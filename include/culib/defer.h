@@ -21,6 +21,8 @@
 // 如果与其他库中名为 defer 的标识符冲突（如 Asio 的 asio::defer），
 // 在包含本头文件之前定义 WAVVIX_NO_DEFER_KEYWORD，改用 WAVVIX_DEFER { ... };
 
+#include <culib/detail/macros.h>
+
 #include <utility>
 
 namespace wavvix {
@@ -63,11 +65,8 @@ struct defer_maker {
 }  // namespace detail
 }  // namespace wavvix
 
-#define WAVVIX_DETAIL_CONCAT_IMPL(a, b) a##b
-#define WAVVIX_DETAIL_CONCAT(a, b) WAVVIX_DETAIL_CONCAT_IMPL(a, b)
-
 #define WAVVIX_DEFER \
-    auto WAVVIX_DETAIL_CONCAT(wavvix_defer_, __LINE__) = ::wavvix::detail::defer_maker() + [&]() noexcept
+    auto WAVVIX_DETAIL_UNIQUE_NAME(wavvix_defer_) = ::wavvix::detail::defer_maker() + [&]() noexcept
 
 #ifndef WAVVIX_NO_DEFER_KEYWORD
 #define defer WAVVIX_DEFER
