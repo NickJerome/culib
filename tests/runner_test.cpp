@@ -1,6 +1,7 @@
 #include <culib/test.h>
 
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -288,3 +289,77 @@ TEST(runner, reports_uncaught_exceptions_and_continues) {
     EXPECT(output.find("[       OK ] thrower.after"), !=, std::string::npos);
 }
 #endif
+
+namespace {
+
+int hex_failure_line = 0;
+
+void sets_hex_then_fails() {
+    *current_context()->out << std::hex << std::showbase;
+    hex_failure_line = __LINE__ + 1;
+    EXPECT(1, ==, 2);
+}
+
+void sets_width_then_fails() {
+    *current_context()->out << std::setw(40);
+    EXPECT(1, ==, 2);
+}
+
+void sets_width_then_passes() {
+    *current_context()->out << std::setw(40);
+}
+
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+void sets_hex_then_throws() {
+    *current_context()->out << std::hex << std::showbase;
+    throw std::runtime_error("boom");
+}
+#endif
+
+// 记录刷新次数的输出缓冲区
+class counting_buffer : public std::stringbuf {
+public:
+    counting_buffer() : syncs(0) {}
+
+    int syncs;
+
+protected:
+    int sync() override {
+        ++syncs;
+        return std::stringbuf::sync();
+    }
+};
+
+}  // namespace
+
+// 测试改动了输出流的格式（std::hex、std::setw 等）时，报告里的行号和排版不受影响
+TEST(runner, ignores_stream_formatting_left_by_tests) {
+    std::vector<test_case> tests;
+    tests.push_back(test_case{"format", "hex_then_fails", &sets_hex_then_fails, "format.cpp", 1});
+    tests.push_back(test_case{"format", "width_then_fails", &sets_width_then_fails, "format.cpp", 2});
+    tests.push_back(test_case{"format", "width_then_passes", &sets_width_then_passes, "format.cpp", 3});
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    tests.push_back(test_case{"format", "hex_then_throws", &sets_hex_then_throws, "format.cpp", 42});
+#endif
+    const std::string output = run_with_fake_clock(tests, run_options(), nullptr);
+    EXPECT(output.find("\n" + std::string(__FILE__) + ":" + std::to_string(hex_failure_line) + ": Failure\n"), !=,
+           std::string::npos);
+    EXPECT(output.find("[ RUN      ] format.width_then_fails\n" + std::string(__FILE__) + ":"), !=,
+           std::string::npos);
+    EXPECT(output.find("\n[       OK ] format.width_then_passes ("), !=, std::string::npos);
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    EXPECT(output.find("\nformat.cpp:42: Failure\n  Uncaught exception: boom\n"), !=, std::string::npos);
+#endif
+}
+
+// 失败信息写出后立即刷新：随后即使崩溃，失败原因也不会丢在缓冲区里
+TEST(runner, flushes_failure_reports_immediately) {
+    counting_buffer buffer;
+    std::ostream out(&buffer);
+    test_context context = {&out, false};
+    test_context* const outer = exchange_context(&context);
+    EXPECT(1, ==, 2);
+    exchange_context(outer);
+    EXPECT(buffer.syncs, >, 0);
+    EXPECT(context.failed, ==, true);
+}

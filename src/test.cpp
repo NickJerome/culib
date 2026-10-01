@@ -48,6 +48,13 @@ std::string quote(const char* data, std::size_t size) {
     return text;
 }
 
+// 原样写出并立即刷新：不受测试留下的流格式（std::hex、std::setw 等）影响，
+// 随后即使程序崩溃，这段内容也已经输出。
+void write_text(std::ostream& out, const std::string& text) {
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    out.flush();
+}
+
 // 以百分之一为单位的整数，格式化成两位小数，例如 125 -> "1.25"。
 std::string two_decimals(std::int64_t hundredths) {
     std::string fraction = display_signed(hundredths % 100);
@@ -104,17 +111,23 @@ std::vector<suite_group> group_by_suite(const std::vector<const test_case*>& tes
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
 // 测试函数抛出了未捕获的异常：位置取 TEST 所在的文件和行
 void report_uncaught_exception(const test_case& test, const char* what, std::ostream& out) {
-    out << test.file << ':' << test.line << ": Failure\n";
+    std::string message = std::string(test.file) + ":" + display_signed(test.line) + ": Failure\n";
     if (what != nullptr) {
-        out << "  Uncaught exception: " << what << '\n';
+        message += std::string("  Uncaught exception: ") + what + "\n";
     } else {
-        out << "  Uncaught exception of unknown type\n";
+        message += "  Uncaught exception of unknown type\n";
     }
+    write_text(out, message);
 }
 #endif
 
 // 运行一个测试，返回是否通过；elapsed 返回测试函数本身的耗时。
 bool run_single_test(const test_case& test, std::ostream& out, clock_function clock, std::int64_t& elapsed) {
+    // 测试可能改动输出流的格式（std::hex、std::setw 等），结束后恢复，后面的报告不受影响
+    const std::ios_base::fmtflags flags = out.flags();
+    const std::streamsize precision = out.precision();
+    const std::streamsize width = out.width();
+    const char fill = out.fill();
     test_context context = {&out, false};
     test_context* previous = exchange_context(&context);
     const std::int64_t start = clock();
@@ -133,6 +146,10 @@ bool run_single_test(const test_case& test, std::ostream& out, clock_function cl
 #endif
     elapsed = clock() - start;
     exchange_context(previous);
+    out.flags(flags);
+    out.precision(precision);
+    out.width(width);
+    out.fill(fill);
     return !context.failed;
 }
 
@@ -194,9 +211,9 @@ test_context* exchange_context(test_context* context) noexcept {
 void report_failure(const char* file, int line, const char* left_text, const char* op_text, const char* right_text,
                     const std::string& left_value, const std::string& right_value) {
     std::ostream& out = current != nullptr ? *current->out : std::cerr;
-    out << file << ':' << line << ": Failure\n"
-        << "  Expression: " << left_text << ' ' << op_text << ' ' << right_text << '\n'
-        << "  Values:     " << left_value << ' ' << op_text << ' ' << right_value << '\n';
+    write_text(out, std::string(file) + ":" + display_signed(line) + ": Failure\n" + "  Expression: " + left_text + " " +
+                        op_text + " " + right_text + "\n" + "  Values:     " + left_value + " " + op_text + " " +
+                        right_value + "\n");
     if (current != nullptr) {
         current->failed = true;
     }
@@ -406,7 +423,8 @@ run_summary run_tests(const std::vector<test_case>& tests, const run_options& op
         for (const std::string& name : summary.failed_names) {
             out << "[  FAILED  ] " << name << '\n';
         }
-        out << "\n " << summary.failed << " FAILED " << (summary.failed == 1 ? "TEST" : "TESTS") << '\n';
+        out << "\n " << display_signed(summary.failed) << " FAILED " << (summary.failed == 1 ? "TEST" : "TESTS")
+            << '\n';
     }
     out.flush();
     return summary;
@@ -429,7 +447,8 @@ int run_main(const std::vector<test_case>& tests, int argc, const char* const ar
         for (std::size_t j = i + 1; j < tests.size(); ++j) {
             if (std::strcmp(tests[i].suite, tests[j].suite) == 0 && std::strcmp(tests[i].name, tests[j].name) == 0) {
                 err << "error: duplicate test name " << full_name(tests[i]) << " (" << tests[i].file << ':'
-                    << tests[i].line << " and " << tests[j].file << ':' << tests[j].line << ")\n";
+                    << display_signed(tests[i].line) << " and " << tests[j].file << ':'
+                    << display_signed(tests[j].line) << ")\n";
                 return 2;
             }
         }
