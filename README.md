@@ -34,7 +34,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
-| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`Result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息已完成 |
+| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息已完成 |
 | string | split / join / trim / 大小写转换 / 格式化；UTF-8 ⇄ UTF-16 转换 | 规划中 |
 | fs | 路径处理、文件与目录操作、整文件读写（C++11 没有 `std::filesystem`） | 规划中 |
 | time | 时间戳、日期时间格式化、高精度计时 | 规划中 |
@@ -213,18 +213,20 @@ culib/
 
 ### 命名
 
-- **命名空间**：`wavvix`，全小写；内部实现放在 `wavvix::detail`，使用方不应依赖。
-- **类型**（类、结构体、枚举、类型别名）：UpperCamelCase，如 `Result`、`ThreadPool`。
-- **函数、方法、变量、参数**：lowerCamelCase，如 `readFile()`、`isOk()`。
-- **私有成员变量**：lowerCamelCase 加尾下划线，如 `count_`。
-- **枚举值**：UpperCamelCase，如 `LogLevel::Warning`。
+与 C++ 标准库保持一致（参考 C++ Core Guidelines 的 NL.10），和 `std::`、Boost 等库一起使用时风格统一：
+
+- **命名空间**：全小写，即 `wavvix`；内部实现放在 `wavvix::detail`，使用方不应依赖。
+- **类型、函数、变量、参数**：全部 snake_case，如 `thread_pool`、`read_file()`、`is_ok()`、`buffer_size`。
+- **私有成员变量**：snake_case 加尾下划线，如 `count_`。
+- **枚举值**：snake_case，如 `log_level::warning`；与关键字冲突时换一个词，如用 `automatic` 代替 `auto`。
+- **模板参数**：大驼峰，如 `T`、`Allocator`，与标准库相同。
 - **宏**：全大写加 `WAVVIX_` 前缀，如 `WAVVIX_PLATFORM_WINDOWS`；内部使用的宏加 `WAVVIX_DETAIL_` 前缀。
   唯一的例外是 `defer`：为了写起来像关键字，额外提供小写的 `defer`（等价于 `WAVVIX_DEFER`）。如果与其他库冲突（如 Asio 的 `asio::defer`），在包含头文件之前定义 `WAVVIX_NO_DEFER_KEYWORD` 即可关闭。
 - **文件名**：全小写，单词间用下划线，如 `defer.h`、`defer_test.cpp`。Windows / macOS 默认不区分文件名大小写而 Linux 区分，全小写可以避免只在 Linux 上才暴露的包含错误。
 
 ### 错误处理
 
-- 可能失败的操作通过 `Result` 返回结果或错误，由调用方显式检查；库不主动抛出异常。
+- 可能失败的操作通过 `result` 返回结果或错误，由调用方显式检查；库不主动抛出异常。
 - 不依赖 RTTI。公共头文件中不出现 `throw`、`try`、`dynamic_cast`、`typeid`，因此可以用于关闭了异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程。
 
 ### 性能与占用
@@ -239,17 +241,17 @@ culib/
 
 ### 易用性
 
-- **看名字就会用**：名字直接说明行为，使用完整单词（公认缩写除外）；同类操作命名统一，如 `isXxx` / `hasXxx` 返回 bool，`toXxx` 表示转换。
-- **全库一致**：同类问题只用同一种方式处理，如可能失败的操作一律返回 `Result`，字符串一律 UTF-8，参数一律输入在前、输出在后。
+- **看名字就会用**：名字直接说明行为，使用完整单词（公认缩写除外）；同类操作命名统一，如 `is_xxx` / `has_xxx` 返回 bool，`to_xxx` 表示转换。
+- **全库一致**：同类问题只用同一种方式处理，如可能失败的操作一律返回 `result`，字符串一律 UTF-8，参数一律输入在前、输出在后。
 - **简单的事一行完成**：常用功能一行调用即可，提供合理的默认值。
 - **名字描述行为，不标性能档次**（参考 `std::vector` 的 `push_back` / `emplace_back` / `reserve`）：
-  - 同一件事、只是结果放的位置不同，用同名重载，两个版本平级：`readFile(path)` 返回新字符串，`readFile(path, buffer)` 覆盖写入已有的 buffer 并复用其容量；
+  - 同一件事、只是结果放的位置不同，用同名重载，两个版本平级：`read_file(path)` 返回新字符串，`read_file(path, buffer)` 覆盖写入已有的 buffer 并复用其容量；
   - 行为确实不同时才换名字，且名字说明做了什么（如 push 放入已有对象、emplace 就地构造），而不是标注「快速版」；
   - 能自动生效的优化直接做进接口（如移动语义、右值重载），使用者无需知道它的存在；
   - 调优类接口（类似 `reserve`）只是可选的附加操作，不用也完全正确；
   - 任何一个版本都不能比其他版本更容易用错。
 - **零配置、零管理**：包含头文件即可使用，无需 `init()` / `cleanup()`，无需预定义宏；资源全部由 RAII 管理，接口中不出现需要使用者手动释放的指针。
-- **难以误用**：用 `enum class` 代替 bool / 整数开关，如 `copyFile(src, dst, Overwrite::Yes)` 而不是 `copyFile(src, dst, true)`；编译器支持时，忽略 `Result` 返回值会产生警告。
+- **难以误用**：用 `enum class` 代替 bool / 整数开关，如 `copy_file(src, dst, overwrite::yes)` 而不是 `copy_file(src, dst, true)`；编译器支持时，忽略 `result` 返回值会产生警告。
 - **报错看得懂**：模板用错时用 `static_assert` 给出明确提示，而不是一长串模板错误；运行时错误可以直接取得可读的描述。
 - **没有意外**：行为符合直觉；会阻塞、会分配内存、非线程安全等需要留意的地方，在接口注释中写明。
 - **头文件即文档**：每个公共头文件都能单独包含、不依赖包含顺序；公共接口在头文件中有简短注释，主要模块在 `examples/` 中有可直接运行的示例。
@@ -274,7 +276,7 @@ culib/
 ## 待定事项
 
 - [ ] 模块清单与优先级
-- [ ] `Result` 的具体设计（错误的表示方式、接口形式）
+- [ ] `result` 的具体设计（设计文档待评审）
 - [ ] 最低系统版本（如 Windows 7 还是 Windows 10），影响可用的系统 API
 - [ ] 测试与基准测试框架：自带极简实现，或引入 doctest、nanobench 等单头文件库（仅测试使用，不影响库本身零依赖）
 - [ ] 头文件注释的语言与编码：目前是中文注释、UTF-8 无 BOM。使用方用 MSVC 在中文等非 UTF-8 代码页下编译、又没开 `/utf-8` 时，会按本地编码读取 culib 的头文件，可能出现 C4819 警告或乱码导致的编译错误。可选方案：头文件存为 UTF-8 with BOM，或注释只用英文

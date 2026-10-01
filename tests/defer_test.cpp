@@ -6,18 +6,18 @@
 
 namespace {
 
-int failureCount = 0;
+int failure_count = 0;
 
 void check(bool passed, const char* expression, const char* file, int line) {
     if (!passed) {
         std::printf("%s:%d: CHECK failed: %s\n", file, line, expression);
-        ++failureCount;
+        ++failure_count;
     }
 }
 
 #define CHECK(expression) check((expression), #expression, __FILE__, __LINE__)
 
-void runsAtScopeExit() {
+void runs_at_scope_exit() {
     int value = 0;
     {
         defer { value = 1; };
@@ -26,7 +26,7 @@ void runsAtScopeExit() {
     CHECK(value == 1);
 }
 
-void runsInReverseOrder() {
+void runs_in_reverse_order() {
     std::string order;
     {
         defer { order += 'a'; };
@@ -36,23 +36,23 @@ void runsInReverseOrder() {
     CHECK(order == "cba");
 }
 
-int returnEarlyOrNot(bool returnEarly, int& cleanupCount) {
-    defer { ++cleanupCount; };
-    if (returnEarly) {
+int return_early_or_not(bool return_early, int& cleanup_count) {
+    defer { ++cleanup_count; };
+    if (return_early) {
         return 1;
     }
     return 2;
 }
 
-void runsOnEveryReturnPath() {
-    int cleanupCount = 0;
-    CHECK(returnEarlyOrNot(true, cleanupCount) == 1);
-    CHECK(cleanupCount == 1);
-    CHECK(returnEarlyOrNot(false, cleanupCount) == 2);
-    CHECK(cleanupCount == 2);
+void runs_on_every_return_path() {
+    int cleanup_count = 0;
+    CHECK(return_early_or_not(true, cleanup_count) == 1);
+    CHECK(cleanup_count == 1);
+    CHECK(return_early_or_not(false, cleanup_count) == 2);
+    CHECK(cleanup_count == 2);
 }
 
-void runsOncePerLoopIteration() {
+void runs_once_per_loop_iteration() {
     std::string log;
     for (int i = 0; i < 3; ++i) {
         defer { log += 'e'; };
@@ -61,7 +61,7 @@ void runsOncePerLoopIteration() {
     CHECK(log == "bebebe");
 }
 
-void seesLatestValueOfCapturedVariables() {
+void sees_latest_value_of_captured_variables() {
     int value = 1;
     int seen = 0;
     {
@@ -71,9 +71,9 @@ void seesLatestValueOfCapturedVariables() {
     CHECK(seen == 2);
 }
 
-class Counter {
+class delayed_counter {
 public:
-    void incrementLater() {
+    void increment_later() {
         defer { ++count_; };
         CHECK(count_ == 0);
     }
@@ -84,13 +84,13 @@ private:
     int count_ = 0;
 };
 
-void worksInsideMemberFunctions() {
-    Counter counter;
-    counter.incrementLater();
+void works_inside_member_functions() {
+    delayed_counter counter;
+    counter.increment_later();
     CHECK(counter.count() == 1);
 }
 
-void longFormMacroWorks() {
+void long_form_macro_works() {
     int value = 0;
     {
         WAVVIX_DEFER { value = 1; };
@@ -98,23 +98,23 @@ void longFormMacroWorks() {
     CHECK(value == 1);
 }
 
-// 正常使用 defer 时移动会被编译器省略，这里直接构造 DeferGuard 来覆盖移动路径。
-void movedFromGuardDoesNotRun() {
-    int runCount = 0;
+// 正常使用 defer 时移动会被编译器省略，这里直接构造 defer_guard 来覆盖移动路径。
+void moved_from_guard_does_not_run() {
+    int run_count = 0;
     {
-        auto first = wavvix::detail::DeferMaker() + [&]() noexcept { ++runCount; };
+        auto first = wavvix::detail::defer_maker() + [&]() noexcept { ++run_count; };
         {
             auto second = std::move(first);
         }
-        CHECK(runCount == 1);
+        CHECK(run_count == 1);
     }
-    CHECK(runCount == 1);
+    CHECK(run_count == 1);
 }
 
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
 #define TEST_HAS_EXCEPTIONS 1
 
-void runsDuringStackUnwinding() {
+void runs_during_stack_unwinding() {
     int value = 0;
     try {
         defer { value = 1; };
@@ -128,20 +128,20 @@ void runsDuringStackUnwinding() {
 }  // namespace
 
 int main() {
-    runsAtScopeExit();
-    runsInReverseOrder();
-    runsOnEveryReturnPath();
-    runsOncePerLoopIteration();
-    seesLatestValueOfCapturedVariables();
-    worksInsideMemberFunctions();
-    longFormMacroWorks();
-    movedFromGuardDoesNotRun();
+    runs_at_scope_exit();
+    runs_in_reverse_order();
+    runs_on_every_return_path();
+    runs_once_per_loop_iteration();
+    sees_latest_value_of_captured_variables();
+    works_inside_member_functions();
+    long_form_macro_works();
+    moved_from_guard_does_not_run();
 #ifdef TEST_HAS_EXCEPTIONS
-    runsDuringStackUnwinding();
+    runs_during_stack_unwinding();
 #endif
 
-    if (failureCount != 0) {
-        std::printf("defer_test: %d check(s) failed\n", failureCount);
+    if (failure_count != 0) {
+        std::printf("defer_test: %d check(s) failed\n", failure_count);
         return 1;
     }
     std::printf("defer_test: all checks passed\n");
