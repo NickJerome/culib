@@ -35,6 +35,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
 | base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息已完成 |
+| test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 term 完成） |
 | string | split / join / trim / 大小写转换 / 格式化；UTF-8 ⇄ UTF-16 转换 | 规划中 |
 | fs | 路径处理、文件与目录操作、整文件读写（C++11 没有 `std::filesystem`） | 规划中 |
 | time | 时间戳、日期时间格式化、高精度计时 | 规划中 |
@@ -86,8 +87,11 @@ xmake f -c                     # 清除配置缓存，重新检测环境
 ### 3. 运行测试
 
 ```bash
-xmake test                     # 编译并运行全部测试
-xmake test "<测试目标>/*"       # 只运行某个测试目标（zsh 下需要加引号）
+xmake test                                # 编译并运行全部测试，只显示是否通过（适合 CI）
+xmake test -v                             # 有失败时显示完整报告
+xmake run culib_test                      # 在终端里查看完整报告：分组、每个测试和每组的耗时
+xmake run culib_test --filter="defer.*"   # 只运行 defer 组（zsh 下模式要加引号）
+xmake run culib_test --list               # 列出所有测试
 ```
 
 ### 4. 安装
@@ -187,6 +191,41 @@ xmake f -p windows --runtimes=MD    # 动态 CRT
 
 使用预编译库时，构建 culib 所用的运行时也必须和使用方一致。
 
+## 编写测试
+
+culib 自带一个用法接近 Google Test 的单元测试框架，只有 `TEST` 和 `EXPECT` 两个宏：
+
+```cpp
+#include <culib/test.h>
+
+TEST(math, adds_numbers) {                     // 组名, 测试名
+    EXPECT(1 + 1, ==, 2);                      // EXPECT(a, op, b)
+    EXPECT(std::string("abc"), <, "abd");
+}
+
+int main(int argc, char* argv[]) {             // 整个测试程序只需要一个 main
+    return wavvix::test::run_all(argc, argv);
+}
+```
+
+- `op` 只能是 `==`、`!=`、`<`、`<=`、`>`、`>=`；`a` 和 `b` 各只求值一次。
+- 有符号与无符号整数按数学值比较，`EXPECT(v.size(), ==, 3)` 不会产生警告；两边都是 C 字符串时比较内容。
+- 失败时打印位置、表达式和两边的值，测试继续执行。`EXPECT` 返回 `bool`，需要失败就停时写 `if (!EXPECT(p, !=, nullptr)) { return; }`。
+- 运行参数：`--filter=模式`（如 `defer.*`，`-` 之后的模式表示排除）、`--list`、`--help`。退出码：全部通过为 0，有失败为 1，参数错误或测试重名为 2。
+- 测试函数抛出未捕获的异常时记为失败，并继续运行后面的测试。
+- 汇总头文件 `culib.h` 不包含测试框架，需要单独包含 `<culib/test.h>`。
+
+在自己的 xmake 工程里加一个测试程序：
+
+```lua
+target("myapp_test")
+    set_kind("binary")
+    set_default(false)
+    add_files("tests/*.cpp")
+    add_deps("culib")
+    add_tests("default")
+```
+
 ## 目录结构
 
 ```
@@ -195,16 +234,20 @@ culib/
 ├── README.md
 ├── include/
 │   └── culib/                  # 公共头文件（对外 API），一个功能一个头文件
-│       ├── culib.h             # 汇总头文件
+│       ├── culib.h             # 汇总头文件（不含测试框架）
 │       ├── defer.h
-│       └── version.h
+│       ├── test.h              # 单元测试框架
+│       ├── version.h
+│       └── detail/             # 内部使用的头文件
 ├── src/                        # 实现代码（不对外暴露）；纯模板 / 宏的功能只有头文件
-│   ├── version.cpp
-│   ├── <功能>_win.cpp          # 平台相关实现：Windows
-│   └── <功能>_posix.cpp        # 平台相关实现：Linux / macOS 共用
-├── tests/                      # 单元测试，每个 <功能>_test.cpp 是一个独立的测试程序
+│   ├── test.cpp
+│   ├── test_posix.cpp          # 平台相关实现：Linux / macOS 共用
+│   ├── test_win.cpp            # 平台相关实现：Windows
+│   └── version.cpp
+├── tests/                      # 单元测试，全部编译成一个测试程序 culib_test
 │   ├── xmake.lua
-│   └── defer_test.cpp
+│   ├── main.cpp
+│   └── <功能>_test.cpp
 ├── benchmarks/                 # 基准测试
 └── examples/                   # 示例程序
 ```
@@ -221,7 +264,9 @@ culib/
 - **枚举值**：snake_case，如 `log_level::warning`；与关键字冲突时换一个词，如用 `automatic` 代替 `auto`。
 - **模板参数**：大驼峰，如 `T`、`Allocator`，与标准库相同。
 - **宏**：全大写加 `WAVVIX_` 前缀，如 `WAVVIX_PLATFORM_WINDOWS`；内部使用的宏加 `WAVVIX_DETAIL_` 前缀。
-  唯一的例外是 `defer`：为了写起来像关键字，额外提供小写的 `defer`（等价于 `WAVVIX_DEFER`）。如果与其他库冲突（如 Asio 的 `asio::defer`），在包含头文件之前定义 `WAVVIX_NO_DEFER_KEYWORD` 即可关闭。
+  例外是几个高频使用的短名字，它们都是带前缀正式名字的别名，与其他库冲突时可以在包含头文件之前关闭：
+  - `defer`，即 `WAVVIX_DEFER`，定义 `WAVVIX_NO_DEFER_KEYWORD` 关闭（例如与 Asio 的 `asio::defer` 冲突时）；
+  - `TEST`、`EXPECT`，即 `WAVVIX_TEST`、`WAVVIX_EXPECT`，定义 `WAVVIX_NO_TEST_SHORT_NAMES` 关闭。
 - **文件名**：全小写，单词间用下划线，如 `defer.h`、`defer_test.cpp`。Windows / macOS 默认不区分文件名大小写而 Linux 区分，全小写可以避免只在 Linux 上才暴露的包含错误。
 
 ### 错误处理
@@ -233,8 +278,8 @@ culib/
 
 - **热路径可内联**：热路径上的小函数放在头文件中（`inline` / 模板）。静态库里的普通函数在不开启 LTO 时无法被跨库内联。
 - **少分配、少拷贝**：避免不必要的堆分配和拷贝；参数优先传引用或字符串视图，支持移动语义；需要反复产出结果的接口，额外提供写入调用方缓冲区的重载。
-- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr`、`<iostream>` 等，优先使用模板与值语义。
-- **无启动开销**：不在 `main` 之前执行任何代码，避免需要动态初始化的全局对象。
+- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。
+- **无启动开销**：不在 `main` 之前执行任何代码，避免需要动态初始化的全局对象。唯一的例外是测试程序里 `TEST` 的自动注册，正式程序不受影响。
 - **按需同步**：只在必要处加锁，不让单线程使用者为同步付出代价。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，使用方链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **以数据为准**：性能敏感的实现配套基准测试，优化以测量结果为依据。
@@ -278,7 +323,7 @@ culib/
 - [ ] 模块清单与优先级
 - [ ] `result` 的具体设计（设计文档待评审）
 - [ ] 最低系统版本（如 Windows 7 还是 Windows 10），影响可用的系统 API
-- [ ] 测试与基准测试框架：自带极简实现，或引入 doctest、nanobench 等单头文件库（仅测试使用，不影响库本身零依赖）
+- [ ] 基准测试框架：自带极简实现，或引入 nanobench 等单头文件库（仅基准测试使用，不影响库本身零依赖）
 - [ ] 头文件注释的语言与编码：目前是中文注释、UTF-8 无 BOM。使用方用 MSVC 在中文等非 UTF-8 代码页下编译、又没开 `/utf-8` 时，会按本地编码读取 culib 的头文件，可能出现 C4819 警告或乱码导致的编译错误。可选方案：头文件存为 UTF-8 with BOM，或注释只用英文
 
 ## 版本
