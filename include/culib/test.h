@@ -40,7 +40,7 @@
 namespace wavvix {
 namespace test {
 
-// 运行全部已注册的测试，返回进程退出码：0 表示全部通过，1 表示有测试失败，2 表示参数错误。
+// 运行全部已注册的测试，返回进程退出码：0 表示全部通过，1 表示有测试失败，2 表示参数错误或测试重名。
 int run_all(int argc, char* argv[]);
 
 namespace detail {
@@ -495,8 +495,10 @@ inline bool check(const binary_result<L, R>& result, const char* left_text, cons
 using clock_function = std::int64_t (*)();
 
 struct run_options {
-    run_options() : clock(nullptr) {}
+    run_options() : list_only(false), clock(nullptr) {}
 
+    std::string filter;    // 过滤模式，空字符串表示全部
+    bool list_only;        // 只列出测试，不运行
     clock_function clock;  // 为 nullptr 时使用 std::chrono::steady_clock
 };
 
@@ -510,6 +512,25 @@ struct run_summary {
 
 // 按选项运行一组测试，报告写到 out。
 run_summary run_tests(const std::vector<test_case>& tests, const run_options& options, std::ostream& out);
+
+// 命令行解析结果
+struct parsed_arguments {
+    parsed_arguments() : ok(true), show_help(false) {}
+
+    bool ok;
+    bool show_help;
+    run_options options;
+    std::string error;  // ok 为 false 时的错误原因
+};
+
+parsed_arguments parse_arguments(int argc, const char* const argv[]);
+
+// 全名（组名.测试名）是否匹配 gtest 风格的过滤模式：
+// * 匹配任意字符串，? 匹配单个字符；多个模式用 : 分隔；- 之后的模式表示排除。
+bool matches_filter(const std::string& full_name, const std::string& filter);
+
+// 通配符匹配：* 匹配任意字符串，? 匹配单个字符。
+bool matches_pattern(const char* pattern, const char* text);
 
 // run_all 的全部逻辑；测试列表、输出流和时钟都可以替换，便于自测。
 int run_main(const std::vector<test_case>& tests, int argc, const char* const argv[], std::ostream& out,

@@ -161,3 +161,101 @@ TEST(runner, run_main_returns_exit_codes) {
     EXPECT(wavvix::test::detail::run_main(sample_tests(), 2, arguments, out, err, &fake_clock), ==, 2);
     EXPECT(err.str().find("unknown argument: --bogus"), !=, std::string::npos);
 }
+
+namespace {
+
+run_options with_filter(const std::string& filter) {
+    run_options options;
+    options.filter = filter;
+    return options;
+}
+
+}  // namespace
+
+TEST(runner, runs_only_tests_matching_the_filter) {
+    run_summary summary;
+    const std::string output = run_with_fake_clock(sample_tests(), with_filter("sample.pass*"), &summary);
+    EXPECT(summary.ran, ==, 1);
+    EXPECT(summary.failed, ==, 0);
+    EXPECT(output.find("sample.fails"), ==, std::string::npos);
+}
+
+TEST(runner, lists_tests_grouped_by_suite) {
+    std::vector<test_case> tests;
+    tests.push_back(test_case{"beta", "one", &do_nothing, "f.cpp", 1});
+    tests.push_back(test_case{"alpha", "one", &do_nothing, "f.cpp", 2});
+    tests.push_back(test_case{"beta", "two", &do_nothing, "f.cpp", 3});
+    run_options options;
+    options.list_only = true;
+    run_summary summary;
+    const std::string output = run_with_fake_clock(tests, options, &summary);
+    EXPECT(output, ==, "beta.\n  one\n  two\nalpha.\n  one\n");
+    EXPECT(summary.ran, ==, 0);
+}
+
+TEST(runner, matches_gtest_style_filters) {
+    using wavvix::test::detail::matches_filter;
+    EXPECT(matches_filter("defer.runs", ""), ==, true);
+    EXPECT(matches_filter("defer.runs", "*"), ==, true);
+    EXPECT(matches_filter("defer.runs", "defer.*"), ==, true);
+    EXPECT(matches_filter("defer.runs", "def?r.ru?s"), ==, true);
+    EXPECT(matches_filter("defer.runs", "defer.run"), ==, false);
+    EXPECT(matches_filter("defer.runs", "other.*"), ==, false);
+    EXPECT(matches_filter("defer.runs", "other.*:defer.*"), ==, true);
+    EXPECT(matches_filter("defer.loop", "defer.*-*loop*"), ==, false);
+    EXPECT(matches_filter("defer.runs", "defer.*-*loop*"), ==, true);
+    EXPECT(matches_filter("defer.loop", "-*loop*"), ==, false);
+    EXPECT(matches_filter("expect.passes", "-*loop*"), ==, true);
+}
+
+TEST(runner, parses_command_line_arguments) {
+    using wavvix::test::detail::parse_arguments;
+    using wavvix::test::detail::parsed_arguments;
+
+    const char* list_arguments[] = {"culib_test", "--filter=defer.*", "--list"};
+    const parsed_arguments listed = parse_arguments(3, list_arguments);
+    EXPECT(listed.ok, ==, true);
+    EXPECT(listed.options.filter, ==, "defer.*");
+    EXPECT(listed.options.list_only, ==, true);
+    EXPECT(listed.show_help, ==, false);
+
+    const char* help_arguments[] = {"culib_test", "--help"};
+    EXPECT(parse_arguments(2, help_arguments).show_help, ==, true);
+
+    const char* bad_arguments[] = {"culib_test", "--colour"};
+    const parsed_arguments bad = parse_arguments(2, bad_arguments);
+    EXPECT(bad.ok, ==, false);
+    EXPECT(bad.error, ==, "unknown argument: --colour");
+}
+
+TEST(runner, run_main_handles_help_list_and_errors) {
+    using wavvix::test::detail::run_main;
+    std::ostringstream out;
+    std::ostringstream err;
+
+    const char* help[] = {"culib_test", "--help"};
+    EXPECT(run_main(sample_tests(), 2, help, out, err, &fake_clock), ==, 0);
+    EXPECT(out.str().find("--filter=PATTERNS"), !=, std::string::npos);
+
+    out.str("");
+    const char* list[] = {"culib_test", "--list"};
+    EXPECT(run_main(sample_tests(), 2, list, out, err, &fake_clock), ==, 0);
+    EXPECT(out.str(), ==, "sample.\n  passes\n  fails\n");
+
+    const char* bad[] = {"culib_test", "--bogus"};
+    EXPECT(run_main(sample_tests(), 2, bad, out, err, &fake_clock), ==, 2);
+    EXPECT(err.str().find("error: unknown argument: --bogus\n\nUsage: culib_test [options]\n"), !=,
+           std::string::npos);
+}
+
+TEST(runner, run_main_rejects_duplicate_test_names) {
+    std::vector<test_case> tests;
+    tests.push_back(test_case{"dup", "same", &do_nothing, "a.cpp", 1});
+    tests.push_back(test_case{"dup", "same", &do_nothing, "b.cpp", 2});
+    const char* arguments[] = {"culib_test"};
+    std::ostringstream out;
+    std::ostringstream err;
+    EXPECT(wavvix::test::detail::run_main(tests, 1, arguments, out, err, &fake_clock), ==, 2);
+    EXPECT(err.str(), ==, "error: duplicate test name dup.same (a.cpp:1 and b.cpp:2)\n");
+    EXPECT(out.str(), ==, "");
+}

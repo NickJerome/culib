@@ -111,6 +111,35 @@ bool run_single_test(const test_case& test, std::ostream& out, clock_function cl
     return !context.failed;
 }
 
+// 用 : 分隔的多个模式里，是否有一个匹配
+bool matches_any(const std::string& patterns, const std::string& text) {
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t end = patterns.find(':', start);
+        const std::string pattern =
+            patterns.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (matches_pattern(pattern.c_str(), text.c_str())) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            return false;
+        }
+        start = end + 1;
+    }
+}
+
+void print_usage(std::ostream& out, const char* program) {
+    out << "Usage: " << program << " [options]\n"
+        << "\n"
+        << "Options:\n"
+        << "  --filter=PATTERNS  Only run tests whose full name (suite.name) matches.\n"
+        << "                     '*' matches any string and '?' matches one character.\n"
+        << "                     Separate patterns with ':'; patterns after '-' are excluded.\n"
+        << "                     Example: --filter=defer.*-*loop*\n"
+        << "  --list             List the tests instead of running them.\n"
+        << "  --help             Show this message.\n";
+}
+
 }  // namespace
 
 // ------------------------------------------------------------------ 注册
@@ -225,6 +254,61 @@ std::string display_unprintable() {
 
 // ------------------------------------------------------------------ 运行
 
+bool matches_pattern(const char* pattern, const char* text) {
+    const char* star = nullptr;   // 最近一个 * 的位置
+    const char* retry = nullptr;  // 回溯时 text 从这里之后重新尝试
+    while (*text != '\0') {
+        if (*pattern == '*') {
+            star = pattern++;
+            retry = text;
+        } else if (*pattern == '?' || *pattern == *text) {
+            ++pattern;
+            ++text;
+        } else if (star != nullptr) {
+            pattern = star + 1;
+            text = ++retry;
+        } else {
+            return false;
+        }
+    }
+    while (*pattern == '*') {
+        ++pattern;
+    }
+    return *pattern == '\0';
+}
+
+bool matches_filter(const std::string& full_name, const std::string& filter) {
+    const std::size_t dash = filter.find('-');
+    std::string positive = filter.substr(0, dash);
+    const std::string negative = dash == std::string::npos ? std::string() : filter.substr(dash + 1);
+    if (positive.empty()) {
+        positive = "*";
+    }
+    if (!matches_any(positive, full_name)) {
+        return false;
+    }
+    return negative.empty() || !matches_any(negative, full_name);
+}
+
+parsed_arguments parse_arguments(int argc, const char* const argv[]) {
+    parsed_arguments parsed;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument = argv[i];
+        if (argument.compare(0, 9, "--filter=") == 0) {
+            parsed.options.filter = argument.substr(9);
+        } else if (argument == "--list") {
+            parsed.options.list_only = true;
+        } else if (argument == "--help" || argument == "-h") {
+            parsed.show_help = true;
+        } else {
+            parsed.ok = false;
+            parsed.error = "unknown argument: " + argument;
+            return parsed;
+        }
+    }
+    return parsed;
+}
+
 std::string format_duration(std::int64_t nanoseconds) {
     if (nanoseconds < 0) {
         nanoseconds = 0;
@@ -244,10 +328,23 @@ run_summary run_tests(const std::vector<test_case>& tests, const run_options& op
     const clock_function clock = options.clock != nullptr ? options.clock : &steady_now;
     std::vector<const test_case*> selected;
     for (const test_case& test : tests) {
-        selected.push_back(&test);
+        if (matches_filter(full_name(test), options.filter)) {
+            selected.push_back(&test);
+        }
     }
     const std::vector<suite_group> groups = group_by_suite(selected);
     run_summary summary;
+
+    if (options.list_only) {
+        for (const suite_group& group : groups) {
+            out << group.name << ".\n";
+            for (const test_case* test : group.tests) {
+                out << "  " << test->name << '\n';
+            }
+        }
+        out.flush();
+        return summary;
+    }
 
     out << "[==========] Running " << count_text(selected.size(), "test") << " from "
         << count_text(groups.size(), "test suite") << ".\n";
@@ -292,13 +389,28 @@ run_summary run_tests(const std::vector<test_case>& tests, const run_options& op
 
 int run_main(const std::vector<test_case>& tests, int argc, const char* const argv[], std::ostream& out,
              std::ostream& err, clock_function clock) {
-    if (argc > 1) {
-        err << "error: unknown argument: " << argv[1] << '\n';
+    const char* const program = argc > 0 && argv[0] != nullptr ? argv[0] : "test";
+    parsed_arguments parsed = parse_arguments(argc, argv);
+    if (!parsed.ok) {
+        err << "error: " << parsed.error << "\n\n";
+        print_usage(err, program);
         return 2;
     }
-    run_options options;
-    options.clock = clock;
-    return run_tests(tests, options, out).failed > 0 ? 1 : 0;
+    if (parsed.show_help) {
+        print_usage(out, program);
+        return 0;
+    }
+    for (std::size_t i = 0; i < tests.size(); ++i) {
+        for (std::size_t j = i + 1; j < tests.size(); ++j) {
+            if (std::strcmp(tests[i].suite, tests[j].suite) == 0 && std::strcmp(tests[i].name, tests[j].name) == 0) {
+                err << "error: duplicate test name " << full_name(tests[i]) << " (" << tests[i].file << ':'
+                    << tests[i].line << " and " << tests[j].file << ':' << tests[j].line << ")\n";
+                return 2;
+            }
+        }
+    }
+    parsed.options.clock = clock;
+    return run_tests(tests, parsed.options, out).failed > 0 ? 1 : 0;
 }
 
 }  // namespace detail
