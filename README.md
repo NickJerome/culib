@@ -34,7 +34,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
-| base | 平台 / 编译器检测宏、版本信息、`Result` 错误处理、作用域守卫；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 规划中 |
+| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`Result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息已完成 |
 | string | split / join / trim / 大小写转换 / 格式化；UTF-8 ⇄ UTF-16 转换 | 规划中 |
 | fs | 路径处理、文件与目录操作、整文件读写（C++11 没有 `std::filesystem`） | 规划中 |
 | time | 时间戳、日期时间格式化、高精度计时 | 规划中 |
@@ -143,10 +143,16 @@ target("myapp")
 
 ```cpp
 // myapp/src/main.cpp
-#include <culib/culib.h>   // 汇总头文件；也可以只包含用到的模块头文件
+#include <culib/culib.h>   // 汇总头文件；也可以只包含用到的功能头文件，如 <culib/defer.h>
 #include <cstdio>
 
 int main() {
+    std::FILE* file = std::fopen("data.txt", "rb");
+    if (!file) {
+        return 1;
+    }
+    defer { std::fclose(file); };   // 离开作用域时自动关闭，不管从哪条路径返回
+
     std::printf("culib %s\n", wavvix::version());
     return 0;
 }
@@ -188,15 +194,17 @@ culib/
 ├── xmake.lua                   # 构建脚本
 ├── README.md
 ├── include/
-│   └── culib/                  # 公共头文件（对外 API）
+│   └── culib/                  # 公共头文件（对外 API），一个功能一个头文件
 │       ├── culib.h             # 汇总头文件
-│       └── <模块>.h
-├── src/                        # 实现代码（不对外暴露）
-│   └── <模块>/
-│       ├── <模块>.cpp          # 平台无关实现
-│       ├── <模块>_win.cpp      # Windows 实现
-│       └── <模块>_posix.cpp    # Linux / macOS 共用实现
-├── tests/                      # 单元测试
+│       ├── defer.h
+│       └── version.h
+├── src/                        # 实现代码（不对外暴露）；纯模板 / 宏的功能只有头文件
+│   ├── version.cpp
+│   ├── <功能>_win.cpp          # 平台相关实现：Windows
+│   └── <功能>_posix.cpp        # 平台相关实现：Linux / macOS 共用
+├── tests/                      # 单元测试，每个 <功能>_test.cpp 是一个独立的测试程序
+│   ├── xmake.lua
+│   └── defer_test.cpp
 ├── benchmarks/                 # 基准测试
 └── examples/                   # 示例程序
 ```
@@ -208,8 +216,11 @@ culib/
 - **命名空间**：`wavvix`，全小写；内部实现放在 `wavvix::detail`，使用方不应依赖。
 - **类型**（类、结构体、枚举、类型别名）：UpperCamelCase，如 `Result`、`ThreadPool`。
 - **函数、方法、变量、参数**：lowerCamelCase，如 `readFile()`、`isOk()`。
+- **私有成员变量**：lowerCamelCase 加尾下划线，如 `count_`。
 - **枚举值**：UpperCamelCase，如 `LogLevel::Warning`。
-- **宏**：全大写加 `WAVVIX_` 前缀，如 `WAVVIX_PLATFORM_WINDOWS`。
+- **宏**：全大写加 `WAVVIX_` 前缀，如 `WAVVIX_PLATFORM_WINDOWS`；内部使用的宏加 `WAVVIX_DETAIL_` 前缀。
+  唯一的例外是 `defer`：为了写起来像关键字，额外提供小写的 `defer`（等价于 `WAVVIX_DEFER`）。如果与其他库冲突（如 Asio 的 `asio::defer`），在包含头文件之前定义 `WAVVIX_NO_DEFER_KEYWORD` 即可关闭。
+- **文件名**：全小写，单词间用下划线，如 `defer.h`、`defer_test.cpp`。Windows / macOS 默认不区分文件名大小写而 Linux 区分，全小写可以避免只在 Linux 上才暴露的包含错误。
 
 ### 错误处理
 
@@ -252,11 +263,11 @@ culib/
 - **头文件**：使用 `#pragma once`；头文件中不写 `using namespace`。
 - **零警告**：以较高的警告级别编译，三个平台上保持零警告。
 
-### 新增模块
+### 新增功能
 
 1. 在 `include/culib/` 下添加公共头文件（附接口注释），并加入 `culib.h`
-2. 在 `src/<模块>/` 下添加实现，平台相关代码按后缀拆分
-3. 在 `tests/` 下添加对应测试；性能敏感的部分在 `benchmarks/` 下补充基准测试
+2. 如需编译实现，在 `src/` 下添加源文件，平台相关代码按后缀拆分
+3. 在 `tests/` 下添加 `<功能>_test.cpp`；性能敏感的部分在 `benchmarks/` 下补充基准测试
 4. 在 `examples/` 下添加用法示例
 5. 更新本文档「模块规划」中的状态
 
@@ -266,6 +277,7 @@ culib/
 - [ ] `Result` 的具体设计（错误的表示方式、接口形式）
 - [ ] 最低系统版本（如 Windows 7 还是 Windows 10），影响可用的系统 API
 - [ ] 测试与基准测试框架：自带极简实现，或引入 doctest、nanobench 等单头文件库（仅测试使用，不影响库本身零依赖）
+- [ ] 头文件注释的语言与编码：目前是中文注释、UTF-8 无 BOM。使用方用 MSVC 在中文等非 UTF-8 代码页下编译、又没开 `/utf-8` 时，会按本地编码读取 culib 的头文件，可能出现 C4819 警告或乱码导致的编译错误。可选方案：头文件存为 UTF-8 with BOM，或注释只用英文
 
 ## 版本
 
