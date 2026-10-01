@@ -1,6 +1,7 @@
 #include <culib/test.h>
 
 #include <climits>
+#include <cstddef>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -173,4 +174,37 @@ TEST(expect, prints_enums_and_streamable_types) {
     EXPECT(to_display(plain_color::red), ==, "2");
     EXPECT(to_display(named_color::green), ==, "green");
     EXPECT(to_display(opaque()), ==, "<unprintable>");
+}
+
+TEST(expect, compares_signed_and_unsigned_by_value) {
+    const std::size_t three = 3;
+    EXPECT(three, ==, 3);
+    EXPECT(-1, <, 1u);
+    EXPECT(1u, >, -1);
+    EXPECT(-1, !=, static_cast<unsigned int>(-1));
+    EXPECT(static_cast<unsigned int>(-1), >, -1);
+    EXPECT(0u, >=, 0);
+    EXPECT(-5LL, <=, 0ULL);
+    EXPECT(static_cast<unsigned char>(200), >, static_cast<signed char>(-1));
+}
+
+TEST(expect, compares_c_strings_by_content) {
+    const char* pointer = "abc";
+    char array[] = "abc";
+    EXPECT(pointer, ==, array);
+    EXPECT(pointer, ==, "abc");
+    EXPECT(pointer, <, "abd");
+    EXPECT("b", >, pointer);
+    EXPECT(pointer, <=, "abc");
+    EXPECT(pointer, >=, "abc");
+    const char* null_text = nullptr;
+    EXPECT(null_text, !=, "abc");
+    EXPECT(null_text, ==, nullptr);
+}
+
+TEST(expect, compares_std_string_with_c_string) {
+    const std::string text = "abc";
+    EXPECT(text, ==, "abc");
+    EXPECT("abc", ==, text);
+    EXPECT(std::string("abc"), <, "abd");
 }

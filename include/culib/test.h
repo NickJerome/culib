@@ -14,6 +14,7 @@
 //
 // EXPECT(a, op, b)：
 // - op 只能是 ==、!=、<、<=、>、>=；a 和 b 各只求值一次。
+// - 有符号与无符号整数按数学值比较；两边都是 C 字符串（char 指针或数组）时比较内容。
 // - 失败时打印位置、表达式和两边的值，测试继续执行。EXPECT 返回 bool，
 //   需要失败就停时写 if (!EXPECT(p, !=, nullptr)) { return; }。
 // - 操作数里有不在括号内的逗号（如模板参数）时，给操作数再加一层括号。
@@ -26,6 +27,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -229,11 +232,25 @@ std::string to_display(const T& value) {
 
 // ------------------------------------------------------------------ 比较
 
-// 比较方式：直接使用运算符
+// 比较方式：直接使用运算符 / 有符号与无符号整数按数学值比较 / 两边都是 C 字符串时比较内容
 struct raw_comparison {};
+struct mixed_sign_comparison {};
+struct c_string_comparison {};
+
+// 参与「按数学值比较」的整数类型；bool 不参与
+template <typename T>
+struct is_plain_integer
+    : std::integral_constant<bool, std::is_integral<T>::value && !std::is_same<T, bool>::value> {};
 
 template <typename L, typename R>
-using comparison_tag = raw_comparison;
+struct is_mixed_sign
+    : std::integral_constant<bool, is_plain_integer<L>::value && is_plain_integer<R>::value &&
+                                       std::is_signed<L>::value != std::is_signed<R>::value> {};
+
+template <typename L, typename R>
+using comparison_tag = typename std::conditional<
+    is_c_string_type<L>::value && is_c_string_type<R>::value, c_string_comparison,
+    typename std::conditional<is_mixed_sign<L, R>::value, mixed_sign_comparison, raw_comparison>::type>::type;
 
 template <typename L, typename R>
 bool compare_equal(const L& left, const R& right, raw_comparison) {
@@ -265,6 +282,121 @@ bool compare_greater_equal(const L& left, const R& right, raw_comparison) {
     return static_cast<bool>(left >= right);
 }
 
+// 有符号与无符号整数：先排除负数，再统一转成 unsigned long long 比较
+template <typename L, typename R>
+bool mixed_equal(L left, R right, std::true_type /* left 有符号 */) {
+    return left >= 0 && static_cast<unsigned long long>(left) == static_cast<unsigned long long>(right);
+}
+
+template <typename L, typename R>
+bool mixed_equal(L left, R right, std::false_type /* right 有符号 */) {
+    return right >= 0 && static_cast<unsigned long long>(left) == static_cast<unsigned long long>(right);
+}
+
+template <typename L, typename R>
+bool mixed_less(L left, R right, std::true_type /* left 有符号 */) {
+    return left < 0 || static_cast<unsigned long long>(left) < static_cast<unsigned long long>(right);
+}
+
+template <typename L, typename R>
+bool mixed_less(L left, R right, std::false_type /* right 有符号 */) {
+    return right >= 0 && static_cast<unsigned long long>(left) < static_cast<unsigned long long>(right);
+}
+
+template <typename L, typename R>
+bool compare_equal(L left, R right, mixed_sign_comparison) {
+    return detail::mixed_equal(left, right, std::is_signed<L>());
+}
+
+template <typename L, typename R>
+bool compare_not_equal(L left, R right, mixed_sign_comparison) {
+    return !detail::mixed_equal(left, right, std::is_signed<L>());
+}
+
+template <typename L, typename R>
+bool compare_less(L left, R right, mixed_sign_comparison) {
+    return detail::mixed_less(left, right, std::is_signed<L>());
+}
+
+template <typename L, typename R>
+bool compare_less_equal(L left, R right, mixed_sign_comparison) {
+    return !detail::mixed_less(right, left, std::is_signed<R>());
+}
+
+template <typename L, typename R>
+bool compare_greater(L left, R right, mixed_sign_comparison) {
+    return detail::mixed_less(right, left, std::is_signed<R>());
+}
+
+template <typename L, typename R>
+bool compare_greater_equal(L left, R right, mixed_sign_comparison) {
+    return !detail::mixed_less(left, right, std::is_signed<L>());
+}
+
+// 两边都是 C 字符串：比较内容；任一边是空指针时按指针比较
+inline bool c_string_equal(const char* left, const char* right) {
+    if (left == nullptr || right == nullptr) {
+        return left == right;
+    }
+    return std::strcmp(left, right) == 0;
+}
+
+inline bool c_string_less(const char* left, const char* right) {
+    if (left == nullptr || right == nullptr) {
+        return std::less<const char*>()(left, right);
+    }
+    return std::strcmp(left, right) < 0;
+}
+
+template <typename L, typename R>
+bool compare_equal(const L& left, const R& right, c_string_comparison) {
+    return detail::c_string_equal(left, right);
+}
+
+template <typename L, typename R>
+bool compare_not_equal(const L& left, const R& right, c_string_comparison) {
+    return !detail::c_string_equal(left, right);
+}
+
+template <typename L, typename R>
+bool compare_less(const L& left, const R& right, c_string_comparison) {
+    return detail::c_string_less(left, right);
+}
+
+template <typename L, typename R>
+bool compare_less_equal(const L& left, const R& right, c_string_comparison) {
+    return !detail::c_string_less(right, left);
+}
+
+template <typename L, typename R>
+bool compare_greater(const L& left, const R& right, c_string_comparison) {
+    return detail::c_string_less(right, left);
+}
+
+template <typename L, typename R>
+bool compare_greater_equal(const L& left, const R& right, c_string_comparison) {
+    return !detail::c_string_less(left, right);
+}
+
+// 判断两边能否用某个运算符比较，用于给出清楚的编译错误
+#define WAVVIX_DETAIL_DEFINE_HAS_OPERATOR(trait, op)                                                     \
+    template <typename A, typename B>                                                                   \
+    auto trait##_test(int)                                                                              \
+        -> decltype(static_cast<void>(std::declval<const A&>() op std::declval<const B&>()), std::true_type()); \
+    template <typename, typename>                                                                       \
+    std::false_type trait##_test(...);                                                                  \
+    template <typename L, typename R>                                                                   \
+    struct trait : decltype(trait##_test<L, R>(0)) {};
+
+WAVVIX_DETAIL_DEFINE_HAS_OPERATOR(has_equal, ==)
+WAVVIX_DETAIL_DEFINE_HAS_OPERATOR(has_not_equal, !=)
+WAVVIX_DETAIL_DEFINE_HAS_OPERATOR(has_less, <)
+WAVVIX_DETAIL_DEFINE_HAS_OPERATOR(has_less_equal, <=)
+WAVVIX_DETAIL_DEFINE_HAS_OPERATOR(has_greater, >)
+WAVVIX_DETAIL_DEFINE_HAS_OPERATOR(has_greater_equal, >=)
+
+#undef WAVVIX_DETAIL_DEFINE_HAS_OPERATOR
+
 // 一次比较的结果：是否通过，以及指向两边操作数的指针（用于失败时打印）。
 // 指针指向 EXPECT 里的操作数，只在同一个完整表达式内有效。
 template <typename L, typename R>
@@ -282,36 +414,42 @@ public:
 
     template <typename R>
     binary_result<L, R> operator==(const R& right) const {
+        static_assert(has_equal<L, R>::value, "EXPECT: the operands cannot be compared with ==");
         return binary_result<L, R>{detail::compare_equal(*value_, right, comparison_tag<L, R>()), value_,
                                    std::addressof(right)};
     }
 
     template <typename R>
     binary_result<L, R> operator!=(const R& right) const {
+        static_assert(has_not_equal<L, R>::value, "EXPECT: the operands cannot be compared with !=");
         return binary_result<L, R>{detail::compare_not_equal(*value_, right, comparison_tag<L, R>()), value_,
                                    std::addressof(right)};
     }
 
     template <typename R>
     binary_result<L, R> operator<(const R& right) const {
+        static_assert(has_less<L, R>::value, "EXPECT: the operands cannot be compared with <");
         return binary_result<L, R>{detail::compare_less(*value_, right, comparison_tag<L, R>()), value_,
                                    std::addressof(right)};
     }
 
     template <typename R>
     binary_result<L, R> operator<=(const R& right) const {
+        static_assert(has_less_equal<L, R>::value, "EXPECT: the operands cannot be compared with <=");
         return binary_result<L, R>{detail::compare_less_equal(*value_, right, comparison_tag<L, R>()), value_,
                                    std::addressof(right)};
     }
 
     template <typename R>
     binary_result<L, R> operator>(const R& right) const {
+        static_assert(has_greater<L, R>::value, "EXPECT: the operands cannot be compared with >");
         return binary_result<L, R>{detail::compare_greater(*value_, right, comparison_tag<L, R>()), value_,
                                    std::addressof(right)};
     }
 
     template <typename R>
     binary_result<L, R> operator>=(const R& right) const {
+        static_assert(has_greater_equal<L, R>::value, "EXPECT: the operands cannot be compared with >=");
         return binary_result<L, R>{detail::compare_greater_equal(*value_, right, comparison_tag<L, R>()), value_,
                                    std::addressof(right)};
     }
