@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <locale>
@@ -100,12 +101,36 @@ std::vector<suite_group> group_by_suite(const std::vector<const test_case*>& tes
     return groups;
 }
 
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+// 测试函数抛出了未捕获的异常：位置取 TEST 所在的文件和行
+void report_uncaught_exception(const test_case& test, const char* what, std::ostream& out) {
+    out << test.file << ':' << test.line << ": Failure\n";
+    if (what != nullptr) {
+        out << "  Uncaught exception: " << what << '\n';
+    } else {
+        out << "  Uncaught exception of unknown type\n";
+    }
+}
+#endif
+
 // 运行一个测试，返回是否通过；elapsed 返回测试函数本身的耗时。
 bool run_single_test(const test_case& test, std::ostream& out, clock_function clock, std::int64_t& elapsed) {
     test_context context = {&out, false};
     test_context* previous = exchange_context(&context);
     const std::int64_t start = clock();
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    try {
+        test.function();
+    } catch (const std::exception& error) {
+        report_uncaught_exception(test, error.what(), out);
+        context.failed = true;
+    } catch (...) {
+        report_uncaught_exception(test, nullptr, out);
+        context.failed = true;
+    }
+#else
     test.function();
+#endif
     elapsed = clock() - start;
     exchange_context(previous);
     return !context.failed;

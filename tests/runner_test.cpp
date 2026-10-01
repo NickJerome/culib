@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -259,3 +260,31 @@ TEST(runner, run_main_rejects_duplicate_test_names) {
     EXPECT(err.str(), ==, "error: duplicate test name dup.same (a.cpp:1 and b.cpp:2)\n");
     EXPECT(out.str(), ==, "");
 }
+
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+namespace {
+
+void throws_std_exception() {
+    throw std::runtime_error("boom");
+}
+
+void throws_unknown() {
+    throw 42;
+}
+
+}  // namespace
+
+TEST(runner, reports_uncaught_exceptions_and_continues) {
+    std::vector<test_case> tests;
+    tests.push_back(test_case{"thrower", "std_exception", &throws_std_exception, "thrower.cpp", 7});
+    tests.push_back(test_case{"thrower", "unknown", &throws_unknown, "thrower.cpp", 8});
+    tests.push_back(test_case{"thrower", "after", &do_nothing, "thrower.cpp", 9});
+    run_summary summary;
+    const std::string output = run_with_fake_clock(tests, run_options(), &summary);
+    EXPECT(summary.ran, ==, 3);
+    EXPECT(summary.failed, ==, 2);
+    EXPECT(output.find("thrower.cpp:7: Failure\n  Uncaught exception: boom\n"), !=, std::string::npos);
+    EXPECT(output.find("thrower.cpp:8: Failure\n  Uncaught exception of unknown type\n"), !=, std::string::npos);
+    EXPECT(output.find("[       OK ] thrower.after"), !=, std::string::npos);
+}
+#endif
