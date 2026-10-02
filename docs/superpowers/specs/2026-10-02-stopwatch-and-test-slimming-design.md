@@ -163,7 +163,12 @@ note: in instantiation of function template specialization ... requested here   
 
 - `include/culib/culib.h`：包含 `stopwatch.h`。
 - README：
-  - 「模块规划」：time 一行的状态改为「进行中：`stopwatch` 已完成」；补上已经商定、但还没有列入的模块：lexical_cast（字符串与各种类型互转）、term（终端彩色输出）、table（文本表格）、flag（命令行参数），状态均为「规划中」。
+  - 「模块规划」：time 一行的状态改为「进行中：`stopwatch` 已完成」；补上已经商定、但还没有列入的模块，状态均为「规划中」：
+    - lexical_cast：字符串与各种类型互转；
+    - flag：命令行参数，`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version`；
+    - term：终端彩色输出；
+    - table：文本表格，支持对齐和中文。
+  - 「模块规划」表格下方写明近期顺序：result → lexical_cast → flag → term → table。
   - 「目录结构」：加上 `stopwatch.h`、`stopwatch.cpp` 和私有头文件 `test_runner.h`。
 - 原设计文档 `2026-10-01-test-term-table-design.md`：在第 3 节（实现顺序）、第 4.2 节（`static_assert` 检查、空指针的顺序）、第 4.3 节（耗时单位）、第 4.6 节（可替换的时钟）、第 4.7 节（测试文件）被本文改动的地方加注释，指向本文。
 
@@ -172,11 +177,37 @@ note: in instantiation of function template specialization ... requested here   
 1. 单测框架（已完成）。
 2. 本文：测试框架精简与 stopwatch。
 3. result（见 `2026-10-01-result-design.md`）。
-4. lexical_cast（另行设计，依赖 result）。
-5. 之后是 term、table、flag，先后到时候再定：
-   - term 完成后，测试输出带颜色，并支持 `--color`；
-   - table 的单元格转换依赖 lexical_cast；
-   - flag（命令行参数，写法如 `wavvix::flag::int64 port(8080, "server listen port", {"port", "p"});`）依赖 lexical_cast 和 result，完成后测试框架的命令行解析改用它。
+4. lexical_cast：字符串与各种类型互转（另行设计，依赖 result）。
+5. flag：命令行参数（另行设计，需求见 6.1 节）。依赖 lexical_cast 把文字转成各种类型、依赖 result 报告参数错误，排在这两个之后是最早的位置。完成后，测试框架的命令行解析改用它。
+6. term：终端彩色输出（见 `2026-10-01-test-term-table-design.md` 第 5 节）。完成后，测试输出带颜色，并支持 `--color`。
+7. table：文本表格（见同一文档第 6 节），单元格的转换依赖 lexical_cast。
+
+flag 排在 term、table 之前：写程序离不开命令行参数，彩色输出和表格是锦上添花。
+
+### 6.1 flag 的需求
+
+flag 的设计轮到它时单独进行。以下是目前确定的需求，作为设计的起点：
+
+```cpp
+#include <culib/flag.h>
+
+wavvix::flag::string address("127.0.0.1", "server listen address", {"address", "addr"});
+wavvix::flag::int64 port(8080, "server listen port", {"port", "p"});
+wavvix::flag::boolean verbose(wavvix::flag::required, "more information", {"verbose"});  // 必填项
+
+int main(int argc, char* argv[]) {
+    wavvix::flag::init(argc, argv);
+    std::cout << address << ":" << port << std::endl;
+}
+```
+
+- `flag` 是命名空间，不是类模板，写法与 Go 的 flag 包相同。类模板不带模板参数就不能使用，只有命名空间才能写出 `wavvix::flag::init`、`wavvix::flag::required`。
+- 每个 flag 有默认值、说明文字和若干个名字（如 `--port` 和 `-p`），定义成全局对象，像普通变量一样读取和输出。
+- 常用类型有短名字，如 `flag::int64`、`flag::string`。`bool`、`double` 是关键字，对应的名字到时候再定（例如 `flag::boolean`）。打算底下用一个类模板实现，短名字只是它的别名，这样不常用的类型和使用者自己的类型也能用。
+- 必填项：用 `flag::required` 代替默认值，`init` 时检查命令行里有没有给出。
+- 自带 `--help` 和 `--version`：`--help` 根据各个 flag 的名字、说明和默认值生成用法；`--version` 需要有地方设置程序的版本号，例如在 `init` 时传入。
+- 可以在代码里按名字设置值。配置文件由使用者自己读取，读出键值后调用这个接口即可，库里暂不解析配置文件。
+- 设计时还要定：全局 flag 对象会在 `main` 之前登记，和 `TEST` 一样成为 README「无启动开销」约定的例外；参数错误时的报错内容和退出码。
 
 ## 7. 验证
 
