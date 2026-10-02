@@ -138,7 +138,7 @@ std::string format_duration(std::chrono::nanoseconds duration);
 - 六个运算符各是一个函数对象，用宏生成，内部原样调用对应的运算符。
 - 直接比较：调用函数对象。
 - 有符号与无符号：有符号的一边是负数时，大小已经确定，用 `-1` 和 `0` 代替两边调用函数对象；否则两边都转成 `unsigned long long` 再比较。
-- C 字符串：任一边是空指针时，用两边「是否非空」的 `bool` 值调用函数对象；否则调用 `op(std::strcmp(left, right), 0)`。
+- C 字符串：任一边是空指针时，用两边是否非空（空为 0，非空为 1）调用函数对象；不直接比较两个 `bool`，因为 MSVC 对 `bool` 做大小比较会给出警告。否则调用 `op(std::strcmp(left, right), 0)`。
 
 设计时已在本机用一组边界值（`LLONG_MIN`、`-1`、`0`、`LLONG_MAX`、`ULLONG_MAX` 等）以及空指针、空字符串的组合，对比新旧实现六个运算符的结果，完全一致。
 
