@@ -1,5 +1,7 @@
 #include <culib/test.h>
 
+#include "test_runner.h"  // 框架的内部接口：test_context、exchange_context
+
 #include <climits>
 #include <cstddef>
 #include <ostream>
@@ -39,6 +41,25 @@ std::ostream& operator<<(std::ostream& out, named_color) {
 }
 
 struct opaque {};
+
+// 依次用 ==、!=、<、<=、>、>= 比较两边，把每次的结果写成 T 或 F。
+// 失败只记在临时的上下文里，不影响当前测试。
+template <typename L, typename R>
+std::string six_results(const L& left, const R& right) {
+    captured_failures capture;
+    std::string results;
+    results += EXPECT(left, ==, right) ? 'T' : 'F';
+    results += EXPECT(left, !=, right) ? 'T' : 'F';
+    results += EXPECT(left, <, right) ? 'T' : 'F';
+    results += EXPECT(left, <=, right) ? 'T' : 'F';
+    results += EXPECT(left, >, right) ? 'T' : 'F';
+    results += EXPECT(left, >=, right) ? 'T' : 'F';
+    return results;
+}
+
+const char* const left_is_less = "FTTTFF";
+const char* const left_is_greater = "FTFFTT";
+const char* const both_are_equal = "TFFTFT";
 
 }  // namespace
 
@@ -200,6 +221,30 @@ TEST(expect, compares_c_strings_by_content) {
     const char* null_text = nullptr;
     EXPECT(null_text, !=, "abc");
     EXPECT(null_text, ==, nullptr);
+}
+
+// Review focus：结果为「假」的比较也要正确，六个运算符逐一检查
+TEST(expect, compares_signed_and_unsigned_by_value_with_every_operator) {
+    EXPECT(six_results(-1, 1u), ==, left_is_less);
+    EXPECT(six_results(1u, -1), ==, left_is_greater);
+    EXPECT(six_results(LLONG_MIN, 0ULL), ==, left_is_less);
+    EXPECT(six_results(ULLONG_MAX, -1LL), ==, left_is_greater);
+    EXPECT(six_results(static_cast<unsigned long long>(LLONG_MAX) + 1, LLONG_MAX), ==, left_is_greater);
+    EXPECT(six_results(2, 2u), ==, both_are_equal);
+    EXPECT(six_results(0u, 0), ==, both_are_equal);
+}
+
+// Review focus：空指针小于任何字符串（包括空字符串 ""），两个空指针相等
+TEST(expect, compares_c_strings_by_content_with_every_operator) {
+    const char* const null_text = nullptr;
+    const char* const other_null = nullptr;
+    char abc_copy[] = "abc";
+    EXPECT(six_results("abc", abc_copy), ==, both_are_equal);  // 内容相同、地址不同
+    EXPECT(six_results("abc", "abd"), ==, left_is_less);
+    EXPECT(six_results("b", "abc"), ==, left_is_greater);
+    EXPECT(six_results(null_text, ""), ==, left_is_less);
+    EXPECT(six_results("", null_text), ==, left_is_greater);
+    EXPECT(six_results(null_text, other_null), ==, both_are_equal);
 }
 
 TEST(expect, compares_std_string_with_c_string) {

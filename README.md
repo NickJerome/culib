@@ -36,12 +36,18 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | --- | --- | --- |
 | base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息已完成 |
 | test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 term 完成） |
+| lexical_cast | 字符串与各种类型互转 | 规划中 |
+| flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version` | 规划中 |
+| term | 终端彩色输出：前景色、背景色，自动判断是否输出颜色，支持 Windows 控制台 | 规划中 |
+| table | 文本表格：表头、左中右对齐、中文对齐 | 规划中 |
 | string | split / join / trim / 大小写转换 / 格式化；UTF-8 ⇄ UTF-16 转换 | 规划中 |
 | fs | 路径处理、文件与目录操作、整文件读写（C++11 没有 `std::filesystem`） | 规划中 |
-| time | 时间戳、日期时间格式化、高精度计时 | 规划中 |
+| time | 时间戳、日期时间格式化、高精度计时（`stopwatch` 秒表） | 进行中：`stopwatch` 已完成 |
 | thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 规划中 |
 | os | 进程、环境变量、系统信息、程序自身路径、动态库加载 | 规划中 |
 | log | 轻量级日志 | 规划中 |
+
+近期顺序：result → lexical_cast → flag → term → table，详见 [设计文档](docs/superpowers/specs/2026-10-02-stopwatch-and-test-slimming-design.md) 第 6 节。
 
 ## 快速开始
 
@@ -236,12 +242,15 @@ culib/
 │   └── culib/                  # 公共头文件（对外 API），一个功能一个头文件
 │       ├── culib.h             # 汇总头文件（不含测试框架）
 │       ├── defer.h
+│       ├── stopwatch.h         # 秒表
 │       ├── test.h              # 单元测试框架
 │       ├── version.h
 │       └── detail/             # 内部使用的头文件
 ├── src/                        # 实现代码（不对外暴露）；纯模板 / 宏的功能只有头文件
+│   ├── stopwatch.cpp
 │   ├── test.cpp
 │   ├── test_posix.cpp          # 平台相关实现：Linux / macOS 共用
+│   ├── test_runner.h           # 单测运行器的内部接口（私有头文件，不安装）
 │   ├── test_win.cpp            # 平台相关实现：Windows
 │   └── version.cpp
 ├── tests/                      # 单元测试，全部编译成一个测试程序 culib_test

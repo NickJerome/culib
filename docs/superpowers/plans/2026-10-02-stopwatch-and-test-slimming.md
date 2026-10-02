@@ -76,12 +76,12 @@
 
 `xmake.lua` 用 `add_files("src/**.cpp")`、`tests/xmake.lua` 用 `add_files("*.cpp")`，新文件会自动参与编译，不需要改构建脚本。
 
-- [ ] **Step 1: 确认基线**
+- [x] **Step 1: 确认基线**
 
 Run: `xmake test`
 Expected: `100% tests passed, 0 test(s) failed out of 1`
 
-- [ ] **Step 2: 写失败的测试 `tests/stopwatch_test.cpp`**
+- [x] **Step 2: 写失败的测试 `tests/stopwatch_test.cpp`**
 
 ```cpp
 #include <culib/defer.h>
@@ -194,12 +194,12 @@ TEST(stopwatch, formats_durations_regardless_of_the_global_locale) {
 }
 ```
 
-- [ ] **Step 3: 运行，确认失败**
+- [x] **Step 3: 运行，确认失败**
 
 Run: `xmake build culib_test 2>&1 | grep -m1 'error'`
 Expected: 输出包含 `tests/stopwatch_test.cpp:2:10: fatal error: 'culib/stopwatch.h' file not found`
 
-- [ ] **Step 4: 新建 `include/culib/stopwatch.h`**
+- [x] **Step 4: 新建 `include/culib/stopwatch.h`**
 
 ```cpp
 #pragma once
@@ -252,7 +252,7 @@ std::string format_duration(std::chrono::nanoseconds duration);
 }  // namespace wavvix
 ```
 
-- [ ] **Step 5: 新建 `src/stopwatch.cpp`**
+- [x] **Step 5: 新建 `src/stopwatch.cpp`**
 
 ```cpp
 #include <culib/stopwatch.h>
@@ -295,7 +295,7 @@ std::string format_duration(std::chrono::nanoseconds duration) {
 }  // namespace wavvix
 ```
 
-- [ ] **Step 6: 把 `stopwatch.h` 加入汇总头文件 `include/culib/culib.h`**
+- [x] **Step 6: 把 `stopwatch.h` 加入汇总头文件 `include/culib/culib.h`**
 
 把
 
@@ -312,7 +312,7 @@ std::string format_duration(std::chrono::nanoseconds duration) {
 #include <culib/version.h>
 ```
 
-- [ ] **Step 7: 运行，确认通过**
+- [x] **Step 7: 运行，确认通过**
 
 Run: `xmake run culib_test --filter="stopwatch.*" | tail -1`
 Expected: `[  PASSED  ] 10 tests.`
@@ -323,7 +323,7 @@ Expected: `100% tests passed, 0 test(s) failed out of 1`
 Run: `xmake run culib_test | tail -1`
 Expected: `[  PASSED  ] 53 tests.`（原有 43 个，加上 10 个 stopwatch 测试）
 
-- [ ] **Step 8: 汇编对比，确认 stopwatch 和手写代码一样**
+- [x] **Step 8: 汇编对比，确认 stopwatch 和手写代码一样**
 
 Run:
 ```bash
@@ -354,7 +354,7 @@ Expected: 输出 `SAME`，两个函数都是两次 `steady_clock::now()` 调用�
 	sub	x0, x0, x20
 ```
 
-- [ ] **Step 9: 更新 README**
+- [x] **Step 9: 更新 README**
 
 在「模块规划」表格中，把
 
@@ -398,7 +398,7 @@ Expected: 输出 `SAME`，两个函数都是两次 `steady_clock::now()` 调用�
 │   ├── test.cpp
 ```
 
-- [ ] **Step 10: 提交**
+- [x] **Step 10: 提交**
 
 ```bash
 git add include/culib/stopwatch.h src/stopwatch.cpp tests/stopwatch_test.cpp include/culib/culib.h README.md
@@ -409,7 +409,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```
 
-- [ ] **Step 11: 变异检验：确认 locale 测试能抓住用流格式化数字的实现**
+- [x] **Step 11: 变异检验：确认 locale 测试能抓住用流格式化数字的实现**
 
 临时把整数部分改成用 `std::ostringstream` 输出（流会使用全局 locale）：
 
@@ -448,7 +448,7 @@ Expected: `[  PASSED  ] 10 tests.`，`git status --short` 没有输出。
 
 这一任务只改写法、不改行为，所以先补测试锁定现有行为：新测试在改写前就应该通过，改写后必须照样通过；最后用变异检验证明新测试确实能发现错误。
 
-- [ ] **Step 1: 补充覆盖六个运算符的测试**
+- [x] **Step 1: 补充覆盖六个运算符的测试**
 
 在 `tests/expect_test.cpp` 中，把
 
@@ -521,12 +521,12 @@ TEST(expect, compares_c_strings_by_content_with_every_operator) {
 TEST(expect, compares_std_string_with_c_string) {
 ```
 
-- [ ] **Step 2: 运行，确认在改写前就通过**
+- [x] **Step 2: 运行，确认在改写前就通过**
 
 Run: `xmake run culib_test --filter="expect.*" | tail -1`
 Expected: `[  PASSED  ] 19 tests.`（原有 17 个，加上 2 个新测试。这两个测试锁定的是现有行为，所以此时就应该通过）
 
-- [ ] **Step 3: 改写「比较」一节**
+- [x] **Step 3: 改写「比较」一节**
 
 在 `include/culib/test.h` 中，把从
 
@@ -621,7 +621,7 @@ bool compare(Op op, const char* left, const char* right, c_string_comparison) {
 }
 ```
 
-- [ ] **Step 4: 改写 `class lhs`**
+- [x] **Step 4: 改写 `class lhs`**
 
 把从
 
@@ -686,7 +686,7 @@ private:
 };
 ```
 
-- [ ] **Step 5: 删掉不再需要的 `#include <functional>`**
+- [x] **Step 5: 删掉不再需要的 `#include <functional>`**
 
 在 `include/culib/test.h` 的头文件列表中删除这一行（原来只给 `std::less` 用）：
 
@@ -694,7 +694,7 @@ private:
 #include <functional>
 ```
 
-- [ ] **Step 6: 运行，确认通过**
+- [x] **Step 6: 运行，确认通过**
 
 Run: `xmake run culib_test --filter="expect.*" | tail -1`
 Expected: `[  PASSED  ] 19 tests.`
@@ -702,7 +702,7 @@ Expected: `[  PASSED  ] 19 tests.`
 Run: `xmake test && xmake run culib_test | tail -1 && wc -l include/culib/test.h`
 Expected: `100% tests passed, 0 test(s) failed out of 1`；`[  PASSED  ] 55 tests.`；`470 include/culib/test.h`（原来 567 行）
 
-- [ ] **Step 7: 确认两边不能比较时，编译器直接给出看得懂的错误**
+- [x] **Step 7: 确认两边不能比较时，编译器直接给出看得懂的错误**
 
 Run:
 ```bash
@@ -710,7 +710,7 @@ printf '#include <culib/test.h>\nstruct point { int x; };\nvoid f() { EXPECT(poi
 ```
 Expected: 第一行是 `error: invalid operands to binary expression ('const point' and 'const point')`，最后一行指向输入的第 3 行（`<stdin>:3:28: note: in instantiation of function template specialization 'wavvix::test::detail::lhs<point>::operator==<point>' requested here`）。
 
-- [ ] **Step 8: 确认 EXPECT 检查通过时仍然只有一次比较和一次分支**
+- [x] **Step 8: 确认 EXPECT 检查通过时仍然只有一次比较和一次分支**
 
 Run:
 ```bash
@@ -736,7 +736,7 @@ LBB1_2:
 
 普通比较仍是 `cmp` / `b.ne` / `mov` / `ret`；有符号与无符号比较是一次负数判断（`tbnz`）加一次比较（改写前是 5 条指令，现在是 3 条）。失败上报只出现在 `LBB0_2` / `LBB1_3` 之后的代码块里。
 
-- [ ] **Step 9: 原设计文档第 4.2 节加注释**
+- [x] **Step 9: 原设计文档第 4.2 节加注释**
 
 在 `docs/superpowers/specs/2026-10-01-test-term-table-design.md` 中，把
 
@@ -762,7 +762,7 @@ LBB1_2:
 - ~~两边的类型不支持该比较时，用 `static_assert` 给出明确提示。~~（2026-10-02 修订：已删除，由编译器直接报出两边的类型不能比较，见 `2026-10-02-stopwatch-and-test-slimming-design.md` 第 4.3 节。）
 ```
 
-- [ ] **Step 10: 提交**
+- [x] **Step 10: 提交**
 
 ```bash
 git add include/culib/test.h tests/expect_test.cpp docs/superpowers/specs/2026-10-01-test-term-table-design.md
@@ -773,7 +773,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```
 
-- [ ] **Step 11: 变异检验：确认新测试能发现「负数被当成更大」的错误**
+- [x] **Step 11: 变异检验：确认新测试能发现「负数被当成更大」的错误**
 
 Run:
 ```bash
@@ -809,7 +809,7 @@ Expected: `[  PASSED  ] 55 tests.`，`git status --short` 没有输出。
   - `int run_main(const std::vector<test_case>& tests, int argc, const char* const argv[], std::ostream& out, std::ostream& err);`（去掉时钟参数）
   - 删除：`clock_function`、`wavvix::test::detail::format_duration`；`test.cpp` 里的 `steady_now`、`two_decimals`。
 
-- [ ] **Step 1: 修改测试：不再注入假时钟，把报告里的时长换成 `T` 再比较**
+- [x] **Step 1: 修改测试：不再注入假时钟，把报告里的时长换成 `T` 再比较**
 
 在 `tests/runner_test.cpp` 中：
 
@@ -926,12 +926,12 @@ std::string mask_durations(const std::string& report) {
 
 完成后 `grep -n 'fake\|clock' tests/runner_test.cpp` 应当没有输出。
 
-- [ ] **Step 2: 运行，确认失败**
+- [x] **Step 2: 运行，确认失败**
 
 Run: `xmake build culib_test 2>&1 | grep -m2 'error'`
 Expected: 两行 `error: too few arguments to function call, expected 6, have 5`（`run_main` 还带着时钟参数）。
 
-- [ ] **Step 3: 修改 `include/culib/test.h` 的「运行」一节**
+- [x] **Step 3: 修改 `include/culib/test.h` 的「运行」一节**
 
 把
 
@@ -982,7 +982,7 @@ int run_main(const std::vector<test_case>& tests, int argc, const char* const ar
              std::ostream& err);
 ```
 
-- [ ] **Step 4: 修改 `src/test.cpp`**
+- [x] **Step 4: 修改 `src/test.cpp`**
 
 1. 把开头的
 
@@ -1159,7 +1159,7 @@ int run_main(const std::vector<test_case>& tests, int argc, const char* const ar
 
 完成后 `grep -n 'clock\|int64\|two_decimals\|steady' src/test.cpp include/culib/test.h` 应当没有输出。
 
-- [ ] **Step 5: 运行，确认通过**
+- [x] **Step 5: 运行，确认通过**
 
 Run: `xmake run culib_test --filter="runner.*" | tail -1`
 Expected: `[  PASSED  ] 16 tests.`（原来 17 个，耗时格式化的测试已移走）
@@ -1170,7 +1170,7 @@ Expected: `100% tests passed, 0 test(s) failed out of 1`；`[  PASSED  ] 54 test
 Run: `xmake run culib_test --filter="defer.runs_at*" | grep OK`
 Expected: 类似 `[       OK ] defer.runs_at_scope_exit (458 ns)`：不足 1 微秒的测试显示纳秒，不再是 `(0 us)`。
 
-- [ ] **Step 6: 原设计文档第 4.3、4.6 节加注释**
+- [x] **Step 6: 原设计文档第 4.3、4.6 节加注释**
 
 在 `docs/superpowers/specs/2026-10-01-test-term-table-design.md` 中：
 
@@ -1210,7 +1210,7 @@ Expected: 类似 `[       OK ] defer.runs_at_scope_exit (458 ns)`：不足 1 微
 - 以下逻辑拆成纯函数，单独测试：参数解析、过滤模式匹配、耗时格式化、值的打印、比较规则。（2026-10-02 修订：耗时格式化移到 stopwatch 模块，即 `wavvix::format_duration`。）
 ```
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add tests/runner_test.cpp include/culib/test.h src/test.cpp docs/superpowers/specs/2026-10-01-test-term-table-design.md
@@ -1243,7 +1243,7 @@ EOF
 
 这一任务只搬代码，不改行为；所有声明的内容与任务 3 结束时 `test.h` 里的一致。
 
-- [ ] **Step 1: 写探针，确认现在 `test.h` 还暴露着运行器的内部接口**
+- [x] **Step 1: 写探针，确认现在 `test.h` 还暴露着运行器的内部接口**
 
 Run:
 ```bash
@@ -1251,7 +1251,7 @@ printf '#include <culib/test.h>\nint f() { return static_cast<int>(wavvix::test:
 ```
 Expected: `0`（只包含 `test.h` 就能用到注册表，说明内部接口还在公共头文件里）
 
-- [ ] **Step 2: 新建 `include/culib/detail/expect.h`**
+- [x] **Step 2: 新建 `include/culib/detail/expect.h`**
 
 ```cpp
 #pragma once
@@ -1596,7 +1596,7 @@ inline bool check(const binary_result<L, R>& result, const char* left_text, cons
 }  // namespace wavvix
 ```
 
-- [ ] **Step 3: 新建 `src/test_runner.h`**
+- [x] **Step 3: 新建 `src/test_runner.h`**
 
 ```cpp
 #pragma once
@@ -1691,7 +1691,7 @@ void prepare_process();
 }  // namespace wavvix
 ```
 
-- [ ] **Step 4: 改写 `include/culib/test.h`，只保留使用者需要的内容**
+- [x] **Step 4: 改写 `include/culib/test.h`，只保留使用者需要的内容**
 
 整个文件替换为：
 
@@ -1767,7 +1767,7 @@ public:
 #endif
 ```
 
-- [ ] **Step 5: `src/` 下的实现改为包含私有头文件**
+- [x] **Step 5: `src/` 下的实现改为包含私有头文件**
 
 在 `src/test.cpp` 中，把开头的
 
@@ -1814,7 +1814,7 @@ public:
 #include "test_runner.h"
 ```
 
-- [ ] **Step 6: 框架自测引用私有头文件**
+- [x] **Step 6: 框架自测引用私有头文件**
 
 在 `tests/xmake.lua` 中，把
 
@@ -1866,7 +1866,7 @@ public:
 #include <iomanip>
 ```
 
-- [ ] **Step 7: 运行探针和全部测试**
+- [x] **Step 7: 运行探针和全部测试**
 
 Run: `clang++ -std=c++11 -Iinclude -fsyntax-only /tmp/exposed_probe.cpp 2>&1 | grep -c "no member named 'registry'"; rm -f /tmp/exposed_probe.cpp`
 Expected: `1`（只包含 `test.h` 时已经拿不到注册表）
@@ -1874,7 +1874,7 @@ Expected: `1`（只包含 `test.h` 时已经拿不到注册表）
 Run: `xmake test && xmake run culib_test | tail -1`
 Expected: `100% tests passed, 0 test(s) failed out of 1`；`[  PASSED  ] 54 tests.`
 
-- [ ] **Step 8: 每个头文件都能单独编译**
+- [x] **Step 8: 每个头文件都能单独编译**
 
 Run:
 ```bash
@@ -1882,7 +1882,7 @@ for h in include/culib/*.h include/culib/detail/*.h; do echo "#include <${h#incl
 ```
 Expected: 没有任何输出。
 
-- [ ] **Step 9: 确认私有头文件不随库安装**
+- [x] **Step 9: 确认私有头文件不随库安装**
 
 Run: `xmake install -o /tmp/culib_install_check > /dev/null && find /tmp/culib_install_check/include -type f | sort; rm -rf /tmp/culib_install_check`
 Expected:
@@ -1896,12 +1896,12 @@ Expected:
 /tmp/culib_install_check/include/culib/version.h
 ```
 
-- [ ] **Step 10: 确认行数**
+- [x] **Step 10: 确认行数**
 
 Run: `wc -l include/culib/test.h include/culib/detail/expect.h`
 Expected: `69 include/culib/test.h`、`340 include/culib/detail/expect.h`、`409 total`（原来 `test.h` 一个文件 567 行）
 
-- [ ] **Step 11: 更新 README 和原设计文档**
+- [x] **Step 11: 更新 README 和原设计文档**
 
 在 README「目录结构」中，把
 
@@ -1931,7 +1931,7 @@ Expected: `69 include/culib/test.h`、`340 include/culib/detail/expect.h`、`409
 - （2026-10-02 修订）头文件拆成三个：`culib/test.h` 只含使用者需要的部分；`culib/detail/expect.h` 是 `EXPECT` 的实现；`src/test_runner.h` 是运行器的内部接口，属于私有头文件，不安装。框架自测通过 `tests/xmake.lua` 加入的 `src` 目录引用它。见 `2026-10-02-stopwatch-and-test-slimming-design.md` 第 4.1 节。
 ```
 
-- [ ] **Step 12: 提交**
+- [x] **Step 12: 提交**
 
 ```bash
 git add include/culib/test.h include/culib/detail/expect.h src/test_runner.h src/test.cpp src/test_posix.cpp src/test_win.cpp tests/xmake.lua tests/expect_test.cpp tests/runner_test.cpp README.md docs/superpowers/specs/2026-10-01-test-term-table-design.md
@@ -1954,7 +1954,7 @@ EOF
 - Consumes: 规格第 5、6 节的模块清单和顺序。
 - Produces: 文档，无代码接口。
 
-- [ ] **Step 1: README「模块规划」补上已商定的模块和近期顺序**
+- [x] **Step 1: README「模块规划」补上已商定的模块和近期顺序**
 
 把
 
@@ -1986,7 +1986,7 @@ EOF
 近期顺序：result → lexical_cast → flag → term → table，详见 [设计文档](docs/superpowers/specs/2026-10-02-stopwatch-and-test-slimming-design.md) 第 6 节。
 ```
 
-- [ ] **Step 2: 原设计文档第 3 节加注释**
+- [x] **Step 2: 原设计文档第 3 节加注释**
 
 在 `docs/superpowers/specs/2026-10-01-test-term-table-design.md` 中，把
 
@@ -2002,12 +2002,12 @@ EOF
 （2026-10-02 修订：在第 1 项之后插入「测试框架精简与 stopwatch」，在 lexical_cast 之后加入 flag，新的顺序见 `2026-10-02-stopwatch-and-test-slimming-design.md` 第 6 节。）
 ```
 
-- [ ] **Step 3: 检查**
+- [x] **Step 3: 检查**
 
 Run: `grep -c '规划中' README.md && grep -n '近期顺序' README.md && grep -c '2026-10-02 修订' docs/superpowers/specs/2026-10-01-test-term-table-design.md`
 Expected: `9`（原来 6 行「规划中」，time 一行在任务 1 改成了「进行中」，再加上 4 个新模块）；一行 `近期顺序：result → lexical_cast → flag → term → table…`；`7`（第 3 节 1 处、第 4.2 节 2 处、第 4.3 节 1 处、第 4.6 节 2 处、第 4.7 节 1 处）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-10-01-test-term-table-design.md
@@ -2029,7 +2029,7 @@ EOF
 - Consumes: 任务 1–5 的全部产出。
 - Produces: 验证结果。
 
-- [ ] **Step 1: debug 和 release 模式下都运行测试**
+- [x] **Step 1: debug 和 release 模式下都运行测试**
 
 Run:
 ```bash
@@ -2037,7 +2037,7 @@ xmake f -m release && xmake test && xmake f -m debug && xmake test
 ```
 Expected: 两次都是 `100% tests passed, 0 test(s) failed out of 1`。
 
-- [ ] **Step 2: 查看完整报告和退出码**
+- [x] **Step 2: 查看完整报告和退出码**
 
 Run: `xmake run culib_test | tail -3`
 Expected: 最后一行是 `[  PASSED  ] 54 tests.`，倒数第二行形如 `[==========] 54 tests from 4 test suites ran. (… total)`。
@@ -2045,7 +2045,7 @@ Expected: 最后一行是 `[  PASSED  ] 54 tests.`，倒数第二行形如 `[===
 Run: `build/macosx/arm64/debug/culib_test --bogus > /dev/null 2>&1; echo "exit=$?"`
 Expected: `exit=2`
 
-- [ ] **Step 3: ASan + UBSan**
+- [x] **Step 3: ASan + UBSan**
 
 Run:
 ```bash
@@ -2053,7 +2053,7 @@ clang++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -g -O1 -fsanitize=address,un
 ```
 Expected: `[  PASSED  ] 54 tests.`，没有 sanitizer 报错。
 
-- [ ] **Step 4: 关闭异常和 RTTI**
+- [x] **Step 4: 关闭异常和 RTTI**
 
 Run:
 ```bash
@@ -2061,15 +2061,15 @@ clang++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -O2 -fno-exceptions -fno-rtt
 ```
 Expected: `[  PASSED  ] 52 tests.`（少了两个依赖异常的测试）
 
-- [ ] **Step 5: 头文件单独编译、EXPECT 汇编**
+- [x] **Step 5: 头文件单独编译、EXPECT 汇编**
 
 重新执行任务 4 Step 8 的命令（Expected：没有输出），以及任务 2 Step 8 的命令（Expected：与任务 2 Step 8 相同）。
 
-- [ ] **Step 6: 记录本机无法验证的部分**
+- [x] **Step 6: 记录本机无法验证的部分**
 
 在最终汇报中说明以下内容尚未验证：Linux / GCC 4.8+、Windows / MSVC 2015+（包括 `/W4 /WX` 下 C 字符串比较的 0 / 1 写法确实没有警告、`test_win.cpp` 改为包含 `test_runner.h` 后能编译）、MinGW。
 
-- [ ] **Step 7: 如有修复，提交**
+- [x] **Step 7: 如有修复，提交**
 
 ```bash
 git add -A
@@ -2081,3 +2081,15 @@ EOF
 ```
 
 只有在前面的步骤中实际修改了文件时才执行这一步。
+
+
+## 执行记录（2026-10-03）
+
+- 代码、测试与文档已实现；按用户后续推送要求，将各任务的提交步骤合并为一个实现提交。
+- 本机环境：macOS arm64、Apple Clang 17、xmake 3.0.8。debug / release 均通过 54 个测试；ASan + UBSan 通过 54 个测试且无诊断；关闭异常与 RTTI 后通过 52 个测试。
+- 所有公共头文件及私有 `test_runner.h` 均以 C++11、`-Wall -Wextra -Wpedantic -Werror` 独立编译通过。安装检查确认只安装 7 个公共头文件，不包含 `test_runner.h`。非法参数退出码为 2。
+- 两项变异检验均检测到预期错误：受全局 locale 影响的数字格式化、把负数当成较大的混合符号比较。变异在临时目录编译，工作区保留正确实现。
+- 汇编确认 stopwatch 与手写 `steady_clock` 计时一致；普通 EXPECT 成功路径为一次比较和一次分支，混合符号比较另有一次负数判断。无法比较的类型直接给出编译器原生诊断并指向 EXPECT 调用。
+- 相对计划示例的小幅调整：组耗时和总耗时在输出汇总行之前读取，保留原实现的计时边界，符合 spec 第 4.4 节。
+- 计划引用的 superpowers 执行技能在本机不可用，本次直接按任务顺序实施。
+- 尚未验证：Linux / GCC 4.8+、Windows / MSVC 2015+（含 `/W4 /WX` 与 `test_win.cpp`）、MinGW。

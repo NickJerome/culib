@@ -1,4 +1,4 @@
-#include <culib/test.h>
+#include "test_runner.h"
 
 namespace wavvix {
 namespace test {

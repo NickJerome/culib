@@ -1,11 +1,17 @@
-#include <culib/test.h>
+#include "test_runner.h"
+
+#include <culib/stopwatch.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <iomanip>
 #include <iostream>
 #include <locale>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace wavvix {
 namespace test {
@@ -55,15 +61,6 @@ void write_text(std::ostream& out, const std::string& text) {
     out.flush();
 }
 
-// 以百分之一为单位的整数，格式化成两位小数，例如 125 -> "1.25"。
-std::string two_decimals(std::int64_t hundredths) {
-    std::string fraction = display_signed(hundredths % 100);
-    if (fraction.size() < 2) {
-        fraction.insert(0, "0");
-    }
-    return display_signed(hundredths / 100) + "." + fraction;
-}
-
 // "1 test"、"2 tests"
 std::string count_text(std::size_t count, const char* noun) {
     std::string text = display_unsigned(count) + " " + noun;
@@ -71,12 +68,6 @@ std::string count_text(std::size_t count, const char* noun) {
         text += "s";
     }
     return text;
-}
-
-std::int64_t steady_now() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
 }
 
 std::string full_name(const test_case& test) {
@@ -122,7 +113,7 @@ void report_uncaught_exception(const test_case& test, const char* what, std::ost
 #endif
 
 // 运行一个测试，返回是否通过；elapsed 返回测试函数本身的耗时。
-bool run_single_test(const test_case& test, std::ostream& out, clock_function clock, std::int64_t& elapsed) {
+bool run_single_test(const test_case& test, std::ostream& out, std::chrono::nanoseconds& elapsed) {
     // 测试可能改动输出流的格式（std::hex、std::setw 等），结束后恢复，后面的报告不受影响
     const std::ios_base::fmtflags flags = out.flags();
     const std::streamsize precision = out.precision();
@@ -130,7 +121,7 @@ bool run_single_test(const test_case& test, std::ostream& out, clock_function cl
     const char fill = out.fill();
     test_context context = {&out, false};
     test_context* previous = exchange_context(&context);
-    const std::int64_t start = clock();
+    const wavvix::stopwatch watch;
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
     try {
         test.function();
@@ -144,7 +135,7 @@ bool run_single_test(const test_case& test, std::ostream& out, clock_function cl
 #else
     test.function();
 #endif
-    elapsed = clock() - start;
+    elapsed = watch.elapsed();
     exchange_context(previous);
     out.flags(flags);
     out.precision(precision);
@@ -351,23 +342,7 @@ parsed_arguments parse_arguments(int argc, const char* const argv[]) {
     return parsed;
 }
 
-std::string format_duration(std::int64_t nanoseconds) {
-    if (nanoseconds < 0) {
-        nanoseconds = 0;
-    }
-    if (nanoseconds < 1000000) {
-        return display_signed(nanoseconds / 1000) + " us";
-    }
-    // 先按毫秒四舍五入到两位小数；进位到 1000.00 ms 时改用秒
-    const std::int64_t milliseconds = (nanoseconds + 5000) / 10000;  // 单位：0.01 ms
-    if (milliseconds < 100000) {
-        return two_decimals(milliseconds) + " ms";
-    }
-    return two_decimals((nanoseconds + 5000000) / 10000000) + " s";  // 单位：0.01 s
-}
-
 run_summary run_tests(const std::vector<test_case>& tests, const run_options& options, std::ostream& out) {
-    const clock_function clock = options.clock != nullptr ? options.clock : &steady_now;
     std::vector<const test_case*> selected;
     for (const test_case& test : tests) {
         if (matches_filter(full_name(test), options.filter)) {
@@ -390,31 +365,31 @@ run_summary run_tests(const std::vector<test_case>& tests, const run_options& op
 
     out << "[==========] Running " << count_text(selected.size(), "test") << " from "
         << count_text(groups.size(), "test suite") << ".\n";
-    const std::int64_t run_start = clock();
+    const wavvix::stopwatch run_watch;
     for (const suite_group& group : groups) {
         out << "[----------] " << count_text(group.tests.size(), "test") << " from " << group.name << '\n';
-        const std::int64_t suite_start = clock();
+        const wavvix::stopwatch suite_watch;
         for (const test_case* test : group.tests) {
             const std::string name = full_name(*test);
             out << "[ RUN      ] " << name << std::endl;  // 立即刷新：崩溃时最后一行就是出问题的测试
-            std::int64_t elapsed = 0;
-            const bool passed = run_single_test(*test, out, clock, elapsed);
+            std::chrono::nanoseconds elapsed(0);
+            const bool passed = run_single_test(*test, out, elapsed);
             ++summary.ran;
             if (passed) {
-                out << "[       OK ] " << name << " (" << format_duration(elapsed) << ")\n";
+                out << "[       OK ] " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
             } else {
-                out << "[  FAILED  ] " << name << " (" << format_duration(elapsed) << ")\n";
+                out << "[  FAILED  ] " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
                 ++summary.failed;
                 summary.failed_names.push_back(name);
             }
         }
-        const std::int64_t suite_end = clock();
+        const std::chrono::nanoseconds suite_elapsed = suite_watch.elapsed();
         out << "[----------] " << count_text(group.tests.size(), "test") << " from " << group.name << " ("
-            << format_duration(suite_end - suite_start) << " total)\n\n";
+            << wavvix::format_duration(suite_elapsed) << " total)\n\n";
     }
-    const std::int64_t run_end = clock();
+    const std::chrono::nanoseconds run_elapsed = run_watch.elapsed();
     out << "[==========] " << count_text(selected.size(), "test") << " from "
-        << count_text(groups.size(), "test suite") << " ran. (" << format_duration(run_end - run_start)
+        << count_text(groups.size(), "test suite") << " ran. (" << wavvix::format_duration(run_elapsed)
         << " total)\n";
     out << "[  PASSED  ] " << count_text(static_cast<std::size_t>(summary.ran - summary.failed), "test") << ".\n";
     if (summary.failed > 0) {
@@ -431,7 +406,7 @@ run_summary run_tests(const std::vector<test_case>& tests, const run_options& op
 }
 
 int run_main(const std::vector<test_case>& tests, int argc, const char* const argv[], std::ostream& out,
-             std::ostream& err, clock_function clock) {
+             std::ostream& err) {
     const char* const program = argc > 0 && argv[0] != nullptr ? argv[0] : "test";
     parsed_arguments parsed = parse_arguments(argc, argv);
     if (!parsed.ok) {
@@ -453,7 +428,6 @@ int run_main(const std::vector<test_case>& tests, int argc, const char* const ar
             }
         }
     }
-    parsed.options.clock = clock;
     return run_tests(tests, parsed.options, out).failed > 0 ? 1 : 0;
 }
 
@@ -461,7 +435,7 @@ int run_main(const std::vector<test_case>& tests, int argc, const char* const ar
 
 int run_all(int argc, char* argv[]) {
     detail::prepare_process();
-    return detail::run_main(detail::registry(), argc, argv, std::cout, std::cerr, nullptr);
+    return detail::run_main(detail::registry(), argc, argv, std::cout, std::cerr);
 }
 
 }  // namespace test

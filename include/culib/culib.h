@@ -4,4 +4,5 @@
 // 也可以只包含用到的功能头文件，如 <culib/defer.h>。
 
 #include <culib/defer.h>
+#include <culib/stopwatch.h>
 #include <culib/version.h>

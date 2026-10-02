@@ -11,6 +11,8 @@ target("culib_test")
     set_warnings("allextra", "pedantic", "error")
     set_encodings("utf-8")
     add_files("*.cpp")
+    -- 框架自己的测试要用到 src/ 下的私有头文件 test_runner.h
+    add_includedirs("../src")
     add_deps("culib")
     add_tests("default")
 target_end()

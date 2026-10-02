@@ -1,4 +1,4 @@
-#include <culib/test.h>
+#include "test_runner.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
