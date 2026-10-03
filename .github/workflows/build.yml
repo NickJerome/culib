@@ -3,10 +3,9 @@ name: build
 # README 的「平台与工具链」承诺三个平台行为一致、「开发约定」承诺零警告。
 # 这个 workflow 是那两条承诺的执行机制 —— 手工只能覆盖一个平台一种编译器。
 #
-# 已覆盖：Linux / GCC、Linux / Clang、macOS / Apple Clang、Windows / MSVC，debug 与 release 各一遍；
-#         库、测试、示例都编译，测试实际运行。
-# 未覆盖：MinGW，以及 README 写明的最低版本编译器 GCC 4.8.1 / VS2015 ——
-#         GitHub 的 runner 上没有这些版本，要补得用容器或自行安装。
+# 需要 GitHub 的托管 runner（ubuntu / windows / macos 三种标签）。主仓库在自建 Gitea 上时，
+# 用 Gitea 的 Push Mirror 自动镜像到一个 GitHub 仓库来跑它，配置办法见
+# docs/superpowers/specs/2026-10-03-roadmap.md 第 5 节。
 
 on:
   push:
@@ -41,6 +40,7 @@ jobs:
 
       # -w 显示警告。GCC / Clang 上 xmake.lua 已把警告设为错误，所以这一步同时是零警告检查；
       # MSVC 的 /W4 警告集尚未逐条排查，那里只显示不拦（见 xmake.lua 里的注释）。
+      # src/test_win.cpp 和 /Gy 这条路径在此之前从未被任何机器编译过。
       - name: build library
         run: xmake -w -y
 
@@ -55,7 +55,7 @@ jobs:
       - name: run examples
         run: xmake run example_result
 
-  # 单独一格：确认 culib 被当作源码依赖引入时能正常工作。
+  # 确认 culib 被当作源码依赖引入时能正常工作。
   # 这覆盖 xmake.lua 里 is_main_project 为假的那条分支（不强加 -Werror、不构建测试和示例），
   # 以及 README「使用方也可以用更高的标准」这条说法 —— 两者手工都测不到。
   consumed-as-dependency:
