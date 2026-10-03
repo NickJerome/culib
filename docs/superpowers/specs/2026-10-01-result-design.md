@@ -1,7 +1,7 @@
 # result 设计
 
 - 日期：2026-10-01
-- 状态：待评审
+- 状态：已实现（2026-10-03）
 
 ## 1. 背景与目标
 
@@ -103,8 +103,9 @@ class result<void, E>;  // 默认构造即为成功，写作 return {};
 }  // namespace wavvix
 ```
 
-- 两个构造函数通过模板约束区分：参数能转换成 `T` 的走成功，能转换成 `E` 的走失败。
+- 两个构造函数通过模板约束区分：参数只能转换成 `T` 的走成功，只能转换成 `E` 的走失败。第三种输入类型如果同时能转换成 `T` 和 `E`，拒绝构造，不隐式选择分支。复制与移动 result 自身使用特殊成员，不走这两个构造函数。
 - 为了让编译器分得清，`T` 和 `E` 不能互相转换，例如 `result<int, int>`，或者错误类型是可以隐式转成整数的普通枚举。遇到这种情况用 `static_assert` 报错并说明原因；错误类型请用 `enum class` 或类。
+- 值与错误必须是非数组对象类型，析构不能抛异常；`void` 值由专门版本支持。
 - 值类型的 `result<T, E>` 没有默认构造，不存在「空」的状态；`result<void, E>` 默认构造表示成功。
 - 复制、移动随 `T` 和 `E`：两者都能复制时 result 能复制，有一个只能移动时 result 只能移动（例如装 `std::unique_ptr`）。
 - 赋值（复制和移动）：只有 `T` 和 `E` 的移动构造都不抛异常时才支持，复制赋值还要求两者都能复制；否则禁止赋值，避免赋值到一半失败后处于无效状态。
@@ -153,14 +154,14 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
   wavvix::result::error() called on a success value
   ```
 
-  错误类型是 `error` 时打印 `to_string()`；是枚举时打印它的数值；其他类型只说明这是一个错误。
+  错误类型是 `error` 时打印与 `to_string()` 一致的内容；是枚举时打印它的数值（保留有符号性）；其他类型只说明这是一个错误。诊断直接写 stderr，不临时创建字符串。
 - **忽略返回值的警告**：类上标注 `WAVVIX_NODISCARD`，在 C++17 编译器上展开为 `[[nodiscard]]`，在 Clang 的 C++11 模式下展开为 `warn_unused_result` 属性，其他情况为空。因此 GCC 在 C++11 模式下没有这个警告。Clang 能否把该属性用在类上，实现时先验证，不支持则同样为空。
 - **右值版本**：`value()`、`error()`、`value_or()` 对右值 result 都有移动版本，例如 `auto text = read_file(path).value();` 不会复制字符串。
 
 ## 6. 性能
 
 - 值和错误放在同一块内存（union）里，只多一个标志位；不分配内存。
-- `T` 和 `E` 都可以平凡复制时（例如 `result<int, parse_error>`），result 本身也可以平凡复制；体积较小时，函数返回可以走寄存器，和手写的错误码结构体一样快。
+- `T` 和 `E` 都可平凡复制且支持复制与移动赋值时（例如 `result<int, parse_error>`），result 本身也可平凡复制；体积较小时，函数返回可以走寄存器，和手写的错误码结构体一样快。
 - 默认的 `error` 带一个 `std::string`，`result<int>` 因此有几十个字节，并且不可平凡复制；说明文字超过短字符串优化的长度时，出错会分配一次内存。所以：
   - 一般接口用 `error`。
   - 失败很常见、对性能敏感的接口（例如 lexical_cast）用一个 `enum class` 作为错误类型。
@@ -168,7 +169,7 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 
 ## 7. 实现要点
 
-- 「可平凡复制则 result 也可平凡复制」通过按条件选择存储基类实现。判断条件优先用 `std::is_trivially_copyable` 等标准特性；GCC 5 以前的 libstdc++ 没有这些特性，改用编译器内置的 `__has_trivial_copy` 等。
+- 「可平凡复制则 result 也可平凡复制」通过按条件选择存储基类实现。存储位于内部头文件 `detail/result_storage.h`，特殊成员按类型能力启用或删除，类型特征查询与实际能力一致。不可赋值但可以构造的值通过销毁重建实现 result 的赋值；这种情况下不承诺 result 可平凡复制。判断条件优先用 `std::is_trivially_copyable` 等标准特性；GCC 5 以前的 libstdc++ 没有这些特性，改用编译器内置的 `__has_trivial_copy` 等。
 - 两个构造函数用 SFINAE 区分；`T` 与 `E` 能互相转换时用 `static_assert` 给出说明。
 - `WAVVIX_NODISCARD` 放在 `include/culib/detail/macros.h`，与单测框架设计中的 `WAVVIX_DETAIL_CONCAT` 等宏放在一起。
 - 打印信息并终止程序的逻辑放在 `result.cpp` 的一个不内联函数里，避免在每个调用点展开。
@@ -187,7 +188,7 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 - 只能移动的值类型（`std::unique_ptr`）。
 - 复制、移动、赋值，以及可平凡复制的传递（用 `static_assert` 检查）。
 - `error`：`make_error()`、`to_string()`、`error_kind_name()`、`operator<<`；作用域里有名为 `error` 的局部变量时，`make_error(...)` 仍能正常使用。
-- 终止程序前的打印内容：把生成信息的逻辑拆成纯函数单独测试；实际终止程序这一步不测（框架不支持死亡测试）。
+- 误用访问的诊断与实际终止：用独立子进程验证退出信号和 stderr，避免中断单测进程；不为测试额外暴露诊断接口。
 - `T` 与 `E` 能互相转换时的编译报错，以及取错类型时的终止程序，单测无法覆盖，实现时手动验证。
 
 开销实测，方法和 `defer` 相同：
@@ -203,4 +204,20 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 
 ## 10. 实现顺序
 
-排在单测框架之后实现，测试直接使用新框架。整体顺序见 `2026-10-01-test-term-table-design.md` 第 3 节。
+排在单测框架之后实现，测试直接使用新框架。整体顺序以 `2026-10-02-stopwatch-and-test-slimming-design.md` 第 6 节为准；下一步是 lexical_cast。
+
+
+## 11. 实现验证（2026-10-03）
+
+本次环境为 Linux / GCC 14.2，C++11，开启 `-Wall -Wextra -Wpedantic -Werror`：
+
+- debug 与 release：64 个测试通过，其中 result 新增 10 个。
+- ASan + UBSan，并关闭复制消除：64 个测试通过。
+- `-fno-exceptions -fno-rtti`：60 个测试通过。3 个异常专用测试不编译；排除 1 个已知的 stopwatch 自定义 locale 测试，其崩溃已在不含 culib 的标准库程序中复现。
+- 独立子进程验证 7 种错误访问：值与 void 的错误分支访问、默认错误、自定义错误、有符号和无符号枚举诊断；release 下均打印预期内容并触发 SIGABRT。
+- 编译失败验证 5 种误用：值与错误同类型、可互转类型、输入可转为两个分支、复制只可移动类型、不安全的赋值。
+- `result.h`、`detail/result_storage.h`、`culib.h` 可独立包含，且可关闭异常与 RTTI；C++17 下忽略 result 会触发 nodiscard 警告。
+- 构建静态库，单独编译并链接 `examples/result.cpp`，运行成功。
+- GCC -O2 汇编：`result<int, enum>` 为 8 字节，与手写 `int + bool` 结构相同，返回走寄存器；先判断再取值与手写结构的访问指令相同，没有重复检查。构造返回的指令序列仍有差异，不声称完整汇编一致。
+
+当前环境没有 xmake 或 Clang，未执行 xmake、Clang、Windows/MSVC、macOS 以及最低版本编译器验证。构建脚本使用源文件通配符，新模块和测试自动纳入现有目标。

@@ -34,7 +34,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
-| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息已完成 |
+| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息、`result` 已完成 |
 | test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 term 完成） |
 | lexical_cast | 字符串与各种类型互转 | 规划中 |
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version` | 规划中 |
@@ -47,7 +47,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | os | 进程、环境变量、系统信息、程序自身路径、动态库加载 | 规划中 |
 | log | 轻量级日志 | 规划中 |
 
-近期顺序：result → lexical_cast → flag → term → table，详见 [设计文档](docs/superpowers/specs/2026-10-02-stopwatch-and-test-slimming-design.md) 第 6 节。
+近期顺序：lexical_cast → flag → term → table（result 已完成），详见 [设计文档](docs/superpowers/specs/2026-10-02-stopwatch-and-test-slimming-design.md) 第 6 节。
 
 ## 快速开始
 
@@ -242,11 +242,13 @@ culib/
 │   └── culib/                  # 公共头文件（对外 API），一个功能一个头文件
 │       ├── culib.h             # 汇总头文件（不含测试框架）
 │       ├── defer.h
+│       ├── result.h            # 结果与错误处理
 │       ├── stopwatch.h         # 秒表
 │       ├── test.h              # 单元测试框架
 │       ├── version.h
 │       └── detail/             # 内部使用的头文件
 ├── src/                        # 实现代码（不对外暴露）；纯模板 / 宏的功能只有头文件
+│   ├── result.cpp
 │   ├── stopwatch.cpp
 │   ├── test.cpp
 │   ├── test_posix.cpp          # 平台相关实现：Linux / macOS 共用
@@ -282,6 +284,34 @@ culib/
 
 - 可能失败的操作通过 `result` 返回结果或错误，由调用方显式检查；库不主动抛出异常。
 - 不依赖 RTTI。公共头文件中不出现 `throw`、`try`、`dynamic_cast`、`typeid`，因此可以用于关闭了异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程。
+
+可能失败的函数返回 `wavvix::result<T>`：成功直接返回值，失败返回 `make_error(...)`。
+
+```cpp
+#include <culib/result.h>
+
+wavvix::result<int> checked_port(int port) {
+    if (port < 1 || port > 65535) {
+        return wavvix::make_error(wavvix::error_kind::out_of_range, "port must be between 1 and 65535");
+    }
+    return port;
+}
+
+auto port = checked_port(8080);
+if (port.is_err()) {
+    report(port.error().to_string());
+    return;
+}
+use(port.value());
+// 或在失败时使用默认值：checked_port(input).value_or(8080)
+```
+
+- 只关心成败时用 `result<void>`，`return {};` 表示成功。
+- 高频转换等场景可用 `result<T, 自定义枚举>`，避免说明字符串的开销。
+- 支持复制、移动及只能移动的值或错误；赋值要求两种类型都能无异常移动构造。
+- `value()` / `error()` 访问错误分支会打印诊断并终止程序，release 同样检查。
+- 结果容器自身不分配内存；值或错误自身仍可能分配内存。
+- 完整示例见 [examples/result.cpp](examples/result.cpp)，接口规则见 [result 设计](docs/superpowers/specs/2026-10-01-result-design.md)。
 
 ### 性能与占用
 
@@ -330,7 +360,6 @@ culib/
 ## 待定事项
 
 - [ ] 模块清单与优先级
-- [ ] `result` 的具体设计（设计文档待评审）
 - [ ] 最低系统版本（如 Windows 7 还是 Windows 10），影响可用的系统 API
 - [ ] 基准测试框架：自带极简实现，或引入 nanobench 等单头文件库（仅基准测试使用，不影响库本身零依赖）
 - [ ] 头文件注释的语言与编码：目前是中文注释、UTF-8 无 BOM。使用方用 MSVC 在中文等非 UTF-8 代码页下编译、又没开 `/utf-8` 时，会按本地编码读取 culib 的头文件，可能出现 C4819 警告或乱码导致的编译错误。可选方案：头文件存为 UTF-8 with BOM，或注释只用英文

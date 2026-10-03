@@ -175,8 +175,8 @@ note: in instantiation of function template specialization ... requested here   
 ## 6. 实现顺序
 
 1. 单测框架（已完成）。
-2. 本文：测试框架精简与 stopwatch。
-3. result（见 `2026-10-01-result-design.md`）。
+2. 本文：测试框架精简与 stopwatch（已完成）。
+3. result（已完成，见 `2026-10-01-result-design.md`）。
 4. lexical_cast：字符串与各种类型互转（另行设计，依赖 result）。
 5. flag：命令行参数（另行设计，需求见 6.1 节）。依赖 lexical_cast 把文字转成各种类型、依赖 result 报告参数错误，排在这两个之后是最早的位置。完成后，测试框架的命令行解析改用它。
 6. term：终端彩色输出（见 `2026-10-01-test-term-table-design.md` 第 5 节）。完成后，测试输出带颜色，并支持 `--color`。
