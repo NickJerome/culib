@@ -30,37 +30,28 @@ std::string error::to_string() const {
 
 error make_error(error_kind kind, std::string message) { return error(kind, std::move(message)); }
 
-std::ostream& operator<<(std::ostream& os, const error& value) {
-    os << error_kind_name(value.kind());
-    if (!value.message().empty()) os << ": " << value.message();
-    return os;
-}
+std::ostream& operator<<(std::ostream& os, const error& value) { return os << value.to_string(); }
 
 namespace detail {
+namespace {
 // 误用诊断直接写 stderr，不依赖流、动态分配或异常。
-[[noreturn]] void result_bad_error() noexcept {
-    std::fputs("wavvix::result::error() called on a success value\n", stderr);
+[[noreturn]] void die(const char* text) noexcept {
+    std::fputs(text, stderr);
     std::abort();
+}
+}  // namespace
+
+[[noreturn]] void result_bad_error() noexcept {
+    die("wavvix::result::error() called on a success value\n");
 }
 [[noreturn]] void result_bad_value() noexcept {
-    std::fputs("wavvix::result::value() called on an error\n", stderr);
-    std::abort();
+    die("wavvix::result::value() called on an error\n");
 }
 [[noreturn]] void result_bad_value(const wavvix::error& value) noexcept {
-    std::fprintf(stderr, "wavvix::result::value() called on an error: %s", error_kind_name(value.kind()));
-    if (!value.message().empty()) {
-        std::fputs(": ", stderr);
-        std::fwrite(value.message().data(), 1, value.message().size(), stderr);
-    }
-    std::fputc('\n', stderr);
-    std::abort();
-}
-[[noreturn]] void result_bad_signed_value(long long value) noexcept {
-    std::fprintf(stderr, "wavvix::result::value() called on an error: %lld\n", value);
-    std::abort();
-}
-[[noreturn]] void result_bad_unsigned_value(unsigned long long value) noexcept {
-    std::fprintf(stderr, "wavvix::result::value() called on an error: %llu\n", value);
+    // 一次 fprintf 写完；说明为空时连中间的 ": " 一起省掉，和 to_string() 的格式一致。
+    std::fprintf(stderr, "wavvix::result::value() called on an error: %s%s%.*s\n",
+                 error_kind_name(value.kind()), value.message().empty() ? "" : ": ",
+                 static_cast<int>(value.message().size()), value.message().data());
     std::abort();
 }
 }  // namespace detail

@@ -6,6 +6,7 @@
 //     if (port.is_err()) { log(port.error().to_string()); return; }
 //     use(port.value());
 //
+// 把失败原样传给调用方时用 WAVVIX_TRY，见本文件末尾。
 // result<void> 默认构造表示成功；自定义错误建议使用 enum class。
 // value() / error() 取错分支会打印信息并终止程序，release 同样检查。
 // 容器自身不分配内存；值或错误自身可能分配（如 error 的说明字符串）。
@@ -45,29 +46,26 @@ namespace detail {
 [[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void result_bad_error() noexcept;
 [[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void result_bad_value() noexcept;
 [[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void result_bad_value(const wavvix::error& value) noexcept;
-[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void result_bad_signed_value(long long value) noexcept;
-[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void result_bad_unsigned_value(unsigned long long value) noexcept;
 
+// 错误类型是默认的 error 时走上面的重载，打印种类和说明；其他类型只说明访问了错误分支。
 template <typename E>
-[[noreturn]] typename std::enable_if<!std::is_enum<E>::value>::type
-result_bad_value(const E&) noexcept { result_bad_value(); }
-
-template <typename E>
-[[noreturn]] typename std::enable_if<std::is_enum<E>::value>::type
-result_bad_value(const E& value) noexcept {
-    if (std::is_signed<typename std::underlying_type<E>::type>::value)
-        result_bad_signed_value(static_cast<long long>(value));
-    else
-        result_bad_unsigned_value(static_cast<unsigned long long>(value));
-}
+[[noreturn]] void result_bad_value(const E&) noexcept { result_bad_value(); }
 }  // namespace detail
 
 template <typename T, typename E = wavvix::error>
-class WAVVIX_NODISCARD result : private detail::result_base<T, E> {
-    using base = detail::result_base<T, E>;
+class WAVVIX_NODISCARD result : private detail::result_storage<T, E> {
+    static_assert(std::is_object<T>::value && !std::is_array<T>::value &&
+                  std::is_object<E>::value && !std::is_array<E>::value,
+                  "result value and error must be non-array object types");
+    static_assert(std::is_same<T, typename std::remove_cv<T>::type>::value &&
+                  std::is_same<E, typename std::remove_cv<E>::type>::value,
+                  "result value and error must not be const or volatile");
+    static_assert(std::is_nothrow_destructible<T>::value && std::is_nothrow_destructible<E>::value,
+                  "result value and error destructors must not throw");
     static_assert(!std::is_convertible<T, E>::value && !std::is_convertible<E, T>::value &&
                   !std::is_same<T, E>::value,
                   "result value and error types must be distinct and not implicitly interconvertible");
+    using base = detail::result_storage<T, E>;
 public:
     // 仅允许明确属于一个分支的隐式转换；同时可转为 T 和 E 的输入不接受。
     template <typename U, typename std::enable_if<
@@ -106,8 +104,13 @@ private:
 };
 
 template <typename E>
-class WAVVIX_NODISCARD result<void, E> : private detail::result_base<detail::result_unit, E> {
-    using base = detail::result_base<detail::result_unit, E>;
+class WAVVIX_NODISCARD result<void, E> : private detail::result_storage<detail::result_unit, E> {
+    static_assert(std::is_object<E>::value && !std::is_array<E>::value &&
+                  std::is_same<E, typename std::remove_cv<E>::type>::value,
+                  "result error must be a non-array, non-cv-qualified object type");
+    static_assert(std::is_nothrow_destructible<E>::value,
+                  "result error destructor must not throw");
+    using base = detail::result_storage<detail::result_unit, E>;
 public:
     result() noexcept : base(detail::result_value_tag(), detail::result_unit()) {}
     template <typename G, typename std::enable_if<
@@ -127,3 +130,34 @@ private:
 };
 
 }  // namespace wavvix
+
+// WAVVIX_TRY：成功就取出值继续，失败就把错误 return 给调用方。
+//
+//     wavvix::result<config> load(const std::string& path) {
+//         WAVVIX_TRY(std::string text, read_file(path));   // 失败时 return 这个错误
+//         WAVVIX_TRY(int port, parse_port(text));
+//         WAVVIX_TRY_VOID(check_version(text));            // 只关心成败，没有值要接
+//         return config{text, port};
+//     }
+//
+// - 只能写在返回 result 的函数里，被调用方的错误类型要能转换成本函数的错误类型。
+// - 错误以移动方式传出，不会多复制一次说明字符串。
+// - declaration 是一个完整的变量声明，如 int port、const std::string name、auto&& text。
+// - declaration 或 expression 里有不在括号内的逗号时（如模板参数），给它加一层括号。
+// - 展开成多条语句，必须单独成一条语句；不能直接作为 if / for 不带花括号的循环体或分支体。
+// - 同一行只能写一个 WAVVIX_TRY。
+// 名字在传给 _IMPL 之前就拼好，所以 _IMPL 里三处用的是同一个名字，MSVC 的 __COUNTER__ 也只取一次。
+#define WAVVIX_TRY(declaration, expression) \
+    WAVVIX_DETAIL_TRY_IMPL(declaration, expression, WAVVIX_DETAIL_UNIQUE_NAME(wavvix_try_))
+
+#define WAVVIX_TRY_VOID(expression) \
+    WAVVIX_DETAIL_TRY_VOID_IMPL(expression, WAVVIX_DETAIL_UNIQUE_NAME(wavvix_try_))
+
+#define WAVVIX_DETAIL_TRY_IMPL(declaration, expression, holder) \
+    auto holder = (expression);                                 \
+    if (holder.is_err()) return ::std::move(holder).error();     \
+    declaration = ::std::move(holder).value()
+
+#define WAVVIX_DETAIL_TRY_VOID_IMPL(expression, holder) \
+    auto holder = (expression);                         \
+    if (holder.is_err()) return ::std::move(holder).error()

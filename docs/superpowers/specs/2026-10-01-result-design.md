@@ -19,10 +19,11 @@ README 约定：可能失败的操作通过 `result` 返回结果或错误，库
 - 构造：成功时直接从值构造，失败时直接从错误构造；默认错误类型的对象用 `make_error(...)` 创建。
 - 查询与取值：`is_ok()`、`is_err()`、`value()`、`error()`、`value_or()`。
 - 默认错误类型 `error` 和错误种类 `error_kind`。
+- 错误传递宏 `WAVVIX_TRY` / `WAVVIX_TRY_VOID`（语句形式）。
 
 **不做：**
 
-- 错误传递宏（类似 Rust 的 `?`）。现有 C++ 语法里，能写在表达式中间的写法只有两种：依赖 GCC / Clang 扩展的表达式宏（cl.exe 不支持），或者用异常实现。本机实测，用异常实现时出错路径约慢 670 倍，因此都不采用。语句形式的宏外观不理想，也不采用。
+- 表达式形式的错误传递（类似 Rust 的 `?`）。现有 C++ 语法里，能写在表达式中间的写法只有两种：依赖 GCC / Clang 扩展的表达式宏（cl.exe 不支持），或者用异常实现。本机实测，用异常实现时出错路径约慢 670 倍，因此都不采用。语句形式见 4.3。
 - `match`、`map`、`and_then` 等函数式写法。两种情况都要处理时，用普通的 if / else；以后确有需要再加，不影响已有代码。
 - `operator bool`、`operator*`、`operator->`：判断成败和取值各只保留一种写法。
 - 引用类型 `result<T&>`，需要时用指针代替。
@@ -105,10 +106,11 @@ class result<void, E>;  // 默认构造即为成功，写作 return {};
 
 - 两个构造函数通过模板约束区分：参数只能转换成 `T` 的走成功，只能转换成 `E` 的走失败。第三种输入类型如果同时能转换成 `T` 和 `E`，拒绝构造，不隐式选择分支。复制与移动 result 自身使用特殊成员，不走这两个构造函数。
 - 为了让编译器分得清，`T` 和 `E` 不能互相转换，例如 `result<int, int>`，或者错误类型是可以隐式转成整数的普通枚举。遇到这种情况用 `static_assert` 报错并说明原因；错误类型请用 `enum class` 或类。
-- 值与错误必须是非数组对象类型，析构不能抛异常；`void` 值由专门版本支持。
+- 值与错误必须是非数组、非 cv 限定的对象类型，析构不能抛异常；`void` 值由专门版本支持。禁止 `const` / `volatile` 既因为 `result<const int>` 本身没有意义，也让内部的 placement new 不必为 cv 类型绕一圈转换。
 - 值类型的 `result<T, E>` 没有默认构造，不存在「空」的状态；`result<void, E>` 默认构造表示成功。
 - 复制、移动随 `T` 和 `E`：两者都能复制时 result 能复制，有一个只能移动时 result 只能移动（例如装 `std::unique_ptr`）。
 - 赋值（复制和移动）：只有 `T` 和 `E` 的移动构造都不抛异常时才支持，复制赋值还要求两者都能复制；否则禁止赋值，避免赋值到一半失败后处于无效状态。
+- 上面两条的「不支持」通过特殊成员函数体里的 `static_assert` 实现：函数体只在真的用到时才实例化，所以误用仍然是编译错误，报错信息是一句英文说明。代价是 `std::is_copy_constructible` 等类型特征只看声明，对 `result` 会乐观地回答「可以」。按类型能力删除特殊成员可以让类型特征准确，但需要四个空基类按位组合继承（约 50 行只为编译器服务的代码），对一个小团队自用的库不值得。
 
 ### 4.2 error 和 error_kind
 
@@ -145,6 +147,26 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 - 错误种类取名 `error_kind` 而不是 `error_code`，避免和标准库的 `std::error_code` 混淆。
 - `result.h` 只引入 `<iosfwd>`，`operator<<` 在 `result.cpp` 里实现。
 
+### 4.3 WAVVIX_TRY
+
+自己不处理错误、原样交给调用方时用它，省掉每层的 `if` 和 `std::move`：
+
+```cpp
+result<config> load(const std::string& path) {
+    WAVVIX_TRY(std::string text, read_file(path));   // 失败时 return 这个错误
+    WAVVIX_TRY(int port, parse_port(text));
+    WAVVIX_TRY_VOID(check_version(text));            // 只关心成败，没有值要接
+    return config{text, port};
+}
+```
+
+- 只能写在返回 `result` 的函数里，被调用方的错误类型要能转换成本函数的错误类型。
+- 错误和值都以 `std::move` 传出，不会多复制一次说明字符串；错误类型只能移动（如 `std::unique_ptr`）时也能用。
+- 第一个参数是完整的变量声明，如 `int port`、`const std::string name`、`auto&& text`。
+- 声明或表达式里有不在括号内的逗号时（如模板参数），给它加一层括号；同一行只能写一个。
+- 展开成多条语句，必须单独成一条语句。直接作为 `if` / `for` 不带花括号的分支体时是编译错误（声明不能单独作为分支体），不会静默出错。
+- 按命名约定只提供 `WAVVIX_` 前缀的名字，不加 `TRY` 短别名：`TRY` 太容易和其他库撞名，而 `defer` / `TEST` / `EXPECT` 那三个短名字是已经定下的例外。
+
 ## 5. 规则
 
 - **取错类型**：对失败结果调用 `value()`，或对成功结果调用 `error()`，会向 stderr 打印一行信息后调用 `std::abort()`。release 版本同样检查，代价是一次判断。打印内容：
@@ -154,7 +176,7 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
   wavvix::result::error() called on a success value
   ```
 
-  错误类型是 `error` 时打印与 `to_string()` 一致的内容；是枚举时打印它的数值（保留有符号性）；其他类型只说明这是一个错误。诊断直接写 stderr，不临时创建字符串。
+  错误类型是 `error` 时打印与 `to_string()` 一致的内容；其他类型（枚举、字符串等）只打印前半句，说明访问了错误分支。早先的版本会打印枚举的数值并保留有符号性，但那个数字既不说明是哪个枚举、也不比用调试器看更有用，为此多出的两个函数和一组 SFINAE 分发不划算，已去掉。诊断直接写 stderr，不临时创建字符串。
 - **忽略返回值的警告**：类上标注 `WAVVIX_NODISCARD`，在 C++17 编译器上展开为 `[[nodiscard]]`，在 Clang 的 C++11 模式下展开为 `warn_unused_result` 属性，其他情况为空。因此 GCC 在 C++11 模式下没有这个警告。Clang 能否把该属性用在类上，实现时先验证，不支持则同样为空。
 - **右值版本**：`value()`、`error()`、`value_or()` 对右值 result 都有移动版本，例如 `auto text = read_file(path).value();` 不会复制字符串。
 
@@ -169,7 +191,7 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 
 ## 7. 实现要点
 
-- 「可平凡复制则 result 也可平凡复制」通过按条件选择存储基类实现。存储位于内部头文件 `detail/result_storage.h`，特殊成员按类型能力启用或删除，类型特征查询与实际能力一致。不可赋值但可以构造的值通过销毁重建实现 result 的赋值；这种情况下不承诺 result 可平凡复制。判断条件优先用 `std::is_trivially_copyable` 等标准特性；GCC 5 以前的 libstdc++ 没有这些特性，改用编译器内置的 `__has_trivial_copy` 等。
+- 「可平凡复制则 result 也可平凡复制」通过按条件选择存储基类实现，这是整个实现里唯一有实测回报的复杂度（见第 6 节与 11.2）。存储位于内部头文件 `detail/result_storage.h`：平凡的那个特化完全不声明特殊成员，交给编译器生成；非平凡的那个只构造当前有效的成员，用不了的特殊成员靠函数体里的 `static_assert` 挡住（见 4.1 最后一条）。不可赋值但可以构造的值通过销毁重建实现 result 的赋值；这种情况下不承诺 result 可平凡复制。判断条件用 `std::is_trivially_copyable`；GCC 5 以前的 libstdc++ 没有这个特性，那些编译器上一律走非平凡存储，只是少一个按寄存器返回的优化，行为相同。
 - 两个构造函数用 SFINAE 区分；`T` 与 `E` 能互相转换时用 `static_assert` 给出说明。
 - `WAVVIX_NODISCARD` 放在 `include/culib/detail/macros.h`，与单测框架设计中的 `WAVVIX_DETAIL_CONCAT` 等宏放在一起。
 - 打印信息并终止程序的逻辑放在 `result.cpp` 的一个不内联函数里，避免在每个调用点展开。
@@ -186,7 +208,8 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 - 构造：从值构造（包括需要转换的情况，如 `"abc"` 构造 `result<std::string>`）、从错误构造、`result<void>` 的成功和失败。
 - 查询与取值：`is_ok`、`is_err`、`value`、`error`、`value_or`，左值、const 和右值三种情况。
 - 只能移动的值类型（`std::unique_ptr`）。
-- 复制、移动、赋值，以及可平凡复制的传递（用 `static_assert` 检查）。
+- 复制、移动、赋值，以及可平凡复制的传递（用 `static_assert` 检查）。被禁止的组合（复制只能移动的 result、移动构造会抛异常时的赋值）不能用 `static_assert` 检查，因为类型特征只看声明；这些改为手工编译失败验证，见 11.3。
+- `WAVVIX_TRY`：取值成功后继续、失败时向上传播，值分支与 `void` 分支各一处；自定义枚举错误类型；只能移动的错误类型（这组函数能编译即证明错误是移动而非复制传出）。
 - `error`：`make_error()`、`to_string()`、`error_kind_name()`、`operator<<`；作用域里有名为 `error` 的局部变量时，`make_error(...)` 仍能正常使用。
 - 误用访问的诊断与实际终止：用独立子进程验证退出信号和 stderr，避免中断单测进程；不为测试额外暴露诊断接口。
 - `T` 与 `E` 能互相转换时的编译报错，以及取错类型时的终止程序，单测无法覆盖，实现时手动验证。
@@ -199,7 +222,7 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 ## 9. 对现有代码和文档的修改
 
 - README：
-  - 「开发约定 · 错误处理」补充 result 的用法示例。
+  - 「错误处理」一节补充 result 与 `WAVVIX_TRY` 的用法示例（该节 2026-10-03 从「开发约定」提为顶级章节，作者侧约束移入 `CLAUDE.md`）。
   - 待定事项删掉「result 的具体设计」。
 
 ## 10. 实现顺序
@@ -207,17 +230,54 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 排在单测框架之后实现，测试直接使用新框架。整体顺序以 `2026-10-02-stopwatch-and-test-slimming-design.md` 第 6 节为准；下一步是 lexical_cast。
 
 
-## 11. 实现验证（2026-10-03）
+## 11. 实现验证
 
-本次环境为 Linux / GCC 14.2，C++11，开启 `-Wall -Wextra -Wpedantic -Werror`：
+实现于 2026-10-03 完成，同日按本节第 4 小节瘦身并补入 `WAVVIX_TRY`，以下记录瘦身后的状态。环境为 Linux / GCC 14.2，`-Wall -Wextra -Wpedantic -Werror`，全程零警告。
 
-- debug 与 release：64 个测试通过，其中 result 新增 10 个。
-- ASan + UBSan，并关闭复制消除：64 个测试通过。
-- `-fno-exceptions -fno-rtti`：60 个测试通过。3 个异常专用测试不编译；排除 1 个已知的 stopwatch 自定义 locale 测试，其崩溃已在不含 culib 的标准库程序中复现。
-- 独立子进程验证 7 种错误访问：值与 void 的错误分支访问、默认错误、自定义错误、有符号和无符号枚举诊断；release 下均打印预期内容并触发 SIGABRT。
-- 编译失败验证 5 种误用：值与错误同类型、可互转类型、输入可转为两个分支、复制只可移动类型、不安全的赋值。
-- `result.h`、`detail/result_storage.h`、`culib.h` 可独立包含，且可关闭异常与 RTTI；C++17 下忽略 result 会触发 nodiscard 警告。
-- 构建静态库，单独编译并链接 `examples/result.cpp`，运行成功。
-- GCC -O2 汇编：`result<int, enum>` 为 8 字节，与手写 `int + bool` 结构相同，返回走寄存器；先判断再取值与手写结构的访问指令相同，没有重复检查。构造返回的指令序列仍有差异，不声称完整汇编一致。
+### 11.1 构建与测试
 
-当前环境没有 xmake 或 Clang，未执行 xmake、Clang、Windows/MSVC、macOS 以及最低版本编译器验证。构建脚本使用源文件通配符，新模块和测试自动纳入现有目标。
+- release（`-O2`）与 debug（`-O0 -g`），C++11：65 个测试通过，其中 result 11 个。
+- ASan + UBSan，并关闭复制消除（`-fno-elide-constructors`）：65 个测试通过。
+- C++17：65 个测试通过；忽略 result 返回值会触发 nodiscard 警告（GCC 的 C++11 模式下该宏为空，确认无警告）。
+- `-fno-exceptions -fno-rtti`：61 个测试通过。3 个异常专用测试按条件编译排除；另排除 1 个已知的 stopwatch 自定义 locale 测试，其崩溃已在不含 culib 的标准库程序中复现，与 result 无关。
+- `result.h`、`detail/result_storage.h`、`culib.h` 均可独立包含。
+- 单独编译并链接 `examples/result.cpp`，运行输出符合预期。
+
+### 11.2 开销
+
+GCC `-O2` 汇编：`result<int, enum>` 为 8 字节、可平凡复制，`static_assert` 在测试中固定这两点。「构造 result 返回 → 判断 `is_err()` → 取 `value()`」整个调用点与手写 `struct { int; bool; }` 的等价写法生成逐条相同的指令（`leal` / `testl` / `movl` / `cmovs` / `ret`），没有重复检查。这是保留平凡/非平凡两个存储特化的理由。
+
+### 11.3 误用
+
+- 独立子进程验证 8 种错误访问，release 下全部打印预期内容并触发 SIGABRT：默认 `error` 带说明与不带说明、`result<void>` 的错误分支、有符号枚举、无符号枚举、`std::string` 作错误类型、以及对成功结果调用 `error()` 的值版本与 void 版本。枚举和字符串错误只打印前半句。
+- 编译失败验证 5 种误用，均在用到的那一行报出可读的英文说明：值与错误同类型、可互转类型、输入可转为两个分支、复制只能移动的 result、移动构造会抛异常时的赋值。后两种原先由四个空基类按位组合删除特殊成员来保证，瘦身后改由 `static_assert` 保证。
+
+### 11.4 本次瘦身
+
+动机是实现里「为编译器服务」的代码偏多，不够轻量。改动：
+
+- 删掉 `result_copy_control` 等四个按位组合继承的空基类和 `result_traits`（约 50 行），改为在特殊成员函数体里 `static_assert`。代价见 4.1 最后一条：类型特征不再准确。
+- 删掉枚举诊断的 `result_bad_signed_value` / `result_bad_unsigned_value` 两个函数和一组 `is_enum` SFINAE 分发，理由见第 5 节。
+- 删掉 `result_base`：它只放三条 `static_assert` 和一个带 `std::conditional` 条件 noexcept 的转发构造函数，前者移入两个 result 版本的类体，后者随之消失，`result` 直接继承存储。
+- GCC 5 以前的 `__has_trivial_copy` 等内置特性回退改为「一律走非平凡存储」。
+- 新增 `WAVVIX_TRY` / `WAVVIX_TRY_VOID`，见 4.3。两个宏复用 `WAVVIX_DETAIL_UNIQUE_NAME`（`defer` 用的同一个），名字在传给 `_IMPL` 之前就拼好，因此不需要 `TEST` 那样的两层展开，也不会让 MSVC 的 `__COUNTER__` 多取几次。
+- 禁止 cv 限定的值和错误类型（`result<const int>` 之类本来也没有意义），换来 `construct()` 里的 placement new 写成一行 `::new (std::addressof(destination)) V(...)`，不再需要 `const_cast<void*>(static_cast<const volatile void*>(...))` 这串用来伺候 cv 类型的转换。
+- `result.cpp` 里「种类名 + `: ` + 说明」这条格式规则原先写了三遍（`to_string()`、`operator<<`、abort 诊断）。现在 `to_string()` 是唯一定义，`operator<<` 直接 `os << value.to_string()`；abort 诊断仍不分配内存，但收成一次 `fprintf`，用 `%s%s%.*s` 表达「说明为空时连 `: ` 一起省掉」。三个终止函数共用一个 `die()`，`std::abort()` 只出现在两处。
+
+净效果：`result.h` 129 → 163 行（`WAVVIX_TRY` 及其用法注释 +36），`detail/result_storage.h` 178 → 127 行，`result.cpp` 67 → 58 行，合计 374 → 348 行。实现本身减少 62 行，其余是新增功能。
+
+### 11.5 试过但没采纳的简化
+
+和 `defer`（36 行代码、单头文件、无 `.cpp`）相比 result 仍有 7 倍体量，以下两处是实测后确认由语言规则锁死、不是取舍问题：
+
+- **把两个存储特化共用的 union 和 tag 构造函数提到一个公共基类**：含非平凡成员的 anonymous union 在不声明析构函数时隐式析构函数被删除，所以公共基类必须自己声明析构函数；而一旦声明，平凡那条特化就不再平凡可复制，11.2 的寄存器返回随之失效。两个特化里重复的那段构造函数是保住平凡性的代价。
+- **把两段 SFINAE 构造函数换成 `result(T)` / `result(E)` 两个普通重载**（可省约 10 行密集模板）：`result<std::string> text = "hello";` 会编译失败，因为那需要 `const char[6]` → `std::string` → `result<std::string>` 两次用户定义转换，而隐式转换序列只允许一次。模板构造函数让 `U&&` 直接绑定数组、把转换放到构造函数内部完成，是「成功时直接 return 值」对需要转换的值也成立的前提。顺带一提，构造函数模板上那条 `!std::is_same<std::decay<U>::type, result>` 守卫也是必需的：去掉它，无约束的 `U&&` 会在重载决议里压过复制构造函数。
+
+另外两处是权衡后主动不做：
+
+- **先实现一个 `variant`，再把 result 建在它上面**。方向是反的。支撑 result 现有保证（平凡性穿透、生命周期、按索引就地构造）的「两分支 variant」就是现在的 `detail/result_storage.h` 本身——实测把一个 `optional<T>` 直接建在 `detail::result_storage<T, nullopt_t>` 上只需 12 行，`optional<int>` 仍是 8 字节平凡可复制，`optional<std::string>` 走非平凡路径，复制和 move-only 都正确。也就是说可复用的原语已经存在了。真正的 `variant<Ts...>` 要多出 N 元递归联合、索引类型、`visit` 的分派、以及 `std::variant` 最难的那部分——跨 N 个类型做重载决议的转换构造函数；libstdc++ 的实现约 1700 行。result 只会在 N=2 上使用它，等于为用不到的 N 元能力付编译期和可读性的代价。结论：不写 `variant`；等 `optional` 真正要做时，把这个两分支存储换个与 result 无关的名字共用，在那之前不动（README 的 base 模块列的是 `make_unique` / `optional` / `string_view`，没有 `variant`）。
+- **让 `result<void, E>` 私有继承 `result<detail::result_unit, E>`**，以消掉 `is_ok` / `is_err` / `error()` 三个重载 / `check_error` 在两个版本间的重复。约省 5 行，但「特化私有继承主模板并塞一个占位类型」属于聪明而不清楚的写法，还多一层要验证的平凡性传递。那 12 行重复留着。
+
+### 11.6 未覆盖
+
+当前环境没有 xmake 或 Clang，未执行 xmake、Clang、Windows/MSVC、macOS 以及最低版本编译器（GCC 4.8.1 / VS2015）验证。GCC 5 以前的非平凡存储回退路径同样未实测。构建脚本使用源文件通配符，新模块和测试自动纳入现有目标。

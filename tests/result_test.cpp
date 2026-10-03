@@ -24,16 +24,6 @@ struct tracked {
 };
 int tracked::alive = 0;
 
-struct throwing_move {
-    throwing_move() = default;
-    throwing_move(const throwing_move&) = default;
-    throwing_move(throwing_move&&) noexcept(false) {}
-};
-struct neither {
-    neither() = default;
-    neither(const neither&) = delete;
-    neither(neither&&) = delete;
-};
 struct ambiguous {
     operator int() const { return 1; }
     operator parse_error() const { return parse_error::invalid; }
@@ -47,25 +37,51 @@ static_assert(!std::is_default_constructible<small_result>::value, "value result
 static_assert(std::is_default_constructible<result<void>>::value, "void default means success");
 static_assert(std::is_copy_constructible<result<std::string>>::value, "strings can be copied");
 static_assert(std::is_copy_assignable<result<std::string>>::value, "strings can be assigned");
-static_assert(!std::is_copy_constructible<pointer_result>::value, "move-only value forbids copying");
-static_assert(!std::is_copy_assignable<pointer_result>::value, "move-only value forbids copy assignment");
 static_assert(std::is_nothrow_move_constructible<pointer_result>::value, "move-only result supports move");
 static_assert(std::is_nothrow_move_assignable<pointer_result>::value, "move assignment cannot throw");
-static_assert(!std::is_copy_constructible<result<int, std::unique_ptr<int>>>::value, "move-only error");
-static_assert(!std::is_copy_assignable<result<void, std::unique_ptr<int>>>::value, "void move-only error");
 static_assert(std::is_move_constructible<result<void, std::unique_ptr<int>>>::value, "void move");
-static_assert(!std::is_copy_assignable<result<throwing_move, parse_error>>::value, "unsafe copy assignment disabled");
-static_assert(!std::is_move_assignable<result<throwing_move, parse_error>>::value, "unsafe move assignment disabled");
-static_assert(!std::is_move_assignable<result<void, throwing_move>>::value, "void unsafe assignment disabled");
-static_assert(!std::is_copy_constructible<result<neither, parse_error>>::value, "immovable value");
-static_assert(!std::is_move_constructible<result<neither, parse_error>>::value, "immovable value");
 static_assert(!std::is_constructible<small_result, ambiguous>::value, "ambiguous conversion rejected");
+// 复制只可移动的 result、以及移动构造会抛异常时的赋值，由 result_storage 的 static_assert 在用到时拦住。
+// 这类误用不能写成 static_assert 检查（类型特征只看声明），改为手工编译失败验证，见设计文档第 11 节。
 static_assert(std::is_same<decltype(std::declval<small_result&>().value()), int&>::value, "lvalue reference");
 static_assert(std::is_same<decltype(std::declval<const small_result&>().value()), const int&>::value, "const reference");
 static_assert(std::is_same<decltype(std::declval<small_result&&>().value()), int&&>::value, "rvalue reference");
 static_assert(std::is_same<decltype(std::declval<const small_result&>().error()), const parse_error&>::value, "const error");
 static_assert(std::is_same<decltype(std::declval<small_result&&>().error()), parse_error&&>::value, "rvalue error");
 static_assert(std::is_same<decltype(std::declval<result<void, parse_error>&&>().error()), parse_error&&>::value, "void rvalue error");
+
+// WAVVIX_TRY 的被调用方与调用方，放在匿名命名空间里保持和其他辅助类型一致。
+result<int> doubled(int n) {
+    if (n < 0) return make_error(error_kind::invalid_argument, "negative");
+    return n * 2;
+}
+result<void> require_small(int n) {
+    if (n > 100) return make_error(error_kind::out_of_range, "too large");
+    return {};
+}
+result<std::string> describe(int n) {
+    WAVVIX_TRY(int value, doubled(n));
+    WAVVIX_TRY_VOID(require_small(value));
+    return std::string("value=") + std::to_string(value);
+}
+
+result<int, parse_error> parsed(int n) {
+    if (n < 0) return parse_error::invalid;
+    return n;
+}
+result<int, parse_error> tripled(int n) {
+    WAVVIX_TRY(const int value, parsed(n));
+    return value * 3;
+}
+
+// 错误类型只能移动，因此这组函数能编译就证明 WAVVIX_TRY 是移动错误而不是复制。
+result<int, std::unique_ptr<int>> moving_error() {
+    return std::unique_ptr<int>(new int(7));
+}
+result<std::string, std::unique_ptr<int>> forwards_moving_error() {
+    WAVVIX_TRY(int value, moving_error());
+    return std::to_string(value);
+}
 
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
 struct throwing_copy {
@@ -228,6 +244,29 @@ TEST(result, formats_error_names_messages_and_stream_output) {
     std::ostringstream out;
     out << error << '|' << make_error(error_kind::io);
     EXPECT(out.str(), ==, "invalid_argument: port is empty|io");
+}
+
+TEST(result, propagates_errors_with_try) {
+    auto good = describe(4);
+    EXPECT(good.is_ok(), ==, true);
+    EXPECT(good.value(), ==, "value=8");
+
+    auto value_failed = describe(-1);
+    EXPECT(value_failed.is_err(), ==, true);
+    EXPECT(value_failed.error().kind(), ==, error_kind::invalid_argument);
+    EXPECT(value_failed.error().message(), ==, "negative");
+
+    auto void_failed = describe(999);
+    EXPECT(void_failed.is_err(), ==, true);
+    EXPECT(void_failed.error().kind(), ==, error_kind::out_of_range);
+    EXPECT(void_failed.error().message(), ==, "too large");
+
+    EXPECT(tripled(5).value(), ==, 15);
+    EXPECT(tripled(-1).error(), ==, parse_error::invalid);
+
+    auto moved = forwards_moving_error();
+    EXPECT(moved.is_err(), ==, true);
+    EXPECT(*moved.error(), ==, 7);
 }
 
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS

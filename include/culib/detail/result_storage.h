@@ -1,6 +1,6 @@
 #pragma once
 
-// result 的存储与特殊成员控制；公共接口见 culib/result.h。
+// result 的存储：值和错误放在同一个 union 里，只多一个标志位。公共接口见 culib/result.h。
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -13,15 +13,15 @@ struct result_value_tag {};
 struct result_error_tag {};
 struct result_unit {};
 
-// 老版本 libstdc++ 尚未提供 is_trivially_copyable。
-template <typename T>
-struct result_trivial : std::integral_constant<bool,
 #if defined(__GLIBCXX__) && defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
-    __has_trivial_copy(T) && __has_trivial_assign(T) && __has_trivial_destructor(T)
+// GCC 5 以前的 libstdc++ 没有 is_trivially_copyable，这些编译器上一律走非平凡存储。
+// 只是少一个「按寄存器返回」的优化，行为完全相同。
+template <typename T>
+struct result_trivial : std::false_type {};
 #else
-    std::is_trivially_copyable<T>::value
+template <typename T>
+struct result_trivial : std::is_trivially_copyable<T> {};
 #endif
-> {};
 
 template <typename T, typename E, bool Trivial =
     result_trivial<T>::value && result_trivial<E>::value &&
@@ -29,7 +29,7 @@ template <typename T, typename E, bool Trivial =
     std::is_move_assignable<T>::value && std::is_move_assignable<E>::value>
 class result_storage;
 
-// 简单值类型保留编译器生成的特殊成员，允许按寄存器返回。
+// 平凡类型保留编译器生成的特殊成员，result 自身也保持平凡可复制，函数返回可以走寄存器。
 template <typename T, typename E>
 class result_storage<T, E, true> {
 protected:
@@ -46,7 +46,10 @@ protected:
         : error_(std::forward<G>(error)), ok_(false) {}
 };
 
-// 非平凡类型只构造当前有效的成员；不存在第三种“空”状态。
+// 非平凡类型只构造当前有效的成员；不存在第三种「空」状态。
+// 特殊成员一律声明，用不了的组合在函数体里用 static_assert 挡住：函数体只在真的用到时才实例化，
+// 所以误用仍然是编译错误，报错信息比「调用已删除的函数」更直接。代价是 std::is_copy_constructible
+// 这类类型特征只看声明，对 result 会乐观地回答「可以」。
 template <typename T, typename E>
 class result_storage<T, E, false> {
 protected:
@@ -65,18 +68,25 @@ protected:
     result_storage(const result_storage& other)
         noexcept(std::is_nothrow_copy_constructible<T>::value &&
                  std::is_nothrow_copy_constructible<E>::value) : ok_(other.ok_) {
+        static_assert(std::is_copy_constructible<T>::value && std::is_copy_constructible<E>::value,
+                      "copying a result requires copyable value and error types; "
+                      "move it with std::move instead");
         if (ok_) construct(value_, other.value_);
         else construct(error_, other.error_);
     }
     result_storage(result_storage&& other)
         noexcept(std::is_nothrow_move_constructible<T>::value &&
                  std::is_nothrow_move_constructible<E>::value) : ok_(other.ok_) {
+        static_assert(std::is_move_constructible<T>::value && std::is_move_constructible<E>::value,
+                      "moving a result requires movable value and error types");
         if (ok_) construct(value_, std::move(other.value_));
         else construct(error_, std::move(other.error_));
     }
     result_storage& operator=(const result_storage& other)
         noexcept(std::is_nothrow_copy_constructible<T>::value &&
                  std::is_nothrow_copy_constructible<E>::value) {
+        static_assert(assignable,
+                      "assigning a result requires value and error types that move without throwing");
         if (this != &other) {
             // 先复制，成功后才销毁旧值；replace 的移动构造保证不抛异常。
             result_storage temporary(other);
@@ -85,16 +95,21 @@ protected:
         return *this;
     }
     result_storage& operator=(result_storage&& other) noexcept {
+        static_assert(assignable,
+                      "assigning a result requires value and error types that move without throwing");
         if (this != &other) replace(other);
         return *this;
     }
     ~result_storage() { destroy(); }
 
 private:
+    // 赋值要先销毁旧值再构造新值，移动构造不能抛异常，否则中途失败会留下无效状态。
+    static const bool assignable = std::is_nothrow_move_constructible<T>::value &&
+                                   std::is_nothrow_move_constructible<E>::value;
+
     template <typename V, typename U>
     static void construct(V& destination, U&& source) {
-        ::new (const_cast<void*>(static_cast<const volatile void*>(std::addressof(destination))))
-            V(std::forward<U>(source));
+        ::new (std::addressof(destination)) V(std::forward<U>(source));
     }
     void destroy() noexcept {
         if (ok_) value_.~T();
@@ -106,72 +121,6 @@ private:
         if (ok_) construct(value_, std::move(other.value_));
         else construct(error_, std::move(other.error_));
     }
-};
-
-// 删除不受支持的操作，使 is_copy_constructible 等特性得到真实结果。
-// 各开关只控制一个成员，其他成员继续由编译器生成。
-#define WAVVIX_DETAIL_RESULT_CONTROL(name, disabled_member) \
-    template <bool Enabled> struct name { \
-        name() = default; \
-        name(const name&) = default; \
-        name(name&&) = default; \
-        name& operator=(const name&) = default; \
-        name& operator=(name&&) = default; \
-    }; \
-    template <> struct name<false> { disabled_member };
-
-WAVVIX_DETAIL_RESULT_CONTROL(result_copy_control,
-    result_copy_control() = default;
-    result_copy_control(const result_copy_control&) = delete;
-    result_copy_control(result_copy_control&&) = default;
-    result_copy_control& operator=(const result_copy_control&) = default;
-    result_copy_control& operator=(result_copy_control&&) = default;)
-WAVVIX_DETAIL_RESULT_CONTROL(result_move_control,
-    result_move_control() = default;
-    result_move_control(const result_move_control&) = default;
-    result_move_control(result_move_control&&) = delete;
-    result_move_control& operator=(const result_move_control&) = default;
-    result_move_control& operator=(result_move_control&&) = default;)
-WAVVIX_DETAIL_RESULT_CONTROL(result_copy_assign_control,
-    result_copy_assign_control() = default;
-    result_copy_assign_control(const result_copy_assign_control&) = default;
-    result_copy_assign_control(result_copy_assign_control&&) = default;
-    result_copy_assign_control& operator=(const result_copy_assign_control&) = delete;
-    result_copy_assign_control& operator=(result_copy_assign_control&&) = default;)
-WAVVIX_DETAIL_RESULT_CONTROL(result_move_assign_control,
-    result_move_assign_control() = default;
-    result_move_assign_control(const result_move_assign_control&) = default;
-    result_move_assign_control(result_move_assign_control&&) = default;
-    result_move_assign_control& operator=(const result_move_assign_control&) = default;
-    result_move_assign_control& operator=(result_move_assign_control&&) = delete;)
-#undef WAVVIX_DETAIL_RESULT_CONTROL
-
-template <typename T, typename E>
-struct result_traits {
-    static const bool copy = std::is_copy_constructible<T>::value && std::is_copy_constructible<E>::value;
-    static const bool move = std::is_move_constructible<T>::value && std::is_move_constructible<E>::value;
-    static const bool assign = std::is_nothrow_move_constructible<T>::value &&
-                               std::is_nothrow_move_constructible<E>::value;
-};
-
-template <typename T, typename E>
-class result_base : public result_storage<T, E>,
-                    private result_copy_control<result_traits<T, E>::copy>,
-                    private result_move_control<result_traits<T, E>::move>,
-                    private result_copy_assign_control<result_traits<T, E>::copy && result_traits<T, E>::assign>,
-                    private result_move_assign_control<result_traits<T, E>::assign> {
-    static_assert(std::is_object<T>::value && !std::is_array<T>::value,
-                  "result value must be a non-array object type");
-    static_assert(std::is_object<E>::value && !std::is_array<E>::value,
-                  "result error must be a non-array object type");
-    static_assert(std::is_nothrow_destructible<T>::value && std::is_nothrow_destructible<E>::value,
-                  "result value and error destructors must not throw");
-protected:
-    template <typename Tag, typename U>
-    result_base(Tag tag, U&& value)
-        noexcept(std::is_nothrow_constructible<typename std::conditional<
-            std::is_same<Tag, result_value_tag>::value, T, E>::type, U&&>::value)
-        : result_storage<T, E>(tag, std::forward<U>(value)) {}
 };
 
 }  // namespace detail
