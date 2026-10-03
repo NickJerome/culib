@@ -1,0 +1,124 @@
+name: build
+
+# README 的「平台与工具链」承诺三个平台行为一致、「开发约定」承诺零警告。
+# 这个 workflow 是那两条承诺的执行机制 —— 手工只能覆盖一个平台一种编译器。
+#
+# 已覆盖：Linux / GCC、Linux / Clang、macOS / Apple Clang、Windows / MSVC，debug 与 release 各一遍；
+#         库、测试、示例都编译，测试实际运行。
+# 未覆盖：MinGW，以及 README 写明的最低版本编译器 GCC 4.8.1 / VS2015 ——
+#         GitHub 的 runner 上没有这些版本，要补得用容器或自行安装。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.target.name }} / ${{ matrix.mode }}
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      # 一个平台失败不打断其他平台，一次就能看到全部结果
+      fail-fast: false
+      matrix:
+        mode: [debug, release]
+        target:
+          - { name: linux-gcc, os: ubuntu-latest, toolchain: gcc }
+          - { name: linux-clang, os: ubuntu-latest, toolchain: clang }
+          - { name: macos-clang, os: macos-latest, toolchain: clang }
+          - { name: windows-msvc, os: windows-latest, toolchain: msvc }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: xmake-io/setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: configure
+        run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
+
+      # -w 显示警告。GCC / Clang 上 xmake.lua 已把警告设为错误，所以这一步同时是零警告检查；
+      # MSVC 的 /W4 警告集尚未逐条排查，那里只显示不拦（见 xmake.lua 里的注释）。
+      - name: build library
+        run: xmake -w -y
+
+      - name: run tests
+        # 有失败时 -v 打印完整报告
+        run: xmake test -v
+
+      # 示例默认不参与构建，这里显式编译：接口改了而示例没跟着改时就会在这一步失败
+      - name: build examples
+        run: xmake build -w -y -g examples
+
+      - name: run examples
+        run: xmake run example_result
+
+  # 单独一格：确认 culib 被当作源码依赖引入时能正常工作。
+  # 这覆盖 xmake.lua 里 is_main_project 为假的那条分支（不强加 -Werror、不构建测试和示例），
+  # 以及 README「使用方也可以用更高的标准」这条说法 —— 两者手工都测不到。
+  consumed-as-dependency:
+    name: consumed as dependency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: culib
+
+      - uses: xmake-io/setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: create a consumer project
+        run: |
+          mkdir -p consumer/src consumer/third_party
+          cp -r culib consumer/third_party/culib
+          rm -rf consumer/third_party/culib/.git consumer/third_party/culib/build
+          cat > consumer/xmake.lua <<'LUA'
+          add_rules("mode.debug", "mode.release")
+          set_languages("c++17")   -- 使用方用比 culib 本身更高的标准
+
+          includes("third_party/culib")
+
+          target("consumer")
+              set_kind("binary")
+              add_files("src/*.cpp")
+              add_deps("culib")
+          LUA
+          cat > consumer/src/main.cpp <<'CPP'
+          #include <culib/culib.h>
+          #include <cstdio>
+
+          static wavvix::result<int> checked_port(int port) {
+              if (port < 1 || port > 65535) {
+                  return wavvix::make_error(wavvix::error_kind::out_of_range, "bad port");
+              }
+              return port;
+          }
+
+          static wavvix::result<int> doubled_port(int port) {
+              WAVVIX_TRY(const int checked, checked_port(port));
+              return checked * 2;
+          }
+
+          int main() {
+              defer { std::printf("done\n"); };
+              wavvix::stopwatch watch;
+              auto port = doubled_port(8080);
+              if (port.is_err()) {
+                  std::fprintf(stderr, "%s\n", port.error().to_string().c_str());
+                  return 1;
+              }
+              std::printf("culib %s port %d in %s\n", wavvix::version(), port.value(),
+                          wavvix::format_duration(watch.elapsed()).c_str());
+              return doubled_port(-1).is_err() ? 0 : 1;
+          }
+          CPP
+
+      - name: build and run the consumer
+        run: |
+          cd consumer
+          xmake f -m release -y
+          xmake -w -y
+          xmake run consumer
