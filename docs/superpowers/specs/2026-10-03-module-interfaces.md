@@ -72,6 +72,8 @@ std::ostream& operator<<(std::ostream& os, string_view value);
 
 ### 2. lexical_cast —— `culib/lexical_cast.h`
 
+**采用 boost 的形式**：一个泛型入口，不是一堆具名函数。见本文末尾「和 boost / coost 的对照」。
+
 ```cpp
 namespace wavvix {
 
@@ -82,41 +84,42 @@ enum class parse_error {
 };
 const char* parse_error_name(parse_error value) noexcept;
 
-// 字符串 -> 数值。整个输入必须被完全消费，不接受前后空白（要空白自己先 trim）。
-result<int,                parse_error> to_int(string_view text);
-result<long long,          parse_error> to_int64(string_view text);
-result<unsigned long long, parse_error> to_uint64(string_view text);
-result<double,             parse_error> to_double(string_view text);   // 不受 locale 影响
-result<bool,               parse_error> to_bool(string_view text);
+// 字符串 -> T。整个输入必须被完全消费，不接受前后空白（要空白自己先 trim）。
+// T 只支持整数、浮点、bool；其他类型用 static_assert 给出明确提示。
+template <typename T>
+result<T, parse_error> lexical_cast(string_view text);
 
-// 指定进制；base 为 0 时按前缀判断（0x 十六进制、0 八进制、否则十进制）
-result<long long,          parse_error> to_int64(string_view text, int base);
-result<unsigned long long, parse_error> to_uint64(string_view text, int base);
+// 整数专用：指定进制，base 为 0 时按前缀判断（0x 十六进制、0 八进制、否则十进制）。
+// T 不是整数类型时 static_assert 报错。
+template <typename T>
+result<T, parse_error> lexical_cast(string_view text, int base);
 
-// 数值 -> 字符串
+// 另一个方向：数值 -> 字符串。这个方向不会失败，所以直接返回值，不包 result。
 std::string to_string(long long value);
 std::string to_string(unsigned long long value);
 std::string to_string(double value);       // 不受 locale 影响
 std::string to_string(bool value);         // "true" / "false"
 
-// 写入调用方缓冲区的重载（约定：需要反复产出结果时提供）。返回写入的字节数，
-// 容量不足时返回 0 且不写入。
+// 写入调用方缓冲区的重载（约定：需要反复产出结果时提供）。
+// 返回写入的字节数；容量不足时返回 0 且不写入。
 size_t to_chars(long long value, char* buffer, size_t capacity) noexcept;
 size_t to_chars(double value, char* buffer, size_t capacity) noexcept;
 
 }  // namespace wavvix
 ```
 
-- **严格解析**，和 `strtol` 的默认行为相反：`to_int("12abc")` 失败，`to_int(" 12")` 失败，`to_int("")` 失败。理由是「没有意外」——宽松解析会把 `--port=80x` 静默当成 80。
-- `to_bool` 接受 `true/false/1/0/yes/no/on/off`，大小写不敏感。
+- **只有一个解析入口 `lexical_cast<T>`。** 不提供 `to_int` / `to_double` 这类具名别名——那会变成「同一件事两种写法」，违背「全库一致」。`flag::value<T>` 内部直接调 `lexical_cast<T>`，所以泛型形式同时也是 flag 需要的那个形式。
+- **两个方向不对称，这是故意的。** 解析可能失败，所以返回 `result`；格式化不会失败，所以直接返回 `std::string`。强行对称（让 `lexical_cast<std::string>(42)` 也返回 `result`）会迫使调用方检查一个永远成功的结果。名字 `to_string` 和 `std::to_string` 一致，不需要额外解释。
+- **严格解析**，和 `strtol` 的默认行为相反：`lexical_cast<int>("12abc")` 失败，`lexical_cast<int>(" 12")` 失败，`lexical_cast<int>("")` 失败。理由是「没有意外」——宽松解析会把 `--port=80x` 静默当成 80。
+- `lexical_cast<bool>` 接受 `true/false/1/0/yes/no/on/off`，大小写不敏感。
 - 错误类型用 `enum class` 而不是默认的 `error`：按约定，失败很常见且对性能敏感的接口用枚举，这样 `result<int, parse_error>` 是 8 字节、走寄存器返回（见 result 设计 11.2）。
-- `to_double` 不受 locale 影响是硬要求。`stopwatch` 的 `format_duration` 已经踩过这个坑，它的 spec 里有记录。
+- **和 boost 的两处不同**：boost 抛 `bad_lexical_cast`（culib 不抛异常，改成 `result`）；boost 支持任意有流操作符的类型对（culib 只支持数值和 bool，不做泛型容器和自定义类型）。
 
 **要定的事**
 
-- **`flag` 需要按类型分发**（它是 `flag::value<T>`），而上面全是具名函数。是否公开一个 `template <typename T> result<T, parse_error> parse(string_view)` 的特化族？具名函数对人友好、模板对泛型代码友好，但「同一件事两种写法」违背「全库一致」。倾向：公开 `parse<T>`，具名函数作为它的内联转发，文档里说明「人写代码用具名的，泛型代码用 `parse<T>`」。
-- `to_double` 自己实现还是用 `strtod` 配合临时切换 locale？后者有线程安全问题（`setlocale` 是进程级的）。倾向用 `std::from_chars` 不可用时的手写实现，或 `strtod_l`（POSIX）/ `_strtod_l`（MSVC）。**这是本模块唯一的难点。**
-- 浮点转字符串的往返精度要不要保证（`to_string(to_double(x)) == x`）？保证的话需要最短往返算法（Ryu / Grisu），那是独立工程量。倾向不保证，用 `%.17g`。
+- `to_double` 自己实现还是用 `strtod` 配合临时切换 locale？后者有线程安全问题（`setlocale` 是进程级的）。倾向手写实现，或用 `strtod_l`（POSIX）/ `_strtod_l`（MSVC）。**这是本模块唯一的难点。** 注意 coost 为此单列了一个 `dtoa.h`，说明工作量不小。
+- 浮点转字符串要不要保证往返精度（`lexical_cast<double>(to_string(x)) == x`）？保证的话需要最短往返算法（Ryu / Grisu），那是独立工程量。倾向不保证，用 `%.17g`。
+- `lexical_cast<std::string>(text)` 要不要支持（恒等转换）？倾向 `static_assert` 拒绝——要字符串就直接用，不需要转换。
 
 ### 3. flag —— `culib/flag.h`
 
@@ -144,19 +147,19 @@ using uint64  = value<unsigned long long>;
 using number  = value<double>;
 using string  = value<std::string>;
 
-// 解析命令行。失败时打印用法到 stderr 并退出进程（CLI 的惯例），所以没有返回值。
-// --help / --version 也在这里处理并退出。
-void init(int argc, char* argv[]);
+// 解析命令行。失败时打印用法到 stderr 并退出进程（CLI 的惯例）；--help 也在这里处理并退出。
+// version 非空时额外提供 --version，输出它然后退出；为空则不提供这个选项。
+void init(int argc, char* argv[], string_view version = string_view());
 
 // 不希望它退出进程时用这个（测试框架自己要控制退出码）
-result<void> parse(int argc, char* argv[]);
+result<void> parse(int argc, char* argv[], string_view version = string_view());
 
-// 非选项的那些参数，按出现顺序。切图工具的 `crop a.png b.png` 要靠它。
-const std::vector<std::string>& args();
+// 位置参数：argv 里既不是程序名、也不是选项、也不是某个选项的值的那些元素，按出现顺序。
+// 精确规则见下面「args 的精确定义」。切图工具的 `crop a.png b.png` 靠它。
+// 视图指向 argv，不拷字符串；init / parse 之前调用或解析失败时返回空。
+const std::vector<string_view>& args() noexcept;
 
-void set_version(string_view text);      // --version 的输出
-void set_usage(string_view text);        // --help 顶部的一段说明
-std::string usage();                     // 生成的完整用法文本
+std::string usage();                     // 生成的用法文本（纯查询，测试框架自己打印时用）
 
 // 按名字设值，给配置文件用：读出键值后调用它即可，库不解析配置文件格式
 result<void> set(string_view name, string_view text);
@@ -166,50 +169,58 @@ result<void> set(string_view name, string_view text);
 ```
 
 - `flag` 是**命名空间不是类模板**：类模板不带模板参数就没法写 `wavvix::flag::init`。这条在 `2026-10-02-stopwatch-and-test-slimming-design.md` 6.1 已经定了。
-- **位置参数 `args()` 是我在写这份接口时发现 6.1 漏掉的。** 切图这类工具的主要输入就是文件列表，没有位置参数整个 CLI 场景不成立。
+- **位置参数是 6.1 漏掉的**，没有它整个 CLI 场景不成立（切图工具的主要输入就是文件列表）。**用 `args()` 访问器，不用返回值。** 曾经改成返回值（学 coost），那是错的：`flag` 整个模块的前提就是「全局对象，任何地方都能读」，把位置参数单独做成「必须从 `main` 一路传下去」是这个模块里唯一的例外，违背「全库一致」；而且 `std::vector<std::string>` 每次都要拷 argv 的每个元素，而 `string_view` 指向 argv（和进程同寿）是零字符串分配的。
+- **没有 `set_version` / `set_usage`。** 版本号作为 `init` 的参数传入——这是 6.1 本来就写明的做法（「例如在 `init` 时传入」）。设置器的问题是**时序要求**：必须在 `init` 之前调用，忘了就静默失效，正是「零配置、零管理」和「没有意外」要挡的东西。`--help` 顶部那行说明属于 nice-to-have，按「先有消费者」现在不提供；`--help` 的内容本来就从各个 flag 生成，程序名用 `argv[0]`。
+- `value<T>` 内部**直接调 `lexical_cast<T>(text)`** 完成类型转换。这就是 `lexical_cast` 采用泛型形式的直接理由：两边都是泛型，不需要 coost 那套 `char` 类型标签的运行时分发。
 - 两个入口：`init` 退出进程（正常程序想要的），`parse` 返回 `result`（测试框架要的，它自己决定退出码）。
+
+**args 的精确定义**
+
+```
+$ crop --width=1024 -f jpg a.png b.png
+
+argv:  [ "crop"  , "--width=1024" , "-f"  , "jpg"  , "a.png" , "b.png" ]
+         程序名     选项（自带值）    选项    -f 的值   位置参数   位置参数
+
+args() == [ "a.png", "b.png" ]
+```
+
+这个定义取决于四条规则，**都已定下**：
+
+1. **位置参数之后继续解析选项（GNU 风格，重排）。** `crop a.png --width=1024 b.png` 里 `--width` 生效，`args` 是 `[a.png, b.png]`。不采用 POSIX / Go flag 包那种「遇到第一个非选项就停止解析」——那会让 `crop *.png --width=1024` 静默失效，违背「没有意外」。这是 Go 的 flag 包最常被抱怨的一点。
+2. **布尔选项不吃下一个 token。** 只接受 `--verbose` 和 `--verbose=true`，所以 `crop --verbose a.png` 里 `a.png` 是位置参数。这条不是偏好而是必需，否则布尔选项会吞掉文件名。
+3. **`--` 之后全部算位置参数**，哪怕长得像选项：`crop -- --weird-name.png`。处理以 `-` 开头的文件名要靠它。
+4. **单独一个 `-` 算位置参数**（惯例表示标准输入）。
+
+接受的选项写法：`--port=8080`、`--port 8080`、`-p 8080`、`--`。**不支持粘连短选项 `-p8080`**（容易和 `-p -8080` 这种歧义混淆），也不支持短选项合并 `-abc`。
+
+**未知选项报错退出**，不收进位置参数——静默接受拼错的 `--widht` 是最常见的 CLI 坑。
+
+**argv 的生命周期**：C++ 标准（[basic.start.main]/2）规定 argv 的数组和字符串可被程序修改、实现不会改动它们，所以视图在进程存续期间有效。但**程序自己改写 argv 时（例如 setproctitle 那样改进程标题）视图会跟着变**，头文件注释必须写明「`init` 之后不要改写 argv」。
 
 **要定的事**
 
 - **全局 flag 对象在 `main` 之前登记**，这是 README「无启动开销」的第二个例外（第一个是 `TEST`）。要在 `CLAUDE.md` 的性能约定里补一句。
-- 接受哪些写法？`--port=8080`、`--port 8080`、`-p 8080`、`-p8080`、`--`（之后全算位置参数）。倾向全支持除 `-p8080`（粘连短选项容易歧义）。
-- 未知选项：报错退出，还是收进位置参数？倾向报错——静默接受拼错的选项是最常见的 CLI 坑。
-- `operator const T&` 的隐式转换会不会带来意外？例如 `flag::string name(...); if (name == "x")` 能工作，但 `auto v = name;` 拷的是 `value<T>` 而不是 `T`。倾向保留隐式转换（6.1 的需求就是「像普通变量一样读取和输出」），但在注释里写明用 `auto` 的陷阱。
+- `operator const T&` 的隐式转换**已决定保留**（6.1 的需求就是「像普通变量一样读取和输出」）。代价是 `auto v = name;` 拷的是 `value<T>` 而不是 `T`，这个陷阱 coost 的宏方案没有（它定义出的 `FLG_name` 就是一个真变量）。既然保留，**头文件注释必须写明这个陷阱**，并建议需要拷贝时写 `auto v = name.get();`。
 - 必填项检查失败、类型转换失败的退出码是多少？测试框架现在用 2 表示参数错误，保持一致。
 
 ### 4. strings —— `culib/strings.h`
 
-一组操作字符串的**自由函数**，不是字符串类——全库一律用 `std::string`。
+操作字符串的**自由函数**，不是字符串类——全库一律用 `std::string`。
+
+**范围按「先有消费者」砍到两组。** 曾经列过十八个函数（split / join / 大小写 / replace / equals_ignore_case 等），但第一程里它们一个消费者都没有。
 
 ```cpp
 namespace wavvix {
 
-// 切分。返回的是指向 text 的视图，不分配字符串；调用方要保证 text 活得比结果长。
-std::vector<string_view> split(string_view text, char separator);
-std::vector<string_view> split(string_view text, string_view separator);
-// 限制份数，最后一份含剩余全部：split("k=v=x", '=', 2) -> {"k", "v=x"}
-std::vector<string_view> split(string_view text, char separator, size_t limit);
-// 写入调用方容器，复用其容量
-void split(string_view text, char separator, std::vector<string_view>& out);
-
-std::string join(const std::vector<string_view>& parts, string_view separator);
-std::string join(const std::vector<std::string>& parts, string_view separator);
-
 // 去空白。返回视图，不分配。
+// 消费者：lexical_cast 严格不吃前后空白，调用方需要先 trim。
 string_view trim(string_view text) noexcept;
 string_view trim_left(string_view text) noexcept;
 string_view trim_right(string_view text) noexcept;
 
-// 大小写：只处理 ASCII，见下面「要定的事」
-std::string to_lower(string_view text);
-std::string to_upper(string_view text);
-void to_lower(string_view text, std::string& out);
-void to_upper(string_view text, std::string& out);
-bool equals_ignore_case(string_view a, string_view b) noexcept;
-
-std::string replace_all(string_view text, string_view from, string_view to);
-
-// UTF-8 ⇄ UTF-16。Windows 调 W 系列 API 要用；非法序列返回错误，不静默替换成 U+FFFD。
+// UTF-8 ⇄ UTF-16。非法序列返回错误，不静默替换成 U+FFFD。
+// 消费者：fs 和 os 在 Windows 上每次调 W 系列 API 都要。
 result<std::u16string> utf8_to_utf16(string_view utf8);
 result<std::string>    utf16_to_utf8(const std::u16string& utf16);
 bool is_valid_utf8(string_view text) noexcept;
@@ -223,122 +234,114 @@ result<std::string>  wide_to_utf8(const wchar_t* text, size_t size);
 }  // namespace wavvix
 ```
 
-- **格式化不在这里**，已决定切出去或明确缩范围，见路线图第一程的范围决定。
-- **East Asian Width 不在这里**。原消费者是已删除的 `table`，等 `term` 真要做对齐时再加。
+**有消费者再加**（都不在第一程）：
+
+| 推后的 | 它的消费者会是 |
+| --- | --- |
+| `split` / `join` | 第二程的配置文件解析。第一程不需要：`flag` 切 `--port=8080` 用的是 `string_view::find` + `substr` |
+| `to_lower` / `to_upper` / `equals_ignore_case` | 目前没有。真要加时**只做 ASCII**——Unicode 大小写映射要内置上千码点的表，还有 locale 特例（土耳其语的 i） |
+| `replace_all` | 目前没有 |
+| East Asian Width（显示宽度） | 原消费者是已删除的 `table`。等 `term` 真要做对齐时再说 |
+
+**不放这里的**：`starts_with` / `ends_with` / `contains` / `find` 在 `string_view` 上，放这里就是「同一件事两种写法」。格式化已决定切出去单列。
+
+UTF-16 公共类型选 `std::u16string`（Windows `wchar_t` 16 位、Linux 32 位，用 `wstring` 做公共类型会不一致）；`wstring` 重载只在 Windows 存在。
 
 **要定的事**
 
-- **大小写只做 ASCII**——这是个明确的范围缩减，要在文档里写死理由：Unicode 的大小写映射需要内置表（上千个码点，还有 locale 相关的特例如土耳其语的 i），而三个目标场景里没有一个需要非 ASCII 的大小写转换。
-- `split` 返回 `vector<string_view>` 虽然不分配字符串，但分配了 vector。要不要再给一个回调版本（`split(text, sep, callback)`）彻底零分配？等有热路径需求再加。
-- UTF-16 的跨平台类型选 `std::u16string`（Windows `wchar_t` 16 位、Linux 32 位，用 `wstring` 做公共类型会不一致）。`wstring` 重载只在 Windows 上存在——这会让同一份调用代码在两个平台上不同，是否接受？倾向接受，因为需要 `wstring` 的只有 Windows 平台代码。
-- 非法 UTF-8 序列返回错误而不是替换，这对「从文件读来的内容」是否太严格？倾向保持严格，另外提供一个显式的 `sanitize_utf8` 给需要宽容的地方。
+- 非法 UTF-8 返回错误而不是替换，对「从文件读来的内容」是否太严格？倾向保持严格，真需要宽容时再加一个显式的 `sanitize_utf8`。
 
 ### 5. fs —— `culib/fs.h`
+
+**范围按「先有消费者」砍到十一个。** 下表每一行都写明是哪个场景要的。
 
 ```cpp
 namespace wavvix {
 namespace fs {
 
-// --- 路径：纯字符串操作，不碰磁盘 ---
-// 输入一律接受 '/' 和 '\\' 两种分隔符；输出用平台原生分隔符。
-std::string join(string_view a, string_view b);
-string_view parent(string_view path) noexcept;       // 目录部分，没有则空
-string_view filename(string_view path) noexcept;     // 文件名部分
-string_view stem(string_view path) noexcept;         // 文件名去掉扩展名
-string_view extension(string_view path) noexcept;    // 含 '.'，没有则空
-bool is_absolute(string_view path) noexcept;
-std::string normalize(string_view path);             // 消掉 "." 和 ".."，不解析符号链接
-result<std::string> absolute(string_view path);      // 相对转绝对，要访问当前目录
+// --- 路径：纯字符串操作，不碰磁盘。输入接受 '/' 和 '\'，输出用平台原生分隔符 ---
+std::string join(string_view a, string_view b);        // 切图：拼输出路径
+string_view filename(string_view path) noexcept;       // 切图：取文件名
+string_view stem(string_view path) noexcept;           // 切图：去掉扩展名，拼 a_cropped.png
+string_view extension(string_view path) noexcept;      // 切图：筛 .png
 
 // --- 查询 ---
-bool exists(string_view path) noexcept;
-bool is_file(string_view path) noexcept;
-bool is_directory(string_view path) noexcept;
-result<uint64_t> file_size(string_view path);
-result<int64_t>  last_write_time(string_view path);  // Unix 时间戳，秒
+bool exists(string_view path) noexcept;                // 两个场景都要
+bool is_directory(string_view path) noexcept;          // 切图：遍历时区分
 
-// --- 整文件读写 ---
-result<std::string> read_file(string_view path);
-result<void> read_file(string_view path, std::string& out);   // 复用 out 的容量
-result<void> write_file(string_view path, string_view content);
-result<void> append_file(string_view path, string_view content);
+// --- 整文件读写，一律二进制，不做换行转换 ---
+result<std::string> read_file(string_view path);       // 服务器：读配置
+result<void> write_file(string_view path, string_view content);   // 服务器：写 pid
 
-// --- 目录与文件操作 ---
+// --- 目录与文件 ---
 enum class recursive { no, yes };
-enum class overwrite { no, yes };
-result<void> create_directory(string_view path, recursive mode = recursive::no);
-result<void> remove_file(string_view path);
-result<void> remove_directory(string_view path, recursive mode = recursive::no);  // yes 是危险操作
-result<void> copy_file(string_view from, string_view to, overwrite mode = overwrite::no);
-result<void> rename(string_view from, string_view to);
+result<void> create_directory(string_view path, recursive mode = recursive::no);  // 切图：建输出目录
+result<void> remove_file(string_view path);            // 服务器：清 pid
 
 // --- 遍历 ---
 struct entry {
-    string_view name;      // 只是名字，不含路径
+    string_view name;       // 只是名字，不含路径；视图在回调返回后失效
     bool is_directory;
 };
-// 回调返回 false 时停止遍历。形式见下面「要定的事」。
-template <typename F> result<void> list_directory(string_view path, F&& callback);
-// 一次取全部，小目录方便
-result<std::vector<std::string>> list_directory(string_view path);
+// 回调返回 false 时停止。回调是模板参数所以零开销；平台相关的句柄在 .cpp 里。
+template <typename F>
+result<void> list_directory(string_view path, F&& callback);      // 切图：批量处理的入口
 
-result<std::string> temp_directory();
-result<std::string> current_directory();
-result<void> set_current_directory(string_view path);
+namespace detail {
+// 头文件里是完整类型，但只持一个 void*，方法全在 fs.cpp 实现，
+// 所以公共头文件不需要包含 <windows.h> / <dirent.h>。
+class directory_handle {
+    void* handle_;
+public:
+    static result<directory_handle> open(string_view path);
+    bool next(string_view& name, bool& is_directory);
+    ~directory_handle();
+    directory_handle(directory_handle&&) noexcept;
+};
+}  // namespace detail
 
 }  // namespace fs
 }  // namespace wavvix
 ```
 
+**有消费者再加**（12 个，都没有明确的近期调用方）：
+
+`parent`、`is_absolute`、`normalize`、`absolute`、`file_size`、`last_write_time`、`append_file`、`copy_file`、`rename`、`remove_directory`、`temp_directory`、`current_directory` / `set_current_directory`，以及 `read_file` 的复用缓冲区重载。
+
+**`path` 不拆成独立头文件。** coost 单列了 `path.h`（114 行），曾考虑跟进；但砍完之后路径部分只剩 4 个函数，单独开一个头文件不值得。等路径操作长到十个以上再说。
+
+**遍历的形式已定下。** 冲突是：回调式要么用 `std::function`（违背「慎用有隐性开销的设施」），要么用模板（实现进头文件，违背「公共头文件不含平台头」）。解法是上面那个 `detail::directory_handle`：头文件里它是完整类型（只有一个 `void*` 成员），方法在 `.cpp` 里实现，头文件里的模板只负责循环和调回调。
+
 **要定的事**
 
-- **遍历的形式是本模块的核心设计问题，而且和两条约定冲突。** 回调式最简单，但：用 `std::function` 违背「慎用有隐性开销的设施」；用模板回调就得把实现放头文件，而平台代码不能进公共头文件（「公共头文件不包含 `<windows.h>`」）。三条出路：
-  1. 头文件里是模板，它调用一个在 `.cpp` 里实现的、持有不透明句柄的 `detail::directory_handle`（`open` / `next` / `close` 三个非模板函数）。模板只负责循环和调用回调。**倾向这个。**
-  2. 提供真正的迭代器（`begin` / `end`），用起来最像标准库，但要写的代码最多。
-  3. 只提供「一次取全部」的版本，放弃大目录的内存友好。最简单，但遍历一个几十万文件的目录会吃几十 MB。
-- `read_file` 读到的内容是二进制还是文本？Windows 上 `'\n'` 的转换会改变字节数。倾向**一律二进制**，不做换行转换——「没有意外」。
-- 路径用 `std::string`（UTF-8）而不是专门的 `path` 类型。好处是简单，代价是没有类型安全（路径和普通字符串混用不会被编译器发现）。倾向保持 `std::string`：引入 `path` 类型会让每个接口多一层转换，而三个场景都不需要那种严格性。
-- 错误类型用默认的 `error`，因为失败原因必须能区分（`not_found` / `permission_denied` / `already_exists`），调用方要据此决定行为。
-- 符号链接：`exists` 跟随还是不跟随？`remove_directory(recursive::yes)` 遇到符号链接要不要跟进去（跟进去可能删掉链接目标，很危险）。必须在 spec 里写死。
+- 错误类型用默认的 `error`（不是枚举），因为失败原因必须能区分：`not_found` / `permission_denied` / `already_exists`，调用方要据此决定行为。
+- 符号链接：`exists` 跟随还是不跟随？将来加 `remove_directory(recursive::yes)` 时要不要跟进符号链接（跟进去可能删掉链接目标，很危险）？第一个涉及符号链接的接口落地前必须写死。
+- 路径用 `std::string`（UTF-8）而不是专门的 `path` 类型。代价是没有类型安全（路径和普通字符串混用编译器发现不了），好处是每个接口少一层转换。倾向保持 `std::string`。
 
-### 6. term —— `culib/term.h`（可选）
+### 6. term —— 见已有设计
+
+**不在本文重复。** `term` 已经在 [`2026-10-01-test-term-table-design.md`](2026-10-01-test-term-table-design.md) 第 5 节完整设计过，那份设计优先。核心形状：
 
 ```cpp
-namespace wavvix {
-namespace term {
-
-enum class stream { out, err };
-
-enum class color {
-    reset, black, red, green, yellow, blue, magenta, cyan, white,
-    bright_black, bright_red, bright_green, bright_yellow,
-    bright_blue, bright_magenta, bright_cyan, bright_white,
-};
-enum class style { reset, bold, dim, underline };
-
-// 是否应该上色：isatty + TERM + NO_COLOR 环境变量 + Windows 控制台能力
-bool is_color_supported(stream which = stream::out) noexcept;
-void set_color_enabled(bool enabled) noexcept;   // --color / --no-color 用
-bool is_color_enabled() noexcept;
-
-// 返回指向静态字符串的视图，零分配。
-// 颜色关闭时返回空视图，所以可以无条件拼接，不需要在调用点写 if。
-string_view set(color value) noexcept;
-string_view set(style value) noexcept;
-string_view reset() noexcept;
-
-}  // namespace term
-}  // namespace wavvix
+std::cout << fg::red("error") << '
+';
+std::cout << (fg::white | bg::red)(" FAIL ") << '
+';
+const style fail_style = fg::white | bg::red;      // style 是 2 字节的值，可保存复用
 ```
 
-- **「颜色关闭时返回空视图」是这个接口的关键**：调用方可以无条件写 `out << term::set(color::red) << text << term::reset()`，不需要到处判断。
-- `NO_COLOR` 环境变量是事实标准（无论值是什么，只要存在就禁用颜色），要支持。
+那份设计里有四处是本文曾经另造的版本（`set(color)` / `reset()`）做不到的，记在这里以免再走弯路：
 
-**要定的事**
+| | 已有设计 | 曾另造的版本 |
+| --- | --- | --- |
+| 忘记恢复颜色 | **不可能**——`style` 不能直接 `<<`，漏掉括号和文字就编译报错 | `set(red)` 之后忘了 `reset()` 就颜色泄漏 |
+| 组合前景背景 | `fg::white \| bg::red`，分别覆盖 | 没有 |
+| 恢复范围 | 只恢复自己设过的那一层（39 / 49） | `reset()` 清掉一切，踩掉别人的格式 |
+| 与 `std::setw` 并用 | 兼容（颜色码用不受格式影响的方式写出） | 没考虑 |
 
-- Windows 上需要 `SetConsoleMode` 启用 VT 序列，这和「零配置、无需 init()」冲突。出路是**第一次调用时惰性启用**，用 `std::call_once` 保证线程安全。要在文档里说明这是该约定的一个内部例外（使用者仍然不需要调 init）。
-- 真彩色 / 256 色要不要支持？倾向只做 16 色 + bright：三个场景里没有需要渐变色的，而 16 色在所有终端上都能用。
-- 完成后要改测试框架的输出，并给它加 `--color=auto|always|never`。
+第一条是把「难以误用」落实得最好的一处：它让「颜色设上了却没恢复」这个 bug 在类型层面无法表达。
+
+**教训**：写接口之前先查 `docs/superpowers/specs/` 下有没有已经设计过的。已有设计优先，要改也得先读完再说为什么。
 
 ---
 
@@ -549,3 +552,45 @@ auto n = sock.read(buffer);     // 不可读时让出，可读时被调度回来
 
 - **全局 `flag` 对象在 `main` 之前登记**，这是「无启动开销」的第二个例外（第一个是 `TEST`）。
 - **`thread_pool::submit` 用 `std::function`** 是「慎用有隐性开销的设施」的一处有意例外（异构任务的类型擦除跑不掉）。
+
+---
+
+## 和 boost / coost 的对照
+
+2026-10-03 实地读了 coost 的 `include/co/string.h`（1234 行）和 `include/co/flag.h`（83 行），结论记在这里，避免以后重新讨论。
+
+### lexical_cast
+
+| | boost | coost | culib 最终 |
+| --- | --- | --- | --- |
+| 形式 | 一个泛型 `lexical_cast<T>(src)` | **没有公开的字符串→数值 API**，转换藏在 flag 内部（靠一个 `char` 类型标签运行时分发） | 泛型 `lexical_cast<T>(sv)`，**采用 boost 的形式** |
+| 适用类型 | 任意有流操作符的类型对 | 只有 flag 需要的那几种 | 整数、浮点、bool；其他 `static_assert` 拒绝 |
+| 错误 | 抛 `bad_lexical_cast`；后加非抛的 `try_lexical_convert` | flag 内部处理，`set_value` 返 bool | `result<T, parse_error>` |
+| 模块地位 | 独立库 | 不是模块 | 独立头文件 |
+
+**采用 boost 形式的理由**：`flag::value<T>` 是模板，它需要的正是按类型分发的泛型入口。曾经设计过「具名函数 `to_int` / `to_double` + 泛型 `parse<T>` 两套并存」，那是不干净的——boost 只有泛型、coost 只有内部，两家各自自洽，而两套并存违背「全库一致」。
+
+**错误模型两家都不学**：coost 的「藏起来 + 返 bool」让业务代码拿不到转换能力（它能这么做是因为有 json 模块兜住了「解析文本」的需求，culib 的路线图里没有）；boost 的抛异常违背「库不主动抛异常」。`result<T, parse_error>` 迫使调用方检查，这是约定要求的。
+
+### flag
+
+| | coost | culib 最终 |
+| --- | --- | --- |
+| 定义 | 宏 `DEF_int64(port, 8080, "help")`，生成一个**真正的全局变量** `int64 FLG_port` | `flag::int64 port(8080, "help", {"port","p"})`，一个带隐式转换的包装类 |
+| 读取 | 直接 `FLG_port`，`auto` 拷到的就是 `int64` | 隐式转换成 `const T&`；**`auto` 会拷到包装类**，是个陷阱 |
+| 类型分发 | `char` 标签运行时分发 | 模板参数 + `lexical_cast<T>` |
+| 位置参数 | `parse` 的返回值 | **同样用返回值**（这一点学 coost） |
+| 配置文件 | **内建**（`set_config_path`、`-mkconf` 生成模板） | 见下 |
+
+**选包装类而不是宏**：culib 的约定要求宏加 `WAVVIX_` 前缀（只有 `defer` / `TEST` / `EXPECT` 三个例外），所以 coost 风格在这里会写成 `WAVVIX_DEF_INT64(...)`，难看；而且包装类能放 `was_given()`。代价就是 `auto` 陷阱，头文件注释里必须写明。
+
+**两边都是泛型，这是关键**：`lexical_cast<T>` 配 `value<T>` 是自洽的一对，coost 的「宏 + 标签分发」也是自洽的一对。不自洽的是把两种风格混着用。
+
+### 还没决定的：配置文件归不归 flag
+
+coost 把配置文件内建在 flag 里，理由很硬：**它们管的是同一组参数**。culib 现在把配置文件列成第二程一个独立模块，而接口里那个 `config::apply_to_flags()` 其实就是在弥合这个割裂。做到第二程时要重新判断：是并进 flag（像 coost），还是保持独立。
+
+### 另外两处值得跟进
+
+- **coost 单列了 `dtoa.h`**（浮点转字符串），而那正是 `lexical_cast` 里标为「唯一难点」的部分。说明工作量可能超出一个函数。
+- **coost 单列了 `path.h`**（114 行），而 culib 把路径处理并进了 `fs`。写 `fs` spec 时看一眼它，判断要不要拆开。
