@@ -1,8 +1,19 @@
 # culib 开发约定
 
-这份文档的读者是**写 culib 的人**（包括 AI 助手）。接入方式和 API 用法见 [README](README.md)，模块路线图见 README 的「模块规划」。
+这份文档的读者是**写 culib 的人**（包括 AI 助手）。接入方式和 API 用法见 [README](README.md)，模块顺序与取舍见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)，各模块预期接口见 [预期接口](docs/superpowers/specs/2026-10-03-module-interfaces.md)。
 
 设计目标（高性能、低占用、尽可能零开销、使用者零理解负担、C++11、跨平台一致、零第三方依赖）见 README 开头，本文是把那些目标落成可执行的约束。
+
+## 定位与范围
+
+**这个库解决作者常见的开发用途。** 判断「这个该不该做」时先问它在三个目标场景里有没有真实位置：小工具 CLI、多平台服务器程序、easytier 式精简核心（远期）。完整推导见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)。
+
+两条边界：
+
+- **culib 只做脚手架，不碰需要第三方库的领域。** 加密、图像解码、压缩、TLS 都不在库里。这些**先不做，真用到了再决定是自己写还是引入**——不预先为它们设计接口，也不因为它们去改「零第三方依赖」这条约定。
+- **「给人眼看」的输出只对 CLI 场景有意义。** 彩色终端有用；文本表格三个场景都没有消费者，已从计划中移除。
+
+一条推论：**一个模块在三个场景里都找不到消费者，就不该做。** `table` 和 `variant` 都是这么被去掉的。
 
 ## 命名
 
@@ -32,9 +43,9 @@
 ## 性能与占用
 
 - **热路径可内联**：热路径上的小函数放在头文件中（`inline` / 模板）。静态库里的普通函数在不开启 LTO 时无法被跨库内联。
-- **少分配、少拷贝**：避免不必要的堆分配和拷贝；参数优先传引用或字符串视图，支持移动语义；需要反复产出结果的接口，额外提供写入调用方缓冲区的重载。
-- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。
-- **无启动开销**：不在 `main` 之前执行任何代码，避免需要动态初始化的全局对象。唯一的例外是测试程序里 `TEST` 的自动注册，正式程序不受影响。
+- **少分配、少拷贝**：避免不必要的堆分配和拷贝；参数优先传引用或字符串视图（`wavvix::string_view`，第一程第一项，在那之前只能用 `const std::string&`），支持移动语义；需要反复产出结果的接口，额外提供写入调用方缓冲区的重载。
+- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。已知的有意例外：`thread_pool::submit` 的任务是异构的，类型擦除跑不掉。另一处要小心的是「模板回调」与「公共头文件不含平台头」的冲突，`fs` 的目录遍历就卡在这里，解法见预期接口第 5 节。
+- **无启动开销**：不在 `main` 之前执行任何代码，避免需要动态初始化的全局对象。两处例外：测试程序里 `TEST` 的自动注册（正式程序不受影响）、以及 `flag` 的全局选项对象在 `main` 之前登记（那是 Go 风格 flag 包的用法前提，见预期接口第 3 节）。
 - **按需同步**：只在必要处加锁，不让单线程使用者为同步付出代价。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，使用方链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **性能主张必须有对比**：在该模块的设计文档「实现验证」一节里给出汇编或测量对比，和手写的等价代码比。**没有对比就不要在文档里写性能承诺。**
@@ -65,6 +76,7 @@
 - **公共头文件保持干净**：不包含 `<windows.h>`、`<unistd.h>` 等平台头文件，避免把 `min` / `max` 之类的宏泄漏给使用方。
 - **平台代码隔离**：平台相关实现按文件名后缀区分，即 `_win`（Windows）、`_posix`（Linux + macOS）、`_linux`、`_macos`，由 `xmake.lua` 按平台选择参与编译的文件。
 - **C++11 合规**：MSVC 没有 C++11 模式（最低即 C++14），因此以 GCC / Clang 在 `-std=c++11` 下的编译结果作为合规标准。
+- **公共类型的身份不能随语言标准变化**：culib 自己按 C++11 编译，使用方可以用更高标准，所以**不要把自带设施在高标准下别名到标准库对应物**（如 `using string_view = std::string_view`）——那会让同一个名字在两边是不同类型，以它为参数的公共函数签名不匹配、链接失败。要兼容就加条件编译的转换构造函数，那是纯增量。理由与实例见路线图 4.1。
 - **头文件**：使用 `#pragma once`；头文件中不写 `using namespace`。
 - **零警告**：GCC / Clang 上警告即错误（`xmake.lua` 在 culib 作为主工程时设 `set_warnings("allextra", "pedantic", "error")`）。被其他工程 `includes` 时不加 `error`，因为使用方的编译器版本不同，将来新增的警告不该打断他们的构建。MSVC 的 `/W4` 警告集尚未逐条排查，CI 上只显示不拦，清零后把 `xmake.lua` 和 `tests/xmake.lua`、`examples/xmake.lua` 里的 windows 条件去掉。
 
@@ -94,11 +106,11 @@
 
 | 约定 | 机制 | 覆盖范围 |
 | --- | --- | --- |
-| 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 四种编译器 × debug/release |
+| 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 四种编译器 × debug/release（同上，待 Push Mirror 配好） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang；MSVC 只显示不拦 |
-| 三平台行为一致 | `.github/workflows/build.yml` | Linux GCC / Linux Clang / macOS Clang / Windows MSVC；**MinGW 和最低版本编译器未覆盖** |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | **需要 GitHub 托管 runner；主仓库在自建 Gitea 上，要先配 Push Mirror，见路线图 5.2。配好前 CI 实际没有运行过。** 覆盖 Linux GCC/Clang、macOS Clang、Windows MSVC × debug/release；MinGW、Windows x86、Linux arm64、最低版本编译器未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上 |
-| 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC |
+| 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | 人工（设计文档验证节里逐个 `-fsyntax-only`） | 人工，无自动检查 |
 | 关异常 / RTTI 可用 | 人工（`-fno-exceptions -fno-rtti` 跑测试） | 人工，无自动检查 |

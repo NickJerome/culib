@@ -174,6 +174,8 @@ note: in instantiation of function template specialization ... requested here   
 
 ## 6. 实现顺序
 
+> **已被取代（2026-10-03）**：模块顺序的权威位置现在是 [`2026-10-03-roadmap.md`](2026-10-03-roadmap.md)，它按三个目标使用场景重新推导，调整了 `string` 的位置、移除了 `table`、补入了协程与网络。本节保留作为当时的记录；6.1 的 flag 需求仍然有效。
+
 1. 单测框架（已完成）。
 2. 本文：测试框架精简与 stopwatch（已完成）。
 3. result（已完成，见 `2026-10-01-result-design.md`）。

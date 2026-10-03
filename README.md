@@ -30,24 +30,27 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 
 ## 模块规划
 
-> 以下是候选模块，最终以实际需求为准，逐步补充和调整。
+> 以下是候选模块，最终以实际需求为准，逐步补充和调整。「第一程 / 第二程」是实现顺序，见下方路线图链接。
 
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
-| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（对应 `make_unique`、`optional`、`string_view` 等） | 进行中：`defer`、版本信息、`result` 已完成 |
+| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（`string_view`、`optional`、`make_unique` 等） | 进行中：`defer`、版本信息、`result` 已完成；`string_view` 是第一程第一项 |
 | test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 term 完成） |
-| lexical_cast | 字符串与各种类型互转 | 规划中 |
-| flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version` | 规划中 |
-| term | 终端彩色输出：前景色、背景色，自动判断是否输出颜色，支持 Windows 控制台 | 规划中 |
-| table | 文本表格：表头、左中右对齐、中文对齐 | 规划中 |
-| string | split / join / trim / 大小写转换 / 格式化；UTF-8 ⇄ UTF-16 转换 | 规划中 |
-| fs | 路径处理、文件与目录操作、整文件读写（C++11 没有 `std::filesystem`） | 规划中 |
-| time | 时间戳、日期时间格式化、高精度计时（`stopwatch` 秒表） | 进行中：`stopwatch` 已完成 |
-| thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 规划中 |
-| os | 进程、环境变量、系统信息、程序自身路径、动态库加载 | 规划中 |
-| log | 轻量级日志 | 规划中 |
+| lexical_cast | 字符串 ⇄ 数值 / 布尔 | 第一程 |
+| flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version` | 第一程 |
+| strings | 操作字符串的自由函数：split / join / trim / 大小写转换、UTF-8 ⇄ UTF-16 转换；格式化另行缩范围。**不是字符串类**，全库一律用 `std::string` | 第一程 |
+| fs | 路径处理、文件与目录操作、整文件读写（C++11 没有 `std::filesystem`） | 第一程 |
+| term | 终端彩色输出：前景色、背景色，自动判断是否输出颜色，支持 Windows 控制台 | 第一程（可选） |
+| os | 进程、环境变量、系统信息、程序自身路径、动态库加载、信号与优雅退出 | 第二程（`optional` 随它落地） |
+| time | 时间戳、日期时间格式化、高精度计时（`stopwatch` 秒表） | 第二程：`stopwatch` 已完成 |
+| thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 第二程 |
+| log | 轻量级日志 | 第二程 |
+| 配置文件 | ini 或 toml 子集 | 第二程 |
+| coroutine | 有栈协程，汇编实现上下文切换，六个平台 / 架构目标 | 第三程 |
+| bytes | 字节缓冲与字节序转换 | 第三程 |
+| net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 第三程 |
 
-近期顺序：lexical_cast → flag → term → table（result 已完成），详见 [设计文档](docs/superpowers/specs/2026-10-02-stopwatch-and-test-slimming-design.md) 第 6 节。
+顺序与理由见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)，它按三个目标使用场景（小工具 CLI、多平台服务器、easytier 式精简核心）推导而来。`table` 已从计划中移除，`variant` 评估后不做。
 
 ## 快速开始
 
@@ -264,7 +267,7 @@ culib/
 │   └── result.cpp
 ├── docs/superpowers/           # 设计文档（specs）与实现计划（plans）
 ├── CLAUDE.md                   # 开发约定（写 culib 时看）
-└── .github/workflows/          # CI：四种编译器 × debug/release
+└── .github/workflows/          # CI：Linux GCC / Clang × debug/release；macOS / Windows 待 runner
 ```
 
 ## 错误处理
@@ -344,7 +347,6 @@ GCC / Clang 上警告即错误；CI 覆盖 Linux GCC、Linux Clang、macOS Clang
 
 ## 待定事项
 
-- [ ] 模块清单与优先级
 - [ ] 最低系统版本（如 Windows 7 还是 Windows 10），影响可用的系统 API
 - [ ] 头文件注释的语言与编码：目前是中文注释、UTF-8 无 BOM。使用方用 MSVC 在中文等非 UTF-8 代码页下编译、又没开 `/utf-8` 时，会按本地编码读取 culib 的头文件，可能出现 C4819 警告或乱码导致的编译错误。可选方案：头文件存为 UTF-8 with BOM，或注释只用英文
 
