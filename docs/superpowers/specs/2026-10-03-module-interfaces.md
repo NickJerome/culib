@@ -208,19 +208,31 @@ args() == [ "a.png", "b.png" ]
 
 操作字符串的**自由函数**，不是字符串类——全库一律用 `std::string`。
 
-**范围按「先有消费者」砍到两组。** 曾经列过十八个函数（split / join / 大小写 / replace / equals_ignore_case 等），但第一程里它们一个消费者都没有。
-
 ```cpp
 namespace wavvix {
 
-// 去空白。返回视图，不分配。
-// 消费者：lexical_cast 严格不吃前后空白，调用方需要先 trim。
+// --- 切分与拼接。split 返回的视图指向输入，不拷字符串；调用方保证输入活得比结果长 ---
+std::vector<string_view> split(string_view text, char separator);
+std::vector<string_view> split(string_view text, string_view separator);
+std::vector<string_view> split(string_view text, char separator, size_t limit);  // "k=v=x",'=',2 -> {"k","v=x"}
+void split(string_view text, char separator, std::vector<string_view>& out);     // 复用调用方容器
+std::string join(const std::vector<string_view>& parts, string_view separator);
+std::string join(const std::vector<std::string>& parts, string_view separator);
+
+// --- 去空白。返回视图，不分配 ---
 string_view trim(string_view text) noexcept;
 string_view trim_left(string_view text) noexcept;
 string_view trim_right(string_view text) noexcept;
 
-// UTF-8 ⇄ UTF-16。非法序列返回错误，不静默替换成 U+FFFD。
-// 消费者：fs 和 os 在 Windows 上每次调 W 系列 API 都要。
+// --- 大小写与替换。只处理 ASCII，见下 ---
+std::string to_lower(string_view text);
+std::string to_upper(string_view text);
+void to_lower(string_view text, std::string& out);      // 复用缓冲区
+void to_upper(string_view text, std::string& out);
+bool equals_ignore_case(string_view a, string_view b) noexcept;
+std::string replace_all(string_view text, string_view from, string_view to);
+
+// --- UTF-8 ⇄ UTF-16。非法序列返回错误，不静默替换成 U+FFFD ---
 result<std::u16string> utf8_to_utf16(string_view utf8);
 result<std::string>    utf16_to_utf8(const std::u16string& utf16);
 bool is_valid_utf8(string_view text) noexcept;
@@ -234,52 +246,54 @@ result<std::string>  wide_to_utf8(const wchar_t* text, size_t size);
 }  // namespace wavvix
 ```
 
-**有消费者再加**（都不在第一程）：
+- **大小写只做 ASCII。** 这是明确的范围缩减：Unicode 的大小写映射要内置上千码点的表，还有 locale 特例（土耳其语的 i），而三个场景没一个需要。
+- **不放这里的**：`starts_with` / `ends_with` / `contains` / `find` 在 `string_view` 上，放这里就是「同一件事两种写法」。格式化已决定切出去单列。
+- UTF-16 公共类型选 `std::u16string`（Windows `wchar_t` 16 位、Linux 32 位，用 `wstring` 做公共类型会不一致）；`wstring` 重载只在 Windows 存在。
 
-| 推后的 | 它的消费者会是 |
-| --- | --- |
-| `split` / `join` | 第二程的配置文件解析。第一程不需要：`flag` 切 `--port=8080` 用的是 `string_view::find` + `substr` |
-| `to_lower` / `to_upper` / `equals_ignore_case` | 目前没有。真要加时**只做 ASCII**——Unicode 大小写映射要内置上千码点的表，还有 locale 特例（土耳其语的 i） |
-| `replace_all` | 目前没有 |
-| East Asian Width（显示宽度） | 原消费者是已删除的 `table`。等 `term` 真要做对齐时再说 |
-
-**不放这里的**：`starts_with` / `ends_with` / `contains` / `find` 在 `string_view` 上，放这里就是「同一件事两种写法」。格式化已决定切出去单列。
-
-UTF-16 公共类型选 `std::u16string`（Windows `wchar_t` 16 位、Linux 32 位，用 `wstring` 做公共类型会不一致）；`wstring` 重载只在 Windows 存在。
+> 这些接口曾被「先有消费者」砍到只剩七个，后来恢复：那条规则的强度该随「实现成本 × 设计自由度」缩放，而 `split` 这类东西两项都极小（见 `CLAUDE.md` 的「为自己的调用点设计」）。**只有 East Asian Width 继续推后**——它要内置 Unicode 表，而且「显示宽度」怎么定义有真实的设计自由度；原消费者 `table` 已删除，等 `term` 做对齐时再说。
 
 **要定的事**
 
 - 非法 UTF-8 返回错误而不是替换，对「从文件读来的内容」是否太严格？倾向保持严格，真需要宽容时再加一个显式的 `sanitize_utf8`。
+- `split` 要不要再给一个回调版本（彻底不分配 vector）？等有热路径需求再加。
 
 ### 5. fs —— `culib/fs.h`
-
-**范围按「先有消费者」砍到十一个。** 下表每一行都写明是哪个场景要的。
 
 ```cpp
 namespace wavvix {
 namespace fs {
 
-// --- 路径：纯字符串操作，不碰磁盘。输入接受 '/' 和 '\'，输出用平台原生分隔符 ---
-std::string join(string_view a, string_view b);        // 切图：拼输出路径
-string_view parent(string_view path) noexcept;         // 作者在用；和下面三个是一组路径拆分
-string_view filename(string_view path) noexcept;       // 切图：取文件名
-string_view stem(string_view path) noexcept;           // 切图：去掉扩展名，拼 a_cropped.png
-string_view extension(string_view path) noexcept;      // 切图：筛 .png
+// --- 路径：纯字符串操作，不碰磁盘。输入接受 '/' 和 '\\'，输出用平台原生分隔符 ---
+std::string join(string_view a, string_view b);
+string_view parent(string_view path) noexcept;
+string_view filename(string_view path) noexcept;
+string_view stem(string_view path) noexcept;           // 文件名去掉扩展名
+string_view extension(string_view path) noexcept;      // 含 '.'
+bool is_absolute(string_view path) noexcept;
+std::string normalize(string_view path);               // 消掉 "." 和 ".."，不解析符号链接
+result<std::string> absolute(string_view path);        // 要访问当前目录，所以返回 result
 
 // --- 查询 ---
-bool exists(string_view path) noexcept;                // 两个场景都要
-bool is_directory(string_view path) noexcept;          // 切图：遍历时区分
-result<uint64_t> file_size(string_view path);          // 作者在用
-result<int64_t>  last_write_time(string_view path);    // 作者在用（Unix 时间戳，秒）
+bool exists(string_view path) noexcept;
+bool is_file(string_view path) noexcept;
+bool is_directory(string_view path) noexcept;
+result<uint64_t> file_size(string_view path);
+result<int64_t>  last_write_time(string_view path);    // Unix 时间戳，秒
 
 // --- 整文件读写，一律二进制，不做换行转换 ---
-result<std::string> read_file(string_view path);       // 服务器：读配置
-result<void> write_file(string_view path, string_view content);   // 服务器：写 pid
+result<std::string> read_file(string_view path);
+result<void> read_file(string_view path, std::string& out);        // 复用 out 的容量
+result<void> write_file(string_view path, string_view content);
+result<void> append_file(string_view path, string_view content);
 
-// --- 目录与文件 ---
+// --- 目录与文件操作 ---
 enum class recursive { no, yes };
-result<void> create_directory(string_view path, recursive mode = recursive::no);  // 切图：建输出目录
-result<void> remove_file(string_view path);            // 服务器：清 pid
+enum class overwrite { no, yes };
+result<void> create_directory(string_view path, recursive mode = recursive::no);
+result<void> remove_file(string_view path);
+result<void> remove_directory(string_view path, recursive mode = recursive::no);  // yes 是危险操作
+result<void> copy_file(string_view from, string_view to, overwrite mode = overwrite::no);
+result<void> rename(string_view from, string_view to);
 
 // --- 遍历 ---
 struct entry {
@@ -288,7 +302,12 @@ struct entry {
 };
 // 回调返回 false 时停止。回调是模板参数所以零开销；平台相关的句柄在 .cpp 里。
 template <typename F>
-result<void> list_directory(string_view path, F&& callback);      // 切图：批量处理的入口
+result<void> list_directory(string_view path, F&& callback);
+result<std::vector<std::string>> list_directory(string_view path);   // 一次取全，小目录方便
+
+result<std::string> temp_directory();
+result<std::string> current_directory();
+result<void> set_current_directory(string_view path);
 
 namespace detail {
 // 头文件里是完整类型，但只持一个 void*，方法全在 fs.cpp 实现，
@@ -307,27 +326,117 @@ public:
 }  // namespace wavvix
 ```
 
-**有消费者再加**（9 个）：
-
-`is_absolute`、`normalize`、`absolute`、`append_file`、`copy_file`、`rename`、`remove_directory`、`temp_directory`、`current_directory` / `set_current_directory`，以及 `read_file` 的复用缓冲区重载。
-
-> `parent`、`file_size`、`last_write_time` 曾在这个清单里，作者说明自己在用之后加回去了——**这正是「先有消费者」该有的运作方式**：砍掉是因为说不出调用方，有人说出来就加回来。顺带也说明「作者自己」就是一个合法的消费者，不必非得是库内模块。`parent` 和 `filename` / `stem` / `extension` 是一组路径拆分，`file_size` 和 `last_write_time` 是一组元信息，通常一起用。
-
-**`path` 不拆成独立头文件。** coost 单列了 `path.h`（114 行），曾考虑跟进；但砍完之后路径部分只剩 4 个函数，单独开一个头文件不值得。等路径操作长到十个以上再说。
+**`path` 不拆成独立头文件。** coost 单列了 `path.h`（114 行），曾考虑跟进；但路径部分只有八个函数，而它们和 `exists` / `read_file` 这些总是一起用，拆开反而要 include 两个头文件。等路径操作长到十几个再说。
 
 **遍历的形式已定下。** 冲突是：回调式要么用 `std::function`（违背「慎用有隐性开销的设施」），要么用模板（实现进头文件，违背「公共头文件不含平台头」）。解法是上面那个 `detail::directory_handle`：头文件里它是完整类型（只有一个 `void*` 成员），方法在 `.cpp` 里实现，头文件里的模板只负责循环和调回调。
 
 **要定的事**
 
 - 错误类型用默认的 `error`（不是枚举），因为失败原因必须能区分：`not_found` / `permission_denied` / `already_exists`，调用方要据此决定行为。
-- 符号链接：`exists` 跟随还是不跟随？将来加 `remove_directory(recursive::yes)` 时要不要跟进符号链接（跟进去可能删掉链接目标，很危险）？第一个涉及符号链接的接口落地前必须写死。
+- 符号链接：`exists` 跟随还是不跟随？`remove_directory(recursive::yes)` 遇到符号链接要不要跟进去（跟进去可能删掉链接目标，很危险）？必须在 spec 里写死。
 - 路径用 `std::string`（UTF-8）而不是专门的 `path` 类型。代价是没有类型安全（路径和普通字符串混用编译器发现不了），好处是每个接口少一层转换。倾向保持 `std::string`。
 
-### 5.1 fs::watcher —— `culib/fs_watcher.h`
+### 5.1 fs::watcher —— `culib/fs_watcher.h`（移到第三程，见下）
 
-文件变化监听，Python `watchdog` 那一类。独立头文件但同在 `wavvix::fs` 命名空间：只用路径操作的程序不该因此拉进平台监听机器。
+文件变化监听，Python `watchdog` 那一类。独立头文件但同在 `wavvix::fs` 命名空间。
 
-**这是目前路线图里除协程之外最难跨平台对齐的东西**，三个平台的语义差很远：
+**排到协程之后（第三程），不是第二程。** 这是读 libuv 的头文件之后改的——理由见本节「为什么必须在协程之后」。
+
+```cpp
+namespace wavvix {
+namespace fs {
+
+enum class change {
+    created,     // 目录项出现
+    modified,    // 内容或属性变了
+    removed,     // 目录项消失
+    overflow,    // 丢了事件：path 为空，调用方必须自己重扫
+};
+const char* change_name(change value) noexcept;
+
+struct change_event {
+    string_view path;    // 相对被监视目录；视图指向 watcher 内部缓冲，下次 wait() 前有效
+    change kind;
+};
+
+class watcher {
+public:
+    watcher() noexcept;              // 不会失败：平台句柄延迟到第一次 watch()
+    ~watcher();                      // RAII
+    watcher(watcher&&) noexcept;
+
+    result<void> watch(string_view directory, recursive mode = recursive::no);
+    result<void> unwatch(string_view directory);
+
+    // 在协程里让出、在普通线程里阻塞，直到有事件或超时。
+    // 事件追加到 out（先清空），复用它的容量；返回事件个数，超时返回 0（不是错误）。
+    result<size_t> wait(std::chrono::nanoseconds timeout, std::vector<change_event>& out);
+};
+
+}  // namespace fs
+}  // namespace wavvix
+```
+
+```cpp
+fs::watcher w;
+auto added = w.watch("config", fs::recursive::yes);
+if (added.is_err()) { return; }
+
+std::vector<fs::change_event> events;              // 复用，稳态零分配
+while (running) {
+    auto n = w.wait(std::chrono::seconds(1), events);
+    if (n.is_err()) { break; }
+    for (const fs::change_event& e : events) {
+        if (e.kind == fs::change::overflow) { rescan_everything(); break; }
+        if (fs::filename(e.path) == "server.ini") { reload_config(); }
+    }
+}
+```
+
+#### 为什么必须在协程之后
+
+协程调度器要能等待 watcher，而三个平台给出的可等待对象不一样：
+
+| 平台 | 后端 | 给调度器什么 |
+| --- | --- | --- |
+| Linux | `inotify` | **一个 fd** → 直接进 epoll |
+| Windows | `ReadDirectoryChangesW` | **overlapped I/O** → 进 IOCP |
+| macOS | `FSEvents` | **CFRunLoop source，不是 fd** |
+
+**macOS 是问题**：FSEvents 需要一个 CFRunLoop 跑着，塞不进 kqueue。libuv 的做法是在专门线程上跑 CFRunLoop，再通过 async handle 唤醒 loop 线程——**libuv 在 macOS 上为文件监听开了一个隐藏线程**。
+
+这推翻了本节早先的两处说法：
+
+- **「不用后台线程」在 macOS 上是假的。** 要么 FSEvents 加一个隐藏线程，要么用 kqueue 的 `EVFILT_VNODE`（能进 kqueue，但每个 fd 一个、只说「这个目录变了」、要自己 re-read 并 diff）。
+- **「协程来了这个 API 不用写第二遍」只在 watcher 能被调度器唤醒时成立**，而那需要调度器先存在。现在做一个用 `poll()` 自己阻塞的版本，协程来了之后在协程里调它会**阻塞整个线程**，照样要写第二遍。
+
+**这和 `net` 是完全一样的依赖关系**（见路线图 4.2），所以应该和 `net` 一样排在 `coroutine` 之后。早先把它放在第二程是漏掉了这条依赖。
+
+#### 和 libuv 的对照
+
+读了 `libuv/include/uv.h`（v1.x），四个发现：
+
+| | libuv | culib 的选择 |
+| --- | --- | --- |
+| 事件种类 | 只有 `UV_RENAME`（目录项变了）和 `UV_CHANGE`（内容变了） | created / modified / removed / overflow 四种，见下面的代价 |
+| 递归 | `UV_FS_EVENT_RECURSIVE`，注释写明「on platforms that support it」 | 三平台都提供，Linux 上自己走树实现；竞态由 `overflow` 兜住 |
+| 轮询回退 | **独立类型 `uv_fs_poll_t`**，不是 fs_event 的 flag | 不做轮询，理由见下 |
+| 丢事件信号 | 没有一等公民的「必须重扫」 | `overflow` 事件 |
+
+**libuv 只给两种事件是有道理的**：FSEvents 只告诉你「这个路径变了」，不可靠地给类型。culib 仍然给四种，代价写明：**macOS 上 `created` / `removed` 是 culib 自己 `stat` 一下推断出来的**（路径变了就看它还存不存在）。这让语义跨平台一致、对调用方更有用（配置热加载要区分「文件被删」和「文件被改」），代价是 macOS 上每个事件多一次 `stat`。这是 culib 比 libuv 多做的一步，不是 libuv 做漏了。
+
+**libuv 有两个 flag 声明了十几年没实现**：
+
+```c
+UV_FS_EVENT_WATCH_ENTRY = 1,   /* This flag is currently not implemented yet on any backend. */
+UV_FS_EVENT_STAT = 2,          /* This flag is currently not implemented yet on any backend. */
+```
+
+教训很直接：**别在接口里放实现不了的东西。** 这也是本文每节都带「要定的事」的理由——那些是还没定的，不是已经承诺的。
+
+**libuv 把轮询做成独立类型而不是 fs_event 的降级模式**，而且那个本想做成回退的 `UV_FS_EVENT_STAT` 从未实现。说明「内核通知」和「`stat` 轮询」是两件不同的事：后者有间隔参数、不同的保证（不丢事件但会漏掉一次间隔内的瞬时变化）、不同的开销。**culib 现在不做轮询**；真要做也应该是独立的类型，不是 `watcher` 的一个 flag。
+
+#### 三个平台的语义差异
 
 | | Linux `inotify` | macOS `FSEvents` | Windows `ReadDirectoryChangesW` |
 | --- | --- | --- | --- |
@@ -337,68 +446,26 @@ public:
 | 丢事件 | 队列满 → `IN_Q_OVERFLOW` | 合并 / 丢 → `MustScanSubDirs` | 缓冲区满 → `ERROR_NOTIFY_ENUM_DIR` |
 | watch 上限 | `/proc/sys/fs/inotify/max_user_watches`，常见 8192 | 无明显上限 | 每个目录一个句柄 |
 
-```cpp
-namespace wavvix {
-namespace fs {
+#### 三条为了不对调用方说谎的决定
 
-enum class change {
-    created,     // 文件或目录出现
-    modified,    // 内容或属性变了
-    removed,     // 消失了
-    overflow,    // 丢了事件：path 为空，调用方必须自己重扫
-};
-const char* change_name(change value) noexcept;
+- **`overflow` 是一等公民的事件类型，不是文档脚注。** 三个平台都会在负载高时丢事件。做成事件类型的好处是**处理它的代码在调用点可见**，而不是藏在一个容易被忽略的 `bool&` 出参里。libuv 没有这个信号。
+- **不承诺 `renamed` 事件。** inotify 的 cookie 配对要缓存要超时，FSEvents 根本不配对。重命名表达成 `removed` + `created`；调用方需要知道是重命名时，自己按时间窗口配对。
+- **稳态零分配是设计目标**：`out` 的容量复用、内部读取缓冲是成员、路径是视图（和 `fs::entry` 的 `name` 同一个生命周期模式）。按约定「性能主张必须有对比」，实现时要实测确认，没测之前不写成承诺。
 
-struct change_event {
-    std::string path;    // 相对于被监视的目录；overflow 时为空
-    change kind;
-};
+#### Python watchdog 也会丢
 
-class watcher {
-public:
-    static result<watcher> create();
-    ~watcher();                                   // RAII，自动关闭平台句柄
-    watcher(watcher&&) noexcept;
+问过「watchdog 会不会丢文件」，答案是会——它只是这三个平台 API 的包装。两点旁证：
 
-    result<void> watch(string_view directory, recursive mode = recursive::no);
-    result<void> unwatch(string_view directory);
-
-    // 阻塞到有事件或超时。超时返回空 vector，这不是错误。
-    result<std::vector<change_event>> wait(std::chrono::nanoseconds timeout);
-};
-
-}  // namespace fs
-}  // namespace wavvix
-```
-
-```cpp
-auto w = fs::watcher::create();
-if (w.is_err()) { return; }
-w.value().watch("config", fs::recursive::yes);
-
-while (running) {
-    auto events = w.value().wait(std::chrono::seconds(1));
-    if (events.is_err()) { break; }
-    for (const fs::change_event& e : events.value()) {
-        if (e.kind == fs::change::overflow) { reload_everything(); break; }
-        if (fs::filename(e.path) == "server.ini") { reload_config(); }
-    }
-}
-```
-
-三条设计决定，每条都是为了不对调用方说谎：
-
-- **`overflow` 是一等公民的事件类型，不是文档脚注。** 三个平台都会在负载高时丢事件，API 必须能表达「我丢了，你自己重扫」。做成事件类型的好处是**处理它的代码在调用点可见**，而不是藏在一个容易被忽略的 `bool&` 出参里。
-- **不承诺 `renamed` 事件。** inotify 的 cookie 配对要缓存要超时，FSEvents 根本不配对。诚实的做法是把重命名表达成 `removed` + `created` 两个事件；调用方需要知道是重命名时，自己按时间窗口配对。这是明确的范围缩减，比假装支持好。
-- **用阻塞 `wait(timeout)` 让调用方驱动，不用回调线程。** 不强加后台线程（约定「按需同步」）、不需要 `std::function`（约定「慎用有隐性开销的设施」）。额外的好处：**第三程协程落地后 `wait` 天然变成「让出」，这个 API 不用写第二遍** —— 和 `net`「做成同步阻塞的样子」是同一个决定。
+- **watchdog 自带 `PollingObserver`**（定期 stat 整棵树）作为 fallback，和 libuv 的 `uv_fs_poll_t` 是同一个思路。这个东西的存在本身说明：成熟库也得承认「有时候只能重扫」。而轮询定义上会漏掉「一次间隔内创建又删除」的文件。
+- **它没有统一的「你漏事件了」通知。** 平台层会丢是确定的；watchdog 具体怎么暴露 overflow 存疑，但据了解没有跨平台的「必须重扫」信号。
 
 **要定的事**
 
+- **macOS 用 FSEvents 加隐藏线程，还是 kqueue？** 这是本模块最大的一个分叉。FSEvents 功能好但要一个线程和一条内部管道才能被调度器等待；kqueue 原生可等待但功能差很多（要自己 re-read 并 diff 目录）。libuv 选了 FSEvents + 线程。
 - **Linux 的递归要自己实现**，而且有固有竞态：初次走整棵树逐个 `inotify_add_watch`；看到 `IN_CREATE` 且是目录时补加 watch，但从目录创建到 watch 装上之间的事件会丢（所以更要有 `overflow`）；目录删除时移除 watch。
-- **inotify 的 watch 上限撞了怎么报？** 递归监视一个大目录树很容易超过 8192。倾向返回一个明确的 `error`，而不是静默只监视一部分。
-- macOS 用 `FSEvents` 还是 `kqueue`？FSEvents 原生递归、省事，但要链 CoreServices（系统框架，不算第三方依赖）；`kqueue` 的 `EVFILT_VNODE` 是每个 fd 一个，监视目录树要开大量 fd，不划算。倾向 FSEvents。
-- **一次写入常产生多个 `modified`**（写、改大小、改 mtime）。要不要在一个时间窗口内合并？倾向合并，窗口可配；不合并的话调用方几乎一定要自己做。
-- Windows 的 overlapped I/O 怎么和 `wait(timeout)` 的超时语义对上。
+- **inotify 的 watch 上限撞了怎么报？** 递归监视一个大目录树很容易超过 8192。倾向返回明确的 `error`，而不是静默只监视一部分。
+- **一次写入常产生多个 `modified`**（写、改大小、改 mtime）。要不要在一个时间窗口内合并？倾向合并，窗口可配。
+- macOS 上用 `stat` 推断 `created` / `removed` 时，文件在事件产生和 `stat` 之间又变了怎么办？这种竞态可能需要退化成 `modified`。
 
 ### 6. term —— 见已有设计
 
