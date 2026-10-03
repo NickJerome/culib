@@ -336,40 +336,56 @@ public:
 - 符号链接：`exists` 跟随还是不跟随？`remove_directory(recursive::yes)` 遇到符号链接要不要跟进去（跟进去可能删掉链接目标，很危险）？必须在 spec 里写死。
 - 路径用 `std::string`（UTF-8）而不是专门的 `path` 类型。代价是没有类型安全（路径和普通字符串混用编译器发现不了），好处是每个接口少一层转换。倾向保持 `std::string`。
 
-### 5.1 fs::watcher —— `culib/fs_watcher.h`（移到第三程，见下）
+### 5.1 文件变化监听 —— `culib/fs_watcher.h`（第三程）
 
-文件变化监听，Python `watchdog` 那一类。独立头文件但同在 `wavvix::fs` 命名空间。
-
-**排到协程之后（第三程），不是第二程。** 这是读 libuv 的头文件之后改的——理由见本节「为什么必须在协程之后」。
+**两个类型，调用方自己选。** `fs::watcher` 走内核通知，`fs::poller` 走 `stat` 轮询。排在协程之后，理由见路线图 4.5。
 
 ```cpp
 namespace wavvix {
 namespace fs {
 
 enum class change {
-    created,     // 目录项出现
-    modified,    // 内容或属性变了
-    removed,     // 目录项消失
+    changed,     // 目录项变了，但平台没可靠告诉是哪一种（见下）
+    created,
+    modified,
+    removed,
     overflow,    // 丢了事件：path 为空，调用方必须自己重扫
 };
 const char* change_name(change value) noexcept;
 
 struct change_event {
-    string_view path;    // 相对被监视目录；视图指向 watcher 内部缓冲，下次 wait() 前有效
+    string_view path;    // 相对被监视目录；视图指向内部缓冲，下次 wait() 前有效
     change kind;
 };
 
+// 内核通知：inotify / FSEvents / ReadDirectoryChangesW。
+// 只能看到本机通过文件系统 API 产生的改动。
+// 网络挂载（NFS / SMB）上其他机器做的改动，这里收不到任何事件 —— 那种情况用 poller。
+//   inotify(7)："it does not catch remote events that occur on network filesystems.
+//                (Applications must fall back to polling the filesystem to catch such events.)"
 class watcher {
 public:
-    watcher() noexcept;              // 不会失败：平台句柄延迟到第一次 watch()
-    ~watcher();                      // RAII
+    watcher() noexcept;                      // 不会失败：平台句柄延迟到第一次 watch()
+    ~watcher();
     watcher(watcher&&) noexcept;
-
     result<void> watch(string_view directory, recursive mode = recursive::no);
     result<void> unwatch(string_view directory);
+    // 在协程里让出、在普通线程里阻塞。事件追加到 out（先清空），复用其容量。
+    // 返回事件个数；超时返回 0（不是错误）。
+    result<size_t> wait(std::chrono::nanoseconds timeout, std::vector<change_event>& out);
+};
 
-    // 在协程里让出、在普通线程里阻塞，直到有事件或超时。
-    // 事件追加到 out（先清空），复用它的容量；返回事件个数，超时返回 0（不是错误）。
+// stat 轮询：走一遍目录树、和上一次的快照比对。
+// 任何文件系统都能用（包括网络挂载），不会漏事件，但有两个固有代价：
+// 延迟等于 interval；一轮之内创建又删除的文件看不到。
+class poller {
+public:
+    poller() noexcept;
+    ~poller();
+    poller(poller&&) noexcept;
+    result<void> watch(string_view directory, std::chrono::nanoseconds interval,
+                       recursive mode = recursive::no);
+    result<void> unwatch(string_view directory);
     result<size_t> wait(std::chrono::nanoseconds timeout, std::vector<change_event>& out);
 };
 
@@ -377,95 +393,98 @@ public:
 }  // namespace wavvix
 ```
 
+#### 哪个场景用哪个
+
+| 场景 | 用什么 | 为什么 |
+| --- | --- | --- |
+| 本地盘上的配置文件 | 只用 `watcher` | 够了，低延迟、空闲零开销 |
+| **网络挂载（NFS / SMB）** | **只用 `poller`** | `watcher` 在那里根本不产生事件；加上它是白费，只占一个 inotify watch |
+| 本地，但不能漏（构建系统这类） | **两个都用** | `watcher` 给低延迟，长间隔 `poller` 兜住 `overflow` 和 Linux 递归的竞态 |
+| 路径有些本地有些网络 | 分别用 | |
+
+**组合的真实用例是「本地 + 不能漏」，不是「网络盘」。**
+
+#### 组合交给协程，不做进 API
+
+没有协程时组合很别扭，因为**没法同时等两个东西**——轮流 `wait` 要么忙等、要么互相拖延迟。有协程之后，两个等待循环各跑在自己的协程里，调度器负责同时等：
+
 ```cpp
-fs::watcher w;
-auto added = w.watch("config", fs::recursive::yes);
-if (added.is_err()) { return; }
+fs::watcher w;  w.watch("config", fs::recursive::yes);
+fs::poller  p;  p.watch("config", std::chrono::seconds(30), fs::recursive::yes);
 
-std::vector<fs::change_event> events;              // 复用，稳态零分配
-while (running) {
-    auto n = w.wait(std::chrono::seconds(1), events);
-    if (n.is_err()) { break; }
-    for (const fs::change_event& e : events) {
-        if (e.kind == fs::change::overflow) { rescan_everything(); break; }
-        if (fs::filename(e.path) == "server.ini") { reload_config(); }
-    }
-}
+go([&]{ std::vector<fs::change_event> e; for (;;) { w.wait(forever, e); handle(e); } });
+go([&]{ std::vector<fs::change_event> e; for (;;) { p.wait(forever, e); handle(e); } });
 ```
 
-#### 为什么必须在协程之后
+六行，没有新 API。所以**不加 `watcher::set_rescan_interval`**（那会把 `poller` 的逻辑复制进 `watcher`），也**不加第三个 `hybrid_watcher`**（那是「同一件事三种写法」）。两个类型各做一件事。
 
-协程调度器要能等待 watcher，而三个平台给出的可等待对象不一样：
+这是协程第三次让某个设计变简单：前两次是 `net` 的同步阻塞形状、`wait` 的让出语义。
 
-| 平台 | 后端 | 给调度器什么 |
+#### 为什么是两个类型而不是一个 mode 参数
+
+libuv 的实证最硬：**`UV_FS_EVENT_STAT`（把轮询做成 fs_event 的一个 flag）设计了十几年从未实现，而 `uv_fs_poll_t`（独立类型）活着。** watchdog 同样是独立的 `PollingObserver`。
+
+两者的参数和保证根本不同，合并会让一半参数在另一半模式下没意义——正是「每次都要先想一下」那个设计气味：
+
+| | `watcher` | `poller` |
 | --- | --- | --- |
-| Linux | `inotify` | **一个 fd** → 直接进 epoll |
-| Windows | `ReadDirectoryChangesW` | **overlapped I/O** → 进 IOCP |
-| macOS | `FSEvents` | **CFRunLoop source，不是 fd** |
+| 网络挂载 | **不工作** | 工作 |
+| 延迟 | 毫秒级 | 等于 `interval` |
+| 空闲开销 | ~0 | 每轮走整棵树 `stat` |
+| 丢事件 | 会，报 `overflow` | 不会，但漏掉一轮内的瞬时变化 |
+| 内存 | 小 | 一份目录快照（path → mtime / size / inode） |
 
-**macOS 是问题**：FSEvents 需要一个 CFRunLoop 跑着，塞不进 kqueue。libuv 的做法是在专门线程上跑 CFRunLoop，再通过 async handle 唤醒 loop 线程——**libuv 在 macOS 上为文件监听开了一个隐藏线程**。
+#### 没有自动判断，这是故意的
 
-这推翻了本节早先的两处说法：
+三家都让调用方自己选，没有一家在运行时判断路径在什么文件系统上。watchdog 的 `_get_observer_cls()` 只看「这个平台的 inotify / FSEvents 模块能不能 import」，**完全不看监视的路径**——在 Linux 上监视 NFS 挂载时它照样用 inotify，一个远程事件收不到，而且不发任何警告。
 
-- **「不用后台线程」在 macOS 上是假的。** 要么 FSEvents 加一个隐藏线程，要么用 kqueue 的 `EVFILT_VNODE`（能进 kqueue，但每个 fd 一个、只说「这个目录变了」、要自己 re-read 并 diff）。
-- **「协程来了这个 API 不用写第二遍」只在 watcher 能被调度器唤醒时成立**，而那需要调度器先存在。现在做一个用 `poll()` 自己阻塞的版本，协程来了之后在协程里调它会**阻塞整个线程**，照样要写第二遍。
+自动判断是个陷阱：`statfs` 的 `f_type` 能认出 NFS / CIFS，但 FUSE 挂载、overlayfs、容器里的 bind mount、各种 SMB 实现都可能认错，**而认错的后果是静默失效**。让调用方明确选更安全。
 
-**这和 `net` 是完全一样的依赖关系**（见路线图 4.2），所以应该和 `net` 一样排在 `coroutine` 之后。早先把它放在第二程是漏掉了这条依赖。
+culib 能比它们多做的一点：**把这个坑写在接口注释里**（见上面 `watcher` 的注释），而不是让人去读文档或踩坑。「头文件即文档」在这里是真能救人的。
 
-#### 和 libuv 的对照
+#### 不做隐式的 stat 推断
 
-读了 `libuv/include/uv.h`（v1.x），四个发现：
+曾设计成「macOS 上 FSEvents 的类型不可靠时，culib 自己 `stat` 一下推断 created / removed」。**去掉了**，改成多一个 `changed` 值：平台没可靠给出类型时就报 `changed`，调用方真要知道文件还在不在，自己调 `fs::exists`。
 
-| | libuv | culib 的选择 |
-| --- | --- | --- |
-| 事件种类 | 只有 `UV_RENAME`（目录项变了）和 `UV_CHANGE`（内容变了） | created / modified / removed / overflow 四种，见下面的代价 |
-| 递归 | `UV_FS_EVENT_RECURSIVE`，注释写明「on platforms that support it」 | 三平台都提供，Linux 上自己走树实现；竞态由 `overflow` 兜住 |
-| 轮询回退 | **独立类型 `uv_fs_poll_t`**，不是 fs_event 的 flag | 不做轮询，理由见下 |
-| 丢事件信号 | 没有一等公民的「必须重扫」 | `overflow` 事件 |
+理由是 `stat` 的开销**完全取决于存储**，而库没有资格替调用方决定付不付：
 
-**libuv 只给两种事件是有道理的**：FSEvents 只告诉你「这个路径变了」，不可靠地给类型。culib 仍然给四种，代价写明：**macOS 上 `created` / `removed` 是 culib 自己 `stat` 一下推断出来的**（路径变了就看它还存不存在）。这让语义跨平台一致、对调用方更有用（配置热加载要区分「文件被删」和「文件被改」），代价是 macOS 上每个事件多一次 `stat`。这是 culib 比 libuv 多做的一步，不是 libuv 做漏了。
+| 存储 | 一次 `stat` |
+| --- | --- |
+| 本地、缓存热（本机实测，GCC 14 / `-O2`，20 万次取平均） | **475 ns**（纯系统调用基线 `getpid` 为 131 ns） |
+| 本地、缓存冷的 HDD | 寻道 ~9 ms + 旋转 ~4 ms ≈ **5–10 ms** |
+| NFS / SMB | 一次 `GETATTR` 网络往返 ≈ **0.2–1 ms**（LAN）；NFS 的属性缓存（`acregmin` / `acregmax`）意味着要么拿过期数据、要么付这次往返 |
 
-**libuv 有两个 flag 声明了十几年没实现**：
+隐式 stat 在本地是 475 ns，在 HDD 上贵两万倍。按「零开销：不用的功能不产生任何代价」，这个决定必须留给调用方。
 
-```c
-UV_FS_EVENT_WATCH_ENTRY = 1,   /* This flag is currently not implemented yet on any backend. */
-UV_FS_EVENT_STAT = 2,          /* This flag is currently not implemented yet on any backend. */
-```
+**Linux 和 Windows 上类型是可靠的，照样给精确的 `created` / `modified` / `removed`** —— 那是白来的信息，不该丢。`changed` 只在 macOS 的 FSEvents flags 合并、拿不准时出现。
 
-教训很直接：**别在接口里放实现不了的东西。** 这也是本文每节都带「要定的事」的理由——那些是还没定的，不是已经承诺的。
-
-**libuv 把轮询做成独立类型而不是 fs_event 的降级模式**，而且那个本想做成回退的 `UV_FS_EVENT_STAT` 从未实现。说明「内核通知」和「`stat` 轮询」是两件不同的事：后者有间隔参数、不同的保证（不丢事件但会漏掉一次间隔内的瞬时变化）、不同的开销。**culib 现在不做轮询**；真要做也应该是独立的类型，不是 `watcher` 的一个 flag。
+对照：watchdog 在 macOS 上**确实 stat**，而且比「看存不存在」更细——它比对 inode（`exists = stat and stat.st_ino == event.inode`），因为路径可能被删了又用同名重建。它还在启动时拍一份完整目录快照，用来过滤 FSEvents 重放的历史事件（docstring 写明「up to 30 sec before the watch was started」，并承认「may result in significant memory usage」）。culib 把这一步交给调用方，代价是调用方要自己处理「同名重建」的歧义——要在文档里写明。
 
 #### 三个平台的语义差异
 
 | | Linux `inotify` | macOS `FSEvents` | Windows `ReadDirectoryChangesW` |
 | --- | --- | --- | --- |
 | 递归 | **不支持**，每个目录一个 watch，要自己走树 | 原生递归 | 有递归标志 |
-| 事件粒度 | 每个文件，带类型 | **只给路径，会合并** | 每个文件，带类型 |
+| 事件类型 | 每个文件，可靠 | 有（`kFSEventStreamCreateFlagFileEvents`，10.7+），但**会合并、还会给虚假的 created 标志** | 每个文件，可靠 |
 | 重命名 | `MOVED_FROM` / `MOVED_TO` + cookie 配对 | 不配对 | `OLD_NAME` / `NEW_NAME` |
 | 丢事件 | 队列满 → `IN_Q_OVERFLOW` | 合并 / 丢 → `MustScanSubDirs` | 缓冲区满 → `ERROR_NOTIFY_ENUM_DIR` |
-| watch 上限 | `/proc/sys/fs/inotify/max_user_watches`，常见 8192 | 无明显上限 | 每个目录一个句柄 |
+| 网络挂载 | **看不到远程改动** | 同样 | SMB 部分配置下可用，不可靠 |
+| 可等待对象 | **fd**（进 epoll） | **CFRunLoop source，不是 fd** | overlapped I/O（进 IOCP） |
 
 #### 三条为了不对调用方说谎的决定
 
-- **`overflow` 是一等公民的事件类型，不是文档脚注。** 三个平台都会在负载高时丢事件。做成事件类型的好处是**处理它的代码在调用点可见**，而不是藏在一个容易被忽略的 `bool&` 出参里。libuv 没有这个信号。
-- **不承诺 `renamed` 事件。** inotify 的 cookie 配对要缓存要超时，FSEvents 根本不配对。重命名表达成 `removed` + `created`；调用方需要知道是重命名时，自己按时间窗口配对。
-- **稳态零分配是设计目标**：`out` 的容量复用、内部读取缓冲是成员、路径是视图（和 `fs::entry` 的 `name` 同一个生命周期模式）。按约定「性能主张必须有对比」，实现时要实测确认，没测之前不写成承诺。
+- **`overflow` 是一等公民的事件类型，不是文档脚注。** 三个平台都会在负载高时丢事件。做成事件类型的好处是处理它的代码在调用点可见。libuv 和 watchdog 都没有这个信号。
+- **不承诺 `renamed` 事件。** inotify 的 cookie 配对要缓存要超时，FSEvents 根本不配对。重命名表达成 `removed` + `created`。
+- **稳态零分配是设计目标**：`out` 的容量复用、内部读取缓冲是成员、路径是视图（和 `fs::entry` 的 `name` 同一个生命周期模式）。按约定「性能主张必须有对比」，实现时要实测确认。
 
-#### Python watchdog 也会丢
+#### 要定的事
 
-问过「watchdog 会不会丢文件」，答案是会——它只是这三个平台 API 的包装。两点旁证：
-
-- **watchdog 自带 `PollingObserver`**（定期 stat 整棵树）作为 fallback，和 libuv 的 `uv_fs_poll_t` 是同一个思路。这个东西的存在本身说明：成熟库也得承认「有时候只能重扫」。而轮询定义上会漏掉「一次间隔内创建又删除」的文件。
-- **它没有统一的「你漏事件了」通知。** 平台层会丢是确定的；watchdog 具体怎么暴露 overflow 存疑，但据了解没有跨平台的「必须重扫」信号。
-
-**要定的事**
-
-- **macOS 用 FSEvents 加隐藏线程，还是 kqueue？** 这是本模块最大的一个分叉。FSEvents 功能好但要一个线程和一条内部管道才能被调度器等待；kqueue 原生可等待但功能差很多（要自己 re-read 并 diff 目录）。libuv 选了 FSEvents + 线程。
-- **Linux 的递归要自己实现**，而且有固有竞态：初次走整棵树逐个 `inotify_add_watch`；看到 `IN_CREATE` 且是目录时补加 watch，但从目录创建到 watch 装上之间的事件会丢（所以更要有 `overflow`）；目录删除时移除 watch。
-- **inotify 的 watch 上限撞了怎么报？** 递归监视一个大目录树很容易超过 8192。倾向返回明确的 `error`，而不是静默只监视一部分。
+- **macOS 用 FSEvents 加隐藏线程，还是 kqueue？** 本模块最大的分叉。FSEvents 功能好但要一个线程和一条内部管道才能被调度器等待（libuv 的选择）；kqueue 原生可等待但每个 fd 一个、只说「这个目录变了」、要自己 re-read 并 diff。
+- **Linux 的递归要自己实现**，有固有竞态：从新目录创建到 `inotify_add_watch` 装上之间的事件会丢（所以更要有 `overflow`）。
+- **inotify 的 watch 上限撞了怎么报？** 递归监视大目录树很容易超过 `max_user_watches`（常见 8192）。倾向返回明确的 `error`，而不是静默只监视一部分。
 - **一次写入常产生多个 `modified`**（写、改大小、改 mtime）。要不要在一个时间窗口内合并？倾向合并，窗口可配。
-- macOS 上用 `stat` 推断 `created` / `removed` 时，文件在事件产生和 `stat` 之间又变了怎么办？这种竞态可能需要退化成 `modified`。
+- **`poller` 在 HDD 上很贵**：走整棵树 `stat`，冷缓存每个 5–10 ms。这是轮询的固有代价，只能靠调大 `interval` 和缩小监视范围。要在接口注释里写明。
+- **FSEvents 会重放最多 30 秒前的历史事件。** 不拍启动快照的话，`watch()` 之后可能收到一批启动前的事件。倾向不拍快照（对大目录树是真实的内存代价），在文档里写明——这和收到 `overflow` 是同一类情况，调用方的处理方式一样。
 
 ### 6. term —— 见已有设计
 

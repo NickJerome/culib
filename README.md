@@ -49,7 +49,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | coroutine | 有栈协程，汇编实现上下文切换，六个平台 / 架构目标 | 第三程 |
 | bytes | 字节缓冲与字节序转换 | 第三程 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 第三程 |
-| fs::watcher | 文件变化监听（`culib/fs_watcher.h`）：创建 / 修改 / 删除 / 事件溢出，可递归。要能被协程调度器唤醒，所以排在协程之后 | 第三程 |
+| fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 走内核通知，低延迟但**网络挂载上收不到远程改动**；`poller` 走 stat 轮询，任何文件系统可用。要能被协程调度器唤醒，所以排在协程之后 | 第三程 |
 
 顺序与理由见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)，它按三个目标使用场景（小工具 CLI、多平台服务器、easytier 式精简核心）推导而来。`table` 已从计划中移除，`variant` 评估后不做。
 
