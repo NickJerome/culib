@@ -38,9 +38,10 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 term 完成） |
 | lexical_cast | 字符串 ⇄ 数值 / 布尔 | 第一程 |
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version` | 第一程 |
-| strings | 操作字符串的自由函数：split / join / trim / 大小写转换、UTF-8 ⇄ UTF-16 转换；格式化另行缩范围。**不是字符串类**，全库一律用 `std::string` | 第一程 |
-| fs | 路径处理、文件与目录操作、整文件读写（C++11 没有 `std::filesystem`） | 第一程 |
+| strings | 操作字符串的自由函数：trim、UTF-8 ⇄ UTF-16 转换。**不是字符串类**，全库一律用 `std::string`；split / join / 大小写 / 格式化等推到有消费者时再加 | 第一程 |
+| fs | 路径拆分与拼接、文件与目录操作、整文件读写、目录遍历（C++11 没有 `std::filesystem`） | 第一程 |
 | term | 终端彩色输出：前景色、背景色，自动判断是否输出颜色，支持 Windows 控制台 | 第一程（可选） |
+| fs::watcher | 文件变化监听（`culib/fs_watcher.h`）：创建 / 修改 / 删除 / 事件溢出，可递归 | 第二程 |
 | os | 进程、环境变量、系统信息、程序自身路径、动态库加载、信号与优雅退出 | 第二程（`optional` 随它落地） |
 | time | 时间戳、日期时间格式化、高精度计时（`stopwatch` 秒表） | 第二程：`stopwatch` 已完成 |
 | thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 第二程 |

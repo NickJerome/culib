@@ -261,6 +261,7 @@ namespace fs {
 
 // --- 路径：纯字符串操作，不碰磁盘。输入接受 '/' 和 '\'，输出用平台原生分隔符 ---
 std::string join(string_view a, string_view b);        // 切图：拼输出路径
+string_view parent(string_view path) noexcept;         // 作者在用；和下面三个是一组路径拆分
 string_view filename(string_view path) noexcept;       // 切图：取文件名
 string_view stem(string_view path) noexcept;           // 切图：去掉扩展名，拼 a_cropped.png
 string_view extension(string_view path) noexcept;      // 切图：筛 .png
@@ -268,6 +269,8 @@ string_view extension(string_view path) noexcept;      // 切图：筛 .png
 // --- 查询 ---
 bool exists(string_view path) noexcept;                // 两个场景都要
 bool is_directory(string_view path) noexcept;          // 切图：遍历时区分
+result<uint64_t> file_size(string_view path);          // 作者在用
+result<int64_t>  last_write_time(string_view path);    // 作者在用（Unix 时间戳，秒）
 
 // --- 整文件读写，一律二进制，不做换行转换 ---
 result<std::string> read_file(string_view path);       // 服务器：读配置
@@ -304,9 +307,11 @@ public:
 }  // namespace wavvix
 ```
 
-**有消费者再加**（12 个，都没有明确的近期调用方）：
+**有消费者再加**（9 个）：
 
-`parent`、`is_absolute`、`normalize`、`absolute`、`file_size`、`last_write_time`、`append_file`、`copy_file`、`rename`、`remove_directory`、`temp_directory`、`current_directory` / `set_current_directory`，以及 `read_file` 的复用缓冲区重载。
+`is_absolute`、`normalize`、`absolute`、`append_file`、`copy_file`、`rename`、`remove_directory`、`temp_directory`、`current_directory` / `set_current_directory`，以及 `read_file` 的复用缓冲区重载。
+
+> `parent`、`file_size`、`last_write_time` 曾在这个清单里，作者说明自己在用之后加回去了——**这正是「先有消费者」该有的运作方式**：砍掉是因为说不出调用方，有人说出来就加回来。顺带也说明「作者自己」就是一个合法的消费者，不必非得是库内模块。`parent` 和 `filename` / `stem` / `extension` 是一组路径拆分，`file_size` 和 `last_write_time` 是一组元信息，通常一起用。
 
 **`path` 不拆成独立头文件。** coost 单列了 `path.h`（114 行），曾考虑跟进；但砍完之后路径部分只剩 4 个函数，单独开一个头文件不值得。等路径操作长到十个以上再说。
 
@@ -317,6 +322,83 @@ public:
 - 错误类型用默认的 `error`（不是枚举），因为失败原因必须能区分：`not_found` / `permission_denied` / `already_exists`，调用方要据此决定行为。
 - 符号链接：`exists` 跟随还是不跟随？将来加 `remove_directory(recursive::yes)` 时要不要跟进符号链接（跟进去可能删掉链接目标，很危险）？第一个涉及符号链接的接口落地前必须写死。
 - 路径用 `std::string`（UTF-8）而不是专门的 `path` 类型。代价是没有类型安全（路径和普通字符串混用编译器发现不了），好处是每个接口少一层转换。倾向保持 `std::string`。
+
+### 5.1 fs::watcher —— `culib/fs_watcher.h`
+
+文件变化监听，Python `watchdog` 那一类。独立头文件但同在 `wavvix::fs` 命名空间：只用路径操作的程序不该因此拉进平台监听机器。
+
+**这是目前路线图里除协程之外最难跨平台对齐的东西**，三个平台的语义差很远：
+
+| | Linux `inotify` | macOS `FSEvents` | Windows `ReadDirectoryChangesW` |
+| --- | --- | --- | --- |
+| 递归 | **不支持**，每个目录一个 watch，要自己走树 | 原生递归 | 有递归标志 |
+| 事件粒度 | 每个文件，带类型 | **只给路径，会合并** | 每个文件，带类型 |
+| 重命名 | `MOVED_FROM` / `MOVED_TO` + cookie 配对 | 不配对 | `OLD_NAME` / `NEW_NAME` |
+| 丢事件 | 队列满 → `IN_Q_OVERFLOW` | 合并 / 丢 → `MustScanSubDirs` | 缓冲区满 → `ERROR_NOTIFY_ENUM_DIR` |
+| watch 上限 | `/proc/sys/fs/inotify/max_user_watches`，常见 8192 | 无明显上限 | 每个目录一个句柄 |
+
+```cpp
+namespace wavvix {
+namespace fs {
+
+enum class change {
+    created,     // 文件或目录出现
+    modified,    // 内容或属性变了
+    removed,     // 消失了
+    overflow,    // 丢了事件：path 为空，调用方必须自己重扫
+};
+const char* change_name(change value) noexcept;
+
+struct change_event {
+    std::string path;    // 相对于被监视的目录；overflow 时为空
+    change kind;
+};
+
+class watcher {
+public:
+    static result<watcher> create();
+    ~watcher();                                   // RAII，自动关闭平台句柄
+    watcher(watcher&&) noexcept;
+
+    result<void> watch(string_view directory, recursive mode = recursive::no);
+    result<void> unwatch(string_view directory);
+
+    // 阻塞到有事件或超时。超时返回空 vector，这不是错误。
+    result<std::vector<change_event>> wait(std::chrono::nanoseconds timeout);
+};
+
+}  // namespace fs
+}  // namespace wavvix
+```
+
+```cpp
+auto w = fs::watcher::create();
+if (w.is_err()) { return; }
+w.value().watch("config", fs::recursive::yes);
+
+while (running) {
+    auto events = w.value().wait(std::chrono::seconds(1));
+    if (events.is_err()) { break; }
+    for (const fs::change_event& e : events.value()) {
+        if (e.kind == fs::change::overflow) { reload_everything(); break; }
+        if (fs::filename(e.path) == "server.ini") { reload_config(); }
+    }
+}
+```
+
+三条设计决定，每条都是为了不对调用方说谎：
+
+- **`overflow` 是一等公民的事件类型，不是文档脚注。** 三个平台都会在负载高时丢事件，API 必须能表达「我丢了，你自己重扫」。做成事件类型的好处是**处理它的代码在调用点可见**，而不是藏在一个容易被忽略的 `bool&` 出参里。
+- **不承诺 `renamed` 事件。** inotify 的 cookie 配对要缓存要超时，FSEvents 根本不配对。诚实的做法是把重命名表达成 `removed` + `created` 两个事件；调用方需要知道是重命名时，自己按时间窗口配对。这是明确的范围缩减，比假装支持好。
+- **用阻塞 `wait(timeout)` 让调用方驱动，不用回调线程。** 不强加后台线程（约定「按需同步」）、不需要 `std::function`（约定「慎用有隐性开销的设施」）。额外的好处：**第三程协程落地后 `wait` 天然变成「让出」，这个 API 不用写第二遍** —— 和 `net`「做成同步阻塞的样子」是同一个决定。
+
+**要定的事**
+
+- **Linux 的递归要自己实现**，而且有固有竞态：初次走整棵树逐个 `inotify_add_watch`；看到 `IN_CREATE` 且是目录时补加 watch，但从目录创建到 watch 装上之间的事件会丢（所以更要有 `overflow`）；目录删除时移除 watch。
+- **inotify 的 watch 上限撞了怎么报？** 递归监视一个大目录树很容易超过 8192。倾向返回一个明确的 `error`，而不是静默只监视一部分。
+- macOS 用 `FSEvents` 还是 `kqueue`？FSEvents 原生递归、省事，但要链 CoreServices（系统框架，不算第三方依赖）；`kqueue` 的 `EVFILT_VNODE` 是每个 fd 一个，监视目录树要开大量 fd，不划算。倾向 FSEvents。
+- **一次写入常产生多个 `modified`**（写、改大小、改 mtime）。要不要在一个时间窗口内合并？倾向合并，窗口可配；不合并的话调用方几乎一定要自己做。
+- Windows 的 overlapped I/O 怎么和 `wait(timeout)` 的超时语义对上。
 
 ### 6. term —— 见已有设计
 
