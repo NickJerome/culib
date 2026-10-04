@@ -80,8 +80,22 @@ jobs:
       # -w 显示警告。GCC / Clang 上 xmake.lua 已把警告设为错误，所以这一步同时是零警告检查；
       # MSVC 的 /W4 警告集尚未逐条排查，那里只显示不拦（见 xmake.lua 里的注释）。
       # src/test_win.cpp 和 /Gy 这条路径在此之前从未被任何机器编译过。
+      # 构建失败时把编译器输出当成 ::error:: 发出来。
+      # 为什么要这么绕：job 日志要仓库 admin 权限才能下载，而 run: 步骤里编译器的
+      # 原始警告和错误不会自动变成 annotation——所以不这样做的话，一次 MSVC 失败
+      # 从公开 API 那边看只有「exit code 1」，没法诊断。
       - name: build library
-        run: xmake -w -y
+        shell: bash
+        run: |
+          set -o pipefail
+          if xmake -w -y 2>&1 | tee /tmp/build.log; then exit 0; fi
+          echo "::group::编译输出"
+          cat /tmp/build.log
+          echo "::endgroup::"
+          grep -iE "error|warning" /tmp/build.log | head -40 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          exit 1
 
       - name: run tests
         # 有失败时 -v 打印完整报告
