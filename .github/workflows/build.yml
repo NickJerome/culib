@@ -9,7 +9,9 @@ name: build
 
 on:
   push:
-    branches: [master]
+    # 两个都认：主仓库在 Gitea 上用 master，GitHub 的默认分支名是 main。
+    # 只写一个的话，哪天分支改名 CI 就静默不跑了。
+    branches: [master, main]
   pull_request:
   workflow_dispatch:
 
