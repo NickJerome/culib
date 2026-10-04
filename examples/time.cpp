@@ -33,20 +33,19 @@ int main() {
     std::printf("  本地时区     %s   （带偏移，不带就有歧义）\n",
                 local.value_or("(取不到)").c_str());
 
-    std::printf("\n两个精度差一个数量级（不是「少除一次 1000」，是两个时钟源）：\n");
+    // 热路径：写进调用方的缓冲区，不分配。
+    //
+    // 这里**不放基准测试**：对比的参照物是 gmtime_r / strftime，而 gmtime_r 在
+    // Windows 上根本不存在、gmtime 又被 MSVC 标成弃用——示例要在三个平台上编过，
+    // 不该为了印一个数字去碰平台专有的 libc。测量和方法论在设计文档 3.1。
+    std::printf("\n热路径：写进自己的缓冲区，不分配\n");
     {
-        const int rounds = 200000;
-        wavvix::stopwatch watch;
-        for (int i = 0; i < rounds; ++i) (void)timestamp::now();
-        const double precise = static_cast<double>(watch.elapsed().count()) / rounds;
-
-        watch.restart();
-        for (int i = 0; i < rounds; ++i) (void)timestamp::now_coarse();
-        const double coarse = static_cast<double>(watch.elapsed().count()) / rounds;
-
-        std::printf("  now()         %5.1f ns   毫秒精度，走 CLOCK_REALTIME\n", precise);
-        std::printf("  now_coarse()  %5.1f ns   秒精度，读内核按 tick 更新的一页内存\n", coarse);
-        std::printf("  每行日志都打时间戳的场合，这个差别是真的\n");
+        char buffer[40];
+        const std::size_t written = format_time(now, precision::millis, buffer, sizeof buffer);
+        std::printf("  %.*s   （返回 %zu 字节，不写 '\\0'）\n", static_cast<int>(written), buffer,
+                    written);
+        std::printf("  容量不足时返回 %zu 且不写入\n",
+                    format_time(now, precision::millis, buffer, 8));
     }
 
     std::printf("\n单位写在类型里，所以秒和毫秒混不起来：\n");
@@ -79,7 +78,7 @@ int main() {
     std::printf("\n自己拼格式：拿 utc_parts / local_parts 的字段\n");
     const date_time parts = wavvix::utc_parts(now);
     std::printf("  %d 年 %u 月 %u 日 %u 点 %u 分   （没有 strftime 风格的格式串，"
-                "那个依赖 locale 又慢 5 倍）\n",
+                "那个依赖 locale，也慢几倍）\n",
                 parts.year, parts.month, parts.day, parts.hour, parts.minute);
 
     std::printf("\n和 fs 搭起来用：\n");

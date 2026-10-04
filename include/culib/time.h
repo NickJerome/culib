@@ -17,15 +17,14 @@
 //
 // 笔误是编译错误，不是一个 58728 年的时间戳。
 //
-// ---- 两个精度差一个数量级 --------------------------------------------------------
+// ---- 只有一个 now() --------------------------------------------------------------
 //
-//     timestamp::now()          毫秒精度，实测 49 ns
-//     timestamp::now_coarse()   秒精度，  实测 4.9 ns
+// 系统还有一个便宜十倍的粗时钟（std::time 走的那个，4.9 ns 对 now() 的 49 ns），
+// **但没有包装成第二个函数**：省下的 44 ns 要每秒调 22 万次才值 1% 的一个核，
+// 三个目标场景里没有这样的地方，而多一个函数就等于每个调用点都要先想一下
+// 「这里算不算性能敏感」。真需要的话退路是一行标准 C++：
 //
-// **这不是「少除一次 1000」**：now() 走 CLOCK_REALTIME（要 rdtsc 再换算），
-// now_coarse() 走系统的粗时钟（读内核按 tick 更新的一页内存）。代价是粗时钟的
-// 分辨率只有内核 tick，通常 1–4 ms。每行日志打一次时间戳的场合这 10 倍是真的，
-// 一个 CLI 跑完打一行的场合无所谓——所以两个都给，由调用方挑。
+//     timestamp::from_unix_seconds(std::time(0))    // 分辨率只有内核 tick
 //
 // ---- 不做 -----------------------------------------------------------------------
 //
@@ -56,8 +55,6 @@ public:
 
     // 毫秒精度，实测 49 ns
     static timestamp now() noexcept;
-    // 秒精度，实测 4.9 ns。分辨率只有内核 tick（1–4 ms），理由见文件头
-    static timestamp now_coarse() noexcept;
 
     static timestamp from_unix_seconds(std::int64_t seconds) noexcept {
         return timestamp(seconds * 1000);
@@ -120,14 +117,9 @@ result<std::string> format_local_time(timestamp point, precision digits = precis
 std::size_t format_time(timestamp point, precision digits, char* buffer,
                         std::size_t capacity) noexcept;
 
-// 同上，但格式化一个已经拆开的 date_time（用它自己的 offset_minutes）。
-//
-// 这是本地时间的热路径：拆字段要问系统时区，而**整秒之内结果不变**，所以高频调用方
-// 可以自己按秒缓存 date_time，只在秒变化时重新调 local_parts。spdlog 就是这么做的
-// （pattern_formatter 里 `if (secs != last_log_secs_)`）。
-// 缓存不做进库里：那要么带全局状态、要么带锁，而调用方才知道自己的调用频率。
-std::size_t format_time(const date_time& parts, precision digits, char* buffer,
-                        std::size_t capacity) noexcept;
+// **本地时间没有写缓冲区的重载。** 本来有一个收 date_time 的版本，为的是让高频调用方
+// 自己按秒缓存拆好的字段（spdlog 就是这么干的），但那个用例的消费者是 `log`，而 `log`
+// 还没写——照着别人的做法预先摆一个接口，就是在猜。等 `log` 落地、量出来真需要再加。
 
 // 解析 ISO 8601。认这些形状：
 //

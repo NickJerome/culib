@@ -140,11 +140,14 @@ TEST(time, local_time_carries_its_offset) {
     EXPECT(again.is_ok(), ==, true);
     EXPECT(again.value().unix_seconds(), ==, 1791112371);
 
-    // 拆开的字段走缓冲区重载，结果要和 format_local_time 一字不差
-    char buffer[40];
-    const std::size_t written =
-        format_time(parts.value(), precision::seconds, buffer, sizeof buffer);
-    EXPECT(std::string(buffer, written), ==, shown);
+    // 结构体里那个 offset_minutes 必须真的等于本地和 UTC 墙上时间的差，
+    // 否则「带偏移」只是写上去好看而已。跨日时差 ±1440，所以模一天。
+    const date_time& local = parts.value();
+    const date_time utc = wavvix::utc_parts(point);
+    const int local_minutes = static_cast<int>(local.hour * 60 + local.minute);
+    const int utc_minutes = static_cast<int>(utc.hour * 60 + utc.minute);
+    const int drift = ((local_minutes - utc_minutes - local.offset_minutes) % 1440 + 1440) % 1440;
+    EXPECT(drift, ==, 0);
 }
 
 // UTC 没有范围限制（我们自己算），本地时间有，而且**三个平台一样**——
@@ -263,15 +266,16 @@ TEST(time, agrees_with_libc_across_130_years) {
     EXPECT(mismatched, ==, 0);
 }
 
-TEST(time, both_clocks_agree_on_roughly_now) {
+TEST(time, now_lands_in_this_century) {
     const timestamp precise = timestamp::now();
-    const timestamp coarse = timestamp::now_coarse();
-
-    // 都该落在 2020..2100 之间，否则就是时钟源或换算错了
+    // 落在 2020..2100 之间，否则就是时钟源或换算错了
     EXPECT(precise.unix_seconds() > 1577836800LL, ==, true);   // 2020-01-01
     EXPECT(precise.unix_seconds() < 4102444800LL, ==, true);   // 2100-01-01
 
-    // 粗时钟的分辨率是内核 tick，所以两者可能差一点，但不该差出几秒
+    // 没有 now_coarse()：省下的 44 ns 要每秒 22 万次才值 1% 的一个核，而退路是
+    // 一行标准 C++。这里顺手钉住那个退路确实能用。
+    const timestamp coarse =
+        timestamp::from_unix_seconds(static_cast<std::int64_t>(std::time(0)));
     const std::int64_t gap = precise.unix_seconds() - coarse.unix_seconds();
     EXPECT(gap >= -2 && gap <= 2, ==, true);
 }

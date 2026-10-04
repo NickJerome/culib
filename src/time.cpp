@@ -4,6 +4,7 @@
 #include <culib/time.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 
@@ -83,27 +84,17 @@ date_time parts_from_millis(std::int64_t millis, int offset_minutes) noexcept {
     return out;
 }
 
-// 四位年份是常态；超出 [0, 9999] 时按需写更多位，不悄悄截断。
+// 四位年份是常态。超出 [0, 9999] 要 INT64 量级的毫秒才够得着（INT64_MAX 是
+// 292278994 年），那条路径永远不在热循环里，所以直接交给 snprintf——
+// 冷路径上不值得手写一个数字反转循环。
 std::size_t write_year(int year, char* out) noexcept {
     if (year >= 0 && year <= 9999) {
         write_pad2(out, static_cast<unsigned>(year / 100));
         write_pad2(out + 2, static_cast<unsigned>(year % 100));
         return 4;
     }
-    char digits[16];
-    std::size_t count = 0;
-    const bool negative = year < 0;
-    // 先在无符号域里取绝对值，避免 -INT_MIN 溢出
-    unsigned magnitude = negative ? 0u - static_cast<unsigned>(year) : static_cast<unsigned>(year);
-    do {
-        digits[count++] = static_cast<char>('0' + magnitude % 10);
-        magnitude /= 10;
-    } while (magnitude != 0);
-
-    std::size_t written = 0;
-    if (negative) out[written++] = '-';
-    while (count != 0) out[written++] = digits[--count];
-    return written;
+    const int written = std::snprintf(out, 12, "%d", year);
+    return written > 0 ? static_cast<std::size_t>(written) : 0;
 }
 
 // 需要的最大字节数：年份最多 11 位（含符号）+ "-MM-DDTHH:MM:SS" 15 + ".mmm" 4 + "+HH:MM" 6
@@ -161,12 +152,6 @@ timestamp timestamp::now() noexcept {
                                           .count());
 }
 
-timestamp timestamp::now_coarse() noexcept {
-    // std::time 走系统的粗时钟（glibc 下是 CLOCK_REALTIME_COARSE，读内核按 tick
-    // 更新的一页内存），4.9 ns，比 system_clock::now() 的 49 ns 便宜一个数量级。
-    return timestamp::from_unix_seconds(static_cast<std::int64_t>(std::time(0)));
-}
-
 // --- 拆字段 -------------------------------------------------------------------
 
 date_time utc_parts(timestamp point) noexcept {
@@ -212,11 +197,6 @@ result<date_time> local_parts(timestamp point) {
 }
 
 // --- 格式化 -------------------------------------------------------------------
-
-std::size_t format_time(const date_time& parts, precision digits, char* buffer,
-                        std::size_t capacity) noexcept {
-    return write_parts(parts, digits, buffer, capacity);
-}
 
 std::size_t format_time(timestamp point, precision digits, char* buffer,
                         std::size_t capacity) noexcept {
