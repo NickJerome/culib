@@ -76,11 +76,28 @@ TEST(fs_path, splits_paths) {
 }
 
 TEST(fs_path, joins) {
-    EXPECT(fs::join("/a", "b"), ==, native("/a/b"));
-    EXPECT(fs::join("/a/", "b"), ==, native("/a/b"));     // 不重复加分隔符
-    EXPECT(fs::join("/a", "/b"), ==, native("/b"));       // b 是绝对路径就直接用 b
+    // join 只为「自己插入的那一个分隔符」用平台原生字符，**不改写输入里已有的**。
+    // 所以不能用 native() 去换整个期望值——那是第一次在 Windows 上跑时才发现的测试错误。
+    const std::string separator(1, kSeparator);
+
+    EXPECT(fs::join("a", "b"), ==, "a" + separator + "b");
+    EXPECT(fs::join("a" + separator, "b"), ==, "a" + separator + "b");   // 不重复加
     EXPECT(fs::join("", "b"), ==, "b");
-    EXPECT(fs::join("/a", ""), ==, "/a");
+    EXPECT(fs::join("a", ""), ==, "a");
+
+    // 输入里混用分隔符时原样保留，只有插入的那个是原生的。
+    // Windows 上这是合法路径（"C:/foo\bar" 能用），要规范化用 normalize。
+    EXPECT(fs::join("/a", "b"), ==, "/a" + separator + "b");
+    EXPECT(fs::join("/a/", "b"), ==, "/a/b");             // 已以分隔符结尾，什么都不插
+
+    // b 是绝对路径时直接用 b。注意「绝对」按平台定义：
+    // POSIX 上 "/b" 是绝对的；Windows 上它只是「当前盘的根」，所以按相对路径接。
+#if defined(_WIN32)
+    EXPECT(fs::join("C:\\a", "D:\\b"), ==, "D:\\b");
+    EXPECT(fs::join("/a", "/b"), ==, "/a" + separator + "b");
+#else
+    EXPECT(fs::join("/a", "/b"), ==, "/b");
+#endif
 }
 
 TEST(fs_path, normalizes_without_touching_the_disk) {

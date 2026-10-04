@@ -174,6 +174,24 @@
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
 | 关异常 / RTTI 可用 | 人工（`-fno-exceptions -fno-rtti` 跑测试） | 人工，无自动检查 |
+| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，见下 | MinGW-w64 x86_64。**不覆盖 MSVC**（头文件和警告集都不同），那一侧只有 CI |
+
+**本机验证 Windows 代码的办法**（在 CI 之前就能用，不必等 runner）：
+
+```bash
+apt-get install -y mingw-w64 wine64
+for f in src/*.cpp tests/*.cpp; do
+    case "$f" in *_posix.cpp) continue;; esac
+    x86_64-w64-mingw32-g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror \
+        -Iinclude -Isrc -c "$f" -o "/tmp/winbuild/$(basename $f).o"
+done
+x86_64-w64-mingw32-g++ -static -o /tmp/winbuild/culib_test.exe /tmp/winbuild/*.o
+LANG=C.UTF-8 WINEDEBUG=-all wine /tmp/winbuild/culib_test.exe
+```
+
+**`LANG=C.UTF-8` 不能省**：wine 要靠 Unix locale 才能把 UTF-16 文件名映射到文件系统，空 locale 下中文文件名的 `CreateFileW` 会返回 `ERROR_FILE_NOT_FOUND`。这一点用绕开 culib 的裸 `CreateFileW` 程序确认过，是 wine 的局限而不是库的 bug——**遇到只在某个环境里失败的测试，先确认那是被测代码的问题还是环境的问题。**
+
+MinGW **不能代替 MSVC**：头文件、`__declspec`、警告集都不同。但它能抓到绝大多数「API 用错、include 漏了、类型不匹配」，而那些正是从未编译过的代码里最常见的毛病。
 
 「性能主张有依据」和「关异常 / RTTI 可用」是剩下的两处缺口：有约定、有人工流程、没有自动机制。前者大概也只能人工（汇编对比要人读）；后者容易自动化，加一格 `-fno-exceptions -fno-rtti` 的编译即可。
 

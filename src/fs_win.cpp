@@ -5,6 +5,7 @@
 // 一律走 W 系列 API：路径是 UTF-8，先转 UTF-16 再调。
 
 #include <culib/fs.h>
+#include <culib/lexical_cast.h>   // to_string
 #include <culib/strings.h>
 
 #include <string>
