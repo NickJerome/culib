@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -51,13 +52,17 @@ std::string value_of(const std::string& key) {
 // 【不补上下文】错误原样往上传，信息就停在第 1 层知道的那些。
 wavvix::result<settings> load_bare(const std::string& path) {
     (void)path;  // 知道却没用上，这正是问题所在
-    WAVVIX_TRY(const int port, to_int(value_of("port")));
+    wavvix::result<int> port = to_int(value_of("port"));
+    if (port.is_err()) {
+        return std::move(port).error();
+    }
     settings loaded;
-    loaded.port = port;
+    loaded.port = port.value();
     return loaded;
 }
 
 // 【补上下文】在层边界上把 path 和字段名拼进去。
+// 和上面比，多的只是 return 那一行里的拼接——两边都是一个 if，补上下文几乎是免费的。
 wavvix::result<settings> load(const std::string& path) {
     const std::string key = "port";
     wavvix::result<int> port = to_int(value_of(key));

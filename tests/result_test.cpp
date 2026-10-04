@@ -50,7 +50,7 @@ static_assert(std::is_same<decltype(std::declval<const small_result&>().error())
 static_assert(std::is_same<decltype(std::declval<small_result&&>().error()), parse_error&&>::value, "rvalue error");
 static_assert(std::is_same<decltype(std::declval<result<void, parse_error>&&>().error()), parse_error&&>::value, "void rvalue error");
 
-// WAVVIX_TRY 的被调用方与调用方，放在匿名命名空间里保持和其他辅助类型一致。
+// 手写传播的被调用方与调用方，放在匿名命名空间里保持和其他辅助类型一致。
 result<int> doubled(int n) {
     if (n < 0) return make_error(error_kind::invalid_argument, "negative");
     return n * 2;
@@ -60,9 +60,11 @@ result<void> require_small(int n) {
     return {};
 }
 result<std::string> describe(int n) {
-    WAVVIX_TRY(int value, doubled(n));
-    WAVVIX_TRY_VOID(require_small(value));
-    return std::string("value=") + std::to_string(value);
+    result<int> value = doubled(n);
+    if (value.is_err()) return std::move(value).error();
+    result<void> small = require_small(value.value());
+    if (small.is_err()) return std::move(small).error();
+    return std::string("value=") + std::to_string(value.value());
 }
 
 result<int, parse_error> parsed(int n) {
@@ -70,17 +72,19 @@ result<int, parse_error> parsed(int n) {
     return n;
 }
 result<int, parse_error> tripled(int n) {
-    WAVVIX_TRY(const int value, parsed(n));
-    return value * 3;
+    result<int, parse_error> value = parsed(n);
+    if (value.is_err()) return std::move(value).error();
+    return value.value() * 3;
 }
 
-// 错误类型只能移动，因此这组函数能编译就证明 WAVVIX_TRY 是移动错误而不是复制。
+// 错误类型只能移动，因此这组函数能编译就证明 error() 的右值重载把错误移出来而不是复制。
 result<int, std::unique_ptr<int>> moving_error() {
     return std::unique_ptr<int>(new int(7));
 }
 result<std::string, std::unique_ptr<int>> forwards_moving_error() {
-    WAVVIX_TRY(int value, moving_error());
-    return std::to_string(value);
+    result<int, std::unique_ptr<int>> value = moving_error();
+    if (value.is_err()) return std::move(value).error();
+    return std::to_string(value.value());
 }
 
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS

@@ -108,7 +108,7 @@ size_t to_chars(double value, char* buffer, size_t capacity) noexcept;
 - **两个方向不对称，这是故意的。** 解析可能失败，所以返回 `result`；格式化不会失败，所以直接返回 `std::string`。强行对称（让 `lexical_cast<std::string>(42)` 也返回 `result`）会迫使调用方检查一个永远成功的结果。名字 `to_string` 和 `std::to_string` 一致，不需要额外解释。
 - **严格解析**，和 `strtol` 的默认行为相反：`lexical_cast<int>("12abc")` 失败，`lexical_cast<int>(" 12")` 失败，`lexical_cast<int>("")` 失败。理由是「没有意外」——宽松解析会把 `--port=80x` 静默当成 80。
 - `lexical_cast<bool>` 接受 `true/false/1/0/yes/no/on/off`，大小写不敏感。
-- **错误类型用默认的 `error`，不另开 `parse_error` 枚举。** 曾经设计成枚举，理由是「失败很常见且对性能敏感」，这样 `result<int, parse_error>` 是 8 字节、走寄存器返回。量完之后撤掉了：成功路径 11.4 对 8.5 ns 且两边都是 0 分配，最坏的失败路径 120.8 对 8.2 ns——绝对值 120 ns，要吃掉 1% 的核得每秒失败 8.3 万次，三个场景里没有这样的地方（数据见 `CLAUDE.md`「错误处理」）。换来的是 `WAVVIX_TRY` 在层边界上不用转换，以及调用点不必先判断「这个接口算不算性能敏感」。
+- **错误类型用默认的 `error`，不另开 `parse_error` 枚举。** 曾经设计成枚举，理由是「失败很常见且对性能敏感」，这样 `result<int, parse_error>` 是 8 字节、走寄存器返回。量完之后撤掉了：成功路径 11.4 对 8.5 ns 且两边都是 0 分配，最坏的失败路径 120.8 对 8.2 ns——绝对值 120 ns，要吃掉 1% 的核得每秒失败 8.3 万次，三个场景里没有这样的地方（数据见 `CLAUDE.md`「错误处理」）。换来的是层边界上不用写一次显式转换，以及调用点不必先判断「这个接口算不算性能敏感」。
 - **丢掉的那一项是「按失败种类分支」**：`empty` / `not_a_number` / `out_of_range` 都塌成 `invalid_argument`，想区分只能解析消息字符串。可接受，因为后两者本来没人会分开处理（都是「坏输入，告诉用户」），而第一个在调用点一行就能拿回来而且更好读：`if (v.empty()) return use_default();` 写在 `lexical_cast` 之前。
 - **和 boost 的两处不同**：boost 抛 `bad_lexical_cast`（culib 不抛异常，改成 `result`）；boost 支持任意有流操作符的类型对（culib 只支持数值和 bool，不做泛型容器和自定义类型）。
 

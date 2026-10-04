@@ -1,5 +1,6 @@
 #include <culib/result.h>
 #include <cstdio>
+#include <utility>
 
 wavvix::result<int> checked_port(int port) {
     if (port < 1 || port > 65535) {
@@ -15,11 +16,18 @@ wavvix::result<void> validate_name(const std::string& name) {
     return {};
 }
 
-// 自己不处理错误、原样交给调用方时用 WAVVIX_TRY，省掉每层的 if 和 std::move。
+// 自己不处理错误、原样交给调用方时，就手写 if 把错误移出去。
+// 每一处 return 都看得见，这是故意的——不包成宏。
 wavvix::result<std::string> describe(const std::string& name, int port) {
-    WAVVIX_TRY_VOID(validate_name(name));
-    WAVVIX_TRY(const int checked, checked_port(port));
-    return name + ":" + std::to_string(checked);
+    wavvix::result<void> named = validate_name(name);
+    if (named.is_err()) {
+        return std::move(named).error();
+    }
+    wavvix::result<int> checked = checked_port(port);
+    if (checked.is_err()) {
+        return std::move(checked).error();
+    }
+    return name + ":" + std::to_string(checked.value());
 }
 
 int main() {

@@ -298,7 +298,7 @@ use(port.value());
 ```
 
 - 只关心成败时用 `result<void>`，`return {};` 表示成功。
-- **错误类型只有一种，就是默认的 `error`。** culib 不为「高频转换」之类的场景另开枚举错误类型——量过了，成功路径两边都是零分配、相差 ~3 ns，而两种错误类型会让 `WAVVIX_TRY` 在层边界上转换不过去。真遇到热失败路径时，`make_error(kind)` 不带说明字符串就是零分配。
+- **错误类型只有一种，就是默认的 `error`。** culib 不为「高频转换」之类的场景另开枚举错误类型——量过了，成功路径两边都是零分配、相差 ~3 ns，而两种错误类型会让每个层边界上多一次显式转换。真遇到热失败路径时，`make_error(kind)` 不带说明字符串就是零分配。
 - 跨层把错误传上去时，在中间那一层把上下文拼进消息：底层只知道「不是合法整数」，只有你这一层同时知道「这是 `/etc/app.conf` 的 `port` 字段」。
 - `E` 仍是模板参数，自己的代码需要时可以传任意小而平凡可复制的类型，但要自己负责层边界上的转换。
 - 支持复制、移动及只能移动的值或错误；赋值要求两种类型都能无异常移动构造。用不了的组合（如复制只能移动的 `result`）在用到的那一行编译报错并说明原因，但 `std::is_copy_constructible` 这类类型特征只看声明，对 `result` 会乐观地回答「可以」。
@@ -306,21 +306,22 @@ use(port.value());
 - 结果容器自身不分配内存；值或错误自身仍可能分配内存。
 - 值和错误必须是非数组、非 `const` / `volatile` 的对象类型；需要引用语义时用指针。
 
-自己不处理错误、原样交给调用方时用 `WAVVIX_TRY`，省掉每层的 `if` 和 `std::move`：
+自己不处理错误、原样交给调用方时，手写 `if` 把错误移出去：
 
 ```cpp
 wavvix::result<config> load(const std::string& path) {
-    WAVVIX_TRY(std::string text, read_file(path));   // 失败时直接 return 这个错误
-    WAVVIX_TRY(int port, parse_port(text));
-    WAVVIX_TRY_VOID(check_version(text));            // 只关心成败，没有值要接
-    return config{text, port};
+    wavvix::result<std::string> text = read_file(path);
+    if (text.is_err()) return std::move(text).error();
+
+    wavvix::result<int> port = parse_port(text.value());
+    if (port.is_err()) return std::move(port).error();
+
+    return config{text.value(), port.value()};
 }
 ```
 
-- 只能写在返回 `result` 的函数里，被调用方的错误类型要能转换成本函数的错误类型；错误以移动方式传出，不会多复制一次说明字符串。
-- 第一个参数是完整的变量声明，如 `int port`、`const std::string name`。声明或表达式里有不在括号内的逗号时，给它加一层括号。
-- 展开成多条语句，必须单独成一条语句，不能直接作为 `if` / `for` 不带花括号的分支体；同一行只能写一个。
-- 按「宏」的命名约定没有提供 `TRY` 短名字——`TRY` 太容易和其他库撞名，需要的话自己 `#define TRY WAVVIX_TRY`。
+- `std::move(x).error()` 用的是右值重载，错误被移出来，不会多复制一次说明字符串。
+- **culib 不为这件事提供宏。** 一个 `TRY(decl, expr)` 能把每处压成一行，但它展开后藏着一个 `return`，看起来却像变量声明——函数里哪几行会提前返回，读代码的人看不出来。多写的那一行换到的是「每一处 `return` 都看得见」。这个宏曾经存在过，已删除，理由见 [result 设计](docs/superpowers/specs/2026-10-01-result-design.md) 11.10。
 
 完整示例见 [examples/result.cpp](examples/result.cpp)，接口规则见 [result 设计](docs/superpowers/specs/2026-10-01-result-design.md)。
 

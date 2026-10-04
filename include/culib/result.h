@@ -6,7 +6,13 @@
 //     if (port.is_err()) { log(port.error().to_string()); return; }
 //     use(port.value());
 //
-// 把失败原样传给调用方时用 WAVVIX_TRY，见本文件末尾。
+// 把失败原样传给调用方时自己写 if，别包成宏：
+//
+//     wavvix::result<int> port = parse_port(text);
+//     if (port.is_err()) return std::move(port).error();
+//
+// 多出来的那一行换到的是「每一处 return 都看得见」。库里曾经有个 WAVVIX_TRY 宏，
+// 展开后藏着一个 return，看起来却像变量声明——已删除，理由见 result 设计文档 11.10。
 // result<void> 默认构造表示成功。
 // 错误类型一律用默认的 error：culib 不为「性能敏感」的接口另开枚举，代价量过，见 CLAUDE.md。
 // E 仍是模板参数（约束只有「非数组对象类型、非 cv、析构不抛、和 T 不可互转」，并不要求是枚举），
@@ -133,34 +139,3 @@ private:
 };
 
 }  // namespace wavvix
-
-// WAVVIX_TRY：成功就取出值继续，失败就把错误 return 给调用方。
-//
-//     wavvix::result<config> load(const std::string& path) {
-//         WAVVIX_TRY(std::string text, read_file(path));   // 失败时 return 这个错误
-//         WAVVIX_TRY(int port, parse_port(text));
-//         WAVVIX_TRY_VOID(check_version(text));            // 只关心成败，没有值要接
-//         return config{text, port};
-//     }
-//
-// - 只能写在返回 result 的函数里，被调用方的错误类型要能转换成本函数的错误类型。
-// - 错误以移动方式传出，不会多复制一次说明字符串。
-// - declaration 是一个完整的变量声明，如 int port、const std::string name、auto&& text。
-// - declaration 或 expression 里有不在括号内的逗号时（如模板参数），给它加一层括号。
-// - 展开成多条语句，必须单独成一条语句；不能直接作为 if / for 不带花括号的循环体或分支体。
-// - 同一行只能写一个 WAVVIX_TRY。
-// 名字在传给 _IMPL 之前就拼好，所以 _IMPL 里三处用的是同一个名字，MSVC 的 __COUNTER__ 也只取一次。
-#define WAVVIX_TRY(declaration, expression) \
-    WAVVIX_DETAIL_TRY_IMPL(declaration, expression, WAVVIX_DETAIL_UNIQUE_NAME(wavvix_try_))
-
-#define WAVVIX_TRY_VOID(expression) \
-    WAVVIX_DETAIL_TRY_VOID_IMPL(expression, WAVVIX_DETAIL_UNIQUE_NAME(wavvix_try_))
-
-#define WAVVIX_DETAIL_TRY_IMPL(declaration, expression, holder) \
-    auto holder = (expression);                                 \
-    if (holder.is_err()) return ::std::move(holder).error();     \
-    declaration = ::std::move(holder).value()
-
-#define WAVVIX_DETAIL_TRY_VOID_IMPL(expression, holder) \
-    auto holder = (expression);                         \
-    if (holder.is_err()) return ::std::move(holder).error()

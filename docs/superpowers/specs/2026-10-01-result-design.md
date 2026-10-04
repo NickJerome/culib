@@ -19,11 +19,11 @@ README 约定：可能失败的操作通过 `result` 返回结果或错误，库
 - 构造：成功时直接从值构造，失败时直接从错误构造；默认错误类型的对象用 `make_error(...)` 创建。
 - 查询与取值：`is_ok()`、`is_err()`、`value()`、`error()`、`value_or()`。
 - 默认错误类型 `error` 和错误种类 `error_kind`。
-- 错误传递宏 `WAVVIX_TRY` / `WAVVIX_TRY_VOID`（语句形式）。
+- 错误传递：调用方手写 `if (x.is_err()) return std::move(x).error();`。**不提供宏**，理由见 11.10。
 
 **不做：**
 
-- 表达式形式的错误传递（类似 Rust 的 `?`）。现有 C++ 语法里，能写在表达式中间的写法只有两种：依赖 GCC / Clang 扩展的表达式宏（cl.exe 不支持），或者用异常实现。本机实测，用异常实现时出错路径约慢 670 倍，因此都不采用。语句形式见 4.3。
+- 表达式形式的错误传递（类似 Rust 的 `?`）。现有 C++ 语法里，能写在表达式中间的写法只有两种：依赖 GCC / Clang 扩展的表达式宏（cl.exe 不支持），或者用异常实现。本机实测，用异常实现时出错路径约慢 670 倍，因此都不采用。语句形式的宏也评估过并曾经实现，后来删除，见 11.10。
 - `match`、`map`、`and_then` 等函数式写法。两种情况都要处理时，用普通的 if / else；以后确有需要再加，不影响已有代码。
 - `operator bool`、`operator*`、`operator->`：判断成败和取值各只保留一种写法。
 - 引用类型 `result<T&>`，需要时用指针代替。
@@ -61,9 +61,15 @@ result<void> save(const config& cfg) {
     return {};                              // 成功时 return {}
 }
 
-// 失败很常见、对性能敏感时，用枚举作为错误类型
-enum class parse_error { empty, not_a_number, overflow };
-result<int, parse_error> parse_int(const std::string& text);
+// 跨层把错误传上去时，在层边界上把上下文拼进消息（见 11.7：错误类型只有 error 一种）
+result<config> load(const std::string& path) {
+    result<int> port = parse_port(read_key(path, "port"));
+    if (port.is_err()) {
+        return make_error(port.error().kind(),
+                          "读 " + path + ": port = " + port.error().message());
+    }
+    return config{port.value()};
+}
 ```
 
 ## 4. 接口
@@ -147,25 +153,24 @@ std::ostream& operator<<(std::ostream& os, const error& e);    // 输出 to_stri
 - 错误种类取名 `error_kind` 而不是 `error_code`，避免和标准库的 `std::error_code` 混淆。
 - `result.h` 只引入 `<iosfwd>`，`operator<<` 在 `result.cpp` 里实现。
 
-### 4.3 WAVVIX_TRY
+### 4.3 错误传递：手写 if，不提供宏
 
-自己不处理错误、原样交给调用方时用它，省掉每层的 `if` 和 `std::move`：
+自己不处理错误、原样交给调用方时：
 
 ```cpp
 result<config> load(const std::string& path) {
-    WAVVIX_TRY(std::string text, read_file(path));   // 失败时 return 这个错误
-    WAVVIX_TRY(int port, parse_port(text));
-    WAVVIX_TRY_VOID(check_version(text));            // 只关心成败，没有值要接
-    return config{text, port};
+    result<std::string> text = read_file(path);
+    if (text.is_err()) return std::move(text).error();
+
+    result<int> port = parse_port(text.value());
+    if (port.is_err()) return std::move(port).error();
+
+    return config{text.value(), port.value()};
 }
 ```
 
-- 只能写在返回 `result` 的函数里，被调用方的错误类型要能转换成本函数的错误类型。
-- 错误和值都以 `std::move` 传出，不会多复制一次说明字符串；错误类型只能移动（如 `std::unique_ptr`）时也能用。
-- 第一个参数是完整的变量声明，如 `int port`、`const std::string name`、`auto&& text`。
-- 声明或表达式里有不在括号内的逗号时（如模板参数），给它加一层括号；同一行只能写一个。
-- 展开成多条语句，必须单独成一条语句。直接作为 `if` / `for` 不带花括号的分支体时是编译错误（声明不能单独作为分支体），不会静默出错。
-- 按命名约定只提供 `WAVVIX_` 前缀的名字，不加 `TRY` 短别名：`TRY` 太容易和其他库撞名，而 `defer` / `TEST` / `EXPECT` 那三个短名字是已经定下的例外。
+- `std::move(x).error()` 走右值重载，错误被移出来，不会多复制一次说明字符串；错误类型只能移动（如 `std::unique_ptr`）时也能用。
+- **本节曾经描述一个 `WAVVIX_TRY` 宏，它被实现过又被删除了**，完整理由见 11.10。一句话：它展开后藏着一个 `return`，写出来却像变量声明。
 
 ## 5. 规则
 
@@ -184,9 +189,8 @@ result<config> load(const std::string& path) {
 
 - 值和错误放在同一块内存（union）里，只多一个标志位；不分配内存。
 - `T` 和 `E` 都可平凡复制且支持复制与移动赋值时（例如 `result<int, parse_error>`），result 本身也可平凡复制；体积较小时，函数返回可以走寄存器，和手写的错误码结构体一样快。
-- 默认的 `error` 带一个 `std::string`，`result<int>` 因此有几十个字节，并且不可平凡复制；说明文字超过短字符串优化的长度时，出错会分配一次内存。所以：
-  - 一般接口用 `error`。
-  - 失败很常见、对性能敏感的接口（例如 lexical_cast）用一个 `enum class` 作为错误类型。
+- 默认的 `error` 带一个 `std::string`，`result<int>` 因此是 48 字节，并且不可平凡复制；说明文字超过短字符串优化的长度时，出错会分配一次内存。**成功路径不分配**——union 只构造活着的那个成员。
+- 本节原先据此规定「一般接口用 `error`、性能敏感的接口用 `enum class`」。**那条规定已撤销**：量过之后发现枚举的优势在本库的场景里兑现不了，全库统一用 `error`，数据和理由见 11.7。
 - 先判断 `is_err()` 再调用 `value()` 时，`value()` 里的重复检查在开启优化后会被编译器去掉。
 
 ## 7. 实现要点
@@ -209,7 +213,7 @@ result<config> load(const std::string& path) {
 - 查询与取值：`is_ok`、`is_err`、`value`、`error`、`value_or`，左值、const 和右值三种情况。
 - 只能移动的值类型（`std::unique_ptr`）。
 - 复制、移动、赋值，以及可平凡复制的传递（用 `static_assert` 检查）。被禁止的组合（复制只能移动的 result、移动构造会抛异常时的赋值）不能用 `static_assert` 检查，因为类型特征只看声明；这些改为手工编译失败验证，见 11.3。
-- `WAVVIX_TRY`：取值成功后继续、失败时向上传播，值分支与 `void` 分支各一处；自定义枚举错误类型；只能移动的错误类型（这组函数能编译即证明错误是移动而非复制传出）。
+- 手写传播：取值成功后继续、失败时向上传播，值分支与 `void` 分支各一处；自定义枚举错误类型；只能移动的错误类型（这组函数能编译即证明错误是移动而非复制传出）。
 - `error`：`make_error()`、`to_string()`、`error_kind_name()`、`operator<<`；作用域里有名为 `error` 的局部变量时，`make_error(...)` 仍能正常使用。
 - 误用访问的诊断与实际终止：用独立子进程验证退出信号和 stderr，避免中断单测进程；不为测试额外暴露诊断接口。
 - `T` 与 `E` 能互相转换时的编译报错，以及取错类型时的终止程序，单测无法覆盖，实现时手动验证。
@@ -222,7 +226,7 @@ result<config> load(const std::string& path) {
 ## 9. 对现有代码和文档的修改
 
 - README：
-  - 「错误处理」一节补充 result 与 `WAVVIX_TRY` 的用法示例（该节 2026-10-03 从「开发约定」提为顶级章节，作者侧约束移入 `CLAUDE.md`）。
+  - 「错误处理」一节补充 result 的用法示例，当时还包含 `WAVVIX_TRY`（见 11.10）。该节 2026-10-03 从「开发约定」提为顶级章节，作者侧约束移入 `CLAUDE.md`。
   - 待定事项删掉「result 的具体设计」。
 
 ## 10. 实现顺序
@@ -232,7 +236,7 @@ result<config> load(const std::string& path) {
 
 ## 11. 实现验证
 
-实现于 2026-10-03 完成，同日按本节第 4 小节瘦身并补入 `WAVVIX_TRY`，以下记录瘦身后的状态。环境为 Linux / GCC 14.2，`-Wall -Wextra -Wpedantic -Werror`，全程零警告。
+实现于 2026-10-03 完成，同日按本节第 4 小节瘦身并补入 `WAVVIX_TRY`（次日删除，见 11.10），以下记录瘦身后的状态。环境为 Linux / GCC 14.2，`-Wall -Wextra -Wpedantic -Werror`，全程零警告。
 
 ### 11.1 构建与测试
 
@@ -280,11 +284,11 @@ result:                              手写 union{int,enum}+bool:
 - 删掉枚举诊断的 `result_bad_signed_value` / `result_bad_unsigned_value` 两个函数和一组 `is_enum` SFINAE 分发，理由见第 5 节。
 - 删掉 `result_base`：它只放三条 `static_assert` 和一个带 `std::conditional` 条件 noexcept 的转发构造函数，前者移入两个 result 版本的类体，后者随之消失，`result` 直接继承存储。
 - GCC 5 以前的 `__has_trivial_copy` 等内置特性回退改为「一律走非平凡存储」。
-- 新增 `WAVVIX_TRY` / `WAVVIX_TRY_VOID`，见 4.3。两个宏复用 `WAVVIX_DETAIL_UNIQUE_NAME`（`defer` 用的同一个），名字在传给 `_IMPL` 之前就拼好，因此不需要 `TEST` 那样的两层展开，也不会让 MSVC 的 `__COUNTER__` 多取几次。
+- 新增 `WAVVIX_TRY` / `WAVVIX_TRY_VOID`（**次日即删除，见 11.10**）。两个宏复用 `WAVVIX_DETAIL_UNIQUE_NAME`（`defer` 用的同一个），名字在传给 `_IMPL` 之前就拼好，因此不需要 `TEST` 那样的两层展开，也不会让 MSVC 的 `__COUNTER__` 多取几次。
 - 禁止 cv 限定的值和错误类型（`result<const int>` 之类本来也没有意义），换来 `construct()` 里的 placement new 写成一行 `::new (std::addressof(destination)) V(...)`，不再需要 `const_cast<void*>(static_cast<const volatile void*>(...))` 这串用来伺候 cv 类型的转换。
 - `result.cpp` 里「种类名 + `: ` + 说明」这条格式规则原先写了三遍（`to_string()`、`operator<<`、abort 诊断）。现在 `to_string()` 是唯一定义，`operator<<` 直接 `os << value.to_string()`；abort 诊断仍不分配内存，但收成一次 `fprintf`，用 `%s%s%.*s` 表达「说明为空时连 `: ` 一起省掉」。三个终止函数共用一个 `die()`，`std::abort()` 只出现在两处。
 
-净效果：`result.h` 129 → 163 行（`WAVVIX_TRY` 及其用法注释 +36），`detail/result_storage.h` 178 → 127 行，`result.cpp` 67 → 58 行，合计 374 → 348 行。实现本身减少 62 行，其余是新增功能。
+净效果：`result.h` 129 → 163 行（`WAVVIX_TRY` 及其用法注释 +36；删除后 141 行，比加宏前多 12 行手写传播的说明注释），`detail/result_storage.h` 178 → 127 行，`result.cpp` 67 → 58 行，合计 374 → 348 行。实现本身减少 62 行，其余是新增功能。
 
 ### 11.5 试过但没采纳的简化
 
@@ -322,7 +326,7 @@ result:                              手写 union{int,enum}+bool:
 
 换来的：
 
-1. **`WAVVIX_TRY` 在层边界上不用转换。** 两种错误类型时，返回 `result<T, error>` 的函数里 `WAVVIX_TRY` 一个返回 `result<U, 枚举>` 的调用会编译失败（`could not convert 'parse_failure' to 'wavvix::result<int>'`），必须手写转换。
+1. **层边界上不用写一次显式转换。** 两种错误类型时，返回 `result<T, error>` 的函数里直接 `return std::move(x).error()` 一个 `result<U, 枚举>` 的错误会编译失败（`could not convert 'parse_failure' to 'wavvix::result<int>'`），每处都要手写一次映射。
 2. **消掉一处「每次都要先想一下」。** 原判据是「算不算性能敏感」——用性能标准回答语义问题。
 3. 丢掉的是「按失败种类分支」。可接受，理由见预期接口第 2 节。
 
@@ -340,27 +344,49 @@ result:                              手写 union{int,enum}+bool:
   **重开条件**：出现第三个错误类型时（大概是 `fs` 或 `net` 要带 errno / 平台错误码），那时 `to_string` / `operator<<` 的重复才真实存在。届时先比一下 **ADL 自由函数**（`error_message(e)`，像 `swap` 那样）——它不要基类、保住聚合初始化、没有 C++11 那条税，可能比 CRTP 更便宜。
 - **错误链 / cause 列表。** 每层一次分配，而上下文用「在层边界把字符串拼进消息」就够了，实测只多 1 次分配。
 
-### 11.9 不加补上下文的宏（2026-10-04）
+### 11.9 删掉 WAVVIX_TRY（2026-10-04）
 
-`examples/error_context.cpp` 摊开了一件事：「补上下文」那版用不了 `WAVVIX_TRY`，要手写 `if` + `make_error` + 拼接，**5 行对 1 行**：
+`WAVVIX_TRY` / `WAVVIX_TRY_VOID` 在 2026-10-03 的瘦身里加入，次日由作者否决并删除。原话：**「谁让你乱加宏的，很明显把内部逻辑藏起来了。」**
+
+```cpp
+#define WAVVIX_DETAIL_TRY_IMPL(declaration, expression, holder) \
+    auto holder = (expression);                                 \
+    if (holder.is_err()) return ::std::move(holder).error();    \
+    declaration = ::std::move(holder).value()
+```
+
+问题在第二行：**`WAVVIX_TRY(int port, parse_port(text));` 写出来像一句变量声明，展开后却含一个 `return`。** 一个函数有哪几条提前返回的路径，是读代码时最先要确定的事，而这个宏把它藏进了一个看起来不会改变控制流的语法形式里。`defer` 也是宏，但它只在作用域结束时执行一段代码，不会替你返回；`TEST` / `EXPECT` 同理。**判据因此是「宏会不会让人看错控制流」**，不是「宏省了几行」——这条写进了 `CLAUDE.md` 的命名一节。
+
+删除的代价是每处传播多一行 `if`。换到的是每一处 `return` 都在明面上。
+
+两个连带后果：
+
+1. **它曾经是「立项错误上下文」的全部论据，那个论据没了。** 当时的说法是「补上下文就用不了 `WAVVIX_TRY`，5 行对 1 行」。宏删掉之后，`examples/error_context.cpp` 里两种写法都只是一个 `if`，差别只在 `return` 那一行里多一段拼接——**跨层补上下文几乎是免费的**，见 11.10。
+2. 11.7 论证统一错误类型时，理由之一写的是「`WAVVIX_TRY` 在层边界上转换不过去」。改成了「每个层边界上要多写一次显式转换」，结论不变但不再依赖这个宏。
+
+**不重开。** 表达式形式（Rust 的 `?`）早在第 2 节就排除了（需要编译器扩展或异常）；语句形式就是这次删掉的东西。
+
+### 11.10 不加补上下文的宏（2026-10-04）
+
+`examples/error_context.cpp` 把「补上下文」和「不补」并排写出来之后，能看到两边都只是一个 `if`：
 
 ```cpp
 // 不补上下文
-WAVVIX_TRY(const int port, to_int(value_of("port")));
+result<int> port = to_int(value_of("port"));
+if (port.is_err()) return std::move(port).error();
 
-// 补上下文
-wavvix::result<int> port = to_int(value_of(key));
+// 补上下文：多的只是 return 那一行里的拼接
+result<int> port = to_int(value_of(key));
 if (port.is_err()) {
-    return wavvix::make_error(port.error().kind(),
-                              "读 " + path + ": " + key + " = " + port.error().message());
+    return make_error(port.error().kind(),
+                      "读 " + path + ": " + key + " = " + port.error().message());
 }
 ```
 
-错误类型统一成 `error` 之后，一个 `WAVVIX_TRY_CTX(declaration, expression, prefix)` 在技术上很干净（内层错误的 `kind()` 和 `message()` 都拿得到，拼一下即可）。**仍然不加**，作者定的，理由是：
+错误类型统一成 `error` 之后，一个 `TRY_CTX(declaration, expression, prefix)` 在技术上很干净（内层错误的 `kind()` 和 `message()` 都拿得到）。**不加**，三条理由，第一条最硬：
 
-- **这正是不该省的 5 行。** 上下文的价值全在它具体——哪个文件、哪个字段、什么值。一个接一个字符串前缀的宏会鼓励随手写个笼统的 `"load failed"`，那和不补没区别。手写反而逼着把该写的信息写全。
-- **层边界很少。** 它不是每个函数都要用的东西，省下来的总行数远不如多一个宏的代价。
-- `CLAUDE.md` 的命名一节本来就写了「新增短名字要慎重」。`WAVVIX_TRY` / `WAVVIX_TRY_VOID` 已经是两个了，第三个要有更硬的理由。
-- 宏不参与重载、调试器难以单步，而这几行恰好是出错时最需要看清楚的地方。
+- **它和 `WAVVIX_TRY` 是同一个毛病**，同样藏一个 `return`，见 11.9。这一条单独就够了。
+- **省下的行数本来就不多。** 这正是「只看输出不看源码」会判断错的地方：我当时以为是 5 行对 1 行，源码一摊开是 1 个 `if` 对 1 个 `if`。
+- **这正是不该省的地方。** 上下文的价值全在它具体——哪个文件、哪个字段、什么值。一个吃字符串前缀的宏会鼓励随手写个笼统的 `"load failed"`，那和不补没区别；手写反而逼着把信息写全。
 
-**重开条件**：写完 `fs` + `os` + 配置文件之后，数一下真实的层边界有多少处、那段拼接是否在多处长得一模一样。如果是，那时要比的也不只是宏——先看一个普通函数（`error with_context(const error&, std::string)`）能不能解决，它没有宏的那些缺点。
+**重开条件**：写完 `fs` + `os` + 配置文件之后，如果那段拼接在很多处长得一模一样，加一个**普通函数** `error with_context(const error&, std::string)`——它不藏控制流，所以不受 11.9 那条判据的约束。宏仍然不加。
