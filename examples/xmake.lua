@@ -13,12 +13,8 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "*.cpp"))) do
         if not is_plat("windows") then
             set_languages("c++11")
         end
-        -- 与根 xmake.lua 的库目标保持一致：MSVC 的 /W4 警告集尚未逐条排查，先只看不拦
-        if is_plat("windows") then
-            set_warnings("allextra", "pedantic")
-        else
-            set_warnings("allextra", "pedantic", "error")
-        end
+        -- 与根 xmake.lua 的库目标保持一致：警告即错误，三个平台都一样
+        set_warnings("allextra", "pedantic", "error")
         set_encodings("utf-8")
         add_files(file)
         add_deps("culib")

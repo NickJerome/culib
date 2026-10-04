@@ -13,12 +13,11 @@ target("culib")
         set_languages("c++11")
     end
     -- 警告级别：allextra 即 -Wall -Wextra（MSVC 为 /W4），与 tests 对齐。
-    -- 只在自己是主工程、且不是 MSVC 时把警告当错误：
-    -- - 被其他工程 includes 时不加 error——使用方的编译器版本不同，
-    --   将来新编译器新增的警告不该打断他们的构建；
-    -- - MSVC 的 /W4 警告集与 GCC / Clang 差异较大，尚未逐条排查，
-    --   CI 上先只看不拦，清零后再把 windows 从这个条件里去掉。
-    if is_main_project and not is_plat("windows") then
+    -- 只在自己是主工程时把警告当错误：被其他工程 includes 时不加 error——
+    -- 使用方的编译器版本不同，将来新编译器新增的警告不该打断他们的构建。
+    -- MSVC 的 /W4 原先豁免（「只看不拦」），因为在 CI 第一次编译 Windows 代码
+    -- 之前根本没法逐条排查；那边全绿之后纳入，三个平台一致。
+    if is_main_project then
         set_warnings("allextra", "pedantic", "error")
     else
         set_warnings("allextra", "pedantic")

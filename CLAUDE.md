@@ -112,7 +112,9 @@
 - **公共类型的身份不能随语言标准变化**：culib 自己按 C++11 编译，使用方可以用更高标准，所以**不要把自带设施在高标准下别名到标准库对应物**（如 `using string_view = std::string_view`）——那会让同一个名字在两边是不同类型，以它为参数的公共函数签名不匹配、链接失败。要兼容就加条件编译的转换构造函数，那是纯增量。理由与实例见路线图 4.1。
 - **头文件**：使用 `#pragma once`；头文件中不写 `using namespace`。
 - **公共头文件存成带 BOM 的 UTF-8**（`include/` 下的全部 `.h`）。头文件里有中文注释，而使用方在非 UTF-8 代码页（如中文 Windows 的 936）下不加 `/utf-8` 编译时，MSVC 会对每个头文件报 C4819，开了 `/WX` 就是编译失败。**BOM 让文件自己说明编码，不要求使用方加任何标志**——culib 自己的 `set_encodings("utf-8")` 只管 culib 的编译单元，管不到使用方的。`src/` / `tests/` / `examples/` 不需要 BOM，它们只由 culib 自己的构建编译。CI 的 `headers` job 会拦。
-- **零警告**：GCC / Clang 上警告即错误（`xmake.lua` 在 culib 作为主工程时设 `set_warnings("allextra", "pedantic", "error")`）。被其他工程 `includes` 时不加 `error`，因为使用方的编译器版本不同，将来新增的警告不该打断他们的构建。MSVC 的 `/W4` 警告集尚未逐条排查，CI 上只显示不拦，清零后把 `xmake.lua` 和 `tests/xmake.lua`、`examples/xmake.lua` 里的 windows 条件去掉。
+- **零警告，三个平台一致**：警告即错误（`xmake.lua` 在 culib 作为主工程时设 `set_warnings("allextra", "pedantic", "error")`，MSVC 上 `allextra` 就是 `/W4`）。被其他工程 `includes` 时不加 `error`，因为使用方的编译器版本不同，将来新增的警告不该打断他们的构建。
+
+  MSVC 的 `/W4` 原先豁免（「只显示不拦」），因为**在 CI 第一次真正编译 Windows 代码之前，那些警告根本看不到、也就无法逐条排查**。Windows 侧全绿之后才纳入。这是「在正确的层解决问题」的一个具体形态：那条豁免不是偷懒，是在缺少 runner 的前提下唯一能做的事；前提变了就该撤掉。
 
 ## 为自己的调用点设计
 
@@ -165,9 +167,9 @@
 
 | 约定 | 机制 | 覆盖范围 |
 | --- | --- | --- |
-| 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 四种编译器 × debug/release（同上，待 Push Mirror 配好） |
-| 零警告 | `set_warnings(..., "error")` | GCC / Clang；MSVC 只显示不拦 |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | **需要 GitHub 托管 runner；主仓库在自建 Gitea 上，要先配 Push Mirror，见路线图 5.2。配好前 CI 实际没有运行过。** 覆盖 Linux GCC/Clang、macOS Clang、Windows MSVC × debug/release；MinGW、Windows x86、Linux arm64、最低版本编译器未覆盖 |
+| 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 四种编译器 × debug/release（同上） |
+| 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | **已在 GitHub 上实际运行，10/10 绿。** 覆盖 Linux GCC/Clang、macOS Clang、Windows MSVC × debug/release；MinGW 由本机交叉编译覆盖（见上）；Windows x86、Linux arm64、最低版本编译器（GCC 4.8.1 / VS2015）仍未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上 |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
