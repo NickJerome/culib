@@ -77,22 +77,18 @@ std::ostream& operator<<(std::ostream& os, string_view value);
 ```cpp
 namespace wavvix {
 
-enum class parse_error {
-    empty,           // 输入为空或只有空白
-    not_a_number,    // 有不属于数字的字符，或没有完全消费掉输入
-    out_of_range,    // 超出目标类型的表示范围
-};
-const char* parse_error_name(parse_error value) noexcept;
-
 // 字符串 -> T。整个输入必须被完全消费，不接受前后空白（要空白自己先 trim）。
 // T 只支持整数、浮点、bool；其他类型用 static_assert 给出明确提示。
+// 失败时 kind 一律是 error_kind::invalid_argument，消息里带上出错的那段输入，例如
+//   "80x" 不是合法整数        /  "99999" 超出 int 的范围  /  输入为空
+// 调用方要说明「这是哪个字段」时，在自己那一层把上下文拼进去，见 CLAUDE.md「错误处理」。
 template <typename T>
-result<T, parse_error> lexical_cast(string_view text);
+result<T> lexical_cast(string_view text);
 
 // 整数专用：指定进制，base 为 0 时按前缀判断（0x 十六进制、0 八进制、否则十进制）。
 // T 不是整数类型时 static_assert 报错。
 template <typename T>
-result<T, parse_error> lexical_cast(string_view text, int base);
+result<T> lexical_cast(string_view text, int base);
 
 // 另一个方向：数值 -> 字符串。这个方向不会失败，所以直接返回值，不包 result。
 std::string to_string(long long value);
@@ -112,7 +108,8 @@ size_t to_chars(double value, char* buffer, size_t capacity) noexcept;
 - **两个方向不对称，这是故意的。** 解析可能失败，所以返回 `result`；格式化不会失败，所以直接返回 `std::string`。强行对称（让 `lexical_cast<std::string>(42)` 也返回 `result`）会迫使调用方检查一个永远成功的结果。名字 `to_string` 和 `std::to_string` 一致，不需要额外解释。
 - **严格解析**，和 `strtol` 的默认行为相反：`lexical_cast<int>("12abc")` 失败，`lexical_cast<int>(" 12")` 失败，`lexical_cast<int>("")` 失败。理由是「没有意外」——宽松解析会把 `--port=80x` 静默当成 80。
 - `lexical_cast<bool>` 接受 `true/false/1/0/yes/no/on/off`，大小写不敏感。
-- 错误类型用 `enum class` 而不是默认的 `error`：按约定，失败很常见且对性能敏感的接口用枚举，这样 `result<int, parse_error>` 是 8 字节、走寄存器返回（见 result 设计 11.2）。
+- **错误类型用默认的 `error`，不另开 `parse_error` 枚举。** 曾经设计成枚举，理由是「失败很常见且对性能敏感」，这样 `result<int, parse_error>` 是 8 字节、走寄存器返回。量完之后撤掉了：成功路径 11.4 对 8.5 ns 且两边都是 0 分配，最坏的失败路径 120.8 对 8.2 ns——绝对值 120 ns，要吃掉 1% 的核得每秒失败 8.3 万次，三个场景里没有这样的地方（数据见 `CLAUDE.md`「错误处理」）。换来的是 `WAVVIX_TRY` 在层边界上不用转换，以及调用点不必先判断「这个接口算不算性能敏感」。
+- **丢掉的那一项是「按失败种类分支」**：`empty` / `not_a_number` / `out_of_range` 都塌成 `invalid_argument`，想区分只能解析消息字符串。可接受，因为后两者本来没人会分开处理（都是「坏输入，告诉用户」），而第一个在调用点一行就能拿回来而且更好读：`if (v.empty()) return use_default();` 写在 `lexical_cast` 之前。
 - **和 boost 的两处不同**：boost 抛 `bad_lexical_cast`（culib 不抛异常，改成 `result`）；boost 支持任意有流操作符的类型对（culib 只支持数值和 bool，不做泛型容器和自定义类型）。
 
 **要定的事**
