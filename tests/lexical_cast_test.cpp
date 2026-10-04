@@ -1,6 +1,7 @@
 #include <culib/lexical_cast.h>
 #include <culib/test.h>
 
+#include <cstddef>
 #include <limits>
 #include <string>
 
@@ -174,6 +175,37 @@ TEST(lexical_cast, formats_integers) {
     EXPECT(to_string((std::numeric_limits<unsigned long long>::max)()), ==, "18446744073709551615");
     EXPECT(to_string(true), ==, "true");
     EXPECT(to_string(false), ==, "false");
+}
+
+// 上面那条测试全都写了 static_cast<long long>，于是**把一个真 bug 藏了两天**：
+// to_string 只有 long long / unsigned long long / double / bool 四个重载，对 int 来说
+// 四条转换路等价，所以 to_string(42) 有歧义、根本编译不过——而最常见的调用恰好就是它。
+// 测试是照着实现写的，不是照着用法写的，所以没发现。这一条专门不写任何 cast。
+TEST(lexical_cast, formats_every_arithmetic_type_without_a_cast) {
+    const short tiny = -7;
+    const int whole = 42;
+    const long wide = -42L;
+    const unsigned positive = 3000000000u;
+    const std::size_t sized = 99;
+    const float single = 0.5f;
+
+    EXPECT(to_string(tiny), ==, "-7");
+    EXPECT(to_string(whole), ==, "42");
+    EXPECT(to_string(wide), ==, "-42");
+    EXPECT(to_string(positive), ==, "3000000000");
+    EXPECT(to_string(sized), ==, "99");
+    EXPECT(to_string(single), ==, "0.5");
+
+    // 字面量也一样，这是最常见的写法
+    EXPECT(to_string(42), ==, "42");
+    EXPECT(to_string(-1), ==, "-1");
+
+    // bool 仍然走非模板重载（精确匹配优先），所以是 "true" 而不是 "1"
+    EXPECT(to_string(true), ==, "true");
+
+    char buffer[32];
+    const std::size_t written = to_chars(whole, buffer, sizeof buffer);
+    EXPECT(std::string(buffer, written), ==, "42");
 }
 
 TEST(lexical_cast, formats_doubles_shortest_and_round_trips) {

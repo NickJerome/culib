@@ -77,36 +77,29 @@ jobs:
       - name: configure
         run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
 
-      # -w 显示警告。GCC / Clang 上 xmake.lua 已把警告设为错误，所以这一步同时是零警告检查；
-      # MSVC 的 /W4 警告集尚未逐条排查，那里只显示不拦（见 xmake.lua 里的注释）。
-      # src/test_win.cpp 和 /Gy 这条路径在此之前从未被任何机器编译过。
-      # 构建失败时把编译器输出当成 ::error:: 发出来。
-      # 为什么要这么绕：job 日志要仓库 admin 权限才能下载，而 run: 步骤里编译器的
-      # 原始警告和错误不会自动变成 annotation——所以不这样做的话，一次 MSVC 失败
-      # 从公开 API 那边看只有「exit code 1」，没法诊断。
+      # 下面四步都经过 report-failure.sh：失败时把完整输出发成 annotation，否则从公开
+      # API 那边看只有「exit code 1」，连哪个文件哪一行都不知道。原因写在那个脚本里。
+      # 分成四步而不是合成一步，是因为「哪一步红的」本身就是诊断信息。
+
+      # -w 显示警告。xmake.lua 已把警告设为错误（三个平台都是），所以这同时是零警告检查。
       - name: build library
         shell: bash
-        run: |
-          set -o pipefail
-          if xmake -w -y 2>&1 | tee /tmp/build.log; then exit 0; fi
-          echo "::group::编译输出"
-          cat /tmp/build.log
-          echo "::endgroup::"
-          grep -iE "error|warning" /tmp/build.log | head -40 | while IFS= read -r line; do
-            echo "::error::$line"
-          done
-          exit 1
+        run: bash .github/report-failure.sh xmake -w -y
 
       - name: run tests
+        shell: bash
         # 有失败时 -v 打印完整报告
-        run: xmake test -v
+        run: bash .github/report-failure.sh xmake test -v
 
-      # 示例默认不参与构建，这里显式编译：接口改了而示例没跟着改时就会在这一步失败
+      # 示例默认不参与构建，这里显式编译：接口改了而示例没跟着改时就会在这一步失败。
+      # 这一步抓到过 examples/os.cpp 的 std::fopen 在 MSVC 上是 C4996。
       - name: build examples
-        run: xmake build -w -y -g examples
+        shell: bash
+        run: bash .github/report-failure.sh xmake build -w -y -g examples
 
       - name: run examples
-        run: xmake run example_result
+        shell: bash
+        run: bash .github/report-failure.sh xmake run example_result
 
   # 确认 culib 被当作源码依赖引入时能正常工作。
   # 这覆盖 xmake.lua 里 is_main_project 为假的那条分支（不强加 -Werror、不构建测试和示例），

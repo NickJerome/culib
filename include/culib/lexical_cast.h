@@ -56,6 +56,22 @@ struct is_character_type {
         std::is_same<T, char16_t>::value || std::is_same<T, char32_t>::value;
 };
 
+// 把任意算术类型收敛到 to_string / to_chars 真正实现的那三种之一。
+// bool 不在这里：它对 to_string(bool) 是精确匹配，走非模板重载。
+template <typename T>
+struct widen {
+    static_assert(std::is_arithmetic<T>::value,
+                  "to_string and to_chars accept arithmetic types only");
+    static_assert(!is_character_type<T>::value,
+                  "to_string refuses char-like types: to_string('A') is ambiguous "
+                  "(\"65\", or \"A\"?). Cast to int for the number, or use "
+                  "std::string(1, c) for the character");
+    using type = typename std::conditional<
+        std::is_floating_point<T>::value, double,
+        typename std::conditional<std::is_signed<T>::value, long long,
+                                  unsigned long long>::type>::type;
+};
+
 template <typename T>
 struct cast_tag {
     using type = typename std::conditional<
@@ -142,6 +158,18 @@ std::string to_string(unsigned long long value);
 std::string to_string(double value);          // 不受 locale 影响，保证往返，见设计文档
 std::string to_string(bool value);            // "true" / "false"
 
+// int、long、unsigned、float 等等直接传就行，不用在调用点写 static_cast。
+//
+// 为什么要有这一个：上面四个重载对 int 来说**都是**「需要一次转换」——转成 long long、
+// unsigned long long、double、bool 是同一级别的四条路，所以 to_string(42) 有歧义、
+// 编译不过。这个模板对它们是精确匹配，于是接住那些原本歧义的类型，收敛到其中一条路上；
+// long long / unsigned long long / double / bool 这些精确匹配的类型仍然走上面的非模板
+// 重载（非模板胜过模板），行为和之前一字不差。
+template <typename T>
+std::string to_string(T value) {
+    return to_string(static_cast<typename detail::widen<T>::type>(value));
+}
+
 // 需要反复产出结果时用这三个，写进调用方的缓冲区，不分配。
 // 返回写入的字节数；容量不足时返回 0 且不写入任何东西。
 // 和 std::to_chars 一样**不写 '\0'**，所以要用返回的长度，不能直接当 C 字符串。
@@ -149,5 +177,15 @@ std::string to_string(bool value);            // "true" / "false"
 std::size_t to_chars(long long value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(unsigned long long value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(double value, char* buffer, std::size_t capacity) noexcept;
+
+// 同上，接住 int 之类原本有歧义的类型。
+template <typename T>
+std::size_t to_chars(T value, char* buffer, std::size_t capacity) noexcept {
+    static_assert(!std::is_same<T, bool>::value,
+                  "to_chars has no bool overload on purpose: to_string(bool) gives "
+                  "\"true\" / \"false\", and silently writing \"1\" here instead would "
+                  "make the two disagree. Write the word yourself");
+    return to_chars(static_cast<typename detail::widen<T>::type>(value), buffer, capacity);
+}
 
 }  // namespace wavvix

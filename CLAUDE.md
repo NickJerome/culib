@@ -122,6 +122,7 @@
 
 - **一段代码如果是为了让某个「类型特征查询」或 SFINAE 上下文成立而存在，而不是为了让某个具体调用成立，先问谁在查。** result 曾有 50 行宏生成的空基类，唯一受益者是 `std::is_copy_constructible<result<...>>` 的查询者——而这个库里没有查询者。删掉后误用仍是编译错误，报错信息还更清楚。
 - **同一把尺子用在测试上**：当时 `result_test.cpp` 里有 9 条 `static_assert` 在测这个没人需要的性质，一并删掉了。
+- **测试要照着用法写，不是照着实现写。** 照着实现写的测试会把 bug 一起藏起来：`to_string` 只有 `long long` / `unsigned long long` / `double` / `bool` 四个重载，于是 `to_string(42)` 四条转换路等价、**有歧义、根本编译不过**——而测试每一行都写了 `static_cast<long long>(...)`，调用点也都带着 cast，所以这个「最常见的调用写不出来」的毛病活了下来，最后是一个新示例里一句 `to_string(n)` 撞出来的（见 [lexical_cast 设计](docs/superpowers/specs/2026-10-04-lexical_cast-design.md) 3.7）。**判据：这条测试里的写法，和你希望使用方写的是同一个写法吗？** 不是就说明测试在替实现辩护。这也是 `examples/` 比单元测试更容易发现接口问题的原因——示例没法作弊，它必须按用法写。
 - **每一处不直观的实现，要能一句话说出「为谁换来了什么」，而那个「什么」最好能测出来。** 测不出来的收益通常不存在。result 保留平凡/非平凡两个存储特化，是因为能拿出和手写结构逐条相同的汇编；删掉四个空基类，是因为受益者是假想的泛型代码。
 - **先有消费者，再有模块——但规则的强度要随成本缩放。** 没有调用方的模块没有反馈回路，它的 API 只是猜测。`variant` 就是这么被否掉的（见 `docs/superpowers/specs/2026-10-03-variant-design.md`）。确实想提前造时，优先选 API 已被外部定死的东西（标准库设施、协议实现）——没有设计自由度就没有设计风险。
 
@@ -170,7 +171,8 @@
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 四种编译器 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
 | 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | **已在 GitHub 上实际运行，10/10 绿。** 覆盖 Linux GCC/Clang、macOS Clang、Windows MSVC × debug/release；MinGW 由本机交叉编译覆盖（见上）；Windows x86、Linux arm64、最低版本编译器（GCC 4.8.1 / VS2015）仍未覆盖 |
-| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上 |
+| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上，**外加本机 MinGW 交叉编译全部示例**（见下） |
+| CI 失败能诊断 | `.github/report-failure.sh`，把失败命令的输出发成 `::error::` annotation | 编译 / 测试 / 示例四个步骤全经过它。**不这么做的话从公开 API 看只有「exit code 1」**——job 日志要仓库 admin 权限，而 `run:` 步骤里编译器的原始诊断不会自动变成 annotation |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
@@ -189,11 +191,20 @@ for f in src/*.cpp tests/*.cpp; do
 done
 x86_64-w64-mingw32-g++ -static -o /tmp/winbuild/culib_test.exe /tmp/winbuild/*.o
 LANG=C.UTF-8 WINEDEBUG=-all wine /tmp/winbuild/culib_test.exe
+
+# 示例也要编：真正把 MSVC 搞红的那次，错在 examples/os.cpp 而不是 src/ 里。
+# 链接示例时要排掉 tests/main.cpp.o（它带着测试程序的 main）。
+for f in examples/*.cpp; do
+    x86_64-w64-mingw32-g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude \
+        -static -o "/tmp/winbuild/example_$(basename $f .cpp).exe" "$f" /tmp/winbuild/lib/*.o
+done
 ```
 
 **`LANG=C.UTF-8` 不能省**：wine 要靠 Unix locale 才能把 UTF-16 文件名映射到文件系统，空 locale 下中文文件名的 `CreateFileW` 会返回 `ERROR_FILE_NOT_FOUND`。这一点用绕开 culib 的裸 `CreateFileW` 程序确认过，是 wine 的局限而不是库的 bug——**遇到只在某个环境里失败的测试，先确认那是被测代码的问题还是环境的问题。**
 
 MinGW **不能代替 MSVC**：头文件、`__declspec`、警告集都不同。但它能抓到绝大多数「API 用错、include 漏了、类型不匹配」，而那些正是从未编译过的代码里最常见的毛病。
+
+**这条限制已经兑现过一次**：`examples/os.cpp` 里一个 `std::fopen` 在 MSVC 上是 C4996（CRT 把整个 `fopen` / `sprintf` / `strcpy` / `getenv` / `strtok` / `localtime` 一族标成了弃用，建议改用 `_s` 版本），开了警告即错误就编不过；MinGW 没有这个弃用，所以本机全绿。**所以在 Windows 上会被编译的文件里，别用那一族函数**——culib 自己的接口能干的事就用自己的（那次的改法是 `std::fopen` → `fs::append_file`），真要用标准 C 的就先确认它不在弃用名单里（`printf` / `fprintf` / `fflush` 不在）。
 
 「性能主张有依据」和「关异常 / RTTI 可用」是剩下的两处缺口：有约定、有人工流程、没有自动机制。前者大概也只能人工（汇编对比要人读）；后者容易自动化，加一格 `-fno-exceptions -fno-rtti` 的编译即可。
 

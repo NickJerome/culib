@@ -33,6 +33,10 @@ std::size_t to_chars(long long value, char* buffer, std::size_t capacity) noexce
 std::size_t to_chars(unsigned long long value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(double value, char* buffer, std::size_t capacity) noexcept;
 
+// 接住 int / long / unsigned / float 等等，收敛到上面那几个之一，见 3.7
+template <typename T> std::string to_string(T value);
+template <typename T> std::size_t to_chars(T value, char* buffer, std::size_t capacity) noexcept;
+
 }  // namespace wavvix
 ```
 
@@ -97,7 +101,52 @@ lexical_cast refuses char-like types: casting "65" to char is ambiguous
 
 教训归到「为自己的调用点设计」那条：**为一个假想的编译器行为写的代码，和为假想的泛型用户写的代码是同一类问题**——先验证它真的存在。
 
-### 3.7 错误消息带范围，不带类型名
+### 3.7 `to_string(42)` 原本编译不过（已修）
+
+四个重载是 `long long` / `unsigned long long` / `double` / `bool`。传一个 `int` 进去，**四条路都是「一次转换」、级别完全相同**，于是重载决议判定有歧义：
+
+```
+error: call of overloaded 'to_string(int)' is ambiguous
+note: candidate: 'std::string wavvix::to_string(long long int)'
+note: candidate: 'std::string wavvix::to_string(long long unsigned int)'
+note: candidate: 'std::string wavvix::to_string(double)'
+note: candidate: 'std::string wavvix::to_string(bool)'
+```
+
+也就是说**最常见的那个调用从来没能编译过**，`short`、`long`、`unsigned`、`std::size_t`、`float` 同样。这同时违反「简单的事一行完成」和「难以误用」。
+
+**为什么没被发现：测试是照着实现写的，不是照着用法写的。** `formats_integers` 那条测试每一行都写了 `static_cast<long long>(...)`，`src/fs_win.cpp` 里也写的是 `to_string(static_cast<unsigned long long>(code))`。所有调用点都恰好带着 cast，于是歧义永远不出现。真正撞上它的是 `examples/os.cpp` 里一句 `to_string(n)`（`n` 是 `long`）——**一个新示例比整套单元测试更早发现问题，因为它是按用法写的。**
+
+修法是加一个模板重载：
+
+```cpp
+template <typename T>
+std::string to_string(T value) {
+    return to_string(static_cast<typename detail::widen<T>::type>(value));
+}
+```
+
+`widen` 用两层 `std::conditional` 把类型收敛成 `double` / `long long` / `unsigned long long` 三者之一。关键是**不用改原来四个重载、也不新增任何 `.cpp` 符号**：
+
+- 对 `int` 这些原本有歧义的类型，模板是精确匹配，所以它赢；
+- 对 `long long` / `double` / `bool` 这些本来就精确匹配的类型，**非模板胜过模板**，仍然走原来那条路，行为一字不差（`to_string(true)` 还是 `"true"` 而不是 `"1"`）；
+- 模板体内那次调用也走非模板，不会递归。
+
+`to_chars` 有同样的毛病，同样修。差别是它**故意没有 bool 版本**，而 `widen<bool>` 会算出 `unsigned long long`、悄悄写出 `"1"`，和 `to_string(bool)` 的 `"true"` 打对台——所以模板里加了一条 `static_assert` 把 bool 挡掉，而不是让它默默走数字路径。
+
+三种误用的报错（实测）：
+
+| 写法 | 报错 |
+| --- | --- |
+| `to_string('A')` | `to_string refuses char-like types: to_string('A') is ambiguous ("65", or "A"?). Cast to int for the number, or use std::string(1, c) for the character` |
+| `to_chars(true, buf, n)` | `to_chars has no bool overload on purpose: to_string(bool) gives "true" / "false", and silently writing "1" here instead would make the two disagree. Write the word yourself` |
+| `to_string(std::string("x"))` | `to_string and to_chars accept arithmetic types only` |
+
+拒绝 char 一族和 `lexical_cast` 保持一致（见 3.2），理由是同一个：`to_string('A')` 是 `"65"` 还是 `"A"` 没有不让人猜的答案。
+
+**留下的教训写进了回归测试**：新增的 `formats_every_arithmetic_type_without_a_cast` 整条不写任何 `static_cast`，并在注释里说明原因——照着实现写的测试会把这种 bug 一起藏起来。
+
+### 3.8 错误消息带范围，不带类型名
 
 `"99999" 超出 -32768..32767 的范围`，不是 `"99999" 超出 short 的范围`。范围对读者更有用，而且省掉一整套 `type_name<T>` 的特化样板。
 
@@ -110,6 +159,8 @@ lexical_cast refuses char-like types: casting "65" to char is ambiguous
 90 个测试通过（新增 13 个）：整数边界（含 `LLONG_MIN` / `ULLONG_MAX`）、严格拒绝、`out_of_range` 与 `invalid_argument` 的区分、无符号拒负、进制（2 / 8 / 10 / 16 / 36 / 前缀检测 / 非法 base）、bool 的八个词 × 大小写、浮点的合法与非法形状、特殊值、整数与浮点格式化、`to_chars` 的容量边界、以及「自己的输出能被自己读回来」。
 
 头文件单独 `-fsyntax-only` 通过。`examples/lexical_cast.cpp` 可编译运行。
+
+**后来补了第 14 个**：`formats_every_arithmetic_type_without_a_cast`，整条不写 `static_cast`，钉住 3.7 修掉的那个歧义。GCC 14.2 / clang 19 × debug/release 都跑过，MinGW-w64 + wine 也跑过。
 
 ### 4.2 往返
 
