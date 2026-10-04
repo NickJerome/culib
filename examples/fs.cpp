@@ -42,12 +42,12 @@ int main() {
 
     // 建一个临时工作区，defer 保证不管从哪条路径返回都删掉
     const std::string root = fs::join(fs::temp_directory().value_or("/tmp"), "culib_fs_example");
-    fs::remove_directory(root, fs::recursive::yes);
+    (void)fs::remove_directory(root, fs::recursive::yes);   // 上次留下的残骸，失败也无妨
     if (fs::create_directory(root, fs::recursive::yes).is_err()) {
         std::printf("建不了临时目录，跳过磁盘部分\n");
         return 0;
     }
-    defer { fs::remove_directory(root, fs::recursive::yes); };
+    defer { (void)fs::remove_directory(root, fs::recursive::yes); };
     std::printf("\n工作区：%s\n", root.c_str());
 
     std::printf("\n整文件读写（二进制，不做换行转换）：\n");

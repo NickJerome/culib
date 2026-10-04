@@ -36,10 +36,13 @@ public:
     explicit scratch(const char* name) {
         const result<std::string> base = fs::temp_directory();
         root_ = fs::join(base.value_or("/tmp"), std::string("culib_fs_test_") + name);
-        fs::remove_directory(root_, fs::recursive::yes);   // 上次跑崩了留下的残骸
+        // 上次跑崩了留下的残骸。清理是尽力而为，失败了也没别的办法，所以显式丢弃
+        // 返回值——result 带 nodiscard，裸调用在 clang 下是编译错误（GCC 的 C++11
+        // 模式没有这个警告，所以本机测不出来，是 CI 第一次跑才抓到的）。
+        (void)fs::remove_directory(root_, fs::recursive::yes);
         ok_ = fs::create_directory(root_, fs::recursive::yes).is_ok();
     }
-    ~scratch() { fs::remove_directory(root_, fs::recursive::yes); }
+    ~scratch() { (void)fs::remove_directory(root_, fs::recursive::yes); }
     const std::string& root() const { return root_; }
     std::string at(string_view relative) const { return fs::join(root_, relative); }
     bool ok() const { return ok_; }
