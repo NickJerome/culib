@@ -69,7 +69,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: xmake-io/setup-xmake@v1
+      # 注意仓库名是 github-action-setup-xmake，不是 setup-xmake（后者不存在）
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
 
@@ -104,7 +105,8 @@ jobs:
         with:
           path: culib
 
-      - uses: xmake-io/setup-xmake@v1
+      # 注意仓库名是 github-action-setup-xmake，不是 setup-xmake（后者不存在）
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
 
