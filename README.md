@@ -43,10 +43,10 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | term | 终端彩色输出：前景色、背景色，自动判断是否输出颜色，支持 Windows 控制台 | 第一程（可选） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
-| thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 第二程 |
+| 调度器与 I/O | vCPU 模型 + 四个事件后端（`io_uring` / `epoll` / `kqueue` / `IOCP`）一套抽象；协程感知的 `mutex` / `condition_variable` / `semaphore` / `rwlock` | 第二程：**协程是并发模型，取代线程池**，见 [调度器设计](docs/superpowers/specs/2026-10-04-scheduler-design.md) |
 | log | 轻量级日志 | 第二程 |
 | 配置文件 | ini 或 toml 子集 | 第二程 |
-| coroutine | 有栈协程，汇编换栈。**这一程只做原语**（`resume` / `yield` / `inside`），调度器和 I/O 跟着 `net` 一起设计 | **已完成**（原语）：x86_64 四种 + arm64 + MinGW x86 共五个目标；**MSVC x86 待补**，要先有 CI 格子 |
+| coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | **原语已完成**：x86_64 四种 + arm64 + MinGW x86 共五个目标；**MSVC x86 待补**，要先有 CI 格子 |
 | bytes | 字节缓冲与字节序转换 | 第三程 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 第三程 |
 | fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 走内核通知，低延迟但**网络挂载上收不到远程改动**；`poller` 走 stat 轮询，任何文件系统可用。要能被协程调度器唤醒，所以排在协程之后 | 第三程 |
