@@ -11,6 +11,10 @@
 //     wavvix::result<int> port = parse_port(text);
 //     if (port.is_err()) return std::move(port).error();
 //
+// std::move 不能省：没有它取到的是 error() 的左值重载，错误会被复制一次。
+// 错误类型只能移动时漏写是编译错误，可复制时（默认的 error 就是）却编译通过且零警告，
+// 只是静默多复制一次说明字符串——所以一律写成 std::move(x).error()，不留第二种写法。
+//
 // 多出来的那一行换到的是「每一处 return 都看得见」。库里曾经有个 WAVVIX_TRY 宏，
 // 展开后藏着一个 return，看起来却像变量声明——已删除，理由见 result 设计文档 11.10。
 // result<void> 默认构造表示成功。

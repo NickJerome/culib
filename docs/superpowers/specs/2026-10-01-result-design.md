@@ -169,7 +169,10 @@ result<config> load(const std::string& path) {
 }
 ```
 
-- `std::move(x).error()` 走右值重载，错误被移出来，不会多复制一次说明字符串；错误类型只能移动（如 `std::unique_ptr`）时也能用。
+- **`std::move` 不能省，而且漏写不一定报错。** `error()` 有左值 / const / 右值三个重载，`x.error()` 在左值上拿到 `E&`，返回的 result 会复制构造错误。实测（长于 SSO 的消息、全局 `operator new` 计数）：`return x.error()` 两次分配，`return std::move(x).error()` 一次。这里没有 RVO 可用——错误是 `x` 的子对象而不是返回值本身。
+  - 错误类型只能移动（`std::unique_ptr`）时漏写是编译错误：`could not convert 'r.error()' from 'std::unique_ptr<int>' to ...`。
+  - 错误类型可复制（默认的 `error`）时漏写**编译通过、`-Wall -Wextra -Wpedantic` 零警告**，只是静默多复制一次说明字符串。这是「同一个写法在一半类型上报错、在另一半上静默变慢」，所以全库统一写 `std::move(x).error()`，不留第二种写法。
+  - `std::move(x.error())` 的分配次数相同、功能等价，仍然用 `std::move(x).error()`：和标准库一个形状（`std::move(opt).value()`），而且它表达的是「整个 result 被消费掉了」——移走之后 `x` 的消息就是空的，`return` 必须紧跟其后。
 - **本节曾经描述一个 `WAVVIX_TRY` 宏，它被实现过又被删除了**，完整理由见 11.10。一句话：它展开后藏着一个 `return`，写出来却像变量声明。
 
 ## 5. 规则
