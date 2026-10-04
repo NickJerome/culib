@@ -46,7 +46,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 第二程 |
 | log | 轻量级日志 | 第二程 |
 | 配置文件 | ini 或 toml 子集 | 第二程 |
-| coroutine | 有栈协程，汇编换栈。**这一程只做原语**（`resume` / `yield` / `inside`），调度器和 I/O 跟着 `net` 一起设计 | 进行中：x86_64（Linux/macOS/MinGW/MSVC）、arm64 已就位，**32 位 x86 待补** |
+| coroutine | 有栈协程，汇编换栈。**这一程只做原语**（`resume` / `yield` / `inside`），调度器和 I/O 跟着 `net` 一起设计 | **已完成**（原语）：x86_64 四种 + arm64 + MinGW x86 共五个目标；**MSVC x86 待补**，要先有 CI 格子 |
 | bytes | 字节缓冲与字节序转换 | 第三程 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 第三程 |
 | fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 走内核通知，低延迟但**网络挂载上收不到远程改动**；`poller` 走 stat 轮询，任何文件系统可用。要能被协程调度器唤醒，所以排在协程之后 | 第三程 |
