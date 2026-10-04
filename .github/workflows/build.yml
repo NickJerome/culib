@@ -127,6 +127,11 @@ jobs:
           cat > consumer/src/main.cpp <<'CPP'
           #include <culib/culib.h>
           #include <cstdio>
+          #include <string>
+          #include <string_view>
+          #include <type_traits>
+          #include <utility>
+          #include <vector>
 
           static wavvix::result<int> checked_port(int port) {
               if (port < 1 || port > 65535) {
@@ -135,20 +140,37 @@ jobs:
               return port;
           }
 
+          // 错误传播手写 if，不用宏：曾经有个 WAVVIX_TRY，因为藏了一个 return 被删掉了
           static wavvix::result<int> doubled_port(int port) {
-              WAVVIX_TRY(const int checked, checked_port(port));
-              return checked * 2;
+              wavvix::result<int> checked = checked_port(port);
+              if (checked.is_err()) return std::move(checked).error();
+              return checked.value() * 2;
           }
 
           int main() {
               defer { std::printf("done\n"); };
               wavvix::stopwatch watch;
-              auto port = doubled_port(8080);
+
+              // 第一程的五个模块各用一下，确认它们在「C++17 使用方」这一侧也能用
+              std::string_view standard = "from std::string_view";
+              wavvix::string_view ours = standard;
+              static_assert(!std::is_same<wavvix::string_view, std::string_view>::value,
+                            "wavvix::string_view must stay a distinct type from std::string_view");
+
+              const wavvix::result<int> parsed = wavvix::lexical_cast<int>("42");
+              const std::vector<wavvix::string_view> parts = wavvix::split("a,b,c", ',');
+              const wavvix::result<std::string> temporary = wavvix::fs::temp_directory();
+              const wavvix::string_view suffix = wavvix::fs::extension("archive.tar.gz");
+
+              const wavvix::result<int> port = doubled_port(8080);
               if (port.is_err()) {
                   std::fprintf(stderr, "%s\n", port.error().to_string().c_str());
                   return 1;
               }
-              std::printf("culib %s port %d in %s\n", wavvix::version(), port.value(),
+              std::printf("culib %s port %d view %zu parsed %d parts %zu temp %s ext %s in %s\n",
+                          wavvix::version(), port.value(), ours.size(), parsed.value_or(-1),
+                          parts.size(), temporary.value_or("?").c_str(),
+                          suffix.to_string().c_str(),
                           wavvix::format_duration(watch.elapsed()).c_str());
               return doubled_port(-1).is_err() ? 0 : 1;
           }
