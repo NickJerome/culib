@@ -25,6 +25,7 @@
 
 #include <culib/result.h>
 #include <culib/string_view.h>
+#include <culib/time.h>
 
 #include <cstdint>
 #include <string>
@@ -71,7 +72,9 @@ bool exists(string_view path) noexcept;
 bool is_file(string_view path) noexcept;
 bool is_directory(string_view path) noexcept;
 result<std::uint64_t> file_size(string_view path);
-result<std::int64_t> last_write_time(string_view path);   // Unix 时间戳，秒
+result<timestamp> last_write_time(string_view path);
+// 秒精度：三个平台的底层接口都只保证到秒（POSIX 的 st_mtime、Windows 的
+// FILETIME 虽然是 100 ns 刻度但文件系统未必记那么细），不假装更准。
 
 // --- 整文件读写 ---------------------------------------------------------------
 

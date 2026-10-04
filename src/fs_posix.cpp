@@ -121,10 +121,10 @@ result<std::uint64_t> file_size(string_view path) {
     return static_cast<std::uint64_t>(info.st_size);
 }
 
-result<std::int64_t> last_write_time(string_view path) {
+result<timestamp> last_write_time(string_view path) {
     struct stat info;
     if (!stat_path(path, info)) return from_errno("取修改时间", path, errno);
-    return static_cast<std::int64_t>(info.st_mtime);
+    return timestamp::from_unix_seconds(static_cast<std::int64_t>(info.st_mtime));
 }
 
 // --- 整文件读写 ---------------------------------------------------------------

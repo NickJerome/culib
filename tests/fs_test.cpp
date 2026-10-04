@@ -200,9 +200,10 @@ TEST(fs, queries_existence_and_kind) {
     EXPECT(fs::is_file(area.at("nothing")), ==, false);
     EXPECT(fs::is_directory(area.at("nothing")), ==, false);
 
-    const result<std::int64_t> when = fs::last_write_time(file);
+    const result<wavvix::timestamp> when = fs::last_write_time(file);
     EXPECT(when.is_ok(), ==, true);
-    EXPECT(when.value_or(0) > 1600000000, ==, true);   // 2020 年之后，确认不是 0 或垃圾
+    // 2020 年之后，确认不是纪元或垃圾。单位写在类型里，所以不会拿秒当毫秒
+    EXPECT(when.value_or(wavvix::timestamp()).unix_seconds() > 1600000000, ==, true);
 }
 
 TEST(fs, creates_directories_idempotently) {

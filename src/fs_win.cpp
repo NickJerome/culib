@@ -159,14 +159,14 @@ result<std::uint64_t> file_size(string_view path) {
     return static_cast<std::uint64_t>(size.QuadPart);
 }
 
-result<std::int64_t> last_write_time(string_view path) {
+result<timestamp> last_write_time(string_view path) {
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
     WIN32_FILE_ATTRIBUTE_DATA data;
     if (!::GetFileAttributesExW(wide.value().c_str(), GetFileExInfoStandard, &data)) {
         return from_last_error("取修改时间", path, ::GetLastError());
     }
-    return to_unix_seconds(data.ftLastWriteTime);
+    return timestamp::from_unix_seconds(to_unix_seconds(data.ftLastWriteTime));
 }
 
 // --- 整文件读写 ---------------------------------------------------------------

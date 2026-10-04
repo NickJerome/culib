@@ -35,14 +35,14 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
 | base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（`string_view`、`optional`、`make_unique` 等） | 进行中：`defer`、版本信息、`result`、`string_view`、`optional` 已完成；`make_unique` 按需再加 |
-| test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 `term`；149 个测试在三平台 CI 上全绿） |
+| test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 `term`；164 个测试在三平台 CI 上全绿） |
 | lexical_cast | 字符串 ⇄ 数值 / 布尔。`lexical_cast<T>` 严格解析（整个输入必须被消费）、`to_string` / `to_chars` 反向 | **已完成** |
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version`；位置参数、GNU 风格重排、`set()` 给配置文件用 | **已完成** |
 | strings | 操作字符串的自由函数：split / join / trim / 大小写 / replace、UTF-8 ⇄ UTF-16 转换。**不是字符串类**，全库一律用 `std::string`；大小写只做 ASCII，格式化另行缩范围 | **已完成**（East Asian Width 推后） |
 | fs | 路径拆分与拼接、文件与目录操作、整文件读写、目录遍历（C++11 没有 `std::filesystem`） | **已完成** |
 | term | 终端彩色输出：前景色、背景色，自动判断是否输出颜色，支持 Windows 控制台 | 第一程（可选） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
-| time | 时间戳、日期时间格式化、高精度计时（`stopwatch` 秒表） | 第二程：`stopwatch` 已完成 |
+| time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
 | thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 第二程 |
 | log | 轻量级日志 | 第二程 |
 | 配置文件 | ini 或 toml 子集 | 第二程 |
