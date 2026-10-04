@@ -103,6 +103,10 @@ public:
     const E& error() const& noexcept { check_error(); return this->error_; }
     E&& error() && noexcept { check_error(); return std::move(this->error_); }
 
+    // 失败时返回 fallback。**不能写 value_or({})**：花括号初始化列表推导不出 U，
+    // 报错是「couldn't deduce template parameter 'U'」。写出类型即可，如
+    // value_or(std::vector<std::string>())。std::optional::value_or 有同样的限制，
+    // 不加非模板重载绕过它：那会让 value_or(某个左值) 无条件多拷一次 fallback。
     template <typename U>
     T value_or(U&& fallback) const& {
         return is_ok() ? this->value_ : static_cast<T>(std::forward<U>(fallback));
