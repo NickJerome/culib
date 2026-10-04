@@ -6,4 +6,5 @@
 #include <culib/defer.h>
 #include <culib/result.h>
 #include <culib/stopwatch.h>
+#include <culib/string_view.h>
 #include <culib/version.h>
