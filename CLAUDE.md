@@ -111,6 +111,7 @@
 - **C++11 合规**：MSVC 没有 C++11 模式（最低即 C++14），因此以 GCC / Clang 在 `-std=c++11` 下的编译结果作为合规标准。
 - **公共类型的身份不能随语言标准变化**：culib 自己按 C++11 编译，使用方可以用更高标准，所以**不要把自带设施在高标准下别名到标准库对应物**（如 `using string_view = std::string_view`）——那会让同一个名字在两边是不同类型，以它为参数的公共函数签名不匹配、链接失败。要兼容就加条件编译的转换构造函数，那是纯增量。理由与实例见路线图 4.1。
 - **头文件**：使用 `#pragma once`；头文件中不写 `using namespace`。
+- **公共头文件存成带 BOM 的 UTF-8**（`include/` 下的全部 `.h`）。头文件里有中文注释，而使用方在非 UTF-8 代码页（如中文 Windows 的 936）下不加 `/utf-8` 编译时，MSVC 会对每个头文件报 C4819，开了 `/WX` 就是编译失败。**BOM 让文件自己说明编码，不要求使用方加任何标志**——culib 自己的 `set_encodings("utf-8")` 只管 culib 的编译单元，管不到使用方的。`src/` / `tests/` / `examples/` 不需要 BOM，它们只由 culib 自己的构建编译。CI 的 `headers` job 会拦。
 - **零警告**：GCC / Clang 上警告即错误（`xmake.lua` 在 culib 作为主工程时设 `set_warnings("allextra", "pedantic", "error")`）。被其他工程 `includes` 时不加 `error`，因为使用方的编译器版本不同，将来新增的警告不该打断他们的构建。MSVC 的 `/W4` 警告集尚未逐条排查，CI 上只显示不拦，清零后把 `xmake.lua` 和 `tests/xmake.lua`、`examples/xmake.lua` 里的 windows 条件去掉。
 
 ## 为自己的调用点设计
@@ -170,7 +171,10 @@
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上 |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
-| 头文件可独立包含 | 人工（设计文档验证节里逐个 `-fsyntax-only`） | 人工，无自动检查 |
+| 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
+| 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
 | 关异常 / RTTI 可用 | 人工（`-fno-exceptions -fno-rtti` 跑测试） | 人工，无自动检查 |
 
-最后三行是已知的缺口：有约定、有人工流程、没有自动机制。补的时候优先补「头文件可独立包含」，它最容易自动化（遍历 `include/culib/**.h` 各编一次）。
+「性能主张有依据」和「关异常 / RTTI 可用」是剩下的两处缺口：有约定、有人工流程、没有自动机制。前者大概也只能人工（汇编对比要人读）；后者容易自动化，加一格 `-fno-exceptions -fno-rtti` 的编译即可。
+
+**C4819 这一条 CI 抓不到真正的现场**：GitHub 的 windows runner 代码页是 UTF-8（65001），正是不会报 C4819 的那种。所以 `headers` job 拦的是「BOM 在不在」这个代理指标，而不是「MSVC 会不会报警」。真实验证要一台中文代码页的 Windows，目前没有。

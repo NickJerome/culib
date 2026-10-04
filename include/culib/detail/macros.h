@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // culib 内部使用的通用宏，使用方不应依赖。
 

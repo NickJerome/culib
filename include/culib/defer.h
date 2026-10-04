@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // defer：在当前作用域结束时执行一段代码，类似 Go 的 defer。
 //

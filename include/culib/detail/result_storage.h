@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // result 的存储：值和错误放在同一个 union 里，只多一个标志位。公共接口见 culib/result.h。
 #include <memory>

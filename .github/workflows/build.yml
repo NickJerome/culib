@@ -14,6 +14,42 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 两条开发约定原先只有人工流程、没有机制：公共头文件带 UTF-8 BOM、每个头文件能单独包含。
+  # 都只需要一个 Linux runner，所以合成一个快速门禁，排在编译矩阵前面。
+  headers:
+    name: public headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 头文件里有中文注释。使用方在非 UTF-8 代码页（如中文 Windows 的 936）下不加 /utf-8
+      # 编译时，MSVC 会对每个头文件报 C4819，开了 /WX 就是编译失败。BOM 让文件自己说明编码，
+      # 不需要使用方加任何标志 —— culib 自己的 set_encodings("utf-8") 管不到使用方的编译单元。
+      - name: every public header starts with a UTF-8 BOM
+        run: |
+          missing=$(find include -name '*.h' -print0 \
+            | xargs -0 -I{} sh -c 'head -c3 "{}" | od -An -tx1 | tr -d " \n" | grep -q efbbbf || echo "{}"')
+          if [ -n "$missing" ]; then
+            echo "缺少 UTF-8 BOM："; echo "$missing"
+            echo "修法：python3 -c \"import pathlib,sys; p=pathlib.Path(sys.argv[1]); b=p.read_bytes(); p.write_bytes(b'\\xef\\xbb\\xbf'+b)\" <文件>"
+            exit 1
+          fi
+          echo "全部带 BOM：$(find include -name '*.h' | wc -l) 个"
+
+      - name: every public header compiles on its own
+        run: |
+          status=0
+          for header in $(find include -name '*.h' | sed 's|^include/||' | sort); do
+            printf '#include <%s>\nint main() { return 0; }\n' "$header" > /tmp/standalone.cpp
+            if g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude \
+                   -fsyntax-only /tmp/standalone.cpp; then
+              echo "  ok    $header"
+            else
+              echo "  FAIL  $header"; status=1
+            fi
+          done
+          exit $status
+
   build:
     name: ${{ matrix.target.name }} / ${{ matrix.mode }}
     runs-on: ${{ matrix.target.os }}

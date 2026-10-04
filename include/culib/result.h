@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // 可能失败的操作：成功时直接 return 值，失败时 return make_error(...)。
 //

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // culib 的版本号，遵循语义化版本（SemVer）。
 #define WAVVIX_VERSION_MAJOR 0

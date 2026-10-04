@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // 单元测试框架：用法接近 Google Test，只有 TEST 和 EXPECT 两个宏。
 //

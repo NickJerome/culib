@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // 秒表：测量经过的时间，构造时开始计时。
 //

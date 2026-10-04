@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // EXPECT(a, op, b) 的实现：拆解 a op b、比较规则、打印两边的值、失败上报。
 // 由 culib/test.h 包含，使用方不需要阅读，也不应直接依赖。
