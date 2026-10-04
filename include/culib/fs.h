@@ -104,6 +104,20 @@ result<void> set_current_directory(string_view path);
 
 namespace detail {
 
+// 平台只提供这两个单级原语，递归的逻辑在 fs.cpp 里写一遍，两个平台共用。
+// 这样「逐级创建」「逐级删除」这两段容易出错的循环不会有两份互相漂移的副本。
+
+// 建一级目录。已存在时返回 error_kind::already_exists，**不自己判断是不是目录**
+// ——那要多一次 stat，而递归创建时每级都多一次在网络盘上是几毫秒。
+result<void> make_directory(string_view path);
+
+// 是目录、而且不是符号链接 / junction。递归删除靠它决定要不要递归进去：
+// 跟进符号链接会删掉链接指向的别处内容。
+bool is_directory_not_link(string_view path) noexcept;
+
+// 删一个空目录。非空时返回 already_exists（POSIX 的 ENOTEMPTY / Windows 的 ERROR_DIR_NOT_EMPTY）。
+result<void> remove_empty_directory(string_view path);
+
 // 头文件里是完整类型，但只持一个 void*，方法全在 fs_posix.cpp / fs_win.cpp 里实现。
 // 这样公共头文件不需要包含 <dirent.h> / <windows.h>，而遍历仍然可以用模板回调
 // （零开销，不走 std::function）。

@@ -175,74 +175,32 @@ result<void> append_file(string_view path, string_view content) {
 
 // --- 目录与文件操作 -----------------------------------------------------------
 
-result<void> create_directory(string_view path, recursive mode) {
-    if (path.empty()) return make_error(error_kind::invalid_argument, "路径是空的");
+namespace detail {
 
-    if (mode == recursive::yes) {
-        // 逐级建。中间某级已存在是正常情况，不是错误。
-        std::string partial;
-        partial.reserve(path.size());
-        for (std::size_t i = 0; i <= path.size(); ++i) {
-            if (i == path.size() || path.data()[i] == '/') {
-                if (!partial.empty()) {
-                    if (::mkdir(partial.c_str(), 0777) != 0 && errno != EEXIST) {
-                        return from_errno("创建目录", partial, errno);
-                    }
-                }
-                if (i < path.size()) partial.push_back('/');
-            } else {
-                partial.push_back(path.data()[i]);
-            }
-        }
-        if (!is_directory(path)) {
-            return make_error(error_kind::already_exists,
-                              path.to_string() + " 已存在但不是目录");
-        }
-        return result<void>();
-    }
-
+result<void> make_directory(string_view path) {
     const c_path native(path);
     if (::mkdir(native.get(), 0777) == 0) return result<void>();
-    if (errno == EEXIST) {
-        // 幂等：已经是目录就算成功，是文件才报错
-        if (is_directory(path)) return result<void>();
-        return make_error(error_kind::already_exists, path.to_string() + " 已存在但不是目录");
-    }
-    return from_errno("创建目录", path, errno);
+    return from_errno("创建目录", path, errno);   // EEXIST 会映射成 already_exists
 }
+
+bool is_directory_not_link(string_view path) noexcept {
+    // lstat 不跟随符号链接，所以指向目录的链接在这里是 false，递归删除不会跟进去
+    const c_path native(path);
+    struct stat info;
+    return ::lstat(native.get(), &info) == 0 && S_ISDIR(info.st_mode);
+}
+
+result<void> remove_empty_directory(string_view path) {
+    const c_path native(path);
+    if (::rmdir(native.get()) != 0) return from_errno("删除目录", path, errno);
+    return result<void>();
+}
+
+}  // namespace detail
 
 result<void> remove_file(string_view path) {
     const c_path native(path);
     if (::unlink(native.get()) != 0) return from_errno("删除", path, errno);
-    return result<void>();
-}
-
-result<void> remove_directory(string_view path, recursive mode) {
-    if (mode == recursive::yes) {
-        // 先收集再删：一边遍历一边改目录在部分文件系统上行为未定义。
-        std::vector<std::string> children;
-        result<void> listed = list_directory(path, [&children](const entry& item) {
-            children.push_back(item.name.to_string());
-            return true;
-        });
-        if (listed.is_err()) return listed;
-        for (std::size_t i = 0; i < children.size(); ++i) {
-            const std::string child = join(path, children[i]);
-            // lstat 不跟随符号链接：指向目录的符号链接要删链接本身，
-            // 跟进去会删掉链接指向的别处内容，那个代价太大（见头文件约定）。
-            struct stat info;
-            const c_path native_child(child);
-            if (::lstat(native_child.get(), &info) != 0) {
-                return from_errno("检查", child, errno);
-            }
-            result<void> removed = S_ISDIR(info.st_mode)
-                                       ? remove_directory(child, recursive::yes)
-                                       : remove_file(child);
-            if (removed.is_err()) return removed;
-        }
-    }
-    const c_path native(path);
-    if (::rmdir(native.get()) != 0) return from_errno("删除目录", path, errno);
     return result<void>();
 }
 

@@ -222,85 +222,40 @@ result<void> append_file(string_view path, string_view content) {
 
 // --- 目录与文件操作 -----------------------------------------------------------
 
-result<void> create_directory(string_view path, recursive mode) {
-    if (path.empty()) return make_error(error_kind::invalid_argument, "路径是空的");
+namespace detail {
 
-    if (mode == recursive::yes) {
-        std::string partial;
-        partial.reserve(path.size());
-        for (std::size_t i = 0; i <= path.size(); ++i) {
-            const bool boundary = i == path.size() || path.data()[i] == '/' ||
-                                  path.data()[i] == '\\';
-            if (boundary) {
-                // 跳过只有盘符的那一级（"C:" 不是能创建的目录）
-                const bool drive_only = partial.size() == 2 && partial[1] == ':';
-                if (!partial.empty() && !drive_only) {
-                    const result<std::wstring> wide = wide_path(partial);
-                    if (wide.is_err()) return std::move(wide).error();
-                    if (!::CreateDirectoryW(wide.value().c_str(), 0)) {
-                        const DWORD code = ::GetLastError();
-                        if (code != ERROR_ALREADY_EXISTS) {
-                            return from_last_error("创建目录", partial, code);
-                        }
-                    }
-                }
-                if (i < path.size()) partial.push_back('\\');
-            } else {
-                partial.push_back(path.data()[i]);
-            }
-        }
-        if (!is_directory(path)) {
-            return make_error(error_kind::already_exists, path.to_string() + " 已存在但不是目录");
-        }
-        return result<void>();
-    }
-
+result<void> make_directory(string_view path) {
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
     if (::CreateDirectoryW(wide.value().c_str(), 0)) return result<void>();
-    const DWORD code = ::GetLastError();
-    if (code == ERROR_ALREADY_EXISTS) {
-        if (is_directory(path)) return result<void>();     // 幂等
-        return make_error(error_kind::already_exists, path.to_string() + " 已存在但不是目录");
-    }
-    return from_last_error("创建目录", path, code);
+    // ERROR_ALREADY_EXISTS 会映射成 already_exists
+    return from_last_error("创建目录", path, ::GetLastError());
 }
+
+bool is_directory_not_link(string_view path) noexcept {
+    const result<DWORD> attributes = attributes_of(path);
+    if (attributes.is_err()) return false;
+    // REPARSE_POINT 覆盖符号链接和 junction，两者都不跟进去
+    return (attributes.value() & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+           (attributes.value() & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+result<void> remove_empty_directory(string_view path) {
+    const result<std::wstring> wide = wide_path(path);
+    if (wide.is_err()) return std::move(wide).error();
+    if (!::RemoveDirectoryW(wide.value().c_str())) {
+        return from_last_error("删除目录", path, ::GetLastError());
+    }
+    return result<void>();
+}
+
+}  // namespace detail
 
 result<void> remove_file(string_view path) {
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
     if (!::DeleteFileW(wide.value().c_str())) {
         return from_last_error("删除", path, ::GetLastError());
-    }
-    return result<void>();
-}
-
-result<void> remove_directory(string_view path, recursive mode) {
-    if (mode == recursive::yes) {
-        std::vector<std::string> children;
-        result<void> listed = list_directory(path, [&children](const entry& item) {
-            children.push_back(item.name.to_string());
-            return true;
-        });
-        if (listed.is_err()) return listed;
-        for (std::size_t i = 0; i < children.size(); ++i) {
-            const std::string child = join(path, children[i]);
-            const result<DWORD> attributes = attributes_of(child);
-            if (attributes.is_err()) return std::move(attributes).error();
-            // 不跟进符号链接 / junction：删链接本身，不碰链接目标（见头文件约定）
-            const bool is_link = (attributes.value() & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-            const bool is_dir = (attributes.value() & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            result<void> removed =
-                (is_dir && !is_link) ? remove_directory(child, recursive::yes)
-                                     : (is_dir ? remove_directory(child, recursive::no)
-                                               : remove_file(child));
-            if (removed.is_err()) return removed;
-        }
-    }
-    const result<std::wstring> wide = wide_path(path);
-    if (wide.is_err()) return std::move(wide).error();
-    if (!::RemoveDirectoryW(wide.value().c_str())) {
-        return from_last_error("删除目录", path, ::GetLastError());
     }
     return result<void>();
 }

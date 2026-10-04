@@ -66,37 +66,6 @@ struct cast_tag {
                                       unsigned_tag>::type>::type>::type;
 };
 
-// T 和 long long 同宽时范围比较是恒假的，而 -Wextra 的 -Wtype-limits 会就此报警、
-// -Werror 把它变成错误。所以按「要不要收窄」分成两个特化，而不是写一个运行时 if。
-template <typename T, bool Narrower>
-struct narrow_signed;
-
-template <typename T>
-struct narrow_signed<T, true> {
-    static bool fits(long long value) {
-        return value >= static_cast<long long>((std::numeric_limits<T>::min)()) &&
-               value <= static_cast<long long>((std::numeric_limits<T>::max)());
-    }
-};
-template <typename T>
-struct narrow_signed<T, false> {
-    static bool fits(long long) { return true; }
-};
-
-template <typename T, bool Narrower>
-struct narrow_unsigned;
-
-template <typename T>
-struct narrow_unsigned<T, true> {
-    static bool fits(unsigned long long value) {
-        return value <= static_cast<unsigned long long>((std::numeric_limits<T>::max)());
-    }
-};
-template <typename T>
-struct narrow_unsigned<T, false> {
-    static bool fits(unsigned long long) { return true; }
-};
-
 template <typename T, typename Tag>
 struct caster;
 
@@ -111,7 +80,8 @@ struct caster<T, signed_tag> {
         result<long long> wide = parse_signed(text, base);
         if (wide.is_err()) return std::move(wide).error();
         const long long value = wide.value();
-        if (!narrow_signed<T, sizeof(T) < sizeof(long long)>::fits(value)) {
+        if (value < static_cast<long long>((std::numeric_limits<T>::min)()) ||
+            value > static_cast<long long>((std::numeric_limits<T>::max)())) {
             return signed_out_of_range(text, static_cast<long long>((std::numeric_limits<T>::min)()),
                                        static_cast<long long>((std::numeric_limits<T>::max)()));
         }
@@ -125,7 +95,7 @@ struct caster<T, unsigned_tag> {
         result<unsigned long long> wide = parse_unsigned(text, base);
         if (wide.is_err()) return std::move(wide).error();
         const unsigned long long value = wide.value();
-        if (!narrow_unsigned<T, sizeof(T) < sizeof(unsigned long long)>::fits(value)) {
+        if (value > static_cast<unsigned long long>((std::numeric_limits<T>::max)())) {
             return unsigned_out_of_range(
                 text, static_cast<unsigned long long>((std::numeric_limits<T>::max)()));
         }

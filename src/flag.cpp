@@ -62,34 +62,24 @@ error prefixed(const entry& which, const error& cause) {
     return make_error(cause.kind(), std::string("--") + which.name + "：" + cause.message());
 }
 
+// 五种类型只在「转成什么」上不同，用模板把剩下的共享掉。
+template <typename T>
+result<void> assign_as(entry& which, string_view text) {
+    result<T> value = lexical_cast<T>(text);
+    if (value.is_err()) return prefixed(which, value.error());
+    *static_cast<T*>(which.storage) = value.value();
+    return result<void>();
+}
+
 // 把一段文本装进选项。
 result<void> assign(entry& which, string_view text) {
     switch (which.which) {
-        case detail::kind::boolean: {
-            result<bool> value = lexical_cast<bool>(text);
-            if (value.is_err()) return prefixed(which, value.error());
-            *static_cast<bool*>(which.storage) = value.value();
-            return result<void>();
-        }
-        case detail::kind::signed_integer: {
-            result<long long> value = lexical_cast<long long>(text);
-            if (value.is_err()) return prefixed(which, value.error());
-            *static_cast<long long*>(which.storage) = value.value();
-            return result<void>();
-        }
-        case detail::kind::unsigned_integer: {
-            result<unsigned long long> value = lexical_cast<unsigned long long>(text);
-            if (value.is_err()) return prefixed(which, value.error());
-            *static_cast<unsigned long long*>(which.storage) = value.value();
-            return result<void>();
-        }
-        case detail::kind::number: {
-            result<double> value = lexical_cast<double>(text);
-            if (value.is_err()) return prefixed(which, value.error());
-            *static_cast<double*>(which.storage) = value.value();
-            return result<void>();
-        }
+        case detail::kind::boolean:          return assign_as<bool>(which, text);
+        case detail::kind::signed_integer:   return assign_as<long long>(which, text);
+        case detail::kind::unsigned_integer: return assign_as<unsigned long long>(which, text);
+        case detail::kind::number:           return assign_as<double>(which, text);
         case detail::kind::text:
+            // 字符串不需要转换，直接写进去
             static_cast<std::string*>(which.storage)->assign(text.data(), text.size());
             return result<void>();
     }
@@ -108,6 +98,30 @@ const char* type_label(detail::kind which) {
         case detail::kind::text: return "<str>";
     }
     return "";
+}
+
+// 每次 parse 先把所有选项恢复成默认值，所以重复调用的结果是确定的。
+// 必填项没有默认值（铺的是空文本），跳过。
+result<void> apply_defaults(registry& self) {
+    for (std::size_t i = 0; i < self.entries.size(); ++i) {
+        self.entries[i].given = false;
+        if (self.entries[i].is_required) continue;
+        const result<void> applied = assign(self.entries[i], self.entries[i].default_text);
+        if (applied.is_err()) return applied;   // 默认值自己都转换不了，是编程错误
+    }
+    return result<void>();
+}
+
+// --help / --version 时不查：用户就是来看用法的。
+result<void> check_required(const registry& self) {
+    if (self.help_requested || self.version_requested) return result<void>();
+    for (std::size_t i = 0; i < self.entries.size(); ++i) {
+        if (self.entries[i].is_required && !self.entries[i].given) {
+            return make_error(error_kind::invalid_argument,
+                              std::string("缺少必填选项 --") + self.entries[i].name);
+        }
+    }
+    return result<void>();
 }
 
 bool is_option(string_view token) {
@@ -199,16 +213,8 @@ result<void> parse(int argc, char* argv[], string_view version) {
     self.program = (argc > 0 && argv[0]) ? fs::filename(argv[0]).to_string()
                                         : std::string("program");
 
-    // 先把默认值铺一遍，所以重复调用 parse 的结果是确定的。
-    // 必填项没有默认值，铺的是空文本，所以跳过。
-    for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        self.entries[i].given = false;
-        if (!self.entries[i].is_required) {
-            const result<void> applied =
-                assign(self.entries[i], self.entries[i].default_text);
-            if (applied.is_err()) return applied;   // 默认值自己都转换不了，是编程错误
-        }
-    }
+    const result<void> defaults = apply_defaults(self);
+    if (defaults.is_err()) return defaults;
 
     bool only_positional = false;
     for (int i = 1; i < argc; ++i) {
@@ -277,15 +283,8 @@ result<void> parse(int argc, char* argv[], string_view version) {
         which->given = true;
     }
 
-    // --help / --version 时不检查必填项：用户就是来看用法的
-    if (!self.help_requested && !self.version_requested) {
-        for (std::size_t i = 0; i < self.entries.size(); ++i) {
-            if (self.entries[i].is_required && !self.entries[i].given) {
-                return make_error(error_kind::invalid_argument,
-                                  std::string("缺少必填选项 --") + self.entries[i].name);
-            }
-        }
-    }
+    const result<void> missing = check_required(self);
+    if (missing.is_err()) return missing;
     self.parsed = true;
     return result<void>();
 }

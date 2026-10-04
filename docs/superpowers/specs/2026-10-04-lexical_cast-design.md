@@ -89,11 +89,13 @@ lexical_cast refuses char-like types: casting "65" to char is ambiguous
 
 **溢出时继续吃完剩下的字符**，这样「格式不对」优先于「超范围」：`"99999x"` 报 `invalid_argument` 而不是 `out_of_range`，因为前者是更根本的毛病。
 
-### 3.6 -Wtype-limits 迫使范围检查分成两个特化
+### 3.6 曾为一个不存在的警告写了 24 行模板（已删）
 
-收窄到 `T` 时要比 `value >= numeric_limits<T>::min()`。`T` 和 `long long` 同宽（Linux x86_64 上 `long` 就是）时这个比较恒为真，而 `-Wextra` 的 `-Wtype-limits` 会就此报警、`-Werror` 把它变成错误。
+收窄到 `T` 时要比 `value >= numeric_limits<T>::min()`。`T` 和 `long long` 同宽（Linux x86_64 上 `long` 就是）时这个比较恒为真，我据此认定 `-Wextra` 的 `-Wtype-limits` 会报警、`-Werror` 会把它变成错误，于是按「要不要收窄」写了 `narrow_signed<T, bool>` / `narrow_unsigned<T, bool>` 四个特化。
 
-所以按「要不要收窄」分成 `narrow_signed<T, true>` / `<T, false>` 两个特化，而不是写一个运行时 `if (sizeof(T) < sizeof(long long))`——后者仍然会实例化那个恒真的比较。
+**复审时实测：那个警告根本不触发。** GCC 在模板实例化里本来就压制这类比较的警告，四种写法（直接比常量、先存 const 局部变量、往返转换、volatile 挡折叠）在 `-Wall -Wextra -Wpedantic` 下都是零警告。删掉 24 行特化、改成直接比较之后，全库在 `-Werror` 下照旧干净，连 `-Wconversion -Wsign-conversion` 都加上也干净。
+
+教训归到「为自己的调用点设计」那条：**为一个假想的编译器行为写的代码，和为假想的泛型用户写的代码是同一类问题**——先验证它真的存在。
 
 ### 3.7 错误消息带范围，不带类型名
 
