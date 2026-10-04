@@ -186,7 +186,7 @@ MSVC 的 `localtime_s` 只接受 `[0, 32535215999]`（1970-01-01 .. 3000-12-31�
 
 ## 4. 实现验证
 
-环境：Linux / GCC 14.2 与 clang 19 × debug/release，`-Wall -Wextra -Wpedantic -Werror`，零警告；Windows 侧 MinGW-w64 + wine。
+环境：Linux / GCC 14.2 与 clang 19 × debug/release，`-Wall -Wextra -Wpedantic -Werror`，零警告；Windows 侧本机 MinGW-w64 + wine；**CI 四种编译器 × debug/release 共 10 个格子一次过**。
 
 ### 4.1 构建与测试
 
@@ -254,7 +254,7 @@ Asia/Kathmandu / Pacific/Chatham / America/St_Johns / Pacific/Kiritimati
 
 ### 4.6 没覆盖
 
-- **MSVC 和 macOS 要等 CI。** `localtime_s` 在 MinGW 下走的是 MSVCRT 的同一套实现，但 MSVC 的头文件和警告集不同；macOS 的 `localtime_r` 是 BSD 的实现，从未被任何机器编译过。
+- ~~MSVC 和 macOS 要等 CI。~~ **CI 10/10 一次过**，所以 `time_win.cpp` 的 `localtime_s`（参数顺序和 POSIX 相反那个）在真 MSVC 上成立，macOS 的 BSD `localtime_r` 也成立。CI runner 的时区是 UTC，所以**带偏移的那条路径在 CI 上走的是退化情形**（偏移为 0，输出 `Z`）；非零偏移只在本机的八个时区下验证过。
 - **32 位 time_t 的那条分支没触发过**。`time_posix.cpp` 里有一个 `sizeof(std::time_t) < sizeof(std::int64_t)` 的判断，本机是 64 位，那一行从来没真的执行。
 - **闰秒附近的行为没测**，因为 Unix 时间戳本身不表示闰秒——`23:59:60` 这种输入直接被拒（有测试），但「系统时钟正在跨闰秒」这个状态没法构造。
 - **`now_coarse()` 的分辨率没量**。只验证了它和 `now()` 相差不超过 2 秒，没测它实际多久跳一次（那取决于内核的 `CONFIG_HZ`）。
