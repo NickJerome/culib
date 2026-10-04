@@ -8,6 +8,7 @@
 #include <culib/fs.h>
 #include <culib/lexical_cast.h>
 #include <culib/optional.h>
+#include <culib/os.h>
 #include <culib/result.h>
 #include <culib/stopwatch.h>
 #include <culib/string_view.h>
