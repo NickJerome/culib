@@ -3,6 +3,8 @@
 
 #include <culib/coroutine.h>
 
+#include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -62,6 +64,7 @@ struct coroutine_control {
     void* body;                 // 可调用对象，也在这个栈上
     stack_memory memory;
     std::size_t usable;         // 可用栈字节数，不含保护页也不含控制块和 body
+    unsigned long long owner;   // 第一次 resume 时绑定的线程序号，0 表示还没绑
     bool started;
     bool finished;
     void* fake_stack;           // ASan 的簿记，见上面那段
@@ -115,6 +118,30 @@ inline void asan_after_switch(coroutine_control* arrived) {
 #endif
 }
 
+// 每根线程一个**永不复用**的序号。
+//
+// 一开始用的是 pthread_self() / GetCurrentThreadId()，结果实测拦不住：线程 A 跑完
+// 退出、线程 B 启动，glibc 把同一个 pthread_t 回收给了 B，于是「从 B resume 一根
+// 绑在 A 上的协程」因为 id 撞上而被放行——而那正是「工作线程死了换一根重试」这种
+// 真实场景。两根线程同时活着时才拦得住，等于检查在一半的情况下失效。
+//
+// 换成单调递增的序号就撞不上了，而且**不需要任何平台 API**，比原来还少两个平台函数。
+// std::atomic<unsigned long long> 的构造是 constexpr，所以这是常量初始化、
+// 不在 main 之前跑代码；fetch_add 每根线程只做一次。
+std::atomic<unsigned long long> next_thread_serial(1);
+#if defined(_MSC_VER)
+__declspec(thread) unsigned long long thread_serial = 0;
+#else
+__thread unsigned long long thread_serial = 0;   // __thread 要求常量初始化，所以从 0 起
+#endif
+
+unsigned long long current_thread_serial() noexcept {
+    if (thread_serial == 0) {
+        thread_serial = next_thread_serial.fetch_add(1, std::memory_order_relaxed);
+    }
+    return thread_serial;
+}
+
 void die(const char* what) {
     // 误用的诊断直接写 stderr：不分配内存、不依赖流
     std::fputs(what, stderr);
@@ -166,6 +193,7 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
     control->body = cursor;
     control->memory = memory;
     control->usable = static_cast<std::size_t>(cursor - (memory.base + memory.guard));
+    control->owner = 0;   // 第一次 resume 才绑线程
     control->started = false;
     control->finished = false;
     control->fake_stack = 0;
@@ -198,6 +226,26 @@ void coroutine_destroy(coroutine_control* control) noexcept {
 bool coroutine_resume(coroutine_control* control) noexcept {
     if (control->finished) return false;
     if (current == control) die("wavvix::coroutine: 协程不能 resume 自己");
+
+    // **协程绑定在第一次 resume 它的那根线程上，之后换线程就 abort。**
+    //
+    // 为什么要真的拦住而不是只写在文档里：跨线程 resume **不会崩**，它会「跑通」，
+    // 只是 thread_local 悄悄换成新线程那一份、catch 块里的 std::current_exception()
+    // 变成空的（实测，见设计文档 3.12）。静默给错答案比当场挂掉难查得多。
+    //
+    // 绑在**第一次 resume** 而不是构造：那样「主线程上造一批协程、分给各个工作线程跑」
+    // 仍然可以，而迁移照样被拦住。线程序号是一次 TLS 读，代价量不出来。
+    const unsigned long long here = current_thread_serial();
+    if (control->owner == 0) {
+        control->owner = here;
+    } else if (control->owner != here) {
+        std::fprintf(stderr,
+                     "wavvix::coroutine: 协程绑定在第 %llu 根线程上，不能从第 %llu 根 resume。\n"
+                     "  换线程会让 thread_local 和异常状态在协程脚下变掉，而且不会报错。\n"
+                     "  要跨线程调度就得等 M:N 支持，见 coroutine 设计文档 3.12。\n",
+                     control->owner, here);
+        std::abort();
+    }
 
     // **current 只由 resume() 读写**，yield() 和 trampoline 都不碰它。
     // 原因是嵌套：协程 A 里 resume 协程 B，B 让出时要恢复的是 A 而不是「没有协程」。

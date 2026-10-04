@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -200,6 +201,29 @@ TEST(coroutine, runs_many_of_them_interleaved) {
     EXPECT(rounds, ==, 9);
     for (std::size_t i = 0; i < ticks.size(); ++i) EXPECT(ticks[i], ==, 8);
     for (std::size_t i = 0; i < workers.size(); ++i) delete workers[i];
+}
+
+// 协程绑定在**第一次 resume 它的那根线程**上，不是构造它的那根。
+// 所以「主线程造一批、分给工作线程跑」是允许的，而迁移会 abort。
+//
+// **abort 那一侧不在单元测试里**：进程会死，测不了。那条用独立程序验证过，
+// 三种情形（owner 还活着、owner 已退出、允许的首次绑定）的输出贴在设计文档 3.13。
+TEST(coroutine, binds_to_the_thread_that_first_resumes_it) {
+    int ran = 0;
+    coroutine worker([&] {
+        ++ran;
+        coroutine::yield();
+        ++ran;
+    });
+
+    // 在工作线程上从头跑到尾：绑定发生在那边，不在主线程
+    std::thread worker_thread([&] {
+        while (worker.resume()) {}
+    });
+    worker_thread.join();
+
+    EXPECT(ran, ==, 2);
+    EXPECT(worker.done(), ==, true);
 }
 
 TEST(coroutine, lets_exceptions_throw_and_catch_inside) {

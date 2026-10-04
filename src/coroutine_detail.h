@@ -42,5 +42,6 @@ struct stack_memory {
 stack_memory allocate_stack(std::size_t usable) noexcept;
 void release_stack(const stack_memory& memory) noexcept;
 
+
 }  // namespace detail
 }  // namespace wavvix
