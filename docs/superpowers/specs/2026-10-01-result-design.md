@@ -339,3 +339,28 @@ result:                              手写 union{int,enum}+bool:
 
   **重开条件**：出现第三个错误类型时（大概是 `fs` 或 `net` 要带 errno / 平台错误码），那时 `to_string` / `operator<<` 的重复才真实存在。届时先比一下 **ADL 自由函数**（`error_message(e)`，像 `swap` 那样）——它不要基类、保住聚合初始化、没有 C++11 那条税，可能比 CRTP 更便宜。
 - **错误链 / cause 列表。** 每层一次分配，而上下文用「在层边界把字符串拼进消息」就够了，实测只多 1 次分配。
+
+### 11.9 不加补上下文的宏（2026-10-04）
+
+`examples/error_context.cpp` 摊开了一件事：「补上下文」那版用不了 `WAVVIX_TRY`，要手写 `if` + `make_error` + 拼接，**5 行对 1 行**：
+
+```cpp
+// 不补上下文
+WAVVIX_TRY(const int port, to_int(value_of("port")));
+
+// 补上下文
+wavvix::result<int> port = to_int(value_of(key));
+if (port.is_err()) {
+    return wavvix::make_error(port.error().kind(),
+                              "读 " + path + ": " + key + " = " + port.error().message());
+}
+```
+
+错误类型统一成 `error` 之后，一个 `WAVVIX_TRY_CTX(declaration, expression, prefix)` 在技术上很干净（内层错误的 `kind()` 和 `message()` 都拿得到，拼一下即可）。**仍然不加**，作者定的，理由是：
+
+- **这正是不该省的 5 行。** 上下文的价值全在它具体——哪个文件、哪个字段、什么值。一个接一个字符串前缀的宏会鼓励随手写个笼统的 `"load failed"`，那和不补没区别。手写反而逼着把该写的信息写全。
+- **层边界很少。** 它不是每个函数都要用的东西，省下来的总行数远不如多一个宏的代价。
+- `CLAUDE.md` 的命名一节本来就写了「新增短名字要慎重」。`WAVVIX_TRY` / `WAVVIX_TRY_VOID` 已经是两个了，第三个要有更硬的理由。
+- 宏不参与重载、调试器难以单步，而这几行恰好是出错时最需要看清楚的地方。
+
+**重开条件**：写完 `fs` + `os` + 配置文件之后，数一下真实的层边界有多少处、那段拼接是否在多处长得一模一样。如果是，那时要比的也不只是宏——先看一个普通函数（`error with_context(const error&, std::string)`）能不能解决，它没有宏的那些缺点。
