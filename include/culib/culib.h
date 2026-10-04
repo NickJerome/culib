@@ -11,6 +11,7 @@
 #include <culib/optional.h>
 #include <culib/os.h>
 #include <culib/result.h>
+#include <culib/scheduler.h>
 #include <culib/stopwatch.h>
 #include <culib/string_view.h>
 #include <culib/strings.h>

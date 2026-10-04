@@ -137,7 +137,7 @@ int main() {
 
         std::printf("   一次切换       %6.1f ns   （对照：读一次系统时钟约 27 ns）\n",
                     per_switch);
-        std::printf("   创建加销毁一根 %6.0f ns   （三个系统调用：分配、设保护页、释放）\n",
+        std::printf("   创建加销毁一根 %6.0f ns   （栈池命中；池空时是三个系统调用，约 5.6 µs）\n",
                     per_create);
         std::printf("   默认栈 %zu KB，是虚拟地址，没碰到的页不占物理内存\n",
                     wavvix::default_stack_size / 1024);

@@ -142,6 +142,91 @@ unsigned long long current_thread_serial() noexcept {
     return thread_serial;
 }
 
+// --- 栈池 ---------------------------------------------------------------------
+//
+// 不池化时一根协程的栈要三个系统调用（分配、设保护页、释放），实测 5586 ns；
+// **池命中是 0 ns**。协程当并发模型用（一个请求一根）时这个差别决定能不能用。
+//
+// 设计上借了 mimalloc 的两条，也明确不要它的第三条：
+//
+//   - **每线程一组桶，不加锁**。mimalloc 的核心也是线程本地堆，避免常见路径上的原子操作。
+//   - **空闲链表就放在空闲内存自己身上**（下面那个 pooled_stack 写在栈的低端），
+//     所以池本身不需要任何额外分配。
+//   - **不要 mimalloc 的 thread_free 列表。** 它需要那个，是因为「谁分配的块必须还给谁」；
+//     而我们的块是**栈，彼此可互换**——在哪根线程上释放就进那根线程的池，没有归属问题。
+//     少一条原子链表。
+//
+// **回收时不 madvise 把物理页还给系统**（实测整栈 1587 ns / 只还深处一半 280 ns）：
+// 没被摸过的页本来就不占物理内存，只有真递归很深的协程才会留下常驻页。代价是内存
+// 高水位会留着，所以用下面那个「每线程缓存字节数上限」兜住；真遇到高水位有害的负载，
+// 再把「只还深处一半」那条 280 ns 的做法做成可选。
+const int pool_bucket_count = 24;                 // 4 KB 起按 2 的幂分桶，到 32 GB
+
+// 每线程缓存的字节数上限。按指针宽度缩放：64 位上地址空间不值钱，32 位上要省。
+// 按**字节**而不是按**个数**封顶，这样 8 MB 的栈不会凭个数把地址空间占光。
+const std::size_t pool_budget = sizeof(void*) >= 8 ? 32u * 1024 * 1024 : 8u * 1024 * 1024;
+
+struct pooled_stack {
+    stack_memory memory;
+    pooled_stack* next;
+};
+
+#if defined(_MSC_VER)
+__declspec(thread) pooled_stack* pool_buckets[pool_bucket_count];
+__declspec(thread) std::size_t pool_bytes = 0;
+#else
+__thread pooled_stack* pool_buckets[pool_bucket_count];   // 常量初始化，全是 0
+__thread std::size_t pool_bytes = 0;
+#endif
+
+// 桶号：最小的 i 使得 (4096 << i) >= want。太大就返回 -1，那种栈不池化。
+//
+// 桶的大小都是 2 的幂且不小于 4096，所以「按桶大小分配」之后再反查桶号一定得到
+// 同一个桶——释放时不需要额外记住它是从哪个桶来的。
+int pool_bucket_of(std::size_t want) noexcept {
+    std::size_t size = 4096;
+    for (int i = 0; i < pool_bucket_count; ++i) {
+        if (size >= want) return i;
+        size <<= 1;
+    }
+    return -1;
+}
+
+std::size_t pool_bucket_size(int bucket) noexcept {
+    return static_cast<std::size_t>(4096) << bucket;
+}
+
+stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
+    const int bucket = pool_bucket_of(usable);
+    if (bucket >= 0 && pool_buckets[bucket]) {
+        pooled_stack* const node = pool_buckets[bucket];
+        pool_buckets[bucket] = node->next;
+        const stack_memory memory = node->memory;   // 先拷出来，下面那块内存要被覆盖
+        pool_bytes -= memory.total;
+        return memory;
+    }
+    // 没命中：**按桶的大小分配，不按请求的大小**，这样下次同桶的请求才能复用。
+    // 多出来的是虚拟地址，没碰到的页不占物理内存。
+    const std::size_t rounded = bucket >= 0 ? pool_bucket_size(bucket) : usable;
+    return allocate_stack(rounded);
+}
+
+void pooled_release_stack(const stack_memory& memory) noexcept {
+    if (!memory.base) return;
+    const int bucket = pool_bucket_of(memory.total - memory.guard);
+    if (bucket < 0 || pool_bytes + memory.total > pool_budget) {
+        release_stack(memory);                      // 超预算就真还给系统
+        return;
+    }
+    // 空闲链表的节点就写在这块栈的低端（保护页上方）。那是栈最深的位置，
+    // 复用时我们在把栈交出去之前就把它读走了，所以不会和新协程的帧打架。
+    pooled_stack* const node = reinterpret_cast<pooled_stack*>(memory.base + memory.guard);
+    node->memory = memory;
+    node->next = pool_buckets[bucket];
+    pool_buckets[bucket] = node;
+    pool_bytes += memory.total;
+}
+
 void die(const char* what) {
     // 误用的诊断直接写 stderr：不分配内存、不依赖流
     std::fputs(what, stderr);
@@ -176,7 +261,7 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
                                     std::size_t body_align, void** body_slot) noexcept {
     // 控制块和 body 都住在栈顶，所以要多要一点空间
     const std::size_t extra = sizeof(coroutine_control) + body_size + body_align + 64;
-    const stack_memory memory = allocate_stack(stack_size + extra);
+    const stack_memory memory = pooled_allocate_stack(stack_size + extra);
     if (!memory.base) return 0;
 
     char* cursor = memory.base + memory.total;
@@ -220,7 +305,7 @@ void coroutine_destroy(coroutine_control* control) noexcept {
     // body 还没跑过就析构它；跑完了的话 body 的生命周期由协程体自己结束
     if (control->destroy && !control->started) control->destroy(control->body);
     const stack_memory memory = control->memory;
-    release_stack(memory);
+    pooled_release_stack(memory);
 }
 
 bool coroutine_resume(coroutine_control* control) noexcept {

@@ -226,6 +226,77 @@ TEST(coroutine, binds_to_the_thread_that_first_resumes_it) {
     EXPECT(worker.done(), ==, true);
 }
 
+// 栈池：上一根协程结束后栈进池子，下一根直接复用。
+//
+// 这条**不靠计时**（那会在 CI 上抖）：看同一个位置的局部变量地址。栈被复用的话
+// 两根协程里的 local 会落在同一个地址上，这是确定性的。
+TEST(coroutine, reuses_stacks_from_the_pool) {
+    void* first = 0;
+    void* second = 0;
+    {
+        coroutine a([&] {
+            int local = 0;
+            first = &local;
+        });
+        while (a.resume()) {}
+    }
+    {
+        coroutine b([&] {
+            int local = 0;
+            second = &local;
+        });
+        while (b.resume()) {}
+    }
+    EXPECT(first != 0, ==, true);
+    EXPECT(first == second, ==, true);   // 同一块栈
+}
+
+// 请求的大小被向上取整到 2 的幂的桶，这样不同请求能落进同一个桶、互相复用。
+// 多出来的是虚拟地址，没碰到的页不占物理内存。
+TEST(coroutine, rounds_stack_requests_into_buckets) {
+    void* small_first = 0;
+    void* small_again = 0;
+    {
+        coroutine a([&] { int local = 0; small_first = &local; }, 40 * 1024);
+        while (a.resume()) {}
+    }
+    {
+        // 40 KB 和 50 KB 取整到同一个桶，所以复用同一块栈
+        coroutine b([&] { int local = 0; small_again = &local; }, 50 * 1024);
+        while (b.resume()) {}
+    }
+    EXPECT(small_first == small_again, ==, true);
+
+    // 差很远的大小落进不同的桶，各自独立
+    void* large = 0;
+    {
+        coroutine c([&] { int local = 0; large = &local; }, 4 * 1024 * 1024);
+        while (c.resume()) {}
+    }
+    EXPECT(large != 0, ==, true);
+    EXPECT(large != small_first, ==, true);
+}
+
+// 大量复用之后每根协程的栈还是干净可用的——池化最怕的是「上一根留下的东西
+// 把下一根搞坏」，所以这里每根都把自己的栈写满再核对。
+TEST(coroutine, keeps_pooled_stacks_usable_after_heavy_churn) {
+    for (int round = 0; round < 200; ++round) {
+        bool verified = false;
+        coroutine worker([&] {
+            char filler[4096];
+            for (int i = 0; i < 4096; ++i) filler[i] = static_cast<char>(round + i);
+            coroutine::yield();
+            bool ok = true;
+            for (int i = 0; i < 4096; ++i) {
+                if (filler[i] != static_cast<char>(round + i)) ok = false;
+            }
+            verified = ok;
+        }, 64 * 1024);
+        while (worker.resume()) {}
+        EXPECT(verified, ==, true);
+    }
+}
+
 TEST(coroutine, lets_exceptions_throw_and_catch_inside) {
     // 协程栈内抛接是正常的（gdb 回溯也正常）。穿出协程不行，那条不测——
     // 它会 std::terminate，测不了。
