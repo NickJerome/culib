@@ -207,6 +207,21 @@ done
 
 **`LANG=C.UTF-8` 不能省**：wine 要靠 Unix locale 才能把 UTF-16 文件名映射到文件系统，空 locale 下中文文件名的 `CreateFileW` 会返回 `ERROR_FILE_NOT_FOUND`。这一点用绕开 culib 的裸 `CreateFileW` 程序确认过，是 wine 的局限而不是库的 bug——**遇到只在某个环境里失败的测试，先确认那是被测代码的问题还是环境的问题。**
 
+**预处理器的可移植性有个只有 CI 抓得到的坑**：别把 `defined(X) && X(...)` 写在同一个 `#if` 里。
+
+```cpp
+#if defined(__has_feature) && __has_feature(address_sanitizer)   // 不可移植
+```
+
+**短路在预处理器这里不管用**——整个表达式仍要被解析，而 `__has_feature` 在 GCC / MSVC 上是未定义标识符、会变成 `0`，于是 `0(address_sanitizer)` 是语法错误。要写成嵌套的：
+
+```cpp
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+```
+
+**本机 GCC 14.2 容忍这个写法，CI 上更老的 GCC 和 MSVC 都不容忍，clang 一直都行。** 所以它在本机三种编译器下全绿、一推 CI 就两个平台同时红——`coroutine` 那次就是这样，一个字符的毛病让 gcc 和 msvc 四个格子一起挂。
+
 MinGW **不能代替 MSVC**：头文件、`__declspec`、警告集都不同。但它能抓到绝大多数「API 用错、include 漏了、类型不匹配」，而那些正是从未编译过的代码里最常见的毛病。
 
 **这条限制已经兑现过两次，两次都在 `examples/` 里，而且是同一类错：示例伸手去拿平台专有的 libc 函数。**

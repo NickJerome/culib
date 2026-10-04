@@ -46,9 +46,11 @@ target("culib")
         end
     elseif is_arch("arm64", "arm64-v8a") then
         add_files("src/asm/context_arm64_aapcs.S")
+    elseif is_arch("x86", "i386") and is_plat("mingw") then
+        add_files("src/asm/context_i386_pe.S")
     end
-    -- 32 位 x86（README 的矩阵里只有 Windows 有）还没做，所以这里不列——
-    -- 那个架构会在 src/coroutine.cpp 的 #error 上失败，而编译期报错比链接期缺符号清楚。
+    -- 没匹配上的组合（MSVC x86、32 位非 Windows）这里什么都不加，由
+    -- src/coroutine.cpp 的 #error 在编译期报错——比链接期缺符号清楚得多。
     -- 没匹配上的架构这里什么都不加，由 src/coroutine.cpp 里的 #error 报错——
     -- xmake 的描述作用域里 raise / assert / error 全是 nil（都报 unknown interface），
     -- 而那个错误会让 xmake f 失败、却让后续的 xmake 沿用上一份还有效的配置继续构建。
