@@ -3,6 +3,7 @@
 // 汇总头文件：包含 culib 的全部公共头文件。
 // 也可以只包含用到的功能头文件，如 <culib/defer.h>。
 
+#include <culib/coroutine.h>
 #include <culib/defer.h>
 #include <culib/flag.h>
 #include <culib/fs.h>

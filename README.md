@@ -35,7 +35,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
 | base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（`string_view`、`optional`、`make_unique` 等） | 进行中：`defer`、版本信息、`result`、`string_view`、`optional` 已完成；`make_unique` 按需再加 |
-| test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 `term`；164 个测试在三平台 CI 上全绿） |
+| test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 `term`；175 个测试在三平台 CI 上全绿） |
 | lexical_cast | 字符串 ⇄ 数值 / 布尔。`lexical_cast<T>` 严格解析（整个输入必须被消费）、`to_string` / `to_chars` 反向 | **已完成** |
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version`；位置参数、GNU 风格重排、`set()` 给配置文件用 | **已完成** |
 | strings | 操作字符串的自由函数：split / join / trim / 大小写 / replace、UTF-8 ⇄ UTF-16 转换。**不是字符串类**，全库一律用 `std::string`；大小写只做 ASCII，格式化另行缩范围 | **已完成**（East Asian Width 推后） |
@@ -46,7 +46,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | thread | 线程池、任务队列、读写锁（C++11 没有 `shared_mutex`）等 | 第二程 |
 | log | 轻量级日志 | 第二程 |
 | 配置文件 | ini 或 toml 子集 | 第二程 |
-| coroutine | 有栈协程，汇编实现上下文切换，六个平台 / 架构目标 | 第二程：排在 `thread` 之前，理由见路线图 4.6 |
+| coroutine | 有栈协程，汇编换栈。**这一程只做原语**（`resume` / `yield` / `inside`），调度器和 I/O 跟着 `net` 一起设计 | 进行中：x86_64（Linux/macOS/MinGW/MSVC）、arm64 已就位，**32 位 x86 待补** |
 | bytes | 字节缓冲与字节序转换 | 第三程 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 第三程 |
 | fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 走内核通知，低延迟但**网络挂载上收不到远程改动**；`poller` 走 stat 轮询，任何文件系统可用。要能被协程调度器唤醒，所以排在协程之后 | 第三程 |
