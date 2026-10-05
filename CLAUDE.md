@@ -183,7 +183,8 @@
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
 | 关异常 / RTTI 可用 | 人工（`-fno-exceptions -fno-rtti` 跑测试） | 人工，无自动检查 |
-| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，见下 | MinGW-w64 x86_64。**不覆盖 MSVC**（头文件和警告集都不同），那一侧只有 CI |
+| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，见下 | MinGW-w64 x86_64 和 i686。**不覆盖 MSVC**（头文件和警告集都不同），那一侧只有 CI |
+| macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
 
 **本机验证 Windows 代码的办法**（在 CI 之前就能用，不必等 runner）：
 
@@ -223,6 +224,22 @@ done
 **本机 GCC 14.2 容忍这个写法，CI 上更老的 GCC 和 MSVC 都不容忍，clang 一直都行。** 所以它在本机三种编译器下全绿、一推 CI 就两个平台同时红——`coroutine` 那次就是这样，一个字符的毛病让 gcc 和 msvc 四个格子一起挂。
 
 MinGW **不能代替 MSVC**：头文件、`__declspec`、警告集都不同。但它能抓到绝大多数「API 用错、include 漏了、类型不匹配」，而那些正是从未编译过的代码里最常见的毛病。
+
+**连交叉编译器都没有的平台（macOS）还有一招：照 SDK 原型手抄一份头文件桩，只做类型检查。**
+
+```bash
+# 把 macOS 的 sys/event.h 里用到的那部分抄进桩里：struct kevent 的六个字段、
+# EV_SET 的七个参数、kevent() 的六个参数和 const 修饰、EVFILT_* / EV_* 常量。
+mkdir -p /tmp/macos-shim/sys && $EDITOR /tmp/macos-shim/sys/event.h
+g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc \
+    -I/tmp/macos-shim -fsyntax-only src/io_engine_macos.cpp
+```
+
+`-I` 的路径排在系统路径前面，所以 `#include <sys/event.h>` 会命中桩，而 `<sys/types.h>` 之类桩里没有的照常落到系统头文件上。**抄原型时去 SDK 文档或源码核对，别凭记忆**——桩写错了比没有桩更坏，它会让你以为验证过了。
+
+能抓到的：参数个数和顺序、字段名、类型不匹配、常量不存在、`const` 修饰不对。**抓不到**：宏的真实展开形式、字段的确切宽度、平台特有的 `#define`。所以这一步的定位和 MinGW 对 MSVC 一样——**把「从没编译过」变成「至少类型对」，不是把 CI 替掉。**
+
+配套的一招更管用：**让那个编不了的平台尽量少写新代码。** kqueue 后端把最容易写错的 `io_complete()`（`EINTR` 重做、`EAGAIN` 虚假唤醒、对端关闭报 0）抽到 `src/io_engine_posix.h` 和 epoll 共用，于是它独有的只剩「怎么登记兴趣」，未验证面小一大截。
 
 **这条限制已经兑现过两次，两次都在 `examples/` 里，而且是同一类错：示例伸手去拿平台专有的 libc 函数。**
 

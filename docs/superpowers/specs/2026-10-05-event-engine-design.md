@@ -1,7 +1,7 @@
 # 事件引擎：抽象的形状，和三个后端各自要付的账
 
 - 日期：2026-10-05
-- 状态：设计已定，实现分三步走（epoll → kqueue → IOCP）。
+- 状态：**已实现**，三个后端都在（epoll / kqueue / IOCP）。验证和缺口见第 9 节——**最大的缺口是没有超时**（7.2），所以这一期之后引擎还不能拿来写服务器。
 - 前置：[调度器设计](2026-10-04-scheduler-design.md)（第一、二期已实现，本文是第三期）、[coroutine 设计](2026-10-04-coroutine-design.md)。
 - **本文改正了调度器设计 §2 的一处猜测**，见第 2 节。
 
@@ -298,4 +298,60 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 
 ## 9. 实现验证
 
-待实现后补。要覆盖的：三个后端跑同一套测试、`EAGAIN` 虚假唤醒、对端关闭（`transferred == 0`）、`blocked` 非空时 `run()` 不返回、不做 I/O 的程序不建引擎（`epoll` fd 数不变）、以及各平台实际跑过的配置。
+### 9.1 跑过的配置
+
+| 平台 / 工具链 | 后端 | 结果 |
+| --- | --- | --- |
+| Linux x86_64，GCC 14.2，debug / release | epoll | **199 个测试通过**，零警告 |
+| Linux x86_64，clang 19，debug / release | epoll | **199 个测试通过**，零警告 |
+| Linux x86_64，GCC 14.2，ASan + UBSan，`detect_leaks=1` | epoll | 见 9.4 |
+| MinGW-w64 x86_64 + wine | IOCP | **198 个测试通过**（少的那条用 `/proc` 数句柄，只在 Linux 跑），零警告 |
+| MinGW-w64 i686 | IOCP | 编译链接通过，零警告（跑不了，wine 没 WOW64） |
+| macOS | kqueue | **本机跑不了。** 只做了对着 SDK 原型桩的类型检查，见 9.3 |
+
+原来的 190 个测试一条没动。新增 9 条全在 `tests/io_engine_test.cpp`，**文件里不出现任何后端的名字**——那是这一期判据（「一套测试跑三个后端」）的形式保证，平台分支只在「怎么造一对连起来的套接字」上（POSIX 用 `socketpair`，Windows 在回环上真连一次）。
+
+### 9.2 这九条分别钉住什么
+
+| 测试 | 钉住的东西 |
+| --- | --- |
+| `reads_what_the_peer_wrote` | 完成形状最基本的那件事：醒来时字节已经在手，调用点没有「等可读」 |
+| `moves_bytes_in_both_directions_over_one_pair` | 一个句柄上读写同时挂。epoll 要把两个方向合并成一个掩码，**解除一个方向时把另一个也带掉**是这里最容易犯的错 |
+| `keeps_run_from_returning_while_a_coroutine_is_blocked_on_io` | 那条跨文件的不变量。IOCP 的 `OVERLAPPED` 生命周期全靠它，所以它该是一条断言而不是一句注释 |
+| `reports_peer_close_as_zero_not_as_a_failure` | 对端关了是 `transferred == 0`，不是错误。三个后端三条不同的路通到同一个结论（POSIX 是 `read()` 返回 0，IOCP 是 0 字节成功完成或者 `ERROR_BROKEN_PIPE`） |
+| `counts_a_coroutine_that_is_blocked_on_io` | `scheduled()` 把 `blocked` 算进去了。顺带钉住一个容易误解的地方：**正在跑的那根不算**，它已经被 swap 到 `run()` 的局部副本里 |
+| `fails_a_bad_handle_without_suspending_the_coroutine` | 挂不上去时不能挂起协程，否则它永远醒不过来、`run()` 也永远不返回 |
+| `serves_two_readers_on_one_handle_in_order` | 同一句柄同一方向的等待链是先来先服务 |
+| `carries_many_concurrent_readers` | 五十对句柄各一根读协程：fd 下标表的扩容和等待链在规模上的样子 |
+| `builds_no_engine_for_a_program_that_never_does_io` | 「不用的功能不产生任何代价」。在**一根新线程**上数 `/proc/self/fd`——主线程早被前面几条把引擎建起来了，不换线程这条就测不到东西 |
+
+### 9.3 kqueue 的未验证面有多大
+
+没有 macOS，真 `<sys/event.h>` 一行都编不过。两件事把它压到最小：
+
+- **最容易写错的那段不是新写的。** `io_complete()`（`EINTR` 重做、`EAGAIN` 虚假唤醒要留在链上、对端关闭报 0、错误码归谁）抽到了 `src/io_engine_posix.h`，两个 POSIX 后端共用，而那一份在 Linux 上被九条测试跑过。kqueue 独有的只剩「怎么登记兴趣」。
+- **拿一份照 macOS SDK 原型抄的 `<sys/event.h>` 做了类型检查**：`struct kevent` 的六个字段、`EV_SET` 的七个参数、`kevent()` 的六个参数和 const 修饰、`EVFILT_*` / `EV_*` 常量。g++ 14.2 和 clang 19 在 `-Wall -Wextra -Wpedantic -Werror` 下都过。
+
+查不到的是真头文件的怪癖（宏展开形式、字段的确切类型、平台特有的 `#define`）。这和 MinGW 对 MSVC 的关系一样：**抓得到「API 用错、include 漏了、类型不匹配」，抓不到工具链差异。**
+
+### 9.4 ASan 的结果，以及它抓到的一个旧洞
+
+`-fsanitize=address,undefined` 加 `detect_leaks=1`：**新增的九条干净**，而且顺带抓出一个**本来就在、只是没人撞到**的泄漏。
+
+第一期把每线程的 vCPU **故意泄漏**到进程结束，理由记在调度器设计 7.3：「vCPU 的生命周期就是线程的生命周期，精确回收要 `pthread_key` / `FlsAlloc`，为一个指针不值当」，并且写着「ASan 没报，因为 `thread_local` 指针还指着它」。那句话当时是真的——**因为在此之前没有任何测试让一根 spawn 过协程的线程退出**。`builds_no_engine_for_a_program_that_never_does_io` 是第一条这么做的，于是 152 字节当场现形。
+
+更要紧的是**第三期把那笔账的性质改了**：vCPU 身上挂着事件引擎，而引擎持有一个内核句柄。每起一根会 spawn 的工作线程漏一个 `epoll` fd，那不是「一个指针」的量级。
+
+改法是一个只有析构函数的 `thread_local` 哨兵，**只在建 vCPU 时碰一次**：C++11 `thread_local` 那个「每次访问插一个 guard」的代价一根线程只付一次，访问路径仍然是裸 `__thread` 指针，热路径上一个检查都没多。哨兵顺手把队列里没跑完的协程也销毁掉。
+
+**ASan 下有两条旧测试是红的**：`coroutine.reuses_stacks_from_the_pool` 和 `rounds_stack_requests_into_buckets`。拿 HEAD 的干净树对照过，**它们在这一期之前就红**——那两条断言「复用栈时同一个局部变量落在同一地址」，而 ASan 给栈变量加红区会把地址挪开。**不是这一期的事，也没动它们**，但调度器设计 8.7 那句「ASan 跑干净」应该理解成「那个专门的 ASan 场景干净」，不是「整个测试套件在 ASan 下干净」。
+
+### 9.5 没覆盖什么
+
+- **超时**：根本没有。一个收不到数据的 `read` 会把协程永久挂住，`run()` 也就永远不返回。这是这一期最大的洞，见 7.2，第五期和取消语义一起做。
+- **MSVC**：本机只有 MinGW，头文件和警告集都不同，那一侧只有 CI。
+- **真 macOS**：见 9.3。
+- **`io_uring`**：第四期。
+- **多 vCPU**：引擎是每 vCPU 一个，但跨 vCPU 的唤醒（Photon 的 `cancel_wait`）没做，见 7.5。
+- **文件 I/O**：三个后端都只在套接字上跑过。epoll 对普通文件**根本不工作**（普通文件永远「就绪」），这是 `epoll` 的性质而不是实现的缺陷，真正的文件异步要等第四期的 `io_uring`。IOCP 那边 `ReadFile` 对带 `FILE_FLAG_OVERLAPPED` 的文件是通的，但没测。
+- **性能**：一个数都没量。这一期没有性能主张，所以按开发约定也不该写。`net` 那一期要量的是 7.1 那笔欠账（一次就绪的读现在要四个系统调用，手写是一个）。
