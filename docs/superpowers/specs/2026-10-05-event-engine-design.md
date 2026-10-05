@@ -175,6 +175,10 @@ result<std::size_t> socket::read(void* buf, std::size_t len) {
 
 **「不用 I/O 的程序不建引擎」是第 2 条里那个分支的全部意义。** 开发约定的「零开销」是硬约束，而一个 CLI 程序 spawn 几根协程算点东西、从来不碰网络，它不该因为库里有事件引擎就多一个 `epoll` fd 和一次 `epoll_create`。引擎跟着 vCPU 一起懒建，但比 vCPU 更懒一层：**第一次 `arm` 时才建**。
 
+**运行期和代码体积两笔都量过了，不是假设。** 运行期那笔有测试钉着（在一根新线程上数 `/proc/self/fd`，见 9.2）。代码体积这笔原先担心白担心了：`run()` 真的引用了 `io_engine_wait` 和 `io_engine_pending`，所以引擎一定会被链进去，`--gc-sections` 剔不掉——**但真正留下来的只有 48 字节**（同一个只算东西的程序，真引擎 31224 字节、换成只提供符号的空引擎 31176 字节，GCC 14.2 `-O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -s`）。`arm` / `sync_interest` / `io_complete` 这些大的全被剔掉了。
+
+所以**不要**为这件事加一层函数指针间接（让 `run()` 不直接引用引擎、从而整个对象文件都能被剔除）。那能省下 48 字节，代价是一个钩子字段加一层间接——**拿「简单」换四十八个字节是赔的**。
+
 **所以这里没有「上千并发时线性扫会不会慢」这个问题**——没有要扫的东西。唤醒一根的代价是一次 `push_back`，和并发连接数无关。
 
 ## 6. 三个后端
@@ -330,6 +334,7 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 | Linux x86_64，GCC 14.2，debug / release | epoll | **201 个测试通过**，零警告 |
 | Linux x86_64，clang 19，debug / release | epoll | **201 个测试通过**，零警告 |
 | Linux x86_64，GCC 14.2，ASan + UBSan，`detect_leaks=1` | epoll | 见 9.4 |
+| Linux x86_64，GCC 14.2 `-O2`，代码体积 | epoll | 不做 I/O 的程序为引擎付 **48 字节**，见第 5 节 |
 | MinGW-w64 x86_64 + wine | IOCP | **199 个测试通过**（少的两条：一条用 `/proc` 数句柄，一条断言就绪时不让出，都只在 POSIX 跑），零警告 |
 | MinGW-w64 i686 | IOCP | 编译链接通过，零警告（跑不了，wine 没 WOW64） |
 | macOS | kqueue | 本机跑不了，只做了对着 SDK 原型桩的类型检查（见 9.3）。**CI 上在真 macOS 跑通了**，见下 |

@@ -168,16 +168,21 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                            std::vector<coroutine*>& woken) noexcept {
     if (!engine) return 0;
 
-    // 和 epoll 用同一个毫秒折算。kqueue 的 timespec 本可以更精确，但那会让同一个
-    // sleep 在 macOS 上醒得比 Linux 早，而「三个后端行为一致」是这一期的判据。
-    // 顺带也拿到那条「不足 1 毫秒的正超时进成 1」的规则——截断成 0 的话 kevent
-    // 立刻返回，于是「还有 100 微秒就该醒」变成忙转。
-    const long milliseconds = io_timeout_ms(timeout);
+    // **直接给纳秒，不走 io_timeout_ms 的毫秒折算。** `kevent` 收的是 timespec，
+    // 本来就能表达纳秒；epoll 和 IOCP 只能收毫秒那是它们的 API 限制，不是我们要
+    // 对齐的东西。折成毫秒会让「睡 100 微秒」在 macOS 上变成睡 1 毫秒——比手写的
+    // kqueue 循环更粗，而「用到的功能不比手写的更慢」是硬约束。
+    //
+    // 毫秒折算那条「不足 1 毫秒进成 1」的规则在这里也不需要：它是为了防止
+    // epoll_wait 拿到 0 立刻返回变成忙转，而真给 100 微秒的 timespec 就是真等
+    // 100 微秒。精度上三个平台因此不同，但那是**性能差异不是语义差异**——
+    // 三边的承诺都是「至少睡够这么久」。
+    const std::chrono::nanoseconds::rep nanoseconds = timeout.count();
     struct timespec span;
     const struct timespec* limit = 0;    // 空指针就是无限等
-    if (milliseconds >= 0) {
-        span.tv_sec = static_cast<time_t>(milliseconds / 1000);
-        span.tv_nsec = static_cast<long>((milliseconds % 1000) * 1000000);
+    if (nanoseconds >= 0) {
+        span.tv_sec = static_cast<time_t>(nanoseconds / 1000000000);
+        span.tv_nsec = static_cast<long>(nanoseconds % 1000000000);
         limit = &span;
     }
 
