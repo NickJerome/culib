@@ -88,17 +88,18 @@ int main() {
     std::printf("\n5. vCPU 模型：一根线程一个调度器，想用多核就多调几次 run()\n");
     {
         const int vcpus = 3;
-        const int per_vcpu = 50;
+        // static 不是随手写的：下面那个 lambda 要用它，而两个编译器的要求是**互斥**的。
+        // 写成局部 const int 时，clang 认为「只读它的值」不构成 odr-use、不需要捕获，
+        // 捕获了就报 -Wunused-lambda-capture（在 -Wextra 里）；而 MSVC 不捕获就报
+        // C3493。两边都满足的办法是让它有静态存储期——那样根本不需要捕获。
+        static const int per_vcpu = 50;
         std::vector<std::size_t> finished(static_cast<std::size_t>(vcpus), 0);
         std::vector<std::thread> carriers;
 
         wavvix::stopwatch watch;
         for (int v = 0; v < vcpus; ++v) {
             std::size_t* const slot = &finished[static_cast<std::size_t>(v)];
-            // per_vcpu 要显式捕获：它是个 const int，GCC 和 clang 认为「只读它的值」
-            // 不构成 odr-use、因此不需要捕获，而 **MSVC 报 C3493**。两边都满足的写法
-            // 就是写进捕获列表，所以这里写上。
-            carriers.push_back(std::thread([slot, per_vcpu] {
+            carriers.push_back(std::thread([slot] {
                 for (int i = 0; i < per_vcpu; ++i) {
                     spawn([] {
                         // 一点活，中间让出两次

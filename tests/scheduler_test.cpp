@@ -117,6 +117,29 @@ TEST(scheduler, wakes_sleepers_in_time_order) {
     EXPECT(order, ==, "ABC");
 }
 
+TEST(scheduler, wakes_sleepers_in_time_order_when_they_expire_in_one_round) {
+    // 上面那条在 Linux 上查不出问题：空闲路径正好睡到最早那个 deadline，所以三个各自
+    // 单独一轮醒，次序怎么排都对。**它在 macOS 和 Windows 上红过**（拿到 "CAB" 和
+    // "ACB"），因为那两个平台定时器粒度更粗，一次睡眠 overshoot 到好几个一起到期，
+    // 而当时的代码是按容器次序（也就是 spawn 次序）把它们搬回 ready 的。
+    //
+    // 这一条不靠平台的定时器粒度，而是**让三个 deadline 必定落在同一轮**：另一根协程
+    // 不让出地占住 vCPU 直到所有 deadline 都过去。所以它在 Linux 上也能复现那个 bug。
+    std::string order;
+    spawn([&] { sleep_for(ms(30)); order += "C"; });
+    spawn([&] { sleep_for(ms(10)); order += "A"; });
+    spawn([&] { sleep_for(ms(20)); order += "B"; });
+    spawn([&] {
+        const wavvix::stopwatch hog;
+        while (hog.elapsed() < ms(45)) {
+            // 故意不 yield：这一根跑完之前调度器不会去看定时器
+        }
+    });
+
+    EXPECT(run(), ==, 4u);
+    EXPECT(order, ==, "ABC");
+}
+
 TEST(scheduler, sleeps_the_thread_when_called_outside_a_coroutine) {
     // 不在协程里就真睡线程，这样随手写个 sleep 在哪儿都对
     wavvix::stopwatch watch;

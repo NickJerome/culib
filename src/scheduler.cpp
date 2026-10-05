@@ -60,6 +60,10 @@ __declspec(thread) vcpu* current_vcpu = 0;
 __thread vcpu* current_vcpu = 0;
 #endif
 
+bool earlier_deadline(const task& left, const task& right) {
+    return left.wake_at < right.wake_at;
+}
+
 void reap(std::vector<task>& queue) {
     for (std::size_t i = 0; i < queue.size(); ++i) delete queue[i].body;
     queue.clear();
@@ -276,6 +280,7 @@ std::size_t run() {
     self.running = true;
     std::size_t completed = 0;
     std::vector<task> round;
+    std::vector<task> expired;    // 本轮到期的睡眠任务，复用缓冲不每轮分配
 
     for (;;) {
         // 1. 上一轮 spawn 进来的入队
@@ -284,20 +289,35 @@ std::size_t run() {
             self.incoming.clear();
         }
 
-        // 2. 到期的睡眠任务变回可运行
+        // 2. 到期的睡眠任务变回可运行。
+        //
+        // **到期的那一批要按 wake_at 排序再入队**，不能按它们在 sleeping 里的次序。
+        // 一轮里只到期一个时两者没区别，而那是 Linux 上的常态——空闲路径正好睡到最早
+        // 那个 deadline，所以每个都单独一轮醒。但 macOS 和 Windows 的定时器粒度更粗，
+        // 一次睡眠会 overshoot 到好几个一起到期，这时按容器次序入队就等于按 spawn 次序
+        // 唤醒。**「定时器按时间排序唤醒」原先只是在 Linux 上碰巧成立**，CI 上
+        // macOS 拿到的是 "CAB"、MSVC release 拿到的是 "ACB"。
+        //
+        // 用 stable_sort 而不是 sort：deadline 相同时按 spawn 次序醒，那是能预期也
+        // 能测的行为，unstable 排序会让它变成「不保证」。
         if (!self.sleeping.empty()) {
             const instant now = clock_type::now();
             std::size_t kept = 0;
+            expired.clear();
             for (std::size_t i = 0; i < self.sleeping.size(); ++i) {
                 if (self.sleeping[i].wake_at <= now) {
                     task woken = self.sleeping[i];
                     woken.sleeping = false;
-                    self.ready.push_back(woken);
+                    expired.push_back(woken);
                 } else {
                     self.sleeping[kept++] = self.sleeping[i];
                 }
             }
             self.sleeping.resize(kept);
+            if (expired.size() > 1) {
+                std::stable_sort(expired.begin(), expired.end(), earlier_deadline);
+            }
+            self.ready.insert(self.ready.end(), expired.begin(), expired.end());
         }
 
         if (self.ready.empty()) {

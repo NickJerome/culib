@@ -302,10 +302,10 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 
 | 平台 / 工具链 | 后端 | 结果 |
 | --- | --- | --- |
-| Linux x86_64，GCC 14.2，debug / release | epoll | **199 个测试通过**，零警告 |
-| Linux x86_64，clang 19，debug / release | epoll | **199 个测试通过**，零警告 |
+| Linux x86_64，GCC 14.2，debug / release | epoll | **200 个测试通过**，零警告 |
+| Linux x86_64，clang 19，debug / release | epoll | **200 个测试通过**，零警告 |
 | Linux x86_64，GCC 14.2，ASan + UBSan，`detect_leaks=1` | epoll | 见 9.4 |
-| MinGW-w64 x86_64 + wine | IOCP | **198 个测试通过**（少的那条用 `/proc` 数句柄，只在 Linux 跑），零警告 |
+| MinGW-w64 x86_64 + wine | IOCP | **199 个测试通过**（少的那条用 `/proc` 数句柄，只在 Linux 跑），零警告 |
 | MinGW-w64 i686 | IOCP | 编译链接通过，零警告（跑不了，wine 没 WOW64） |
 | macOS | kqueue | **本机跑不了。** 只做了对着 SDK 原型桩的类型检查，见 9.3 |
 

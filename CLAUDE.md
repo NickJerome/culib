@@ -223,6 +223,23 @@ done
 
 **本机 GCC 14.2 容忍这个写法，CI 上更老的 GCC 和 MSVC 都不容忍，clang 一直都行。** 所以它在本机三种编译器下全绿、一推 CI 就两个平台同时红——`coroutine` 那次就是这样，一个字符的毛病让 gcc 和 msvc 四个格子一起挂。
 
+**还有一个坑比它更难办：clang 和 MSVC 对 lambda 捕获 `const` 局部变量的要求是互斥的。**
+
+```cpp
+const int per_vcpu = 50;
+std::thread([slot] { for (int i = 0; i < per_vcpu; ++i) ... });   // MSVC: error C3493
+std::thread([slot, per_vcpu] { ... });   // clang: -Wunused-lambda-capture（在 -Wextra 里）
+```
+
+clang 认为「只读一个 `const int` 的值」不构成 odr-use、因此不需要捕获，捕获了就是多余的；MSVC 认为必须捕获。**两边都写不对，因为它们要的是相反的东西。** 解法是让那个变量有静态存储期（`static const int`），那样根本不存在捕获的问题：
+
+```cpp
+static const int per_vcpu = 50;
+std::thread([slot] { for (int i = 0; i < per_vcpu; ++i) ... });   // 两边都过
+```
+
+这一条是 `examples/scheduler.cpp` 踩出来的，而且**踩了两次**：先按 MSVC 的要求加上捕获，于是 linux-clang 从绿变红；才明白要换第三种写法。遇到「按一个编译器的要求改完，另一个就红了」的时候，先确认两边要的是不是相反的——是的话别在两种写法之间来回切。
+
 MinGW **不能代替 MSVC**：头文件、`__declspec`、警告集都不同。但它能抓到绝大多数「API 用错、include 漏了、类型不匹配」，而那些正是从未编译过的代码里最常见的毛病。
 
 **连交叉编译器都没有的平台（macOS）还有一招：照 SDK 原型手抄一份头文件桩，只做类型检查。**
