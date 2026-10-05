@@ -10,3 +10,7 @@ compile_commands.json
 # OS
 .DS_Store
 Thumbs.db
+
+# 参照用的源码检出，不是依赖。调度器设计拿 PhotonLibOS 逐项对比，
+# 克隆一份在手边比翻网页快；它自带 .git，不该进 culib 的历史。
+photon/
