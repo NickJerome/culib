@@ -83,6 +83,40 @@ result<void> read_file(string_view path, std::string& out);   // 复用 out 已�
 result<void> write_file(string_view path, string_view content);
 result<void> append_file(string_view path, string_view content);
 
+// 一直开着的追加写句柄。给「连续往同一个文件写」的场合用——日志就是。
+//
+// **为什么不用 append_file**：那个每行都要开一次关一次文件。本机 tmpfs 实测
+// 2613 ns/行 对 340 ns/行（7.7 倍），而在 HDD 或网络盘上 `open` 和 `close` 各要一次
+// 往返，差距是数量级的（开发约定「性能与占用」里那张 stat 的表）。
+//
+// **没有用户态缓冲**：每次 write 直接交给操作系统，所以进程崩掉时已经写出的行不会丢。
+// 代价是一行一次系统调用，而那正是日志想要的取舍。
+//
+// 不可拷贝（它握着一个句柄）。析构时自动关。
+class output_file {
+public:
+    output_file() noexcept;
+    ~output_file();
+
+    // 以追加方式打开，不存在就建。**已经开着的话先关掉前一个。**
+    result<void> open(string_view path);
+    bool is_open() const noexcept;
+    void close() noexcept;
+
+    result<void> write(string_view content);
+
+    // 这个文件现在有多大（打开时已有的长度 + 之后写进去的）。
+    // 自己记着，所以**不用每次去 stat** ——给日志轮转判断用。
+    std::uint64_t size() const noexcept { return written_; }
+
+private:
+    output_file(const output_file&);
+    output_file& operator=(const output_file&);
+
+    std::intptr_t handle_;      // -1 = 没开。POSIX 上是 fd，Windows 上是 HANDLE
+    std::uint64_t written_;
+};
+
 // --- 目录与文件操作 -----------------------------------------------------------
 
 enum class recursive { no, yes };

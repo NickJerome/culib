@@ -9,6 +9,7 @@
 #include <culib/flag.h>
 #include <culib/fs.h>
 #include <culib/lexical_cast.h>
+#include <culib/log.h>
 #include <culib/optional.h>
 #include <culib/os.h>
 #include <culib/result.h>

@@ -102,7 +102,9 @@ std::int64_t to_unix_seconds(const FILETIME& time) {
 result<void> write_with_disposition(string_view path, string_view content, bool append) {
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
-    const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_WRITE, 0, 0,
+    // 同上：共享模式给 0 的话，写的过程中别人连读都不行。POSIX 没有这种限制。
+    const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_WRITE,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
                                       append ? OPEN_ALWAYS : CREATE_ALWAYS,
                                       FILE_ATTRIBUTE_NORMAL, 0);
     if (file == INVALID_HANDLE_VALUE) return from_last_error("打开", path, ::GetLastError());
@@ -174,7 +176,14 @@ result<timestamp> last_write_time(string_view path) {
 result<void> read_file(string_view path, std::string& out) {
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
-    const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_READ, FILE_SHARE_READ, 0,
+    // **共享模式要带 FILE_SHARE_WRITE**，否则读不了「别人正开着写」的文件——
+    // 日志就是那种文件。POSIX 上读一个正在被写的文件永远可以，而 README 承诺
+    // 「同一套 API 在三个平台上行为一致」，所以这里要跟上。
+    //
+    // 这是 log 那一期撞出来的：日志 sink 握着写句柄时 read_file 返回
+    // ERROR_SHARING_VIOLATION，四条测试在 wine 下红了，而 Linux 上全绿。
+    const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_READ,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
     if (file == INVALID_HANDLE_VALUE) return from_last_error("打开", path, ::GetLastError());
 
@@ -219,6 +228,64 @@ result<void> write_file(string_view path, string_view content) {
 
 result<void> append_file(string_view path, string_view content) {
     return write_with_disposition(path, content, true);
+}
+
+// --- 一直开着的追加写句柄 -----------------------------------------------------
+//
+// FILE_APPEND_DATA 让每次 WriteFile 都落到文件末尾，不需要自己 seek——多个进程
+// 写同一个日志文件时也不会互相盖。不开用户态缓冲，理由见 fs_posix.cpp 那边。
+
+output_file::output_file() noexcept : handle_(-1), written_(0) {}
+
+output_file::~output_file() { close(); }
+
+bool output_file::is_open() const noexcept {
+    return reinterpret_cast<HANDLE>(handle_) != INVALID_HANDLE_VALUE;
+}
+
+void output_file::close() noexcept {
+    const HANDLE file = reinterpret_cast<HANDLE>(handle_);
+    if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
+    handle_ = -1;
+    written_ = 0;
+}
+
+result<void> output_file::open(string_view path) {
+    close();
+    const result<std::wstring> wide = wide_path(path);
+    if (!wide.is_ok()) return result<void>(wide.error());
+
+    // FILE_SHARE_READ | FILE_SHARE_WRITE：让别人能同时 tail 这个日志。
+    const HANDLE file = ::CreateFileW(wide.value().c_str(), FILE_APPEND_DATA,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
+                                      FILE_ATTRIBUTE_NORMAL, 0);
+    if (file == INVALID_HANDLE_VALUE) return from_last_error("打开", path, ::GetLastError());
+
+    LARGE_INTEGER had;
+    had.QuadPart = 0;
+    handle_ = reinterpret_cast<std::intptr_t>(file);
+    written_ = ::GetFileSizeEx(file, &had) ? static_cast<std::uint64_t>(had.QuadPart) : 0;
+    return result<void>();
+}
+
+result<void> output_file::write(string_view content) {
+    const HANDLE file = reinterpret_cast<HANDLE>(handle_);
+    if (file == INVALID_HANDLE_VALUE) {
+        return make_error(error_kind::invalid_argument, "写入前要先 open");
+    }
+    const char* at = content.data();
+    std::size_t left = content.size();
+    while (left) {
+        const DWORD chunk = (left > 0x40000000u) ? 0x40000000u : static_cast<DWORD>(left);
+        DWORD moved = 0;
+        if (!::WriteFile(file, at, chunk, &moved, 0)) {
+            return from_last_error("写入", "", ::GetLastError());
+        }
+        at += moved;
+        left -= moved;
+        written_ += moved;
+    }
+    return result<void>();
 }
 
 // --- 目录与文件操作 -----------------------------------------------------------
