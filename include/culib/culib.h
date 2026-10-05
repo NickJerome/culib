@@ -17,5 +17,6 @@
 #include <culib/string_view.h>
 #include <culib/strings.h>
 #include <culib/sync.h>
+#include <culib/term.h>
 #include <culib/time.h>
 #include <culib/version.h>

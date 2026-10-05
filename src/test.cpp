@@ -1,5 +1,6 @@
 #include "test_runner.h"
 
+#include <culib/term.h>
 #include <culib/stopwatch.h>
 
 #include <chrono>
@@ -18,6 +19,15 @@ namespace test {
 namespace detail {
 
 namespace {
+
+// 报告的配色。**term 的第一个消费者就是这里**——开发约定里「吃自己的狗粮」那条，
+// 而且 term 的设计文档（2026-10-01-test-term-table-design.md 第 5 节）明写着
+// 「完成后被测试框架吃掉」。
+//
+// 上不上色由 term 自己判断：输出重定向到文件、管道给别的程序、或者设了 NO_COLOR 时
+// 自动变回纯文字，所以 CI 的日志里不会多出一堆转义序列。
+const wavvix::term::style marker = wavvix::term::fg::green;
+const wavvix::term::style bad = wavvix::term::fg::red;
 
 test_context* current = nullptr;
 
@@ -363,40 +373,42 @@ run_summary run_tests(const std::vector<test_case>& tests, const run_options& op
         return summary;
     }
 
-    out << "[==========] Running " << count_text(selected.size(), "test") << " from "
+    out << marker("[==========]") << " Running " << count_text(selected.size(), "test") << " from "
         << count_text(groups.size(), "test suite") << ".\n";
     const wavvix::stopwatch run_watch;
     for (const suite_group& group : groups) {
-        out << "[----------] " << count_text(group.tests.size(), "test") << " from " << group.name << '\n';
+        out << marker("[----------]") << " " << count_text(group.tests.size(), "test") << " from "
+            << group.name << '\n';
         const wavvix::stopwatch suite_watch;
         for (const test_case* test : group.tests) {
             const std::string name = full_name(*test);
-            out << "[ RUN      ] " << name << std::endl;  // 立即刷新：崩溃时最后一行就是出问题的测试
+            out << marker("[ RUN      ]") << " " << name << std::endl;  // 立即刷新：崩溃时最后一行就是出问题的测试
             std::chrono::nanoseconds elapsed(0);
             const bool passed = run_single_test(*test, out, elapsed);
             ++summary.ran;
             if (passed) {
-                out << "[       OK ] " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
+                out << marker("[       OK ]") << " " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
             } else {
-                out << "[  FAILED  ] " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
+                out << bad("[  FAILED  ]") << " " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
                 ++summary.failed;
                 summary.failed_names.push_back(name);
             }
         }
         const std::chrono::nanoseconds suite_elapsed = suite_watch.elapsed();
-        out << "[----------] " << count_text(group.tests.size(), "test") << " from " << group.name << " ("
+        out << marker("[----------]") << " " << count_text(group.tests.size(), "test") << " from "
+            << group.name << " ("
             << wavvix::format_duration(suite_elapsed) << " total)\n\n";
     }
     const std::chrono::nanoseconds run_elapsed = run_watch.elapsed();
-    out << "[==========] " << count_text(selected.size(), "test") << " from "
+    out << marker("[==========]") << " " << count_text(selected.size(), "test") << " from "
         << count_text(groups.size(), "test suite") << " ran. (" << wavvix::format_duration(run_elapsed)
         << " total)\n";
-    out << "[  PASSED  ] " << count_text(static_cast<std::size_t>(summary.ran - summary.failed), "test") << ".\n";
+    out << marker("[  PASSED  ]") << " " << count_text(static_cast<std::size_t>(summary.ran - summary.failed), "test") << ".\n";
     if (summary.failed > 0) {
-        out << "[  FAILED  ] " << count_text(static_cast<std::size_t>(summary.failed), "test")
+        out << bad("[  FAILED  ]") << " " << count_text(static_cast<std::size_t>(summary.failed), "test")
             << ", listed below:\n";
         for (const std::string& name : summary.failed_names) {
-            out << "[  FAILED  ] " << name << '\n';
+            out << bad("[  FAILED  ]") << " " << name << '\n';
         }
         out << "\n " << display_signed(summary.failed) << " FAILED " << (summary.failed == 1 ? "TEST" : "TESTS")
             << '\n';
