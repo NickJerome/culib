@@ -366,6 +366,12 @@ std::string usage() {
     return out;
 }
 
+bool was_given(string_view name) noexcept {
+    registry& self = table();
+    const entry* const which = find_by_name(self, name);
+    return which != 0 && which->given;
+}
+
 result<void> set(string_view name, string_view text) {
     registry& self = table();
     entry* which = find_by_name(self, name);

@@ -179,5 +179,12 @@ std::string usage();
 // 在 init 之前调用则命令行会覆盖它；在之后调用则它覆盖命令行。
 result<void> set(string_view name, string_view text);
 
+// 这个选项在命令行上被给过吗（按名字问，别名也算）。没有这个选项时返回 false。
+//
+// 消费者是 `config::apply_to_flags()`：**命令行要优先于配置文件**，所以它得先问一句
+// 「这个已经在命令行上给过了吗」，给过就跳过。按存储地址问的那个重载在那里用不了，
+// 因为配置文件手里只有名字。
+bool was_given(string_view name) noexcept;
+
 }  // namespace flag
 }  // namespace wavvix

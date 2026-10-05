@@ -4,6 +4,7 @@
 // 也可以只包含用到的功能头文件，如 <culib/defer.h>。
 
 #include <culib/bytes.h>
+#include <culib/config.h>
 #include <culib/coroutine.h>
 #include <culib/defer.h>
 #include <culib/flag.h>
