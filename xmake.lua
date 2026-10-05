@@ -32,6 +32,15 @@ target("culib")
     else
         remove_files("src/**_win.cpp")
     end
+    -- 事件引擎的三个后端在 POSIX 内部还要再分一次：Linux 是 epoll、macOS 是 kqueue，
+    -- 两边的头文件完全不同，_posix 那一档装不下。没匹配上的平台一个后端都不会进来，
+    -- 由 src/io_engine.cpp 的 #error 在编译期拦住（不是链接期缺符号）。
+    if not is_plat("linux") then
+        remove_files("src/**_linux.cpp")
+    end
+    if not is_plat("macosx") then
+        remove_files("src/**_macos.cpp")
+    end
 
     -- 协程的换栈汇编：每个 (ABI, 架构, 汇编器) 一个文件，按目标挑一个。
     -- 协程是全有或全无的——程序一旦用了，发到哪个平台就必须有那个平台的汇编，

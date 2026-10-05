@@ -29,9 +29,15 @@
 //
 // ---- 这一期没有的 ---------------------------------------------------------------
 //
-// 没有 I/O（epoll / kqueue / IOCP / io_uring 是第三、四期）、没有协程感知的
-// mutex / condition_variable（第五期）、没有栈池（第二期，所以现在每次 spawn 都要
-// 一次 mmap，约 7 µs）。调度策略是最朴素的轮转，不做公平性和优先级。
+// **没有公共的 I/O 接口。** 事件引擎本身已经有了（第三期，epoll / kqueue / IOCP
+// 三个后端），协程现在可以阻塞在 I/O 上而不占着 vCPU，空闲的 vCPU 也睡在引擎上而不是
+// 睡在定时器上——但那一层还全在库内部：句柄类型和超时两样都要等 net 才定得好，
+// 理由见 docs/superpowers/specs/2026-10-05-event-engine-design.md 7.4。
+// **所以现在没有「带超时的读」，一个收不到数据的 I/O 会把协程永久挂住**，那是第五期
+// 和取消语义一起做的。
+//
+// 另外没有的：io_uring（第四期）、协程感知的 mutex / condition_variable（第五期）。
+// 调度策略是最朴素的轮转，不做公平性和优先级。
 // 全部计划见 docs/superpowers/specs/2026-10-04-scheduler-design.md。
 
 #include <culib/coroutine.h>
