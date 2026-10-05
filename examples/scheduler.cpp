@@ -95,7 +95,10 @@ int main() {
         wavvix::stopwatch watch;
         for (int v = 0; v < vcpus; ++v) {
             std::size_t* const slot = &finished[static_cast<std::size_t>(v)];
-            carriers.push_back(std::thread([slot] {
+            // per_vcpu 要显式捕获：它是个 const int，GCC 和 clang 认为「只读它的值」
+            // 不构成 odr-use、因此不需要捕获，而 **MSVC 报 C3493**。两边都满足的写法
+            // 就是写进捕获列表，所以这里写上。
+            carriers.push_back(std::thread([slot, per_vcpu] {
                 for (int i = 0; i < per_vcpu; ++i) {
                     spawn([] {
                         // 一点活，中间让出两次
