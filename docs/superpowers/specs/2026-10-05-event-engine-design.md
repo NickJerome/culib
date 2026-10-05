@@ -190,19 +190,27 @@ const ssize_t n = (req->direction == io_read)
 
 fd 必须是非阻塞的，否则「报了可读、读到一半阻塞住」会把整个 vCPU 卡死。**这一期不替调用方设 `O_NONBLOCK`**——那是 `net` 创建句柄时的事，引擎只在 debug 下断言。
 
-### 6.2 kqueue：少一次系统调用
+### 6.2 kqueue：两条独立的过滤器
 
 | 动作 | 做法 |
 | --- | --- |
-| 建 | `kqueue()`，再 `EV_SET(..., EVFILT_USER, EV_ADD \| EV_CLEAR, ...)` 装一个自唤醒口 |
-| `arm` | 变更攒进 changelist，**不单独提交**——下一次 `kevent` 顺带提交 |
-| `wait` | `kevent(kq, changes, n, events, m, &ts)` 一次调用提交变更并收事件，其余和 epoll 一样（当场做系统调用） |
+| 建 | `kqueue()`，再 `fcntl` 补上 `FD_CLOEXEC`（没有 `kqueue1`） |
+| `arm` | `EV_SET(..., EV_ADD \| EV_ENABLE, ...)` 加 `kevent(kq, &change, 1, 0, 0, &{0,0})`，**立刻提交** |
+| `wait` | `kevent(kq, 0, 0, events, m, &ts)` 收事件，其余和 epoll 一样（当场做系统调用） |
 
-**变更不单独提交是 kqueue 比 epoll 省的那一次系统调用**：epoll 每次改兴趣都要一次 `epoll_ctl`，kqueue 的变更搭在 `kevent` 上免费捎走。所以这里**不是**把 epoll 的代码换个名字，攒变更的缓冲区是真实的结构差别。
+`EVFILT_READ` / `EVFILT_WRITE` 一个 fd 一个方向各一条，彼此独立——**这是和 epoll 唯一的结构差别**，而且是 kqueue 这边干净：不需要把两个方向合并成一个掩码再整体提交，增删各管各的。`udata` 不用，等待链在自己的 fd 下标表里，靠返回事件的 `ident`（就是 fd）查得到。
 
-`EVFILT_READ` / `EVFILT_WRITE` 一个 fd 一个方向各一条，彼此独立——这点比 epoll 的单掩码干净，不需要维护合并后的兴趣掩码。错误通过返回事件的 `EV_ERROR` 标志报，`udata` 里放请求指针。
+**本文原来打算攒批**（变更不单独提交，搭下一次 `kevent` 免费捎走，Photon 的 `enqueue` 就是那么做的），理由是省掉每次 `arm` 的一次系统调用。**实现时发现那和这一期的判据冲突，改成立刻提交：**
 
-**本机验证不了**：没有 macOS，也没有 `<sys/event.h>`，连 `-fsyntax-only` 都编不过。这是 coroutine 那一期 arm64 汇编和 MASM 的同一种处境（CLAUDE.md 里记着那次「推上 CI 才第一次被验证」），所以这个后端单独一个提交推上去，让 CI 的 macOS runner 当第一个读者。
+1. **攒批会让「登记失败」从同步变成异步。** epoll 上 `arm()` 当场返回失败、协程根本不让出；攒批的话要等到下一次 `kevent()` 才发现，协程已经白挂起一轮。和 7.1 否掉乐观快路是同一把尺子——判据是「三个后端行为一致」，不是「每个后端各自最快」。
+2. **开发约定里「性能主张必须有对比」。** 手上没有 macOS，省下的那次系统调用值多少就只是个说法，而按约定没有对比就不该写进文档。
+
+**什么时候重开**：有 macOS 能跑同场对比，而且有一条测试能把两种做法区分开。现在那条 `fails_a_bad_handle_without_suspending_the_coroutine` 两种做法都能过（协程多挂起一轮不改变最终结果），所以它不算。
+
+**本机验证不了**：没有 macOS，也没有 `<sys/event.h>`，真头文件一行都编不过。这是 coroutine 那一期 arm64 汇编和 MASM 的同一种处境（CLAUDE.md 里记着那次「推上 CI 才第一次被验证」）。两件事把未验证面压到最小：
+
+- **最容易写错的那段不是新写的。** `io_complete()`（EINTR、EAGAIN 虚假唤醒、对端关闭、错误码归谁）抽到了 `src/io_engine_posix.h`，两个 POSIX 后端共用同一份，而那一份在 Linux 上被九条测试跑过。kqueue 这边新写的只有「怎么登记兴趣」。
+- **拿一份照 macOS SDK 抄的 `<sys/event.h>` 原型做了类型检查**（`struct kevent` 的六个字段、`EV_SET` 的七个参数、`kevent()` 的六个参数和 const 修饰、`EVFILT_*` / `EV_*` 常量），g++ 14.2 和 clang 19 在 `-Wall -Wextra -Wpedantic -Werror` 下都过。这查不到真头文件的怪癖，但它抓的正是「从没编译过的代码」里最常见的那几类错，和 MinGW 对 Windows 起的作用一样。
 
 ### 6.3 IOCP：原生就是完成形状
 
