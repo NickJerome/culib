@@ -39,14 +39,12 @@ inline io_fd_slot io_empty_slot() {
     return empty;
 }
 
-// 把一个请求从链上摘下来，带着结果交还给调度器。
-inline void io_hand_back(io_request*& head, std::ptrdiff_t transferred, int failure,
-                         std::vector<coroutine*>& woken, std::size_t& pending) {
+// 把链头摘下来交还给调度器。结果（transferred / failure）调用方已经填在请求里了。
+inline void io_hand_back(io_request*& head, std::vector<coroutine*>& woken,
+                         std::size_t& pending) {
     io_request* const request = head;
     head = request->next;
     request->next = 0;
-    request->transferred = transferred;
-    request->failure = failure;
     woken.push_back(request->owner);
     if (pending) --pending;
 }
@@ -61,31 +59,38 @@ inline bool io_would_block(int code) {
 #endif
 }
 
-// 做一次系统调用，把结果交回链头那个请求。**完成形状在一个「就绪」后端上多付的就是
-// 这里**——调度器设计 §2 说的那三行，有名有姓就在下面那个三元表达式。
+// 做一次系统调用，结果写进请求。**完成形状在一个「就绪」后端上多付的就是这里**——
+// 调度器设计 §2 说的那三行，有名有姓就在下面那个三元表达式。整个后端只有这一处碰
+// read / write，快路（还没登记就先试）和慢路（醒来之后补一次）共用它。
 //
-// 返回 false 表示这一轮没完成：链空了，或者 EAGAIN。后者是水平触发下的虚假唤醒
-// （别的东西把数据抢走了，或者内核报早了），**请求留在链上继续等，不唤醒协程**。
-inline bool io_complete(int fd, io_request*& head, io_direction direction,
-                        std::vector<coroutine*>& woken, std::size_t& pending) {
-    io_request* const request = head;
-    if (!request) return false;
-
+// 返回 false 只有一个意思：**现在还做不了，得等**（EAGAIN）。其余情况都算有结果了，
+// 包括失败和「传了 0 字节」（对端关了，那不是失败）。
+inline bool io_try_now(io_request& request) {
+    const int fd = request.handle;
     ssize_t moved;
     for (;;) {
-        moved = (direction == io_read) ? ::read(fd, request->buffer, request->length)
-                                      : ::write(fd, request->buffer, request->length);
+        moved = (request.direction == io_read) ? ::read(fd, request.buffer, request.length)
+                                              : ::write(fd, request.buffer, request.length);
         if (moved >= 0) break;
         if (errno == EINTR) continue;    // 信号打断，重做
         break;
     }
     if (moved < 0 && io_would_block(errno)) return false;
 
-    if (moved < 0) {
-        io_hand_back(head, -1, errno, woken, pending);
-    } else {
-        io_hand_back(head, moved, 0, woken, pending);   // 0 就是对端关了，不是失败
-    }
+    request.transferred = (moved < 0) ? -1 : moved;
+    request.failure = (moved < 0) ? errno : 0;
+    return true;
+}
+
+// 把链头那个请求做掉并交还给调度器。
+//
+// 返回 false 表示这一轮没完成：链空了，或者 EAGAIN。后者是水平触发下的虚假唤醒
+// （别的东西把数据抢走了，或者内核报早了），**请求留在链上继续等，不唤醒协程**。
+inline bool io_complete(io_request*& head, std::vector<coroutine*>& woken,
+                        std::size_t& pending) {
+    if (!head) return false;
+    if (!io_try_now(*head)) return false;
+    io_hand_back(head, woken, pending);
     return true;
 }
 
@@ -93,7 +98,11 @@ inline bool io_complete(int fd, io_request*& head, io_direction direction,
 // 不收的话那些协程永远醒不过来，run() 也就永远不返回。
 inline void io_fail_chain(io_request*& head, int failure, std::vector<coroutine*>& woken,
                           std::size_t& pending) {
-    while (head) io_hand_back(head, -1, failure, woken, pending);
+    while (head) {
+        head->transferred = -1;
+        head->failure = failure;
+        io_hand_back(head, woken, pending);
+    }
 }
 
 }  // namespace detail

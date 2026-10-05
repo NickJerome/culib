@@ -309,6 +309,36 @@ TEST(io_engine, counts_a_coroutine_that_is_blocked_on_io) {
     EXPECT(seen_while_blocked, ==, 1u);
 }
 
+#if !defined(_WIN32)
+TEST(io_engine, does_not_suspend_when_the_operation_is_already_ready) {
+    // 「零开销」那条硬约束在调用点上的样子：数据已经就绪时一次读写只花一个系统调用，
+    // 而且**协程不让出**。观察办法是交错顺序——让出了另一根就会插到中间去。
+    //
+    // 只在 POSIX 上断言。IOCP 那边没有「登记」这一步可省（发出 overlapped 操作本身
+    // 就是那一个系统调用），而要让同步完成的操作不投完成包得开
+    // FILE_SKIP_COMPLETION_PORT_ON_SUCCESS，那个开关对套接字有已知限制，万一没生效
+    // 就会有一个完成包落在已经销毁的 OVERLAPPED 上。所以 Windows 维持「照样让出」。
+    // **这是性能上的不对称，不是语义上的**：两边传的字节和结果完全一样。见设计文档 7.1。
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+
+    std::string trace;
+    spawn([&] {
+        trace += "a";
+        write_now(pair.left, "x", 1);    // 缓冲是空的，这次写必定就绪
+        trace += "a";
+    });
+    spawn([&] {
+        trace += "b";
+        wavvix::yield();
+        trace += "b";
+    });
+
+    EXPECT(run(), ==, 2u);
+    EXPECT(trace, ==, "aabb");           // 那次写让出了的话会是 "abba"
+}
+#endif
+
 TEST(io_engine, fails_a_bad_handle_without_suspending_the_coroutine) {
     // 挂不上去时**不能**挂起协程：那根协程永远醒不过来，run() 也就永远不返回。
     bool continued = false;

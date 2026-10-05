@@ -100,8 +100,9 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept;
 std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                            std::vector<coroutine*>& woken) noexcept;
 
-// 还有在等的操作吗。调度器用它判断「这根 vCPU 是不是还有 I/O 没回来」。
-bool io_engine_busy(const io_engine* engine) noexcept;
+// 还有几个操作没回来。调度器用它判断「这根 vCPU 是不是还有活」，所以它就是
+// **阻塞在 I/O 上的协程数**——调度器不另记一份。给 0 就是都回来了。
+std::size_t io_engine_pending(const io_engine* engine) noexcept;
 
 // 把纳秒超时折成毫秒，给 epoll_wait 和 GetQueuedCompletionStatusEx 用（两边都要毫秒）。
 // 返回负数表示无限等，各后端自己转成 -1 或者 INFINITE。

@@ -92,6 +92,15 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         return false;
     }
 
+    // **先试一次，不登记。** 就绪的时候这一个系统调用就是全部开销，和手写的
+    // read / write 一样；不先试的话同一次读要付四个（epoll_ctl + 让出 +
+    // epoll_wait + read）。开发约定里「零开销」是硬约束——用到的功能不比手写的
+    // 更慢——所以这一步不是优化，是补一笔本来不该欠的账。量过的数字见
+    // docs/superpowers/specs/2026-10-05-event-engine-design.md 7.1。
+    //
+    // 返回 false 的含义正好对得上：**已经有结果了，调用方不要挂起协程。**
+    if (io_try_now(request)) return false;
+
     const std::size_t index = static_cast<std::size_t>(fd);
     if (index >= engine->slots.size()) {
         engine->slots.resize(index * 2 + 2, io_empty_slot());  // 乘二留余量，别每个新 fd 搬一次家
@@ -150,10 +159,10 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         // EPOLLERR / EPOLLHUP 不单独处理：直接去做那次系统调用，让它去报错。
         // 一条路比两条路少一个「错误该归谁」的判断，而错误码本来就是系统调用给的。
         if (got & static_cast<std::uint32_t>(EPOLLIN | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(fd, slot.readers, io_read, woken, engine->pending)) ++fired;
+            while (io_complete(slot.readers, woken, engine->pending)) ++fired;
         }
         if (got & static_cast<std::uint32_t>(EPOLLOUT | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(fd, slot.writers, io_write, woken, engine->pending)) ++fired;
+            while (io_complete(slot.writers, woken, engine->pending)) ++fired;
         }
 
         unsigned armed = 0;
@@ -164,8 +173,8 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
     return fired;
 }
 
-bool io_engine_busy(const io_engine* engine) noexcept {
-    return engine != 0 && engine->pending != 0;
+std::size_t io_engine_pending(const io_engine* engine) noexcept {
+    return engine != 0 ? engine->pending : 0;
 }
 
 }  // namespace detail

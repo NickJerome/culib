@@ -4,9 +4,13 @@
 // 因为协程在跑的过程中会 spawn 新协程、会 sleep，那些都会改动队列——如果直接遍历
 // 成员容器，一次 push_back 就可能让迭代器失效，而那种崩溃只在「刚好扩容」时出现。
 //
-// 任务有三种状态：可运行（ready / incoming）、等定时器（sleeping）、**等 I/O
-// （blocked）**。第三种是第三期加的，它带来一条跨文件的不变量：**run() 在 blocked
-// 非空时不返回**，而 IOCP 后端的 OVERLAPPED 生命周期正是靠这条兜住的（它必须活到
+// 任务有三种状态：可运行（ready / incoming）、等定时器（sleeping）、**等 I/O**。
+// 第三种没有自己的容器：一个阻塞在 I/O 上的任务除了那根协程之外没有任何状态，而
+// **引擎本来就在数还有几个操作没回来**，所以调度器不另记一份（记了就得按 coroutine*
+// 线性扫回去找）。醒来时直接按引擎报回的 coroutine* 现做一个 task。
+//
+// 这带来一条跨文件的不变量：**run() 在 io_engine_pending() 不为 0 时不返回**，
+// 而 IOCP 后端的 OVERLAPPED 生命周期正是靠这条兜住的（它住在挂起协程的栈上，必须活到
 // 完成包取回来为止）。改结束条件前先看 io_engine_win.cpp 的注释。
 
 #include <culib/scheduler.h>
@@ -44,7 +48,6 @@ struct vcpu {
     std::vector<task> ready;      // 本轮或下一轮要跑的
     std::vector<task> sleeping;   // 等定时器的
     std::vector<task> incoming;   // 正在跑的协程 spawn 出来的，下一轮入队
-    std::vector<task> blocked;    // 等 I/O 的，由引擎报回来才出去
     std::vector<coroutine*> woken;  // 引擎每轮报回来的那些，复用缓冲不每轮分配
     io_engine* engine;            // **比 vCPU 更懒一层**：第一次真做 I/O 才建
     coroutine* current;           // 正在跑的那根，scheduler_io 要知道该挂起谁
@@ -88,13 +91,12 @@ struct vcpu_reaper {
         // 没跑完的协程在这儿一并销毁（线程不调 run() 就退出时会有）。它们栈上的局部
         // 对象不会析构，那是 coroutine 的既有语义，见 culib/coroutine.h。
         //
-        // blocked 在这里**应当是空的**：进得去 blocked 必须先在 run() 里跑过，而
-        // run() 不在 blocked 非空时返回。这条正是 IOCP 的 OVERLAPPED 不会被提前
-        // 释放的依据，所以如果这里真收到了东西，那说明那条不变量已经破了。
+        // 阻塞在 I/O 上的**不可能有**：挂上去必须先在 run() 里跑过，而 run() 不在引擎
+        // 还有未完成操作时返回。所以线程退出时引擎一定是空的，这里也就没有「谁来销毁
+        // 它们」的问题——那条不变量同时也是 IOCP 的 OVERLAPPED 不会被提前释放的依据。
         reap(self->ready);
         reap(self->sleeping);
         reap(self->incoming);
-        reap(self->blocked);
 
         if (self->engine) io_engine_destroy(self->engine);
         delete self;
@@ -157,19 +159,15 @@ void idle(vcpu& self) {
     self.woken.clear();
     io_engine_wait(self.engine, timeout, self.woken);
 
+    // 现做 task 入队。**不需要去任何容器里找回原来那个**——一个阻塞在 I/O 上的任务
+    // 除了那根协程之外没有任何状态（wake_at 和 sleeping 对它都没意义），所以留一份
+    // 副本只会换来一次按 coroutine* 的线性扫描。
     for (std::size_t i = 0; i < self.woken.size(); ++i) {
-        // 从 blocked 里找出它挪回 ready。线性扫：阻塞着的协程数等于并发连接数，
-        // 上千条时这里会显出来，换成按 coroutine* 哈希的条件写在
-        // docs/superpowers/specs/2026-10-05-event-engine-design.md 第 5 节末。
-        for (std::size_t j = 0; j < self.blocked.size(); ++j) {
-            if (self.blocked[j].body != self.woken[i]) continue;
-            self.ready.push_back(self.blocked[j]);
-            // 和末尾对调再砍掉，省一次搬移。blocked 里的次序没有含义——
-            // 唤醒次序是引擎定的，调度次序是 ready 定的。
-            self.blocked[j] = self.blocked.back();
-            self.blocked.pop_back();
-            break;
-        }
+        task slot;
+        slot.body = self.woken[i];
+        slot.wake_at = instant();
+        slot.sleeping = false;
+        self.ready.push_back(slot);
     }
 }
 
@@ -266,7 +264,9 @@ std::size_t scheduled() noexcept {
     using detail::current_vcpu;
     if (!current_vcpu) return 0;
     return current_vcpu->ready.size() + current_vcpu->sleeping.size() +
-           current_vcpu->incoming.size() + current_vcpu->blocked.size();
+           current_vcpu->incoming.size() +
+           // 等 I/O 的那些由引擎数着，调度器不另记一份
+           detail::io_engine_pending(current_vcpu->engine);
 }
 
 std::size_t run() {
@@ -321,9 +321,9 @@ std::size_t run() {
         }
 
         if (self.ready.empty()) {
-            // 三个都空才算活干完了。blocked 非空就还有 I/O 没回来——**这条是
-            // IOCP 那边 OVERLAPPED 生命周期的全部依据**，见文件头注释。
-            if (self.sleeping.empty() && self.blocked.empty()) break;
+            // 没人可跑、没人在睡、引擎也没有未完成的操作，才算活干完了。
+            // **最后那条是 IOCP 那边 OVERLAPPED 生命周期的全部依据**，见文件头注释。
+            if (self.sleeping.empty() && io_engine_pending(self.engine) == 0) break;
             idle(self);
             continue;
         }
@@ -348,7 +348,8 @@ std::size_t run() {
                 slot.wake_at = self.sleep_until;
                 self.sleeping.push_back(slot);
             } else if (self.io_requested) {
-                self.blocked.push_back(slot);     // 等引擎把它报回来
+                // **什么都不做**：这根协程现在由引擎拿着（它的 io_request 就在它自己
+                // 的栈上），引擎报回来时再现做一个 task。调度器这边不留副本。
             } else {
                 self.ready.push_back(slot);        // 让出了，下一轮继续
             }

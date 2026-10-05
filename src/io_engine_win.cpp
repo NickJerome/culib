@@ -194,8 +194,8 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
     return fired;
 }
 
-bool io_engine_busy(const io_engine* engine) noexcept {
-    return engine != 0 && engine->pending != 0;
+std::size_t io_engine_pending(const io_engine* engine) noexcept {
+    return engine != 0 ? engine->pending : 0;
 }
 
 }  // namespace detail
