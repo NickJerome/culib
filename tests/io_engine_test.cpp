@@ -139,6 +139,15 @@ public:
         if (!make_linked(left, right)) {
             left = no_handle();
             right = no_handle();
+            return;
+        }
+        // 两个句柄在第一次参与 I/O 之前先交给引擎。POSIX 两个后端这一步什么都不做，
+        // IOCP 要靠它做完成端口的一次性关联——**这件事必须由持有句柄生命周期的那一方
+        // 来做**，引擎自己记表会被句柄值回收坑死，见 io_engine.h。将来是 net 的
+        // socket 构造函数干这件事，现在是这里。
+        if (!wavvix::detail::scheduler_adopt(left) || !wavvix::detail::scheduler_adopt(right)) {
+            close_handle(left);
+            close_handle(right);
         }
     }
     ~linked_pair() {

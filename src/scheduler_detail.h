@@ -22,5 +22,13 @@ namespace detail {
 // 失败有两种，都不挂起、直接带着结果返回：引擎建不起来，或者挂不上去（比如 fd 非法）。
 void scheduler_io(io_request& request);
 
+// 把一个句柄交给当前 vCPU 的引擎，**在它第一次参与 I/O 之前**调一次。
+// IOCP 需要这一步（一次性的完成端口关联），POSIX 两个后端不需要但照样要调，
+// 这样调用方三个平台一个写法。为什么引擎不能自己记表，见 io_engine.h。
+//
+// 不必在协程里调。会顺带把引擎建起来，所以**一个从不 adopt 也从不 I/O 的程序
+// 仍然一个句柄都不多占**。
+bool scheduler_adopt(io_handle handle);
+
 }  // namespace detail
 }  // namespace wavvix

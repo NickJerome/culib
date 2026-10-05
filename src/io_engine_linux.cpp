@@ -78,6 +78,12 @@ void io_engine_destroy(io_engine* engine) noexcept {
     delete engine;
 }
 
+bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
+    // epoll 的登记每次操作各管各的，没有一次性的关联要做。为什么 IOCP 那边需要这一步，
+    // 见 io_engine.h。
+    return engine != 0 && handle >= 0;
+}
+
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     const int fd = request.handle;
     if (!engine || fd < 0) {

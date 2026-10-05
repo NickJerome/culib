@@ -88,14 +88,21 @@ struct io_request {
 
 **请求活在挂起协程自己的栈上。** 这是协程库的标准做法，也是栈池那一期之后特别划算的一点：请求结构不需要任何分配，而 `OVERLAPPED`（Windows 要求它活到完成为止）正好跟着协程一起被钉在原地——协程挂起期间栈不会动，这是 coroutine 设计 3.13「协程绑 vCPU」那条换来的。
 
-引擎只有两个动作：
+引擎有三个动作（实现时从两个变成三个，第三个是 IOCP 逼出来的，见下）：
 
 | 签名 | 说明 |
 | --- | --- |
-| `bool io_engine::arm(io_request& req)` | 把这次操作挂上去。epoll / kqueue 是登记兴趣，IOCP 是真的发出一个 overlapped 操作。**不挂起协程**——挂起是调度器的事，引擎不碰调度 |
-| `std::size_t io_engine::wait(nanoseconds timeout, std::vector<coroutine*>& woken)` | 带超时地等。完成的操作把结果写进各自的 `io_request`，并把协程追加到 `woken`。`timeout < 0` 表示无限等。返回唤醒了几根 |
+| `bool io_engine_adopt(io_engine*, io_handle)` | 把一个句柄交给引擎，**在它第一次参与 I/O 之前**。POSIX 两个后端什么都不做；IOCP 在这里做完成端口的一次性关联 |
+| `bool io_engine_arm(io_engine*, io_request&)` | 把这次操作挂上去。epoll / kqueue 是登记兴趣，IOCP 是真的发出一个 overlapped 操作。**不挂起协程**——挂起是调度器的事，引擎不碰调度 |
+| `std::size_t io_engine_wait(io_engine*, nanoseconds timeout, std::vector<coroutine*>& woken)` | 带超时地等。完成的操作把结果写进各自的 `io_request`，并把协程追加到 `woken`。`timeout < 0` 表示无限等。返回唤醒了几根 |
 
-加两个查询：`bool ok() const`（构造是否成功）、`bool busy() const`（还有没有在等的操作）。
+加 `io_engine_create` / `destroy` 和一个查询 `io_engine_busy`（还有没有在等的操作）。
+
+**`adopt` 为什么必须在抽象里，而不能藏在引擎内部。** IOCP 要求句柄先关联到完成端口，而关联**是一次性的**（重复关联直接报错）。引擎本可以自己记一张「关联过哪些句柄」的表来判断该不该关联——**那是个 bug**：Windows 会回收句柄值，一个关掉的套接字腾出来的数值可能立刻被新套接字拿到，表就会说「这个关联过了」，于是新套接字上的操作永远不会完成，而且是静默的。
+
+所以这件事只能由**持有句柄生命周期的那一方**做：它知道「这是一个新句柄」。将来是 `net` 的 `socket` 构造函数，现在是测试里造那对套接字的地方。libuv 也是在创建时就关联的。
+
+**代价是 POSIX 这边多一个什么都不做的函数**，调用方三个平台一个写法。这比「让 Windows 那边多一张会出错的表」便宜。
 
 **`arm` 和 `wait` 的分工是这个抽象唯一要紧的地方**：引擎不知道「协程」怎么被调度，它只负责「这根协程可以继续了」这一个结论；调度器不知道三个后端的任何差别，它只管把 `woken` 里的协程从阻塞集挪回运行队列。两边的接触面就是 `coroutine*` 和 `io_request`。
 
@@ -216,20 +223,27 @@ fd 必须是非阻塞的，否则「报了可读、读到一半阻塞住」会�
 
 | 动作 | 做法 |
 | --- | --- |
-| 建 | `CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1)` |
-| 句柄首次见到 | `CreateIoCompletionPort(h, port, key, 0)` 关联上去，记在表里不重复关联 |
+| 建 | `CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 1)`。最后那个 1 是「允许几根线程同时取完成项」——一个 vCPU 一根线程，协程不迁移 |
+| `adopt` | `CreateIoCompletionPort(h, port, 0, 0)`。完成键传 0，因为完成项靠 `lpOverlapped` 反推回请求，不按键查表 |
 | `arm` | 清零 `OVERLAPPED`（在 `io_request` 里），`ReadFile` / `WriteFile`；返回 `FALSE` 且 `GetLastError() != ERROR_IO_PENDING` 才是真失败 |
-| `wait` | `GetQueuedCompletionStatusEx(port, entries, N, &n, ms, FALSE)`，每个完成项的 `lpOverlapped` 反推回 `io_request`，`dwNumberOfBytesTransferred` 就是结果 |
+| `wait` | `GetQueuedCompletionStatusEx(port, entries, N, &n, ms, FALSE)`，每个完成项的 `lpOverlapped` 减掉成员偏移反推回 `io_request` |
 
 **没有模拟层，没有平行 API，没有 AFD。** 第 2 节那张账单上 Photon 付的两笔，这里一笔都不付——这就是选完成形状买到的东西。
 
-三个要小心的地方：
+**结果用 `GetOverlappedResult` 取，不读 `OVERLAPPED::Internal`。** 那个字段里确实是 NTSTATUS（libuv 就是那么读的，再用 `RtlNtStatusToDosError` 翻），但文档上它写着 Reserved，而这个后端的卖点恰恰是不碰未公开的东西——读它就等于在自己这边重开第 2 节批评过的那个口子。操作已经完成时 `bWait` 为 `FALSE` 的这次调用不进内核，所以不心疼。
+
+**一处故意的不对称**：读方向上 `ERROR_HANDLE_EOF` / `ERROR_BROKEN_PIPE` 报成 `transferred == 0`（和 POSIX 那边 `read()` 返回 0 对齐），写方向上同一个错误码是真失败（POSIX 那边是 `EPIPE`）。看着像笔误，其实是为了三个后端行为一致必须付的。
+
+四个要小心的地方：
 
 - **`ReadFile` / `WriteFile` 统一用在套接字和文件上**，不分 `WSARecv` / `ReadFile` 两条路。套接字句柄在 Win32 里就是文件句柄，而 `socket()` 默认就是 overlapped 的（`WSA_FLAG_OVERLAPPED` 隐含）。一条路少一半代码，也少一个「这个句柄是什么」的运行期判断。
 - **`OVERLAPPED` 的生命周期**：必须活到完成包取回来为止。它在 `io_request` 里、`io_request` 在挂起协程的栈上、协程在 `blocked` 里被调度器拿着，而 `run()` 不会在 `blocked` 非空时返回——所以生命周期是靠「结束条件包含 `blocked` 为空」这一条保证的。**这是第 5 节那个改动的隐含承诺，不是巧合。**
 - **`GetQueuedCompletionStatusEx` 要的是毫秒** `DWORD`，`INFINITE` 是 `0xFFFFFFFF`。超时取整和 epoll 一边：不足 1 毫秒的正超时进成 1，否则「睡 100 微秒」会变成忙转。
+- **`OVERLAPPED` 在平台中立的头文件里是一块 `void* overlapped[8]`**，真正的类型在后端里 `reinterpret_cast` 回去——这样 `src/io_engine.h` 不必包含 `<windows.h>`。够不够大用两条 `static_assert` 盯着（Win64 是 64 字节对 32，Win32 是 32 对 20），因为**改那个数组长度的人看不到 Windows 那边**。
 
-**本机验证靠 MinGW 交叉编译 + wine**（CLAUDE.md 里那套）。wine 的 IOCP 对套接字的支持不完整是可能的，真跑不起来就记成覆盖缺口、推 CI 让真 Windows runner 兜——但**编译链接必须在本机过**，那一步能抓掉绝大多数「API 用错、include 漏了」。
+**本机验证靠 MinGW 交叉编译 + wine**（CLAUDE.md 里那套）。实际结果比预期好：x86_64 和 i686 两个三元组都零警告编译链接通过，**wine 下 8 条 I/O 测试全过**（Windows 上少的那条是用 `/proc` 数句柄的，只在 Linux 跑）。也就是说 wine 的 IOCP 对回环套接字是够用的，连「对端优雅关闭报成 0 字节」和「五十对并发」都对。
+
+这一边仍然**不覆盖 MSVC**（头文件、`__declspec`、警告集都不同），那一侧只有 CI。
 
 ## 7. 明确不做的，和重开的条件
 

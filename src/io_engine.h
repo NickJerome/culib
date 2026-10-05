@@ -77,6 +77,17 @@ class io_engine;
 io_engine* io_engine_create() noexcept;
 void io_engine_destroy(io_engine* engine) noexcept;
 
+// 把一个句柄交给引擎，**在它第一次参与 I/O 之前**。
+//
+// 这一步是 IOCP 要的：那边句柄必须先关联到完成端口，而关联**是一次性的**（重复关联
+// 直接报错）。引擎不能自己记一张「关联过哪些」的表来判断——Windows 会回收句柄值，
+// 一个关掉的套接字腾出来的数值可能立刻被新套接字拿到，表就会说「这个已经关联过了」，
+// 于是新套接字上的操作永远不会完成。**所以这件事只能由持有句柄生命周期的那一方做**，
+// 也就是将来的 net（在 socket 构造时），现在是测试。libuv 也是在创建时就关联的。
+//
+// POSIX 的两个后端什么都不用做，直接返回 true。
+bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
+
 // 把这次操作挂上去。epoll / kqueue 是登记兴趣，IOCP 是真的发出一个 overlapped 操作。
 // **不挂起协程**——挂起是调度器的事。
 //

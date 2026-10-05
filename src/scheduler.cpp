@@ -203,20 +203,33 @@ void scheduler_sleep_for(std::chrono::nanoseconds duration) {
     coroutine::yield();          // 让出；调度器读到 sleep_requested 就把我们挪进 sleeping
 }
 
+namespace {
+
+// 「不用 I/O 的程序不建引擎」：引擎比 vCPU 更懒一层，第一次真要用才建。
+// 建不起来返回 0，由调用方决定怎么降级。
+io_engine* engine_here(vcpu& self) {
+    if (!self.engine) self.engine = io_engine_create();
+    return self.engine;
+}
+
+}  // namespace
+
+bool scheduler_adopt(io_handle handle) {
+    vcpu& self = here();
+    io_engine* const engine = engine_here(self);
+    return engine != 0 && io_engine_adopt(engine, handle);
+}
+
 void scheduler_io(io_request& request) {
     if (!coroutine::inside()) die("wavvix 的 I/O 只能在协程里调用");
     vcpu& self = here();
 
-    if (!self.engine) {
-        self.engine = io_engine_create();
-        if (!self.engine) {
-            // 引擎建不起来（句柄耗尽之类）。和栈分配失败一个道理：不 abort，
-            // 把失败交给调用方，让它决定是拒掉这个请求还是整个退出。
-            request.transferred = -1;
-            request.failure = errno;
-            return;
-        }
-        // 和 vCPU 一样泄漏到进程结束：它的生命周期就是这根线程的生命周期。
+    if (!engine_here(self)) {
+        // 引擎建不起来（句柄耗尽之类）。和栈分配失败一个道理：不 abort，
+        // 把失败交给调用方，让它决定是拒掉这个请求还是整个退出。
+        request.transferred = -1;
+        request.failure = errno;
+        return;
     }
 
     request.owner = self.current;
