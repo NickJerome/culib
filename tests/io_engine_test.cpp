@@ -11,6 +11,7 @@
 #include "io_engine.h"
 #include "scheduler_detail.h"
 
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -167,13 +168,30 @@ private:
 
 // 完成形状的调用点：**没有「等可读」那一步**，醒来时结果已经在手。
 // 将来 net 的 socket::read 就是在这上面包一层 result。
+// 没有时限（-1）。**每个调用点都要自己说等多久**，所以 scheduler_io 没给默认值；
+// 这两个测试辅助函数就是「一直等」，因为对面一定会写。带时限的那条路单独有测试。
+const std::chrono::nanoseconds forever(-1);
+
 std::ptrdiff_t read_now(io_handle handle, void* buffer, std::size_t length) {
     io_request request;
     request.direction = io_read;
     request.handle = handle;
     request.buffer = buffer;
     request.length = length;
-    scheduler_io(request);
+    scheduler_io(request, forever);
+    return request.transferred;
+}
+
+// 带时限的读。超时返回时 transferred 是 -1、failure 是 ETIMEDOUT。
+std::ptrdiff_t read_within(io_handle handle, void* buffer, std::size_t length,
+                           std::chrono::nanoseconds timeout, int* failure) {
+    io_request request;
+    request.direction = io_read;
+    request.handle = handle;
+    request.buffer = buffer;
+    request.length = length;
+    scheduler_io(request, timeout);
+    if (failure) *failure = request.failure;
     return request.transferred;
 }
 
@@ -185,7 +203,7 @@ std::ptrdiff_t write_now(io_handle handle, const void* buffer, std::size_t lengt
     // 这么干的（writev 用同一个结构），所以不为写方向另开一个字段。
     request.buffer = const_cast<void*>(buffer);
     request.length = length;
-    scheduler_io(request);
+    scheduler_io(request, forever);
     return request.transferred;
 }
 
@@ -338,6 +356,47 @@ TEST(io_engine, does_not_suspend_when_the_operation_is_already_ready) {
     EXPECT(trace, ==, "aabb");           // 那次写让出了的话会是 "abba"
 }
 #endif
+
+TEST(io_engine, times_out_a_read_that_never_arrives) {
+    // 第三期最大的洞就是这个：没有时限的读会把协程永久挂住，run() 也永远不返回。
+    // 这条在三个后端上走的是三条不同的撤销路——POSIX 同步摘掉，IOCP 要 CancelIoEx
+    // 之后**再等那个完成包**，否则 OVERLAPPED 会随栈帧消失（见 io_engine.h 的 cancel）。
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+
+    std::ptrdiff_t outcome = 0;
+    int failure = 0;
+    spawn([&] {
+        char got[8];
+        outcome = read_within(pair.right, got, sizeof got, ms(20), &failure);
+    });
+
+    EXPECT(run(), ==, 1u);
+    EXPECT(outcome, <, 0);
+    EXPECT(failure, ==, ETIMEDOUT);
+}
+
+TEST(io_engine, a_timed_read_that_arrives_in_time_still_succeeds) {
+    // 撤销那条路不能把正常路弄坏：时限很宽时结果照常。
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+
+    char got[8];
+    std::memset(got, 0, sizeof got);
+    std::ptrdiff_t received = -1;
+    int failure = -1;
+
+    spawn([&] { received = read_within(pair.right, got, sizeof got, ms(2000), &failure); });
+    spawn([&] {
+        sleep_for(ms(10));
+        write_now(pair.left, "ok", 2);
+    });
+
+    EXPECT(run(), ==, 2u);
+    EXPECT(received, ==, 2);
+    EXPECT(failure, ==, 0);
+    EXPECT(std::string(got, 2), ==, "ok");
+}
 
 TEST(io_engine, fails_a_bad_handle_without_suspending_the_coroutine) {
     // 挂不上去时**不能**挂起协程：那根协程永远醒不过来，run() 也就永远不返回。

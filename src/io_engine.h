@@ -8,10 +8,12 @@
 //
 // ---- 分工 ------------------------------------------------------------------------
 //
-// **引擎不碰调度，调度器不认识后端。** 接触面只有 coroutine* 和 io_request：
+// **引擎不碰调度，调度器不认识后端。** 接触面只有 io_request 和它里面那个挂起凭据：
 //
-//   - 引擎负责「这次操作完成了，结果是这些」，把该继续的协程追加到 woken；
-//   - 调度器负责把 woken 里的协程从阻塞集挪回运行队列。
+//   - 引擎负责「这次操作完成了，结果是这些」，把凭据原样追加到 completed；
+//   - 调度器负责把那些凭据对应的协程排回运行队列。
+//
+// 凭据（park_token）对引擎是**不透明的**：它存着、交回来，一个字段都不读。
 //
 // 所以引擎里**一行都不能碰 wavvix::sleep_for**——协程版的 sleep 自己就是靠引擎的
 // wait() 实现的，在 wait() 里调它就是自己等自己。（这个坑是 Photon 的 master engine
@@ -24,7 +26,7 @@
 // 定义**。调度器只拿指针。一次 vCPU 一次分配，而每个调用后面都跟着一个系统调用，
 // 所以这一层间接的代价量不出来。
 
-#include <culib/coroutine.h>
+#include "park.h"
 
 #include <chrono>
 #include <cstddef>
@@ -61,7 +63,9 @@ struct io_request {
     int failure;                  // transferred < 0 时的 errno / Win32 错误码
 
     // ---- 引擎内部，调用方不要动 ----
-    coroutine* owner;
+    // 挂起凭据。**引擎只负责把这个指针原样交回去，一个字段都不读**——「这根协程可以
+    // 继续了」之后怎么排队是调度器的事。调用方（scheduler_io）用同一个 token 挂起自己。
+    park_token* waiter;
     io_request* next;             // 同一句柄同一方向上的等待链
 #if defined(_WIN32)
     // OVERLAPPED 的位置。真正的类型在 io_engine_win.cpp 里 reinterpret 回去——
@@ -95,10 +99,20 @@ bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 // 失败原因已经写进 req，调用方不要挂起。
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept;
 
-// 带超时地等。完成的操作把结果写进各自的 io_request，并把协程追加到 woken。
-// timeout 为负表示无限等。返回唤醒了几根。
+// 带超时地等。完成的操作把结果写进各自的 io_request，并把它们的挂起凭据追加到
+// completed。timeout 为负表示无限等。返回完成了几个。
 std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<coroutine*>& woken) noexcept;
+                           std::vector<park_token*>& completed) noexcept;
+
+// 撤掉一次已经挂上去的操作（调用方超时了）。
+//
+// 返回 **true = 撤干净了，不会再有任何通知**，调用方可以直接带着「超时」走。
+// 返回 **false = 撤销已经发出，但完成通知还会来**（Windows 的 CancelIoEx 就是这样），
+// 调用方**必须再挂起一次等那个通知**，否则 io_request 连同里面的 OVERLAPPED 会随
+// 栈帧消失，而内核还握着它的地址。
+//
+// 两条路的区别不是实现细节，是调用方必须照着写的东西，所以写在返回值里而不是注释里。
+bool io_engine_cancel(io_engine* engine, io_request& request) noexcept;
 
 // 还有几个操作没回来。调度器用它判断「这根 vCPU 是不是还有活」，所以它就是
 // **阻塞在 I/O 上的协程数**——调度器不另记一份。给 0 就是都回来了。

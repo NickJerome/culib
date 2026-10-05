@@ -1,0 +1,240 @@
+// 协程感知的同步原语。
+//
+// 这些测试都按**真实用法**写：临界区里会让出，否则根本不需要锁（见 culib/sync.h
+// 开头那段）。只断言不让出的临界区，等于在测一个没人需要的性质。
+
+#include <culib/scheduler.h>
+#include <culib/sync.h>
+#include <culib/test.h>
+
+#include <chrono>
+#include <string>
+#include <vector>
+
+namespace {
+
+using wavvix::condition_variable;
+using wavvix::lock_guard;
+using wavvix::mutex;
+using wavvix::run;
+using wavvix::semaphore;
+using wavvix::sleep_for;
+using wavvix::spawn;
+
+typedef std::chrono::milliseconds ms;
+
+}  // namespace
+
+TEST(mutex, serializes_critical_sections_that_yield) {
+    // 锁真正要解决的那件事：临界区中间让出，别人跑起来看到了中间状态。
+    // 不加锁时下面这段会拿到 "ab" 交错；加了锁就是两段各自完整。
+    mutex lock;
+    std::string trace;
+
+    for (int i = 0; i < 2; ++i) {
+        const char name = static_cast<char>('a' + i);
+        spawn([&trace, &lock, name] {
+            lock_guard<mutex> held(lock);
+            trace += name;
+            sleep_for(ms(5));      // 临界区中间让出
+            trace += name;
+        });
+    }
+
+    EXPECT(run(), ==, 2u);
+    EXPECT(trace, ==, "aabb");     // 不是 "abab"
+}
+
+TEST(mutex, hands_the_lock_over_in_arrival_order) {
+    // 公平性：unlock 把锁**交给队首**而不是放开让大家抢。放开让抢的话，一个刚好在跑的
+    // 协程可以插队，队首那个可能一直排不上。
+    mutex lock;
+    std::string order;
+
+    spawn([&] {
+        lock.lock();
+        sleep_for(ms(20));         // 占着，让后面三根都排上队
+        lock.unlock();
+    });
+    const char* names = "ABC";
+    for (int i = 0; i < 3; ++i) {
+        const char name = names[i];
+        spawn([&order, &lock, name] {
+            lock.lock();
+            order += name;
+            lock.unlock();
+        });
+    }
+
+    EXPECT(run(), ==, 4u);
+    EXPECT(order, ==, "ABC");
+}
+
+TEST(mutex, try_lock_never_suspends) {
+    mutex lock;
+    bool first = false;
+    bool second = true;
+
+    spawn([&] {
+        first = lock.try_lock();       // 空着，拿得到
+        second = lock.try_lock();      // 自己已经持有，拿不到，但**不挂起**
+        lock.unlock();
+    });
+
+    EXPECT(run(), ==, 1u);
+    EXPECT(first, ==, true);
+    EXPECT(second, ==, false);
+}
+
+TEST(mutex, try_lock_for_gives_up_when_the_time_is_up) {
+    mutex lock;
+    bool got = true;
+
+    spawn([&] {
+        lock.lock();
+        sleep_for(ms(40));
+        lock.unlock();
+    });
+    spawn([&] { got = lock.try_lock_for(ms(10)); });
+
+    EXPECT(run(), ==, 2u);
+    EXPECT(got, ==, false);
+}
+
+TEST(mutex, does_not_lose_the_lock_when_a_waiter_times_out) {
+    // **交棒给一个刚好超时走掉的等待者就是死锁**：锁交出去了，但那根协程已经被排回
+    // ready、不会再来拿。这一条故意把「甲的时限到」和「持有者放锁」排在同一个时刻。
+    // 不管甲最后是超时还是拿到，乙都必须拿得到——拿不到就说明锁丢了。
+    mutex lock;
+    bool second_got_it = false;
+
+    spawn([&] {
+        lock.lock();
+        sleep_for(ms(20));
+        lock.unlock();
+    });
+    spawn([&] {
+        if (lock.try_lock_for(ms(20))) lock.unlock();
+    });
+    spawn([&] {
+        lock.lock();
+        second_got_it = true;
+        lock.unlock();
+    });
+
+    EXPECT(run(), ==, 3u);
+    EXPECT(second_got_it, ==, true);
+}
+
+TEST(semaphore, caps_how_many_run_at_once) {
+    // 最常见的用处：起一堆协程，但只让 N 根同时进去。
+    semaphore permits(2);
+    int inside = 0;
+    int peak = 0;
+
+    for (int i = 0; i < 6; ++i) {
+        spawn([&] {
+            permits.acquire();
+            ++inside;
+            if (inside > peak) peak = inside;
+            sleep_for(ms(5));      // 占着名额让出
+            --inside;
+            permits.release();
+        });
+    }
+
+    EXPECT(run(), ==, 6u);
+    EXPECT(peak, ==, 2);
+    EXPECT(inside, ==, 0);
+}
+
+TEST(semaphore, try_acquire_for_gives_up_when_the_time_is_up) {
+    semaphore permits(0);
+    bool got = true;
+
+    spawn([&] { got = permits.try_acquire_for(ms(10)); });
+
+    EXPECT(run(), ==, 1u);
+    EXPECT(got, ==, false);
+    EXPECT(permits.count(), ==, 0);
+}
+
+TEST(semaphore, release_without_waiters_puts_the_permit_back) {
+    semaphore permits(0);
+    permits.release();
+    permits.release(2);
+    EXPECT(permits.count(), ==, 3);
+    EXPECT(permits.try_acquire(), ==, true);
+    EXPECT(permits.count(), ==, 2);
+}
+
+TEST(condition_variable, wakes_a_waiter_once_the_condition_holds) {
+    mutex lock;
+    condition_variable ready;
+    std::vector<int> queue;
+    int taken = -1;
+
+    spawn([&] {
+        lock_guard<mutex> held(lock);
+        while (queue.empty()) ready.wait(lock);    // 照例用 while，不是 if
+        taken = queue.back();
+    });
+    spawn([&] {
+        sleep_for(ms(10));
+        {
+            lock_guard<mutex> held(lock);
+            queue.push_back(42);
+        }
+        ready.notify_one();
+    });
+
+    EXPECT(run(), ==, 2u);
+    EXPECT(taken, ==, 42);
+}
+
+TEST(condition_variable, notify_all_wakes_everyone_in_arrival_order) {
+    mutex lock;
+    condition_variable ready;
+    bool go = false;
+    std::string order;
+
+    const char* names = "ABC";
+    for (int i = 0; i < 3; ++i) {
+        const char name = names[i];
+        spawn([&order, &lock, &ready, &go, name] {
+            lock_guard<mutex> held(lock);
+            while (!go) ready.wait(lock);
+            order += name;
+        });
+    }
+    spawn([&] {
+        sleep_for(ms(10));
+        {
+            lock_guard<mutex> held(lock);
+            go = true;
+        }
+        ready.notify_all();
+    });
+
+    EXPECT(run(), ==, 4u);
+    EXPECT(order, ==, "ABC");
+}
+
+TEST(condition_variable, wait_for_times_out_and_comes_back_holding_the_lock) {
+    // 超时返回和被通知返回一样，**锁都重新拿在手里**——不然调用方那句 unlock 就错了。
+    mutex lock;
+    condition_variable never;
+    bool notified = true;
+    bool lock_is_held_again = false;
+
+    spawn([&] {
+        lock.lock();
+        notified = never.wait_for(lock, ms(20));
+        lock_is_held_again = !lock.try_lock();    // 已经持有，所以拿不到
+        lock.unlock();
+    });
+
+    EXPECT(run(), ==, 1u);
+    EXPECT(notified, ==, false);
+    EXPECT(lock_is_held_again, ==, true);
+}

@@ -144,7 +144,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
 }
 
 std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<coroutine*>& woken) noexcept {
+                           std::vector<park_token*>& completed) noexcept {
     if (!engine) return 0;
     const long milliseconds = io_timeout_ms(timeout);
     const DWORD limit = (milliseconds < 0) ? INFINITE : static_cast<DWORD>(milliseconds);
@@ -192,11 +192,32 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         }
 
         request->next = 0;
-        woken.push_back(request->owner);
+        completed.push_back(request->waiter);
         if (engine->pending) --engine->pending;
         ++fired;
     }
     return fired;
+}
+
+bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
+    if (!engine || unusable(request.handle)) return true;
+
+    // **CancelIoEx 只是「请求」撤销。** 不管它成功还是失败，这次操作的完成包都还会
+    // 回来（撤销成功时带 ERROR_OPERATION_ABORTED），而 OVERLAPPED 必须活到那时候——
+    // 它住在调用方的栈帧里。所以这里返回 false，让调用方再挂起一次等那个包。
+    //
+    // **这正是设计文档 7.2 当初把超时推后的那个理由**：epoll / kqueue 撤销是同步的，
+    // 这边不是，而两边要在同一个调用点上写对。解法是把差别放进返回值。
+    if (::CancelIoEx(static_cast<HANDLE>(request.handle), overlapped_of(request))) {
+        return false;
+    }
+    if (::GetLastError() == ERROR_NOT_FOUND) {
+        // 内核不认识这个操作了：它已经完成、包也已经被取走，不会再有通知。
+        // 正常路径到不了这里（包取走时凭据就交回去了，调用方不会超时），
+        // 但兜住它比让一根协程永久挂死便宜。pending 在取包那次已经减过，这里不动。
+        return true;
+    }
+    return false;
 }
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {

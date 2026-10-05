@@ -168,7 +168,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
 }
 
 std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<coroutine*>& woken) noexcept {
+                           std::vector<park_token*>& completed) noexcept {
     if (!engine) return 0;
 
     // **直接给纳秒，不走 io_timeout_ms 的毫秒折算。** `kevent` 收的是 timespec，
@@ -212,14 +212,14 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         if (events[i].flags & EV_ERROR) {
             // 这个 fd 的这个方向整个废了，data 里是 errno。把等着的全部收掉——
             // 不收的话那些协程永远醒不过来，run() 也就永远不返回。
-            const std::size_t had = woken.size();
-            io_fail_chain(head, static_cast<int>(events[i].data), woken, engine->pending);
-            fired += woken.size() - had;
+            const std::size_t had = completed.size();
+            io_fail_chain(head, static_cast<int>(events[i].data), completed, engine->pending);
+            fired += completed.size() - had;
             slot.armed &= ~bit;
         } else {
             // EV_EOF 不单独处理：read() 会返回 0，io_complete() 把 0 当成「对端关了」
             // 交回去，和 epoll 那边同一条路。
-            while (io_complete(head, woken, engine->pending)) ++fired;
+            while (io_complete(head, completed, engine->pending)) ++fired;
         }
 
         unsigned armed = 0;
@@ -228,6 +228,27 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         sync_interest(engine, fd, slot, armed);
     }
     return fired;
+}
+
+bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
+    const int fd = request.handle;
+    if (!engine || fd < 0) return true;
+    if (static_cast<std::size_t>(fd) >= engine->slots.size()) return true;
+
+    io_fd_slot& slot = engine->slots[static_cast<std::size_t>(fd)];
+    io_request*& head = (request.direction == io_read) ? slot.readers : slot.writers;
+    if (io_unlink(head, request)) {
+        if (engine->pending) --engine->pending;
+        unsigned armed = 0;
+        if (slot.readers) armed |= io_armed_read;
+        if (slot.writers) armed |= io_armed_write;
+        sync_interest(engine, fd, slot, armed);
+    }
+
+    // 不管摘到没摘到都返回 true：**这边撤销是同步的，不会再有任何通知。**
+    // 没摘到只有一种情形——它已经被完成掉了，而那次完成已经把凭据交回去了；
+    // 调用方那边 token 已经 settled，所以那次交回也不会让它重复入队。
+    return true;
 }
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {

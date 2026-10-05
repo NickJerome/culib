@@ -133,7 +133,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
 }
 
 std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<coroutine*>& woken) noexcept {
+                           std::vector<park_token*>& completed) noexcept {
     if (!engine) return 0;
     const long milliseconds = io_timeout_ms(timeout);
 
@@ -159,10 +159,10 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         // EPOLLERR / EPOLLHUP 不单独处理：直接去做那次系统调用，让它去报错。
         // 一条路比两条路少一个「错误该归谁」的判断，而错误码本来就是系统调用给的。
         if (got & static_cast<std::uint32_t>(EPOLLIN | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(slot.readers, woken, engine->pending)) ++fired;
+            while (io_complete(slot.readers, completed, engine->pending)) ++fired;
         }
         if (got & static_cast<std::uint32_t>(EPOLLOUT | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(slot.writers, woken, engine->pending)) ++fired;
+            while (io_complete(slot.writers, completed, engine->pending)) ++fired;
         }
 
         unsigned armed = 0;
@@ -171,6 +171,27 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         sync_interest(engine, fd, slot, armed);
     }
     return fired;
+}
+
+bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
+    const int fd = request.handle;
+    if (!engine || fd < 0) return true;
+    if (static_cast<std::size_t>(fd) >= engine->slots.size()) return true;
+
+    io_fd_slot& slot = engine->slots[static_cast<std::size_t>(fd)];
+    io_request*& head = (request.direction == io_read) ? slot.readers : slot.writers;
+    if (io_unlink(head, request)) {
+        if (engine->pending) --engine->pending;
+        unsigned armed = 0;
+        if (slot.readers) armed |= io_armed_read;
+        if (slot.writers) armed |= io_armed_write;
+        sync_interest(engine, fd, slot, armed);
+    }
+
+    // 不管摘到没摘到都返回 true：**这边撤销是同步的，不会再有任何通知。**
+    // 没摘到只有一种情形——它已经被完成掉了，而那次完成已经把凭据交回去了；
+    // 调用方那边 token 已经 settled，所以那次交回也不会让它重复入队。
+    return true;
 }
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {

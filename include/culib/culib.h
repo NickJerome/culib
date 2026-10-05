@@ -15,5 +15,6 @@
 #include <culib/stopwatch.h>
 #include <culib/string_view.h>
 #include <culib/strings.h>
+#include <culib/sync.h>
 #include <culib/time.h>
 #include <culib/version.h>

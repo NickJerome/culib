@@ -1,7 +1,7 @@
 # 事件引擎：抽象的形状，和三个后端各自要付的账
 
 - 日期：2026-10-05
-- 状态：**已实现**，三个后端都在（epoll / kqueue / IOCP），CI 三平台 10/10 绿。验证和缺口见第 9 节——**最大的缺口是没有超时**（7.2），所以这一期之后引擎还不能拿来写服务器。
+- 状态：**已实现**，三个后端都在（epoll / kqueue / IOCP），CI 三平台 10/10 绿。验证和缺口见第 9 节。**原来最大的缺口「没有超时」已由第五期补上**（7.2）。
 - **7.1 的结论改过一次**（先否掉乐观快路，后来发现理由站不住、改回来做了并量了数），那一节记着为什么。
 - 前置：[调度器设计](2026-10-04-scheduler-design.md)（第一、二期已实现，本文是第三期）、[coroutine 设计](2026-10-04-coroutine-design.md)。
 - **本文改正了调度器设计 §2 的一处猜测**，见第 2 节。
@@ -84,7 +84,7 @@ struct io_request {
     std::ptrdiff_t transferred;   // >= 0 传了几个字节（0 = 对端关了）；< 0 失败
     int            failure;       // transferred < 0 时的 errno / Win32 错误码
     // ---- 引擎内部 ----
-    coroutine*     owner;
+    park_token*    waiter;        // 挂起凭据，引擎只转交不读（第五期把 coroutine* 换成了它）
     io_request*    next;          // 同一句柄同一方向上的等待链
 };
 ```
@@ -97,7 +97,8 @@ struct io_request {
 | --- | --- |
 | `bool io_engine_adopt(io_engine*, io_handle)` | 把一个句柄交给引擎，**在它第一次参与 I/O 之前**。POSIX 两个后端什么都不做；IOCP 在这里做完成端口的一次性关联 |
 | `bool io_engine_arm(io_engine*, io_request&)` | 把这次操作挂上去。epoll / kqueue 是登记兴趣，IOCP 是真的发出一个 overlapped 操作。**不挂起协程**——挂起是调度器的事，引擎不碰调度 |
-| `std::size_t io_engine_wait(io_engine*, nanoseconds timeout, std::vector<coroutine*>& woken)` | 带超时地等。完成的操作把结果写进各自的 `io_request`，并把协程追加到 `woken`。`timeout < 0` 表示无限等。返回唤醒了几根 |
+| `std::size_t io_engine_wait(io_engine*, nanoseconds timeout, std::vector<park_token*>& completed)` | 带超时地等。完成的操作把结果写进各自的 `io_request`，并把**挂起凭据**追加到 `completed`。`timeout < 0` 表示无限等。返回完成了几个 |
+| `bool io_engine_cancel(io_engine*, io_request&)` | **第五期加的**：调用方超时了，撤掉这次操作。返回值区分「撤干净了」和「通知还会来，你得再等一次」，见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md) 4.2 |
 
 加 `io_engine_create` / `destroy` 和一个查询 `io_engine_pending`（还有几个操作没回来）。那个计数**就是阻塞在 I/O 上的协程数**，调度器不另记一份，见第 5 节。
 
@@ -107,17 +108,19 @@ struct io_request {
 
 **代价是 POSIX 这边多一个什么都不做的函数**，调用方三个平台一个写法。这比「让 Windows 那边多一张会出错的表」便宜。
 
-**`arm` 和 `wait` 的分工是这个抽象唯一要紧的地方**：引擎不知道「协程」怎么被调度，它只负责「这根协程可以继续了」这一个结论；调度器不知道三个后端的任何差别，它只管按 `woken` 里的 `coroutine*` 现做 `task` 入队。两边的接触面就是 `coroutine*` 和 `io_request`。
+**`arm` 和 `wait` 的分工是这个抽象唯一要紧的地方**：引擎不知道「协程」怎么被调度，它只负责「这次操作完成了」这一个结论；调度器不知道三个后端的任何差别，它只管把交回来的凭据排回运行队列。两边的接触面就是 `io_request` 和里面那个凭据，而**凭据对引擎是不透明的**：存着、交回来，一个字段都不读。
 
 ## 4. 调用点长什么样
 
 调度器这边加一个内部入口，这是三个后端之上唯一的调用形式：
 
 ```cpp
-// src/scheduler.cpp
+// src/scheduler_detail.h
 namespace wavvix { namespace detail {
 // 提交一次 I/O 并挂起当前协程；返回时结果在 req 里。只能在协程里调。
-void scheduler_io(io_request& req);
+// timeout 是**第五期加的，而且故意没有默认值**——给了默认值就等于给
+// 「永远等下去」开一条默认路，而那正是 7.2 说的那个会把程序挂死的洞。
+void scheduler_io(io_request& req, std::chrono::nanoseconds timeout);
 }}
 ```
 
@@ -160,6 +163,8 @@ result<std::size_t> socket::read(void* buf, std::size_t len) {
 | `sleeping` | 等定时器 | `wake_at` 到了 |
 | `incoming` | 正在跑的协程 spawn 出来的 | 下一轮入队 |
 | **等 I/O** | **没有容器**，引擎拿着（见下） | **引擎在 `woken` 里报了它** |
+
+**第五期之后这张表不长这样了。** 超时和同步原语要的是同一个机制（「挂起，直到有人叫醒我或者到点」），所以 `sleeping` 和「等 I/O」并成了一个 `parked`，而 `task` 结构体整个消失。本节以下描述的是第三期当时的形状，现在的形状见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md) 第 2 节。
 
 **但第三种状态没有自己的容器。** 最早的实现给它开了一个 `blocked` 向量，于是每次引擎报回一根协程都要按 `coroutine*` 线性扫一遍去找回原来那个 `task`——**那是白搭的**：一个阻塞在 I/O 上的任务除了那根协程之外没有任何状态（`wake_at` 和 `sleeping` 对它都没意义），所以醒来时现做一个 `task` 就行。而「还有几个没回来」引擎本来就在数（`io_engine_pending`），调度器不必记第二份。
 
@@ -291,13 +296,15 @@ fd 必须是非阻塞的，否则「报了可读、读到一半阻塞住」会�
 
 `tests/io_engine_test.cpp` 里有一条 `does_not_suspend_when_the_operation_is_already_ready` 钉住 POSIX 这边不让出（断言交错顺序是 `aabb` 而不是 `abba`），**而且写明了为什么只在 POSIX 断言**。
 
-### 7.2 不做单次操作的超时
+### 7.2 不做单次操作的超时（**第五期已经做了，见下**）
 
 没有超时，一个永远收不到数据的 `read` 会把协程永久挂住，`run()` 也就永远不返回。**这是这一期最大的洞，而且它是真洞不是小瑕。**
 
 不在这一期做的理由是代价不对称且不可本机验证：epoll / kqueue 上取消一次等待就是摘掉登记，而 IOCP 上必须 `CancelIoEx` 并且**继续等那个完成包回来**（`OVERLAPPED` 在包回来之前不能复用也不能释放），协程不能一走了之。那是一套跨三平台的取消语义，而我只能在一个平台上跑它。
 
 **重开条件**：第五期（协程感知的同步原语）本来就要做超时和唤醒，取消语义在那一期统一做掉。路线图第 5 期的验证项里已经列着「超时」。
+
+**2026-10-05 补：条件到了，已经做掉。** 解法是把两种撤销的差别放进 `io_engine_cancel` 的返回值（`true` = 不会再有通知，`false` = 还会来、必须再等一次），调用点两个平台一套写法。**那条路在 wine 下真跑通了**。设计和验证见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md)。
 
 ### 7.3 不做 cascading 引擎
 
@@ -394,7 +401,7 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 
 ### 9.5 没覆盖什么
 
-- **超时**：根本没有。一个收不到数据的 `read` 会把协程永久挂住，`run()` 也就永远不返回。这是这一期最大的洞，见 7.2，第五期和取消语义一起做。
+- ~~**超时**~~：**第五期已经补上**，见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md)。
 - **`io_uring`**：第四期。
 - **多 vCPU**：引擎是每 vCPU 一个，但跨 vCPU 的唤醒（Photon 的 `cancel_wait`）没做，见 7.5。
 - **文件 I/O**：三个后端都只在套接字上跑过。epoll 对普通文件**根本不工作**（普通文件永远「就绪」），这是 `epoll` 的性质而不是实现的缺陷，真正的文件异步要等第四期的 `io_uring`。IOCP 那边 `ReadFile` 对带 `FILE_FLAG_OVERLAPPED` 的文件是通的，但没测。

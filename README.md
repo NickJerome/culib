@@ -35,7 +35,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
 | base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（`string_view`、`optional`、`make_unique` 等） | 进行中：`defer`、版本信息、`result`、`string_view`、`optional` 已完成；`make_unique` 按需再加 |
-| test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 `term`；201 个测试在三平台 CI 上全绿） |
+| test | 单元测试框架：`TEST` / `EXPECT`、按组运行、每个测试和每组的耗时、按名字过滤 | 可用（彩色输出待 `term`；214 个测试在三平台 CI 上全绿） |
 | lexical_cast | 字符串 ⇄ 数值 / 布尔。`lexical_cast<T>` 严格解析（整个输入必须被消费）、`to_string` / `to_chars` 反向 | **已完成** |
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version`；位置参数、GNU 风格重排、`set()` 给配置文件用 | **已完成** |
 | strings | 操作字符串的自由函数：split / join / trim / 大小写 / replace、UTF-8 ⇄ UTF-16 转换。**不是字符串类**，全库一律用 `std::string`；大小写只做 ASCII，格式化另行缩范围 | **已完成**（East Asian Width 推后） |
@@ -43,7 +43,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | term | 终端彩色输出：前景色、背景色，自动判断是否输出颜色，支持 Windows 控制台 | 第一程（可选） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
-| 调度器与 I/O | vCPU 模型 + 四个事件后端（`io_uring` / `epoll` / `kqueue` / `IOCP`）一套抽象；协程感知的 `mutex` / `condition_variable` / `semaphore` / `rwlock` | **进行中**：vCPU + 调度器（`spawn` / `yield` / `sleep_for` / `run`）、栈池、**事件引擎的三个后端（`epoll` / `kqueue` / `IOCP`）** 已完成——协程能阻塞在 I/O 上而不占着 vCPU。**还没有公共 I/O 接口**，也**还没有超时**（句柄类型和超时要等 `net`，见 [事件引擎设计](docs/superpowers/specs/2026-10-05-event-engine-design.md) 7.2 / 7.4）；`io_uring` 是第四期，同步原语是第五期。见 [调度器设计](docs/superpowers/specs/2026-10-04-scheduler-design.md) |
+| 调度器与 I/O | vCPU 模型 + 四个事件后端（`io_uring` / `epoll` / `kqueue` / `IOCP`）一套抽象；协程感知的 `mutex` / `condition_variable` / `semaphore` / `rwlock` | **进行中**：vCPU + 调度器、栈池、**事件引擎三个后端**、**超时与协程感知的同步原语**（`culib/sync.h`：`mutex` / `semaphore` / `condition_variable` / `lock_guard`）已完成。**还没有公共 I/O 接口**（句柄类型要等 `net`）；`io_uring` 是第四期，`net` 是第六期。见 [调度器设计](docs/superpowers/specs/2026-10-04-scheduler-design.md)、[事件引擎](docs/superpowers/specs/2026-10-05-event-engine-design.md)、[超时与同步原语](docs/superpowers/specs/2026-10-05-sync-and-timeout-design.md) |
 | log | 轻量级日志 | 第二程 |
 | 配置文件 | ini 或 toml 子集 | 第二程 |
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | **原语已完成**：x86_64 四种 + arm64 + MinGW x86 共五个目标；**MSVC x86 待补**，要先有 CI 格子 |

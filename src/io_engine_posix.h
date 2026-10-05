@@ -40,13 +40,25 @@ inline io_fd_slot io_empty_slot() {
 }
 
 // 把链头摘下来交还给调度器。结果（transferred / failure）调用方已经填在请求里了。
-inline void io_hand_back(io_request*& head, std::vector<coroutine*>& woken,
+inline void io_hand_back(io_request*& head, std::vector<park_token*>& completed,
                          std::size_t& pending) {
     io_request* const request = head;
     head = request->next;
     request->next = 0;
-    woken.push_back(request->owner);
+    completed.push_back(request->waiter);
     if (pending) --pending;
+}
+
+// 把一个请求从它所在的等待链上摘下来。给「调用方超时了，撤掉这次操作」用。
+// 找不到返回 false——那说明它已经被完成掉了。
+inline bool io_unlink(io_request*& head, io_request& request) {
+    for (io_request** link = &head; *link; link = &(*link)->next) {
+        if (*link != &request) continue;
+        *link = request.next;
+        request.next = 0;
+        return true;
+    }
+    return false;
 }
 
 inline bool io_would_block(int code) {
@@ -86,22 +98,22 @@ inline bool io_try_now(io_request& request) {
 //
 // 返回 false 表示这一轮没完成：链空了，或者 EAGAIN。后者是水平触发下的虚假唤醒
 // （别的东西把数据抢走了，或者内核报早了），**请求留在链上继续等，不唤醒协程**。
-inline bool io_complete(io_request*& head, std::vector<coroutine*>& woken,
+inline bool io_complete(io_request*& head, std::vector<park_token*>& completed,
                         std::size_t& pending) {
     if (!head) return false;
     if (!io_try_now(*head)) return false;
-    io_hand_back(head, woken, pending);
+    io_hand_back(head, completed, pending);
     return true;
 }
 
 // 把一个方向上所有等着的请求用同一个错误码收掉。给「这个 fd 整个废了」用——
 // 不收的话那些协程永远醒不过来，run() 也就永远不返回。
-inline void io_fail_chain(io_request*& head, int failure, std::vector<coroutine*>& woken,
-                          std::size_t& pending) {
+inline void io_fail_chain(io_request*& head, int failure,
+                          std::vector<park_token*>& completed, std::size_t& pending) {
     while (head) {
         head->transferred = -1;
         head->failure = failure;
-        io_hand_back(head, woken, pending);
+        io_hand_back(head, completed, pending);
     }
 }
 
