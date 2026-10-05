@@ -307,7 +307,18 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 | Linux x86_64，GCC 14.2，ASan + UBSan，`detect_leaks=1` | epoll | 见 9.4 |
 | MinGW-w64 x86_64 + wine | IOCP | **199 个测试通过**（少的那条用 `/proc` 数句柄，只在 Linux 跑），零警告 |
 | MinGW-w64 i686 | IOCP | 编译链接通过，零警告（跑不了，wine 没 WOW64） |
-| macOS | kqueue | **本机跑不了。** 只做了对着 SDK 原型桩的类型检查，见 9.3 |
+| macOS | kqueue | 本机跑不了，只做了对着 SDK 原型桩的类型检查（见 9.3）。**CI 上在真 macOS 跑通了**，见下 |
+
+**CI 实际结果：10/10 绿**（`3a766aa`，2026-10-05）。这一格比本机验证重要得多，因为它是 kqueue 和 MSVC 这两侧**第一次真的被执行**：
+
+| CI 格子 | 验证了什么 |
+| --- | --- |
+| `macos-clang / debug` + `release` | **kqueue 后端在真 macOS 上编译并通过全部测试。** 9.3 那一节描述的「未验证面」到这里才真正关上——桩只保证类型对，这里保证行为对 |
+| `windows-msvc / debug` + `release` | **IOCP 后端在真 MSVC 上编译并通过全部测试。** wine 跑通不等于 Windows 跑通，而且 MSVC 的警告集和 MinGW 不同 |
+| `linux-gcc` / `linux-clang` × debug / release | 和本机一致 |
+| `public headers` / `consumed as dependency` | 新增的两个内部头文件没有漏进 `include/`，使用方工程照样能编 |
+
+**到这一格之前 CI 已经红了五个提交**（从 `3e59e3f` 起），所以「三个后端行为一致」这条判据在此之前只是本机结论。路上修掉的三件事见 9.6。
 
 原来的 190 个测试一条没动。新增 9 条全在 `tests/io_engine_test.cpp`，**文件里不出现任何后端的名字**——那是这一期判据（「一套测试跑三个后端」）的形式保证，平台分支只在「怎么造一对连起来的套接字」上（POSIX 用 `socketpair`，Windows 在回环上真连一次）。
 
@@ -349,9 +360,20 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 ### 9.5 没覆盖什么
 
 - **超时**：根本没有。一个收不到数据的 `read` 会把协程永久挂住，`run()` 也就永远不返回。这是这一期最大的洞，见 7.2，第五期和取消语义一起做。
-- **MSVC**：本机只有 MinGW，头文件和警告集都不同，那一侧只有 CI。
-- **真 macOS**：见 9.3。
 - **`io_uring`**：第四期。
 - **多 vCPU**：引擎是每 vCPU 一个，但跨 vCPU 的唤醒（Photon 的 `cancel_wait`）没做，见 7.5。
 - **文件 I/O**：三个后端都只在套接字上跑过。epoll 对普通文件**根本不工作**（普通文件永远「就绪」），这是 `epoll` 的性质而不是实现的缺陷，真正的文件异步要等第四期的 `io_uring`。IOCP 那边 `ReadFile` 对带 `FILE_FLAG_OVERLAPPED` 的文件是通的，但没测。
 - **性能**：一个数都没量。这一期没有性能主张，所以按开发约定也不该写。`net` 那一期要量的是 7.1 那笔欠账（一次就绪的读现在要四个系统调用，手写是一个）。
+- **真 Windows 上的非套接字句柄**：IOCP 这边 `ReadFile` 对带 `FILE_FLAG_OVERLAPPED` 的文件应该是通的，但 CI 和 wine 都只跑了套接字。
+
+### 9.6 从红到绿路上修掉的三件事
+
+CI 从 `3e59e3f` 起就红了，而那是这一期开工时的 HEAD。推上去之后一共是三件事，**只有第一件是这一期造成的**：
+
+| 问题 | 谁的 | 怎么发现的 |
+| --- | --- | --- |
+| 测试要造回环套接字，`tests/xmake.lua` 没链 `ws2_32`，MSVC 九个未解析符号 | **这一期的。** 本机 MinGW 的手写构建行里有 `-lws2_32`，所以本机看不出来 | MSVC 的链接错误本来就进 annotation |
+| `examples/scheduler.cpp` 的 lambda 读了一个 `const int` 局部变量，MSVC 报 C3493 | 原有的（`3e59e3f` 带进来） | 同上。**但第一次改错了**：按 MSVC 的要求加上捕获，clang 立刻用 `-Wunused-lambda-capture` 红了——两个编译器要的是相反的东西，解法是 `static const`。记进 CLAUDE.md 了 |
+| `run()` 把到期的睡眠任务按容器次序而不是 deadline 次序搬回 `ready`，macOS 拿到 `"CAB"`、MSVC release 拿到 `"ACB"` | 原有的，而且是**真 bug**，不是 flaky | **一开始发现不了。** `report-failure.sh` 只认编译器诊断的式样，测试失败一行都不匹配，所以在公开 API 那边只剩 xmake 自己那句 `error: <no error object>`。补上测试框架的式样之后，下一轮 CI 直接把测试名、断言和两边的值都报出来了 |
+
+**第三件最值得记。** 那个机制（CLAUDE.md 的「CI 失败能诊断」）存在的全部目的就是「不让失败只剩一句 exit code 1」，而它在从没被用到的那一半上有个洞，于是 macOS 红了五个提交没人知道原因。详情和改法见 [调度器设计](2026-10-04-scheduler-design.md) 7.6。

@@ -177,7 +177,7 @@
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
 | 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | **已在 GitHub 上实际运行，10/10 绿。** 覆盖 Linux GCC/Clang、macOS Clang、Windows MSVC × debug/release；MinGW 由本机交叉编译覆盖（见上）；Windows x86、Linux arm64、最低版本编译器（GCC 4.8.1 / VS2015）仍未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上，**外加本机 MinGW 交叉编译全部示例**（见下） |
-| CI 失败能诊断 | `.github/report-failure.sh`，把失败命令的输出发成 `::error::` annotation | 编译 / 测试 / 示例四个步骤全经过它。**不这么做的话从公开 API 看只有「exit code 1」**——job 日志要仓库 admin 权限，而 `run:` 步骤里编译器的原始诊断不会自动变成 annotation |
+| CI 失败能诊断 | `.github/report-failure.sh`，把失败命令的输出发成 `::error::` annotation | 编译 / 测试 / 示例四个步骤全经过它，**编译器诊断和测试失败两种式样都认**。**不这么做的话从公开 API 看只有「exit code 1」**——job 日志要仓库 admin 权限，而 `run:` 步骤里编译器的原始诊断不会自动变成 annotation。**测试失败那一半原先是漏的**，代价是 macOS 红了五个提交没人知道原因，见下 |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
@@ -239,6 +239,19 @@ std::thread([slot] { for (int i = 0; i < per_vcpu; ++i) ... });   // 两边都�
 ```
 
 这一条是 `examples/scheduler.cpp` 踩出来的，而且**踩了两次**：先按 MSVC 的要求加上捕获，于是 linux-clang 从绿变红；才明白要换第三种写法。遇到「按一个编译器的要求改完，另一个就红了」的时候，先确认两边要的是不是相反的——是的话别在两种写法之间来回切。
+
+**一条关于诊断机制本身的教训**：`report-failure.sh` 原先只认编译器诊断的式样（`error:` / `error C2039:`），而本库测试框架失败时打的是
+
+```
+<文件>:<行>: Failure
+  Expression: order == "ABC"
+  Values:     "CAB" == "ABC"
+[  FAILED  ] scheduler.wakes_sleepers_in_time_order
+```
+
+**一行都不匹配。** 于是一次测试失败在公开 API 那边只剩 xmake 自己那句 `error: <no error object>`——连哪条测试都不知道。结果是 macOS 红了五个提交，期间一直被当成「大概是 flaky」，而真相是一个确定性的调度器 bug（见 [调度器设计](docs/superpowers/specs/2026-10-04-scheduler-design.md) 7.6）。补上式样之后，下一轮 CI 直接把测试名、断言和两边的值都报出来了。
+
+**判据：一个「让失败可诊断」的机制，要对每一种会失败的东西各验一次。** 这个脚本第一版只包了 build library 一步，漏了 examples（注释里记着）；第二版包全了步骤，却漏了「测试失败」这一类输出。两次都是同一个形状的疏漏——**覆盖了通道，没覆盖内容**。
 
 MinGW **不能代替 MSVC**：头文件、`__declspec`、警告集都不同。但它能抓到绝大多数「API 用错、include 漏了、类型不匹配」，而那些正是从未编译过的代码里最常见的毛病。
 
