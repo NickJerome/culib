@@ -186,6 +186,8 @@
 | Windows 代码能编译并通过测试 | 本机交叉编译 + wine，见下 | MinGW-w64 x86_64 和 i686。**不覆盖 MSVC**（头文件和警告集都不同），那一侧只有 CI |
 | macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
 
+**CI 的结果只在看过那次运行之后才写进文档，并写上是哪个提交。** 推上去不等于绿：README 里「272 个测试在三平台 CI 上全绿」是在 `8bee9ac` 里写下的，而那时前两个提交的 CI 都已经跑完、都是红的（原因见下面 C4996 那张表）。没看过就写的「全绿」比不写更坏——它让下一个人不再去看。查法不用登录：GitHub 公开 API 的 `actions/runs` → 那次运行的 `jobs` → 失败 job 的 check-run `annotations`，`report-failure.sh` 发出来的编译器和测试输出就在那里。
+
 **本机验证 Windows 代码的办法**（在 CI 之前就能用，不必等 runner）：
 
 ```bash
@@ -271,12 +273,13 @@ g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc \
 
 配套的一招更管用：**让那个编不了的平台尽量少写新代码。** kqueue 后端把最容易写错的 `io_complete()`（`EINTR` 重做、`EAGAIN` 虚假唤醒、对端关闭报 0）抽到 `src/io_engine_posix.h` 和 epoll 共用，于是它独有的只剩「怎么登记兴趣」，未验证面小一大截。
 
-**这条限制已经兑现过两次，两次都在 `examples/` 里，而且是同一类错：示例伸手去拿平台专有的 libc 函数。**
+**这条限制已经兑现过三次，而且是同一类错：伸手去拿平台专有、或者被 MSVC 弃用的 libc 函数。** 前两次在 `examples/` 里；第三次在 `src/` 里，一连红了三个提交才被发现——MinGW 不报 C4996，`log` 和 `config` 两期记下的 MinGW + wine 结果都是全过、零警告。
 
 | 哪次 | 写的什么 | Windows 上为什么不行 | 改法 |
 | --- | --- | --- | --- |
 | `examples/os.cpp` | `std::fopen` 攥一个 `FILE*` 写记录 | MSVC 的 CRT 把 `fopen` / `sprintf` / `strcpy` / `getenv` / `strtok` / `localtime` 一族标成弃用（C4996），警告即错误就编不过 | 改用 `fs::append_file`，不越过库的边界 |
 | `examples/time.cpp` | `gmtime_r` 做基准测试的参照物 | **`gmtime_r` 在 Windows 上根本不存在**（只有 `gmtime_s`），而 `gmtime` 又在上面那张弃用名单里 | **把基准测试从示例里删掉**，测量放设计文档 |
+| `src/term.cpp` | `std::getenv` 读 `NO_COLOR` / `TERM` | 同第一行的弃用名单。而且 CRT 的 `getenv` 读的是启动时拷下的那份环境，看不到 `os::setenv`（`SetEnvironmentVariableW`）后来改的值 | 读环境变量挪进平台文件，Windows 侧用 `GetEnvironmentVariableW` |
 
 两条推论：
 

@@ -1,4 +1,4 @@
-// term 的 Windows 侧：判断是不是控制台，以及**开 VT 模式**。
+// term 的 Windows 侧：判断是不是控制台、读 NO_COLOR，以及**开 VT 模式**。
 //
 // **VT 开不起来就不上色**，不退回旧版控制台 API。原设计
 // （2026-10-01-test-term-table-design.md 5.5）写了那条退路：刷新流、记下当前属性、
@@ -69,6 +69,17 @@ bool enable_ansi(stream_kind which) noexcept {
     }
     state = ::SetConsoleMode(to, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) ? 1 : 2;
     return state == 1;
+}
+
+bool environment_allows_color() noexcept {
+    // 不用 std::getenv，两个理由：MSVC 把它标成弃用（C4996），警告即错误就编不过；而且
+    // 它读的是 CRT 启动时拷下的那份环境，看不到 os::setenv（SetEnvironmentVariableW）
+    // 后来改的值。
+    //
+    // 只问长度、不取值：规则只关心「设没设、空不空」。不给缓冲区时返回的是需要的大小，
+    // 含结尾的 '\0'——没设置是 0，设成空串是 1（os_win.cpp 的 getenv 靠的是同一条）。
+    // TERM 不看，Windows 上没有这个约定。
+    return ::GetEnvironmentVariableW(L"NO_COLOR", 0, 0) <= 1;
 }
 
 }  // namespace detail

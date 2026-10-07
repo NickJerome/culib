@@ -10,7 +10,6 @@
 #include "term_detail.h"
 
 #include <atomic>
-#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -76,7 +75,7 @@ bool colorize(std::ostream& out) {
 
     if (!standard) return false;
     if (!is_terminal(which)) return false;
-    if (!environment_allows_color(std::getenv("NO_COLOR"), std::getenv("TERM"))) return false;
+    if (!environment_allows_color()) return false;
     return enable_ansi(which);
 }
 

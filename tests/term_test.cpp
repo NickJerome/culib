@@ -5,6 +5,7 @@
 //
 // Windows 的 VT 模式那条路本机测不了，见 src/term_win.cpp 开头。
 
+#include <culib/os.h>
 #include <culib/term.h>
 #include <culib/test.h>
 
@@ -162,6 +163,32 @@ TEST(term, treats_a_dumb_terminal_as_no_color) {
     EXPECT(environment_allows_color(0, ""), ==, true);
 }
 #endif
+
+TEST(term, sees_no_color_set_by_os_setenv) {
+    // 上面两条测规则，这一条测「读的是进程现在的环境」。Windows 上 CRT 的 getenv 读的
+    // 是启动时拷下的那一份，看不到 os::setenv（SetEnvironmentVariableW）后来改的值。
+    namespace os = wavvix::os;
+    using wavvix::term::detail::environment_allows_color;
+
+    // 跑测试的人自己可能就设了 NO_COLOR 或 TERM=dumb：先存下来，最后原样放回去。
+    const wavvix::optional<std::string> saved_no_color = os::getenv("NO_COLOR");
+    const wavvix::optional<std::string> saved_term = os::getenv("TERM");
+    EXPECT(os::unsetenv("TERM").is_ok(), ==, true);
+
+    EXPECT(os::setenv("NO_COLOR", "1").is_ok(), ==, true);
+    EXPECT(environment_allows_color(), ==, false);
+    EXPECT(os::setenv("NO_COLOR", "").is_ok(), ==, true);   // 空串不算要求关颜色
+    EXPECT(environment_allows_color(), ==, true);
+    EXPECT(os::unsetenv("NO_COLOR").is_ok(), ==, true);
+    EXPECT(environment_allows_color(), ==, true);
+
+    if (saved_no_color.has_value()) {
+        EXPECT(os::setenv("NO_COLOR", saved_no_color.value()).is_ok(), ==, true);
+    }
+    if (saved_term.has_value()) {
+        EXPECT(os::setenv("TERM", saved_term.value()).is_ok(), ==, true);
+    }
+}
 
 TEST(term, remembers_the_mode_it_was_given) {
     set_color_mode(color_mode::never);
