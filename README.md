@@ -21,7 +21,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 
 | 平台 | 编译器 | 架构 |
 | --- | --- | --- |
-| Windows | MSVC（Visual Studio 2015+）、MinGW-w64 | x86、x64 |
+| Windows 10 及以上 | MSVC（Visual Studio 2015+）、MinGW-w64 | x86、x64 |
 | Linux | GCC 4.8.1+、Clang 3.3+ | x86_64、arm64 |
 | macOS | Apple Clang（Xcode / Command Line Tools） | x86_64、arm64 |
 
@@ -351,7 +351,7 @@ xmake run example_result    # 运行一个示例
 
 ## 待定事项
 
-- [ ] 最低系统版本（如 Windows 7 还是 Windows 10），影响可用的系统 API。`net` 开工前必须定，现状见[路线图](docs/superpowers/specs/2026-10-03-roadmap.md)第 6 节
+- [x] 最低系统版本：**Windows 10**（2026-10-07 定）。构建时给 culib 定义 `_WIN32_WINNT=0x0A00`，见[路线图](docs/superpowers/specs/2026-10-03-roadmap.md)第 6 节
 - [x] 头文件注释的语言与编码：**已定**，中文注释保留，公共头文件存成带 BOM 的 UTF-8，使用方不加 `/utf-8` 也不会报 C4819。CI 的 `headers` job 检查 BOM 在不在
 
 ## 版本

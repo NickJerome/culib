@@ -554,7 +554,7 @@ public:
 - **`optional` 在这里第一次落地**：`getenv` 的「没设置」是正常结果不是失败，用 `result` 会迫使调用方处理一个不是错误的错误。见路线图第二程。
 - 信号处理是本模块最容易写错的地方：POSIX 的信号处理函数里能做的事极少（只能调 async-signal-safe 的函数）。所以主推 `stop_requested()` 这种「只翻标志、主循环轮询」的用法。
 
-**要定的事**：最低系统版本（Windows 7 还是 10，影响可用的 API）；Windows 上用 `SetConsoleCtrlHandler` 还是 `signal`；崩溃时输出调用栈要不要做（需要 `dbghelp` / `backtrace`，Windows 上还要 PDB）。
+**要定的事**：~~最低系统版本（Windows 7 还是 10，影响可用的 API）~~（已定 Windows 10，见路线图第 6 节）；Windows 上用 `SetConsoleCtrlHandler` 还是 `signal`；崩溃时输出调用栈要不要做（需要 `dbghelp` / `backtrace`，Windows 上还要 PDB）。
 
 ### 8. time —— `culib/time.h`
 

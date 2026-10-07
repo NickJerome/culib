@@ -7,20 +7,16 @@
 // API），见 docs/superpowers/specs/2026-10-05-event-engine-design.md 第 2 节。
 // 那张账单是选定这个形状的全部理由。
 //
-// **本文件从未被真 Windows 编译过**（本机只有 MinGW 交叉编译 + wine）。
-// 这是继 src/fs_win.cpp 之后又一处这样的代码。
+// 写的时候本机只有 MinGW 交叉编译 + wine，真 MSVC 是推上 CI 才第一次编到、跑到的
+// （`3a766aa` 那次全绿，`3e8ed8d` 记录）。
 
 #include "io_engine.h"
 
 #include <cstddef>
 #include <vector>
 
-// GetQueuedCompletionStatusEx 和 OVERLAPPED_ENTRY 要 Vista 以上。MinGW 的默认下限
-// 已经是 Win7、MSVC 的 SDK 更高，所以这里只在完全没定过的情况下兜一个底；
-// 真有工具链把它定得更低，那是构建环境的问题，应该在那儿改。
-#ifndef _WIN32_WINNT
-#  define _WIN32_WINNT 0x0600
-#endif
+// GetQueuedCompletionStatusEx 和 OVERLAPPED_ENTRY 要 Vista 以上；下限由 xmake.lua
+// 统一定成 Windows 10（_WIN32_WINNT=0x0A00），这里不再各自兜底。
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif

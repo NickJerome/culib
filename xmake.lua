@@ -41,6 +41,12 @@ target("culib")
     if not is_plat("macosx") then
         remove_files("src/**_macos.cpp")
     end
+    -- 最低支持 Windows 10（路线图第 6 节）。_WIN32_WINNT 决定 SDK 头文件声明哪些 API，
+    -- 各工具链的默认值不同（MinGW 随版本变、MSVC 跟着 SDK 走），在这里定死，两边看到
+    -- 同一套。只给 culib 自己的编译单元：公共头文件不含平台头，使用方不受影响。
+    if is_plat("windows", "mingw") then
+        add_defines("_WIN32_WINNT=0x0A00", "WINVER=0x0A00")
+    end
 
     -- 协程的换栈汇编：每个 (ABI, 架构, 汇编器) 一个文件，按目标挑一个。
     -- 协程是全有或全无的——程序一旦用了，发到哪个平台就必须有那个平台的汇编，
