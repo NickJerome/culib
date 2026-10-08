@@ -84,9 +84,15 @@ jobs:
       - name: encrypted peer data through two NATs
         shell: bash
         run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_nat.py --probe
+      - name: encrypted peer data with translated NAT ports
+        shell: bash
+        run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_nat.py --probe --non-preserving
       - name: TUN traffic after NAT mapping changes
         shell: bash
         run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_nat.py
+      - name: TUN traffic after translated NAT port changes
+        shell: bash
+        run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_nat.py --non-preserving
       - name: TUN traffic after peer restart
         shell: bash
         run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_ns.py --restart

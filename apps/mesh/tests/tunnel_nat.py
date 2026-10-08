@@ -3,7 +3,8 @@
 Build apps/mesh in Linux debug mode first. This test needs iptables, IP
 forwarding and network namespaces. The default tunnel test also needs
 /dev/net/tun and changes one NAT mapping; --probe tests encrypted peer data
-without creating a virtual interface. It cleans up its namespaces.
+without creating a virtual interface. --non-preserving maps both peers to
+public UDP ports different from their local ports. It cleans up its namespaces.
 """
 
 import os
@@ -21,9 +22,15 @@ STUN = ROOT / "tests/fixtures/stun_echo.py"
 
 
 def main():
-    if sys.argv[1:] not in ([], ["--probe"]):
-        raise RuntimeError("usage: tunnel_nat.py [--probe]")
-    probe = "--probe" in sys.argv
+    options = sys.argv[1:]
+    if len(set(options)) != len(options) or any(
+            option not in ("--probe", "--non-preserving") for option in options):
+        raise RuntimeError("usage: tunnel_nat.py [--probe] [--non-preserving]")
+    probe = "--probe" in options
+    non_preserving = "--non-preserving" in options
+    public_a = 54001 if non_preserving else 44001
+    public_b = 54002 if non_preserving else 44002
+    changed_a = 55001 if non_preserving else 45001
     if os.geteuid() != 0 or not MESH.is_file():
         raise RuntimeError("run as root after building apps/mesh in Linux debug mode")
     suffix = str(os.getpid())
@@ -37,11 +44,11 @@ def main():
             run("ip", "netns", "add", name)
             namespaces.append(name)
             run("ip", "-n", name, "link", "set", "lo", "up")
-        for router, peer, hub_if, router_if, inside_if, peer_if, hub_ip, public_ip, private_ip, port in (
+        for router, peer, hub_if, router_if, inside_if, peer_if, hub_ip, public_ip, private_ip, port, mapped_port in (
             (nat_a, peer_a, "ha", "na", "ia", "ea", "198.18.1.1",
-             "198.18.1.2", "10.101.0.2", 44001),
+             "198.18.1.2", "10.101.0.2", 44001, public_a),
             (nat_b, peer_b, "hb", "nb", "ib", "eb", "198.18.2.1",
-             "198.18.2.2", "10.102.0.2", 44002),
+             "198.18.2.2", "10.102.0.2", 44002, public_b),
         ):
             run("ip", "-n", hub, "link", "add", hub_if, "type", "veth",
                 "peer", "name", router_if)
@@ -71,10 +78,10 @@ def main():
             run("ip", "netns", "exec", router, "iptables", "-t", "nat",
                 "-I", "POSTROUTING", "1", "-s", private_ip, "-p", "udp",
                 "--sport", str(port), "-j", "SNAT", "--to-source",
-                public_ip + ":" + str(port))
+                public_ip + ":" + str(mapped_port))
             run("ip", "netns", "exec", router, "iptables", "-t", "nat",
                 "-A", "PREROUTING", "-i", router_if, "-p", "udp",
-                "--dport", str(port), "-j", "DNAT", "--to-destination",
+                "--dport", str(mapped_port), "-j", "DNAT", "--to-destination",
                 private_ip + ":" + str(port))
             run("ip", "netns", "exec", router, "iptables", "-I", "FORWARD",
                 "1", "-i", router_if, "-o", inside_if, "-p", "udp", "-m",
@@ -128,7 +135,7 @@ def main():
                 run("ip", "-n", name, "route", "add", remote + "/32",
                     "dev", interface, "src", local)
             if probe:
-                for process, expected_port in zip(peers, (44002, 44001)):
+                for process, expected_port in zip(peers, (public_b, public_a)):
                     output, errors = process.communicate(timeout=35)
                     print(output, end="", flush=True)
                     if process.returncode != 0 or \
@@ -140,7 +147,7 @@ def main():
                 return
             first = [wait_line(peer, "authenticated UDP path: ", 20) for peer in peers]
             print("initial paths:", first)
-            if ":44002" not in first[0] or ":44001" not in first[1]:
+            if ":" + str(public_b) not in first[0] or ":" + str(public_a) not in first[1]:
                 raise RuntimeError("initial NAT ports do not match the mapping")
             ping_pair(peer_a, peer_b, "initial NAT")
 
@@ -149,20 +156,20 @@ def main():
             prefix = ("ip", "netns", "exec", nat_a, "iptables", "-t", "nat")
             run(*prefix, "-D", "POSTROUTING", "-s", "10.101.0.2", "-p", "udp",
                 "--sport", "44001", "-j", "SNAT", "--to-source",
-                "198.18.1.2:44001")
+                "198.18.1.2:" + str(public_a))
             run(*prefix, "-I", "POSTROUTING", "1", "-s", "10.101.0.2", "-p", "udp",
                 "--sport", "44001", "-j", "SNAT", "--to-source",
-                "198.18.1.2:45001")
+                "198.18.1.2:" + str(changed_a))
             run(*prefix, "-D", "PREROUTING", "-i", "na", "-p", "udp",
-                "--dport", "44001", "-j", "DNAT", "--to-destination",
+                "--dport", str(public_a), "-j", "DNAT", "--to-destination",
                 "10.101.0.2:44001")
             run(*prefix, "-A", "PREROUTING", "-i", "na", "-p", "udp",
-                "--dport", "45001", "-j", "DNAT", "--to-destination",
+                "--dport", str(changed_a), "-j", "DNAT", "--to-destination",
                 "10.101.0.2:44001")
             second = [wait_line(peer, "authenticated UDP path: ", 50)
                       for peer in peers]
             print("reconnected paths:", second)
-            if ":45001" not in second[1]:
+            if ":" + str(changed_a) not in second[1]:
                 raise RuntimeError("peer did not learn NAT A's new public port")
             ping_pair(peer_a, peer_b, "changed NAT mapping")
     finally:
