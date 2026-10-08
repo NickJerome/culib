@@ -16,6 +16,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  legacy-gcc:
+    name: GCC 4.8 C++11
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build and test with GCC 4.8
+        shell: bash
+        run: docker run --rm -v "$PWD:/workspace" -w /workspace gcc:4.8 bash tests/legacy_gcc48.sh
+
   # 两条开发约定原先只有人工流程、没有机制：公共头文件带 UTF-8 BOM、每个头文件能单独包含。
   # 都只需要一个 Linux runner，所以合成一个快速门禁，排在编译矩阵前面。
   headers:
