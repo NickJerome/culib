@@ -28,6 +28,7 @@ jobs:
         mode: [debug, release]
         target:
           - { os: ubuntu-latest, plat: linux, toolchain: gcc }
+          - { os: ubuntu-24.04-arm, plat: linux, toolchain: gcc }
           - { os: macos-latest, plat: macosx, toolchain: clang }
           - { os: windows-latest, plat: windows, toolchain: msvc }
     steps:
