@@ -11,20 +11,11 @@ import sys
 import tempfile
 import time
 
-from tunnel_ns import MESH, run, wait_line
+from tunnel_ns import MESH, ping_pair, run, wait_line
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 STUN = ROOT / "tests/fixtures/stun_echo.py"
-
-
-def ping(namespace):
-    result = subprocess.run(
-        ["ip", "netns", "exec", namespace, "ping", "-c", "2", "-W", "5",
-         "10.250.0.2"], text=True, capture_output=True, timeout=20)
-    print(result.stdout, end="")
-    if result.returncode != 0:
-        raise RuntimeError("encrypted TUN ping failed: " + result.stderr)
 
 
 def main():
@@ -132,7 +123,7 @@ def main():
             print("initial paths:", first)
             if ":44002" not in first[0] or ":44001" not in first[1]:
                 raise RuntimeError("initial NAT ports do not match the mapping")
-            ping(peer_a)
+            ping_pair(peer_a, peer_b, "initial NAT")
 
             # Change only NAT A's public UDP port. Existing conntrack state
             # expires after two seconds; both peers must discover a new session.
@@ -154,7 +145,7 @@ def main():
             print("reconnected paths:", second)
             if ":45001" not in second[1]:
                 raise RuntimeError("peer did not learn NAT A's new public port")
-            ping(peer_a)
+            ping_pair(peer_a, peer_b, "changed NAT mapping")
     finally:
         for process in processes:
             if process.poll() is None:

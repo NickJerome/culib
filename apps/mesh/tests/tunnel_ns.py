@@ -32,6 +32,20 @@ def wait_line(process, prefix, timeout):
     return line[len(prefix):]
 
 
+def ping_pair(peer_a, peer_b, phase):
+    for namespace, target in ((peer_a, "10.250.0.2"),
+                              (peer_b, "10.250.0.1")):
+        for _ in range(2):
+            result = subprocess.run(
+                ["ip", "netns", "exec", namespace, "ping", "-c", "1",
+                 "-W", "5", target],
+                text=True, capture_output=True, timeout=10)
+            print(result.stdout, end="")
+            if result.returncode != 0:
+                raise RuntimeError(phase + " encrypted TUN ping failed from " +
+                                   namespace + ": " + result.stderr)
+
+
 def main():
     if os.geteuid() != 0 or not MESH.is_file():
         raise RuntimeError("run as root after building apps/mesh in Linux debug mode")
@@ -100,13 +114,7 @@ def main():
             for peer in peers:
                 print("connected to " +
                       wait_line(peer, "authenticated UDP path: ", 15))
-            result = subprocess.run(
-                ["ip", "netns", "exec", peer_a, "ping", "-c", "2", "-W", "5",
-                 "10.250.0.2"],
-                text=True, capture_output=True, timeout=20)
-            print(result.stdout, end="")
-            if result.returncode != 0:
-                raise RuntimeError("mesh TUN ping failed: " + result.stderr)
+            ping_pair(peer_a, peer_b, "initial")
             if "--address-change" in sys.argv:
                 for peer, hub_if, peer_if, old_address, gateway, new_address in (
                     (peer_a, "ha", "ea", "198.18.1.2", "198.18.1.5", "198.18.1.6"),
@@ -131,13 +139,7 @@ def main():
                                        repr(paths))
                 for path in paths:
                     print("reconnected to " + path)
-                result = subprocess.run(
-                    ["ip", "netns", "exec", peer_a, "ping", "-c", "2", "-W", "5",
-                     "10.250.0.2"],
-                    text=True, capture_output=True, timeout=20)
-                print(result.stdout, end="")
-                if result.returncode != 0:
-                    raise RuntimeError("mesh address-change ping failed: " + result.stderr)
+                ping_pair(peer_a, peer_b, "address-change")
             if "--restart" in sys.argv:
                 peers[1].terminate()
                 peers[1].wait(timeout=5)
@@ -160,13 +162,7 @@ def main():
                       wait_line(peers[0], "authenticated UDP path: ", 40))
                 print("reconnected to " +
                       wait_line(replacement, "authenticated UDP path: ", 10))
-                result = subprocess.run(
-                    ["ip", "netns", "exec", peer_a, "ping", "-c", "2", "-W", "5",
-                     "10.250.0.2"],
-                    text=True, capture_output=True, timeout=20)
-                print(result.stdout, end="")
-                if result.returncode != 0:
-                    raise RuntimeError("mesh reconnect ping failed: " + result.stderr)
+                ping_pair(peer_a, peer_b, "restart")
     finally:
         for process in processes:
             if process.poll() is None:
