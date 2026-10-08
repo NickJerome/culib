@@ -20,9 +20,8 @@
  *   0x30 / 0x34  给结构体参数的两个字
  *
  * **SEH 的局限**：新协程的链头置成 -1（空链）。MinGW i686 的 C++ 异常走 DWARF-2
- * 或 SJLJ，不靠 fs:[0] 这条链，所以空链没问题。**MSVC x86 不行**——它的异常就建在
- * 这条链上，需要在协程栈上造一个真的 EXCEPTION_REGISTRATION_RECORD。那一份没写，
- * 因为既没有 CI 格子也没法本机验证，详见 coroutine 设计文档。
+ * 或 SJLJ，不靠 fs:[0] 这条链，所以空链没问题。MSVC x86 的另一份 MASM 实现
+ * 在新栈上建立终端 SEH registration record，见 context_i386_pe.asm。
  */
 
 .text

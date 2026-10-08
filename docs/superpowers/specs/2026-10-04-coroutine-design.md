@@ -1,7 +1,7 @@
 # coroutine 设计
 
 - 日期：2026-10-04
-- 状态：**已实现**，六个目标里五个就位（缺 MSVC x86，理由见 4.7）。CI 10/10 绿
+- 状态：**已实现**；MSVC x86 已补齐。本机 MSVC x86 debug/release 测试与 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37771093446) 通过。
 - 第二程第 8 项。路线图 4.2（为什么在 net 之前）、4.3（已定的两条）、4.4（成本在哪）、4.6（也挡在 thread 和 log 前面）是前置阅读。
 - **本文修正了路线图 4.3 关于 CFI 工作量的估计，见 3.4。**
 
@@ -318,7 +318,7 @@ abort 那一侧**不在单元测试里**（进程会死），用独立程序验�
 
 ## 4. 实现验证
 
-六个 (平台, 架构) 目标里**五个就位**，每个的验证深度不一样，分开说——「编过了」和「跑过了」差很远。
+各 (平台, 架构) 目标的验证深度不同，分开说——「编过了」和「跑过了」差很远。
 
 | 目标 | 汇编文件 | 验证到哪一步 |
 | --- | --- | --- |
@@ -326,9 +326,9 @@ abort 那一侧**不在单元测试里**（进程会死），用独立程序验�
 | macOS x86_64 | 同上（`__APPLE__` 分支） | 汇编通过、符号前缀对；**CI 跑过** |
 | Linux / macOS arm64 | `context_arm64_aapcs.S` | ELF 和 Mach-O 都汇编通过；**macOS CI 跑过**——那是它第一次被执行 |
 | MinGW x64 | `context_x86_64_pe.S` | **全部跑过**：MinGW-w64 + wine，175 测试 |
-| MSVC x64 | `context_x86_64_pe.asm` | 本机没有 ml64，**CI 跑过**——那是它第一次被汇编 |
+| MSVC x64 | `context_x86_64_pe.asm` | 本机 VS2022 与 CI 均跑过 |
 | MinGW x86 | `context_i386_pe.S` | 汇编、`-Werror` 编译、链接都过；**从未执行**（wine 没有 WOW64） |
-| MSVC x86 | **没写** | 见 4.7 |
+| MSVC x86 | `context_i386_pe.asm` | 本机 VS2022 debug/release 全套测试与 CI 均跑过；见 4.7 |
 
 ### 4.1 切换与创建的开销
 
@@ -383,21 +383,15 @@ Windows 贵一截是应该的：多存 160 字节的 xmm6–15 和四个 TIB 字
 
 两个 MSVC 格子都是挂在这一行，所以那份 MASM 当时根本没被汇编到。修掉之后 **CI 10/10 绿**，MASM 和 arm64 这两份本机完全测不到的汇编才算第一次被验证。
 
-### 4.7 MSVC x86 为什么没写
+### 4.7 MSVC x86 的 SEH 链
 
-它的异常建在 `fs:[0]` 的 SEH 链上，需要在协程栈上造一个真的 `EXCEPTION_REGISTRATION_RECORD`（boost 的 i386 MASM 为此要遍历现有链找顶层 handler）。而：
+MSVC x86 的异常处理使用 `fs:[0]` 的 SEH 链，不能像 MinGW x86 那份汇编一样把新栈的链头置为 `-1`。MASM 实现在新栈上建立终端 registration record，沿现有链找到系统的最终 handler，再把该 handler 放进新记录；切换时同时保存和恢复 TIB 的 SEH 链头。这个策略参考 Boost.Context，许可见 `licenses/BOOST-1.0.txt`。
 
-- **CI 没有 Windows x86 的格子**；
-- 本机没有 ml64/ml，也跑不了 32 位（wine 无 WOW64）。
-
-写一份**既不能汇编也不能运行**的 SEH 代码，产出的是「看着对」的东西，比现在这个老实报错的 `#error` 更糟。
-
-**正确的层是基础设施**：先加一格 Windows x86 的 CI（GitHub 的 windows runner 能用 MSVC 编 x86），再写那份汇编。这和 MSVC 的 `/W4` 当初先豁免、等 CI 能看见了再纳入是同一个处理方式。
+新增 Windows x86 debug/release CI 格子后，本机 VS2022 编译并运行全套测试；`fiber.lets_exceptions_throw_and_catch_inside` 覆盖协程 `yield` 后抛出和捕获异常。`db6c67d` 的 x86 两格先通过，而 x64 debug 格子在旧的 Windows watcher 停止竞态中挂起；修复后的 `8c3a98c` [CI](https://github.com/NickJerome/culib/actions/runs/37771093446) 12 格全绿。这个例子再次说明新平台格子和已有平台回归都要看完。
 
 ### 4.8 没覆盖
 
 - **MinGW x86 从未执行过**，只是编过链过。
-- **MSVC x86 完全没有**，见 4.7。
 - **协程不能跨线程迁移**，所以 TLS 和 `__cxa_eh_globals` 的问题（路线图 4.4 点出的）暂时不存在；真要迁移时那是个新课题，连带要填上布局里留的栈保护 canary 槽。
 - **栈保护 canary（`%fs:0x28`）没处理**，x86_64 的布局里留了 `0x08` 那个槽。只有迁移时才需要。
 - **`sigaltstack` 和协程栈的关系没想清楚**。libaco 的注释指出过 libco 的一个真 bug：信号处理函数跑在普通栈上时换栈会出错。本模块没碰信号，但 `os::install_stop_handler` 装的处理器如果正好打在协程栈上会怎样，没测。
