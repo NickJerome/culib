@@ -65,7 +65,8 @@ result<endpoint> udp_punch(udp_socket& socket,
     targets.reserve(peer_candidates.size() + 1);
     for (std::size_t i = 0; i < peer_candidates.size(); ++i) {
         const endpoint& candidate = peer_candidates[i];
-        if (candidate.family() == local.value().family() && candidate.port() != 0 &&
+        if (candidate.family() == local.value().family() &&
+            detail::valid_unicast_candidate(candidate) &&
             !contains(targets, candidate)) targets.push_back(candidate);
     }
     if (targets.empty())
@@ -119,6 +120,8 @@ result<endpoint> udp_punch(udp_socket& socket,
         if (!detail::punch_decode(incoming, received.value().size, message) ||
             std::memcmp(message.session, session.data(), session.size()) != 0) continue;
         if (message.type == detail::punch_probe) {
+            if (std::memcmp(message.transaction, probe.transaction,
+                            sizeof probe.transaction) == 0) continue;
             detail::punch_message ack = message;
             ack.type = detail::punch_ack;
             unsigned char reply[detail::punch_packet_size];

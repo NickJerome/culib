@@ -135,3 +135,40 @@ TEST(net_punch, rejects_an_empty_candidate_set) {
     if (selected.is_err())
         EXPECT(selected.error().kind(), ==, wavvix::error_kind::invalid_argument);
 }
+
+TEST(net_punch, does_not_confirm_its_own_probe) {
+    const wavvix::result<net::endpoint> loopback = net::endpoint::parse("127.0.0.1", 0);
+    if (!EXPECT(loopback.is_ok(), ==, true)) return;
+    wavvix::result<net::udp_socket> opened = net::udp_socket::bind(loopback.value());
+    if (!EXPECT(opened.is_ok(), ==, true)) return;
+    net::udp_socket socket = std::move(opened).value();
+    const wavvix::result<net::endpoint> local = socket.local_endpoint();
+    if (!EXPECT(local.is_ok(), ==, true)) return;
+    net::punch_session_id session = {};
+    wavvix::spawn([&] {
+        const std::vector<net::endpoint> candidates(1, local.value());
+        wavvix::result<net::endpoint> selected =
+            net::udp_punch(socket, candidates, session, ms(50));
+        EXPECT(selected.is_err(), ==, true);
+        if (selected.is_err())
+            EXPECT(selected.error().kind(), ==, wavvix::error_kind::timeout);
+    });
+    EXPECT(wavvix::run(), ==, std::size_t(1));
+}
+
+TEST(net_punch, rejects_an_unspecified_candidate) {
+    const wavvix::result<net::endpoint> loopback = net::endpoint::parse("127.0.0.1", 0);
+    const wavvix::result<net::endpoint> unspecified =
+        net::endpoint::parse("0.0.0.0", 12345);
+    if (!EXPECT(loopback.is_ok() && unspecified.is_ok(), ==, true)) return;
+    wavvix::result<net::udp_socket> opened = net::udp_socket::bind(loopback.value());
+    if (!EXPECT(opened.is_ok(), ==, true)) return;
+    net::udp_socket socket = std::move(opened).value();
+    net::punch_session_id session = {};
+    const std::vector<net::endpoint> candidates(1, unspecified.value());
+    const wavvix::result<net::endpoint> selected =
+        net::udp_punch(socket, candidates, session, ms(50));
+    EXPECT(selected.is_err(), ==, true);
+    if (selected.is_err())
+        EXPECT(selected.error().kind(), ==, wavvix::error_kind::invalid_argument);
+}
