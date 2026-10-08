@@ -41,6 +41,6 @@ int main() {
 
 析构会等待所有提交的协程结束；有无限等待或持续接受连接的协程时，应先用应用自己的停止信号让它们退出。`scheduler_scope` 只管理调度器生命周期，不取消协程。要并行使用多核，就让每根工作线程各建自己的作用域；当前版本不跨 vCPU 迁移协程或套接字。
 
-PhotonLibOS 也把协程当成线程来用，不过有两层接口。原生的 [`thread_create11()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/thread11.h) / [`go()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/go.h) 创建后只把协程放进运行队列，默认不要求等待；想等指定协程才调用 `thread_enable_join()` 和 `thread_join()`。[`photon_std::thread`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/std-compat.h) 则是 `std::thread` 风格的持有型句柄，构造即入队，随后 `join()` 或 `detach()`；仍可 `join` 时析构会 `terminate`。culib 的 `spawn()` 和 `coroutine` 分别对应这两种用法。Photon 的 [`init()` / `fini()`](https://github.com/alibaba/PhotonLibOS/blob/main/photon.h) 对应这里的 `coroutine::init()` / `shutdown()`，也可以用 `scheduler_scope` 管理生命周期。
+PhotonLibOS 的原生 [`thread_create11()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/thread11.h) / [`go()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/go.h) 创建后只把协程放进运行队列，默认不要求等待；需要等待时才启用 join。[`photon_std::thread`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/std-compat.h) 则是 `std::thread` 风格的持有型句柄，构造即入队，随后 `join()` 或 `detach()`；仍可 `join` 时析构会 `terminate`。culib 的 `spawn()` 和 `coroutine` 分别对应这两种用法。Photon 的 [`init()` / `fini()`](https://github.com/alibaba/PhotonLibOS/blob/main/photon.h) 对应这里的 `coroutine::init()` / `shutdown()`，也可以用 `scheduler_scope` 管理生命周期。Photon 的线程句柄只有在另行初始化 WorkPool 后才会把新协程迁移到其他 vCPU；culib 目前没有跨 vCPU 迁移。
 
 创建协程不会立刻切走当前执行流；只有调用方让出、等待、进行协程 I/O，或者进入调度器收尾时，新协程才会运行。culib 当前将协程绑定在创建它的 vCPU 上；需要真正并行使用多核时，每根工作线程各建自己的 vCPU。
