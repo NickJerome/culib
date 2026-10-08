@@ -30,6 +30,7 @@ jobs:
           - { os: ubuntu-latest, plat: linux, toolchain: gcc }
           - { os: ubuntu-24.04-arm, plat: linux, toolchain: gcc }
           - { os: macos-latest, plat: macosx, toolchain: clang }
+          - { os: macos-15-intel, plat: macosx, toolchain: clang }
           - { os: windows-latest, plat: windows, toolchain: msvc }
     steps:
       - uses: actions/checkout@v4
