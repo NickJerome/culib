@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。Windows 真实 Wintun 已完成临时适配器的 ICMP IP 往返验收；两节点 mesh 转发仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式、双进程本机验证，以及端口保持 NAT 命名空间中的双向数据交换；面向公网的信令服务、保活、映射变化恢复和真实公网 NAT 验证仍待完成。第四项已有独立的 libsodium 应用工程、加密候选消息和加密数据包构件，完整节点协议未完成。
+- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。Windows 真实 Wintun 已完成临时适配器的 ICMP IP 往返验收；两节点 mesh 转发仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式、双进程本机验证，以及端口保持 NAT 命名空间中的双向数据交换；面向公网的信令服务、保活、映射变化恢复和真实公网 NAT 验证仍待完成。第四项已有独立的 libsodium 应用工程、加密候选消息、加密数据包和口令加密身份文件，完整节点协议未完成。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -60,4 +60,4 @@ Linux root 下的 `tests/net_punch_nat.py` 创建两个 peer、两个独立端�
 
 `udp_punch()` 的返回值只证明一次双向可达，不能替代后续的候选交换信令、定时保活、STUN 映射变化检测和重新打洞，也不是身份认证。只靠共享会话 ID 不能构成最终节点安全协议；真实 NAT 网络里的成功率仍未验证。
 
-跨公网的节点协议必须先定身份和加密方案。culib 的“零第三方依赖”约束适用于通用库，不能促使这里手写加密原语；成熟密码库的依赖应留在具体 mesh 应用层，不污染未使用 mesh 的 culib 程序。`apps/mesh` 是单独的 xmake 工程，使用 libsodium 1.0.22。`CME1` 消息让固定公钥的节点加密交换 `punch_offer`，拒绝篡改、错误身份、近期重放和过期消息。`CMD1` 数据包从固定公钥与该会话 ID 派生方向密钥，使用 XChaCha20-Poly1305 认证，并在 64 包窗口内拒绝重放；逐包 API 写入调用方缓冲区。静态 X25519 身份密钥目前只在内存中生成，没有持久化或前向保密，安全边界和待做事项见 [mesh 应用说明](../../../apps/mesh/README.md)。完成第四程前必须有真实公网 NAT 环境与两节点虚拟网卡转发验证，三平台编译通过只能证明可构建，不能证明穿透和转发成功。
+跨公网的节点协议必须先定身份和加密方案。culib 的“零第三方依赖”约束适用于通用库，不能促使这里手写加密原语；成熟密码库的依赖应留在具体 mesh 应用层，不污染未使用 mesh 的 culib 程序。`apps/mesh` 是单独的 xmake 工程，使用 libsodium 1.0.22。`CME1` 消息让固定公钥的节点加密交换 `punch_offer`，拒绝篡改、错误身份、近期重放和过期消息。`CMD1` 数据包从固定公钥与该会话 ID 派生方向密钥，使用 XChaCha20-Poly1305 认证，并在 64 包窗口内拒绝重放；逐包 API 写入调用方缓冲区。`CMI1` 文件用 Argon2id 与 XChaCha20-Poly1305 保存固定 X25519 身份，创建时不覆盖原文件；尚无口令轮换或前向保密，安全边界和待做事项见 [mesh 应用说明](../../../apps/mesh/README.md)。完成第四程前必须有真实公网 NAT 环境与两节点虚拟网卡转发验证，三平台编译通过只能证明可构建，不能证明穿透和转发成功。

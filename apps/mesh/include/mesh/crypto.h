@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <culib/net.h>
+#include <culib/string_view.h>
 
 #include <array>
 #include <chrono>
@@ -25,6 +26,10 @@ public:
 private:
     identity() noexcept;
     friend wavvix::result<identity> generate_identity();
+    friend wavvix::result<identity> create_identity_file(
+        wavvix::string_view, wavvix::string_view);
+    friend wavvix::result<identity> load_identity_file(
+        wavvix::string_view, wavvix::string_view);
     friend wavvix::result<std::vector<unsigned char>> seal_offer(
         const identity&, const public_key&, const wavvix::net::punch_offer&,
         std::chrono::system_clock::time_point);
@@ -36,6 +41,12 @@ private:
 };
 
 wavvix::result<identity> generate_identity();
+
+// Store a new password-encrypted identity without replacing an existing file.
+wavvix::result<identity> create_identity_file(
+    wavvix::string_view path, wavvix::string_view passphrase);
+wavvix::result<identity> load_identity_file(
+    wavvix::string_view path, wavvix::string_view passphrase);
 
 // Encrypt an offer for a pinned peer. The relay sees public routing keys only.
 wavvix::result<std::vector<unsigned char>> seal_offer(
