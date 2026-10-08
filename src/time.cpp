@@ -15,9 +15,6 @@ namespace wavvix {
 namespace detail {
 
 // Howard Hinnant 公开的日历算法。days 是 1970-01-01 以来的天数，可以为负。
-//
-// 为什么不调 gmtime_r：自己算 13.6 ns，gmtime_r 49.8 ns，而且三个平台逐条指令相同，
-// 不受 libc 实现差异影响。正确性拿 411 万个时刻和 gmtime_r 比对过（设计文档 3.1）。
 void civil_from_days(std::int64_t z, int& year, unsigned& month, unsigned& day) noexcept {
     z += 719468;
     const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
@@ -183,9 +180,7 @@ result<date_time> local_parts(timestamp point) {
     }
 
     // 偏移量不用 tm_gmtoff：那是 glibc / BSD 扩展，MSVC 的 std::tm 没有这个字段。
-    // 改成「本地日历时间换算回秒，再减去真正的 Unix 秒」——UTC 这边本来就是我们
-    // 自己算的，所以不需要再调一次 gmtime。七个时区 × 113 万个时刻和 tm_gmtoff
-    // 比对过，含 Lord Howe 的半小时夏令时和加德满都的 +05:45（设计文档 3.2）。
+    // 用本地日历时间换算回秒，再减去真正的 Unix 秒；无需再调 gmtime。
     const std::int64_t local_civil_seconds =
         detail::days_from_civil(broken.tm_year + 1900, static_cast<unsigned>(broken.tm_mon + 1),
                                 static_cast<unsigned>(broken.tm_mday)) *

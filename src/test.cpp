@@ -20,12 +20,7 @@ namespace detail {
 
 namespace {
 
-// 报告的配色。**term 的第一个消费者就是这里**——开发约定里「吃自己的狗粮」那条，
-// 而且 term 的设计文档（2026-10-01-test-term-table-design.md 第 5 节）明写着
-// 「完成后被测试框架吃掉」。
-//
-// 上不上色由 term 自己判断：输出重定向到文件、管道给别的程序、或者设了 NO_COLOR 时
-// 自动变回纯文字，所以 CI 的日志里不会多出一堆转义序列。
+// 报告的配色由 term 决定；重定向输出或设置 NO_COLOR 时自动退回纯文字。
 const wavvix::term::style marker = wavvix::term::fg::green;
 const wavvix::term::style bad = wavvix::term::fg::red;
 

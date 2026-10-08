@@ -215,11 +215,8 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     // **两种都照样会投一个完成包**，因为没有开 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS，
     // 所以这边的协程总是让出一轮。
     //
-    // POSIX 那两个后端有乐观快路（就绪时不登记也不让出），这边没有，**理由不是为了
-    // 和它们一致**——是这边没有可省的东西：IOCP 没有「登记」这一步，发出 overlapped
-    // 操作本身就是那一个系统调用。要省掉完成包就得开那个开关，而它对套接字有已知限制，
-    // 万一没生效，完成包会落在一个已经随栈销毁的 OVERLAPPED 上。拿 use-after-free 的
-    // 风险换一次（64 个一批摊销的）出队，不划算。重开条件见设计文档 7.1。
+    // FILE_SKIP_COMPLETION_PORT_ON_SUCCESS 对套接字有已知限制；误判无完成包会让
+    // 完成通知落在已销毁的 OVERLAPPED 上，所以此处始终等待完成通知。
     ++engine->pending;
     return true;
 }
