@@ -20,22 +20,23 @@ on:
 
 jobs:
   build:
-    name: ${{ matrix.os }} / ${{ matrix.mode }}
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.target.os }} / ${{ matrix.mode }}
+    runs-on: ${{ matrix.target.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         mode: [debug, release]
+        target:
+          - { os: ubuntu-latest, plat: linux, toolchain: gcc }
+          - { os: macos-latest, plat: macosx, toolchain: clang }
+          - { os: windows-latest, plat: windows, toolchain: msvc }
     steps:
       - uses: actions/checkout@v4
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
       - name: configure isolated mesh project
-        shell: bash
-        run: |
-          printf 'y\n' | xmake f -P apps/mesh -m ${{ matrix.mode }} -y
-      - name: run authenticated-offer tests
+        run: xmake f -P apps/mesh -m ${{ matrix.mode }} -p ${{ matrix.target.plat }} --toolchain=${{ matrix.target.toolchain }} -y
+      - name: run mesh protocol tests
         shell: bash
         run: bash .github/report-failure.sh xmake test -P apps/mesh -v
