@@ -9,6 +9,7 @@
 #include <culib/defer.h>
 #include <culib/flag.h>
 #include <culib/fs.h>
+#include <culib/fs_watcher.h>
 #include <culib/lexical_cast.h>
 #include <culib/log.h>
 #include <culib/net.h>

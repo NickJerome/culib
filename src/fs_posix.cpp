@@ -355,12 +355,16 @@ directory_handle& directory_handle::operator=(directory_handle&& other) noexcept
     return *this;
 }
 
-bool directory_handle::next(string_view& name, bool& is_directory) {
+result<bool> directory_handle::next(string_view& name, bool& is_directory) {
     DIR* dir = static_cast<DIR*>(handle_);
     if (!dir) return false;
     for (;;) {
+        errno = 0;
         const struct dirent* item = ::readdir(dir);
-        if (!item) return false;
+        if (!item) {
+            if (errno != 0) return from_errno("读取目录", "", errno);
+            return false;
+        }
         if (std::strcmp(item->d_name, ".") == 0 || std::strcmp(item->d_name, "..") == 0) continue;
         name = string_view(item->d_name);
 #if defined(DT_DIR)
@@ -374,8 +378,9 @@ bool directory_handle::next(string_view& name, bool& is_directory) {
         // 用 fstatat 配 dirfd 而不是拼完整路径：handle 不存目录路径，而且这样不受
         // 遍历期间当前目录被改动的影响。
         struct stat info;
-        is_directory = ::fstatat(::dirfd(dir), item->d_name, &info, 0) == 0 &&
-                       S_ISDIR(info.st_mode);
+        if (::fstatat(::dirfd(dir), item->d_name, &info, 0) != 0)
+            return from_errno("查询目录项", item->d_name, errno);
+        is_directory = S_ISDIR(info.st_mode);
         return true;
     }
 }

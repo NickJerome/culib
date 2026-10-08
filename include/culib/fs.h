@@ -153,9 +153,9 @@ public:
     directory_handle(const directory_handle&) = delete;
     directory_handle& operator=(const directory_handle&) = delete;
 
-    // 取下一项，没有了返回 false。"." 和 ".." 已经跳过。
+    // 取下一项，没有了返回 false，遍历失败返回错误。"." 和 ".." 已经跳过。
     // name 指向内部缓冲区，下一次 next() 或析构之后失效。
-    bool next(string_view& name, bool& is_directory);
+    result<bool> next(string_view& name, bool& is_directory);
 
 private:
     explicit directory_handle(void* handle) noexcept : handle_(handle) {}
@@ -178,7 +178,10 @@ result<void> list_directory(string_view path, F&& callback) {
     if (opened.is_err()) return std::move(opened).error();
     detail::directory_handle handle = std::move(opened).value();
     entry current;
-    while (handle.next(current.name, current.is_directory)) {
+    for (;;) {
+        result<bool> next = handle.next(current.name, current.is_directory);
+        if (next.is_err()) return std::move(next).error();
+        if (!next.value()) break;
         if (!callback(static_cast<const entry&>(current))) break;
     }
     return result<void>();

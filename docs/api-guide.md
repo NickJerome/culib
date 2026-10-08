@@ -247,6 +247,12 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
   5–10 ms，在 NFS 上 0.2–1 ms。**所以这里每个函数都只做它名字说的那件事**，
   不替调用方多问一次磁盘，见 CLAUDE.md「性能与占用」。
 
+## [`fs_watcher.h`](../include/culib/fs_watcher.h)
+
+`fs::poller` 已可用：注册目录时拍一次快照，以后按给定间隔遍历并比较文件身份、大小和修改时间。它适合 NFS / SMB 等网络挂载。`wait(timeout, out)` 在协程里等待扫描间隔时让出；返回的事件包含被监视根目录、相对路径和变化类型。视图在下一次 `wait()` 前有效。完整用法见 [`fs_poller.cpp`](../examples/fs_poller.cpp)。
+
+扫描本身是同步文件系统调用；在慢磁盘或网络挂载上，大目录的扫描会阻塞当前 vCPU。选较长的间隔、缩小监视范围，或把这个 poller 放到独立的工作线程。两次扫描之间创建又删除的文件可能看不到。内核通知版 `fs::watcher` 仍在开发，设计见[文件监听](superpowers/specs/2026-10-08-fs-watcher-design.md)。
+
 ## [`lexical_cast.h`](../include/culib/lexical_cast.h)
 
 完整背景见 [设计文档](superpowers/specs/2026-10-04-lexical_cast-design.md)。

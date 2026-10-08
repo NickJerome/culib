@@ -451,13 +451,16 @@ directory_handle& directory_handle::operator=(directory_handle&& other) noexcept
     return *this;
 }
 
-bool directory_handle::next(string_view& name, bool& is_directory) {
+result<bool> directory_handle::next(string_view& name, bool& is_directory) {
     find_state* state = static_cast<find_state*>(handle_);
     if (!state || state->exhausted) return false;
     for (;;) {
         if (!state->pending) {
             if (!::FindNextFileW(state->handle, &state->data)) {
+                const DWORD code = ::GetLastError();
                 state->exhausted = true;
+                if (code != ERROR_NO_MORE_FILES)
+                    return from_last_error("读取目录", "", code);
                 return false;
             }
         }
@@ -470,7 +473,7 @@ bool directory_handle::next(string_view& name, bool& is_directory) {
         std::size_t length = 0;
         while (found[length] != L'\0') ++length;
         const result<std::string> converted = wide_to_utf8(found, length);
-        if (converted.is_err()) continue;   // 文件名不是合法 UTF-16，跳过而不是让整次遍历失败
+        if (converted.is_err()) return std::move(converted).error();
         state->name = converted.value();
         name = string_view(state->name);
         is_directory = (state->data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
