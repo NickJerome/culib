@@ -6,6 +6,8 @@
 
 建立连接时，双方分别调用 `random_punch_session_id()`，把所得随机值放进自己 `punch_offer.session` 并发送加密候选。**收到对端消息并完成认证后**，两侧用 `derive_session_id(本端公钥, 本端随机值, 对端公钥, 对端随机值)` 得到相同的共享会话 ID。这个派生值才传给 `udp_punch()` 和 `traffic_session::create()`；任何一侧换一个随机值都会得到另一个会话。中继只负责转发加密消息，无权单独决定会话 ID。
 
+TCP 信令层现在提供两字节长度分帧的 `send_encrypted_offer()` / `receive_encrypted_offer()`，以及只服务一对连接的 `relay_offer_pair()`。中继校验公开的收发公钥能互相对应后原样转发密文；端点仍须用 `offer_receiver` 完成认证。`signaling_barrier()` 在双方打洞结束后放行数据阶段。本机双节点测试已通过真实 TCP 回环、双向认证、会话派生与屏障；长期运行的中继服务及节点 CLI 尚未接入。
+
 首次使用时，调用 `create_identity_file(path, passphrase)` 生成并保存身份；以后调用 `load_identity_file(path, passphrase)`，得到相同的公钥。创建操作将加密内容先写入同目录的临时文件，再以不覆盖已有文件的方式发布；路径按 UTF-8 处理。文件用 Argon2id 从口令派生密钥，再用 XChaCha20-Poly1305 加密公私钥，格式为 `CMI1`，共 124 字节。应使用足够强且可保管的口令；忘记口令就无法恢复该身份，也无法继续被原对端公钥信任。文件本身还没有口令轮换接口。
 
 `mesh` 命令目前提供身份创建和公钥查看：在 `apps/mesh` 目录运行 `xmake build -P . mesh` 后，执行 `xmake run -P . mesh identity create node.key`；重启后用 `xmake run -P . mesh identity show node.key` 检查同一个公钥。终端输入口令时关闭回显，标准输入被重定向时读取第一行；口令不作为命令行参数。把显示的 64 位十六进制公钥交给对端固定。节点连接、信令和转发命令仍在开发中。
