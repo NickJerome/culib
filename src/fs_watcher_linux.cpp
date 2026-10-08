@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <poll.h>
+#include <fcntl.h>
 #include <sys/inotify.h>
 #include <unistd.h>
 
@@ -57,6 +58,26 @@ clock_type::time_point deadline_after(std::chrono::nanoseconds timeout) {
     const clock_type::time_point now = clock_type::now();
     const clock_type::duration remaining = clock_type::time_point::max() - now;
     return timeout >= remaining ? clock_type::time_point::max() : now + timeout;
+}
+
+int open_inotify() {
+#if defined(IN_CLOEXEC) && defined(IN_NONBLOCK)
+    const int modern = ::inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+    if (modern >= 0 || errno != ENOSYS) return modern;
+#endif
+    const int fd = ::inotify_init();
+    if (fd < 0) return -1;
+    const int status = ::fcntl(fd, F_GETFL);
+    const int descriptor = ::fcntl(fd, F_GETFD);
+    if (status < 0 || descriptor < 0 ||
+        ::fcntl(fd, F_SETFL, status | O_NONBLOCK) < 0 ||
+        ::fcntl(fd, F_SETFD, descriptor | FD_CLOEXEC) < 0) {
+        const int code = errno;
+        ::close(fd);
+        errno = code;
+        return -1;
+    }
+    return fd;
 }
 
 }  // namespace
@@ -298,7 +319,7 @@ result<void> watcher_backend_add(watcher_state* state, string_view directory, re
             return make_error(error_kind::already_exists, "已经监视 " + root);
     }
     if (state->fd < 0) {
-        state->fd = ::inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+        state->fd = open_inotify();
         if (state->fd < 0) return from_errno("创建 inotify", root, errno);
     }
     result<void> added = add_tree(*state, root, std::string(), mode);
