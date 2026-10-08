@@ -44,6 +44,8 @@ endpoint local = listener.local_endpoint().value(); // 端口 0 已换成实际�
 
 UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发送，`recv_from(nullptr, 0, ...)` 会消费。接收缓冲区太小时，报文已被消费并返回 `out_of_range`；调用方可继续接收下一包。`send_to` 若不能完整发送一包则报错，不会把剩余字节当第二包重试。与 TCP 一样，超时必填，负数表示一直等待；非零长度配空缓冲区是 `invalid_argument`。`bind` 和查询可在协程外调用，收发需要调度器协程。同一句柄不能跨 vCPU 使用，关闭时不得仍有其他协程等待。
 
+`local_candidates(socket)` 取得可交给对端的本机候选地址。socket 绑定具体 IP 时只返回该地址和实际端口；绑定 `0.0.0.0` 或 `::` 时，枚举启用中的同地址族接口，把每个地址配上 socket 的端口，去掉通配、多播和重复地址。结果含回环地址，调用方按通信场景筛选；顺序不保证。此调用在连接建立阶段执行，可能分配内存或阻塞当前线程。不包含 STUN 反射地址，后者要在同一 socket 上单独查询并加入候选集。可运行示例见 [`examples/net_candidates.cpp`](../examples/net_candidates.cpp)。
+
 ## STUN 地址发现
 
 `stun_public_endpoint(socket, server, timeout)` 在给定 UDP socket 上发送一次 STUN Binding 请求，返回服务器看到的公网 `endpoint`。它使用系统随机源生成事务 ID，校验应答来源、事务 ID、长度和 `XOR-MAPPED-ADDRESS`；无应答返回 `timeout`。这个结果只对应**这一个 socket 当前的 NAT 映射**，因此后续打洞和数据传输必须复用它。查询期间由调用方独占该 socket 的接收端；函数会消费并跳过来自其他地址或旧事务的报文。不自动重试。完整用法见 [`examples/net_stun.cpp`](../examples/net_stun.cpp)，运行时传入数字 IP 的 STUN 服务器地址和可选端口。实现和本地假服务器测试已通过 [Linux/macOS/Windows CI](https://github.com/NickJerome/culib/actions/runs/37772593308)。

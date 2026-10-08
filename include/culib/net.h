@@ -129,6 +129,10 @@ private:
     bool adopted_;
 };
 
+// 返回此 socket 可交换给对端的本机地址；通配绑定时枚举启用中的同地址族接口。
+// 不包含 STUN 反射地址，结果顺序不保证；可能阻塞线程，宜在协程外调用。
+result<std::vector<endpoint>> local_candidates(const udp_socket& socket);
+
 // 在此 UDP socket 上查询 STUN Binding 映射地址；查询期间由调用方独占接收。
 // 负超时表示一直等待。服务器只接受数字 IP endpoint，查询不自动重试。
 result<endpoint> stun_public_endpoint(udp_socket& socket, const endpoint& server,
