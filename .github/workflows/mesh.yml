@@ -40,3 +40,6 @@ jobs:
       - name: run mesh protocol tests
         shell: bash
         run: bash .github/report-failure.sh xmake test -P apps/mesh -v
+      - name: build mesh command
+        shell: bash
+        run: bash .github/report-failure.sh xmake build -P apps/mesh mesh

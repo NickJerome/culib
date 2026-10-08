@@ -24,6 +24,18 @@ target("mesh_crypto")
     add_deps("culib")
 target_end()
 
+target("mesh")
+    set_kind("binary")
+    set_default(false)
+    if not is_plat("windows") then
+        set_languages("c++11")
+    end
+    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
+    add_files("src/main.cpp")
+    add_deps("mesh_crypto")
+target_end()
+
 target("mesh_crypto_test")
     set_kind("binary")
     set_default(false)
