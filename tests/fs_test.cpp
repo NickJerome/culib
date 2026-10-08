@@ -357,6 +357,31 @@ TEST(fs, removes_files_and_directories) {
 }
 
 #ifdef _WIN32
+TEST(fs, reads_windows_file_time_before_1970) {
+    const scratch area("pre_epoch_time");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string path = area.at("old.txt");
+    if (!EXPECT(fs::write_file(path, "old").is_ok(), ==, true)) return;
+    const result<std::wstring> wide = wavvix::utf8_to_wide(path);
+    if (!EXPECT(wide.is_ok(), ==, true)) return;
+    const HANDLE file = ::CreateFileW(wide.value().c_str(), FILE_WRITE_ATTRIBUTES,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                      0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (!EXPECT(file != INVALID_HANDLE_VALUE, ==, true)) return;
+    ULARGE_INTEGER ticks;
+    ticks.QuadPart = 116444736000000000ull - 5000000ull;
+    FILETIME before_epoch;
+    before_epoch.dwLowDateTime = ticks.LowPart;
+    before_epoch.dwHighDateTime = ticks.HighPart;
+    const BOOL set = ::SetFileTime(file, 0, 0, &before_epoch);
+    ::CloseHandle(file);
+    if (!EXPECT(set != 0, ==, true)) return;
+
+    const result<wavvix::timestamp> modified = fs::last_write_time(path);
+    if (EXPECT(modified.is_ok(), ==, true))
+        EXPECT(modified.value().unix_seconds(), ==, -1);
+}
+
 TEST(fs, recursive_remove_does_not_follow_a_directory_junction) {
     const scratch area("junction_remove");
     if (!EXPECT(area.ok(), ==, true)) return;

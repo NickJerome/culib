@@ -126,7 +126,10 @@ std::int64_t to_unix_seconds(const FILETIME& time) {
     ticks.LowPart = time.dwLowDateTime;
     ticks.HighPart = time.dwHighDateTime;
     const std::uint64_t kTicksTo1970 = 116444736000000000ull;
-    if (ticks.QuadPart < kTicksTo1970) return 0;
+    if (ticks.QuadPart < kTicksTo1970) {
+        const std::uint64_t before_epoch = kTicksTo1970 - ticks.QuadPart;
+        return -static_cast<std::int64_t>((before_epoch + 9999999ull) / 10000000ull);
+    }
     return static_cast<std::int64_t>((ticks.QuadPart - kTicksTo1970) / 10000000ull);
 }
 
