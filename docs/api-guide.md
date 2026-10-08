@@ -235,6 +235,8 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 
 - 路径一律是 UTF-8 的 std::string / string_view，没有专门的 path 类型。代价是路径
   和普通字符串混用时编译器发现不了，好处是每个接口少一层转换。
+- 文件系统操作拒绝含内嵌 NUL 的路径：返回 `invalid_argument`；`exists` / `is_file` /
+  `is_directory` 等布尔查询返回 `false`。不会把 NUL 前的路径误当成目标文件。
 - 输入接受 '/' 和 '\\' 两种分隔符。**join 只为自己插入的那一个分隔符用平台原生字符，
   不改写输入里已有的**：Windows 上 join("/a", "b") 是 "/a\\b" 而不是 "\\a\\b"。混用在
   Windows 上是合法的（"C:/foo\\bar" 能用）；要全部统一成原生分隔符就用 normalize，
