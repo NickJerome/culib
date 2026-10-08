@@ -261,7 +261,8 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 `absolute()` 把相对路径接到当前目录后再做同样的词法整理；两者都不解析符号链接。
 
 `exists`、`is_file`、`is_directory` 各自查询一次；需要知道类型时直接选类型查询，
-不用先问 `exists`。`last_write_time` 只保证秒精度。`read_file`、`write_file` 和
+不用先问 `exists`。`last_write_time` 只保证秒精度；Windows 上纪元前的修改时间也返回
+负 Unix 秒，向过去取整。`read_file`、`write_file` 和
 `append_file` 按二进制处理内容；带 `std::string&` 出参的 `read_file` 可以复用缓冲区。
 `output_file` 持有常开的追加写句柄，`open()` 会先关掉旧句柄，析构时自动关闭；
 `write()` 无用户态缓冲，每次直接写给操作系统。它的 `size()` 是打开时的大小加上
