@@ -117,22 +117,105 @@ wavvix::result<net::endpoint> run_pair(bool server, const net::endpoint& signali
     return net::udp_punch(socket, peer.value().candidates, local.session, seconds(5));
 }
 
+wavvix::result<void> run_relay(const net::endpoint& signaling) {
+    wavvix::result<net::tcp_listener> opened = net::tcp_listener::listen(signaling);
+    if (opened.is_err()) return std::move(opened).error();
+    net::tcp_listener listener = std::move(opened).value();
+    wavvix::result<net::tcp_stream> first_open = listener.accept(seconds(30));
+    if (first_open.is_err()) return std::move(first_open).error();
+    wavvix::result<net::tcp_stream> second_open = listener.accept(seconds(30));
+    if (second_open.is_err()) return std::move(second_open).error();
+    net::tcp_stream first = std::move(first_open).value();
+    net::tcp_stream second = std::move(second_open).value();
+    wavvix::result<net::punch_offer> first_offer = receive_offer(first);
+    if (first_offer.is_err()) return std::move(first_offer).error();
+    wavvix::result<net::punch_offer> second_offer = receive_offer(second);
+    if (second_offer.is_err()) return std::move(second_offer).error();
+    wavvix::result<net::punch_session_id> session = net::random_punch_session_id();
+    if (session.is_err()) return std::move(session).error();
+    first_offer.value().session = session.value();
+    second_offer.value().session = session.value();
+    wavvix::result<void> to_first = send_offer(first, second_offer.value());
+    if (to_first.is_err()) return std::move(to_first).error();
+    return send_offer(second, first_offer.value());
+}
+
+wavvix::result<net::endpoint> run_relay_peer(
+    const net::endpoint& signaling, net::udp_socket& socket,
+    const std::vector<net::endpoint>& candidates, const char* stun_ip,
+    std::uint16_t stun_port) {
+    net::punch_offer local = {};
+    local.candidates = candidates;
+    if (stun_ip) {
+        wavvix::result<net::endpoint> server = net::endpoint::parse(stun_ip, stun_port);
+        if (server.is_err()) return std::move(server).error();
+        const wavvix::result<net::endpoint> local_address = socket.local_endpoint();
+        if (local_address.is_err()) return local_address.error();
+        if (server.value().family() != local_address.value().family())
+            return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                      "STUN server must match UDP address family");
+        wavvix::result<net::endpoint> reflected =
+            net::stun_public_endpoint(socket, server.value(), seconds(3));
+        if (reflected.is_err()) return std::move(reflected).error();
+        local.candidates.push_back(reflected.value());
+    }
+    wavvix::result<net::punch_session_id> session = net::random_punch_session_id();
+    if (session.is_err()) return std::move(session).error();
+    local.session = session.value();
+    wavvix::result<net::tcp_stream> connected =
+        net::tcp_stream::connect(signaling, seconds(5));
+    if (connected.is_err()) return std::move(connected).error();
+    net::tcp_stream stream = std::move(connected).value();
+    wavvix::result<void> sent = send_offer(stream, local);
+    if (sent.is_err()) return std::move(sent).error();
+    wavvix::result<net::punch_offer> peer = receive_offer(stream);
+    if (peer.is_err()) return std::move(peer).error();
+    stream.close();
+    return net::udp_punch(socket, peer.value().candidates, peer.value().session,
+                          seconds(5));
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
     const bool server = argc == 3 && std::strcmp(argv[1], "listen") == 0;
     const bool client = argc == 4 && std::strcmp(argv[1], "connect") == 0;
-    if (!server && !client) {
-        std::fprintf(stderr, "usage: net_punch_pair listen PORT | connect IP PORT\n");
+    const bool relay = argc == 3 && std::strcmp(argv[1], "relay") == 0;
+    const bool relay_peer = (argc == 4 || argc == 6) &&
+                            std::strcmp(argv[1], "peer") == 0;
+    if (!server && !client && !relay && !relay_peer) {
+        std::fprintf(stderr,
+            "usage: net_punch_pair listen PORT | connect IP PORT | relay PORT | "
+            "peer RELAY_IP PORT [STUN_IP STUN_PORT]\n");
         return 1;
     }
     std::uint16_t port = 0;
-    if (!parse_port(argv[server ? 2 : 3], port)) return 1;
+    if (!parse_port(argv[(server || relay) ? 2 : 3], port)) return 1;
+    std::uint16_t stun_port = 0;
+    if (relay_peer && argc == 6 && !parse_port(argv[5], stun_port)) return 1;
     const wavvix::result<net::endpoint> signaling =
-        net::endpoint::parse(server ? "0.0.0.0" : argv[2], port);
+        net::endpoint::parse((server || relay) ? "0.0.0.0" : argv[2], port);
+    if (signaling.is_err()) return 1;
+    if (relay) {
+        bool succeeded = false;
+        {
+            wavvix::scheduler_scope runtime;
+            wavvix::coroutine worker([&] {
+                wavvix::result<void> exchanged = run_relay(signaling.value());
+                if (exchanged.is_err()) {
+                    std::fprintf(stderr, "%s\n", exchanged.error().to_string().c_str());
+                    return;
+                }
+                std::printf("offers relayed\n");
+                succeeded = true;
+            });
+            worker.join();
+        }
+        return succeeded ? 0 : 1;
+    }
     const wavvix::result<net::endpoint> wildcard =
         net::endpoint::parse("0.0.0.0", 0);
-    if (signaling.is_err() || wildcard.is_err()) return 1;
+    if (wildcard.is_err()) return 1;
     wavvix::result<net::udp_socket> opened = net::udp_socket::bind(wildcard.value());
     if (opened.is_err()) return 1;
     net::udp_socket socket = std::move(opened).value();
@@ -144,7 +227,11 @@ int main(int argc, char* argv[]) {
         wavvix::scheduler_scope runtime;
         wavvix::coroutine peer([&] {
             wavvix::result<net::endpoint> selected =
-                run_pair(server, signaling.value(), socket, candidates.value());
+                relay_peer ? run_relay_peer(signaling.value(), socket,
+                                           candidates.value(), argc == 6 ? argv[4] : 0,
+                                           stun_port)
+                           : run_pair(server, signaling.value(), socket,
+                                      candidates.value());
             if (selected.is_err()) {
                 std::fprintf(stderr, "%s\n", selected.error().to_string().c_str());
                 return;

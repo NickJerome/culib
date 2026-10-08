@@ -46,7 +46,9 @@ UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发
 
 `local_candidates(socket)` 取得可交给对端的本机候选地址。socket 绑定具体 IP 时只返回该地址和实际端口；绑定 `0.0.0.0` 或 `::` 时，枚举启用中的同地址族接口，把每个地址配上 socket 的端口，去掉通配、多播和重复地址。结果含回环地址，调用方按通信场景筛选；顺序不保证。此调用在连接建立阶段执行，可能分配内存或阻塞当前线程。不包含 STUN 反射地址，后者要在同一 socket 上单独查询并加入候选集。可运行示例见 [`examples/net_candidates.cpp`](../examples/net_candidates.cpp)。
 
-`punch_offer` 把双方需要交换的会话 ID 和候选地址放在一起。会话 ID 应用 `random_punch_session_id()` 生成；全零 ID 会被拒绝。`encode_punch_offer(offer)` 产生最多 757 字节的二进制消息，`decode_punch_offer(data, size)` 严格检查版本、数量（1–32）、长度、地址族、非零端口、单播地址和尾部数据。消息可以交给应用已有的信令通道传输；通道须自行确定消息边界并完成身份认证。格式不加密，也不证明地址确实属于声称的节点。[`examples/net_punch_pair.cpp`](../examples/net_punch_pair.cpp) 用一个临时 TCP 连接交换两端候选，再让两个独立进程各自调用 `udp_punch()`。可在两个终端分别运行 `xmake run example_net_punch_pair listen 39001` 和 `xmake run example_net_punch_pair connect 127.0.0.1 39001`。这个示例只用于本机连通性验证，明文 TCP 信令不适合作为最终节点协议。
+`punch_offer` 把双方需要交换的会话 ID 和候选地址放在一起。会话 ID 应用 `random_punch_session_id()` 生成；全零 ID 会被拒绝。`encode_punch_offer(offer)` 产生最多 757 字节的二进制消息，`decode_punch_offer(data, size)` 严格检查版本、数量（1–32）、长度、地址族、非零端口、单播地址和尾部数据。消息可以交给应用已有的信令通道传输；通道须自行确定消息边界并完成身份认证。格式不加密，也不证明地址确实属于声称的节点。
+
+[`examples/net_punch_pair.cpp`](../examples/net_punch_pair.cpp) 有两种本机试验：两个终端分别运行 `xmake run example_net_punch_pair listen 39001` 和 `xmake run example_net_punch_pair connect 127.0.0.1 39001`，让两端直接交换候选；或在三个终端运行 `xmake run example_net_punch_pair relay 39001`，再各运行一次 `xmake run example_net_punch_pair peer 127.0.0.1 39001`，让两端经中继交换候选。`peer` 后还可加 `STUN_IP STUN_PORT`，在**同一 UDP socket** 上取反射地址并放进候选。中继只服务一对节点后退出，不认证双方；这些明文 TCP 流程用于连通性验证，不能作为最终节点协议。
 
 ## STUN 地址发现
 
