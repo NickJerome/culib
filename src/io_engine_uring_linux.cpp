@@ -374,7 +374,9 @@ bool uring_engine_arm(uring_engine* engine, io_request& request) noexcept {
         engine->slots.resize(index * 2 + 2, io_empty_slot());
     io_fd_slot& slot = engine->slots[index];
     io_request*& queue = request.direction == io_read ? slot.readers : slot.writers;
-    if (!queue && request.operation != io_accept && request.operation != io_connect &&
+    if (!queue && (request.operation == io_transfer ||
+                   request.operation == io_socket_transfer ||
+                   request.operation == io_datagram_transfer) &&
         try_socket_now(request)) return false;
 
     request.next = 0;

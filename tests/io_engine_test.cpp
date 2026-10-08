@@ -318,6 +318,37 @@ TEST(io_engine, socket_transfer_uses_the_same_completion_contract) {
 }
 
 #if defined(__linux__)
+TEST(io_engine, vectored_read_uses_its_iovecs) {
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+    const char payload[] = "hello";
+    if (!EXPECT(::send(pair.left, payload, 5, MSG_DONTWAIT), ==, 5)) return;
+
+    char first[2] = {};
+    char second[3] = {};
+    struct iovec vectors[2] = {{first, sizeof first}, {second, sizeof second}};
+    std::ptrdiff_t received = -1;
+    int failure = 0;
+    spawn([&] {
+        io_request request;
+        request.direction = io_read;
+        request.operation = wavvix::detail::io_vectored_transfer;
+        request.handle = pair.right;
+        request.buffer = 0;
+        request.length = 5;
+        request.vectors = vectors;
+        request.vector_count = 2;
+        scheduler_io(request, ms(500));
+        received = request.transferred;
+        failure = request.failure;
+    });
+    EXPECT(run(), ==, 1u);
+    EXPECT(received, ==, 5);
+    EXPECT(failure, ==, 0);
+    EXPECT(std::string(first, sizeof first) + std::string(second, sizeof second), ==,
+           "hello");
+}
+
 TEST(io_engine, socket_write_after_peer_close_does_not_raise_sigpipe) {
     linked_pair pair;
     if (!EXPECT(pair.ok(), ==, true)) return;
