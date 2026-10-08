@@ -1,5 +1,7 @@
 # mesh 应用层（开发中）
 
+macOS 的 `tests/tunnel_macos.py` 在 CI 上启动两个真实 utun 节点和本机信令中继。两端建立受认证的 UDP 路径后，分别从自己的 utun 发出 ICMP 请求，并在对端 utun 抓到原报文；[debug/release 均通过](https://github.com/NickJerome/culib/actions/runs/37820067582)。两个接口共享同一个 macOS 网络栈，测试目标地址没有配置成对端本地地址，所以系统 ping 不会收到应答。这是双向包转发验证，不是跨机器的 ICMP 往返。
+
 这个 xmake 工程单独依赖 libsodium 1.0.22，根工程的 `culib` 静态库不引入该依赖。进入 `apps/mesh` 后运行 `xmake f -P . -m debug -y`、`xmake test -P .`，即可构建并测试目前的加密候选与数据包。
 
 每个节点持有 X25519 公私钥，信令层必须从配置中取得并固定对端公钥。`seal_offer()` 先用 culib 的 `punch_offer` 格式编码候选，再用 libsodium `crypto_box_easy` 加密并认证；信令中继只能看到用于转发的发送者、收件者公钥。`offer_receiver` 检查收件者和允许的发送者、认证密文、消息时间及近期 nonce，接受后才解码候选。消息有效期为 60 秒，允许发送方时钟快 30 秒。接收者必须在其 `identity` 生命周期内使用；同一接收者对象的重复消息会被拒绝。
@@ -14,7 +16,7 @@ TCP 信令层提供两字节长度分帧的 `send_encrypted_offer()` / `receive_
 
 `mesh relay PORT` 转发一对节点的加密候选后退出，`mesh serve PORT` 持续服务下一对。`mesh peer IDENTITY_PATH PEER_PUBLIC_KEY RELAY_IP RELAY_PORT [STUN_IP STUN_PORT [LOCAL_UDP_PORT]]` 建立一次受认证的 UDP 路径并退出。需要持续转发时把 `peer` 换成 `tunnel`：它创建三层虚拟网卡，打印接口名，经同一 UDP socket 查询可选的 STUN 反射地址、打洞、加密双向转发 IP 包，每 5 秒发保活；20 秒收不到认证入站报文时重新通过信令建立会话。每次重连都会重新枚举本地地址并查询可选的 STUN 映射，因此网络接口地址变化后不会继续发布启动时的旧候选。来自对端新 UDP 地址的认证数据也会更新回程地址。`tunnel` 收到终止信号后关闭网卡和 socket；虚拟网卡地址与路由由使用者配置，命令不会修改系统路由。中继一次只处理一对连接，没有用户管理、流量配额或抗拒绝服务能力。
 
-Linux root 下可运行 `python3 tests/tunnel_ns.py --restart`，它在三个临时网络命名空间中建立两个虚拟网卡并验证节点重启后恢复；`python3 tests/tunnel_ns.py --address-change` 同时更换双方底层网卡地址，验证重连使用新候选。`python3 tests/tunnel_nat.py` 再引入两个独立端口保持 NAT、STUN 和信令中继，把一端的公网 UDP 端口从 44001 改成 45001，验证重新认证和打洞。三个场景在变化前后都要求两端各主动发起两次单包 ping，逐包确认收到应答。Windows 管理员环境可运行 `python -B tests/tunnel_windows_wsl.py C:\path\to\amd64\wintun.dll`，以官方签名 Wintun DLL 和 WSL2 的 Linux TUN 验证跨内核的加密 IP 转发；Windows 和 WSL 各主动发起两次单包 ping，四次均收到隧道对端的应答，退出后无残留适配器。可控 NAT 模型和同机跨系统测试均已通过；真实公网 NAT 网络及 macOS 两节点转发尚待验证。
+Linux root 下可运行 `python3 tests/tunnel_ns.py --restart`，它在三个临时网络命名空间中建立两个虚拟网卡并验证节点重启后恢复；`python3 tests/tunnel_ns.py --address-change` 同时更换双方底层网卡地址，验证重连使用新候选。`python3 tests/tunnel_nat.py` 再引入两个独立端口保持 NAT、STUN 和信令中继，把一端的公网 UDP 端口从 44001 改成 45001，验证重新认证和打洞。三个场景在变化前后都要求两端各主动发起两次单包 ping，逐包确认收到应答。Windows 管理员环境可运行 `python -B tests/tunnel_windows_wsl.py C:\path\to\amd64\wintun.dll`，以官方签名 Wintun DLL 和 WSL2 的 Linux TUN 验证跨内核的加密 IP 转发；Windows 和 WSL 各主动发起两次单包 ping，四次均收到隧道对端的应答，退出后无残留适配器。可控 NAT 模型和同机跨系统测试均已通过；真实公网 NAT 网络及 macOS 跨机器的两节点往返尚待验证。
 
 `traffic_session::create()` 用双方固定的公钥与上述共享会话 ID 派生两个方向不同的密钥。`seal()` / `open()` 写入调用方缓冲区，不在逐包路径上分配内存；XChaCha20-Poly1305 校验数据及包头，接收端允许 64 个序号的乱序窗口并拒绝重复包。每次连接都必须重新生成双方的随机值。单个 UDP 包最多 65507 字节，其中 28 字节用于包头和认证码，超长 IP 包尚无分片机制。
 
