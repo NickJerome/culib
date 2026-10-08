@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析。Linux TUN 已在 WSL2 上实际收发 IP 包；macOS utun 已在 CI 上编译并运行打开接口测试。两者的内部后端通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37776334576)。Windows Wintun 的内部后端已写出，本机 MSVC x64/x86 编译与缺 DLL 错误路径通过，待跨平台 CI 和有驱动机器验证。公共接口仍待完成；打洞及节点协议未开始。
+- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析。Linux TUN 已在 WSL2 上实际收发 IP 包；macOS utun 已在 CI 上编译并运行打开接口测试。Windows Wintun 内部后端及事件等待已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37778749317)，缺 DLL 错误路径通过；有驱动的收发仍待验证。统一的 `net::virtual_interface` RAII 接口和示例已写出，待跨平台 CI。打洞及节点协议未开始。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -16,6 +16,17 @@
 | 2 | STUN Binding：在**将用于传输的同一 UDP socket** 上取得服务器反射地址，校验来源和 transaction ID。 | 本地假 STUN 服务器覆盖 IPv4/IPv6、丢包、超时和畸形报文；不依赖公网服务。 |
 | 3 | 候选地址交换和 UDP 打洞：双方并发探测本地/反射地址，连接后保活并检测映射变化。 | 同机多进程与可控 NAT 环境测试；公开 CI 只覆盖不需要外部 NAT 的路径。 |
 | 4 | 节点协议：身份认证、加密、路由和虚拟网卡转发组成最小端到端程序。 | 两节点不同子网的双向 IP 包、重连、拒绝未授权节点、退出时资源清理。 |
+
+### 虚拟网卡公开接口
+
+| 类别 | 签名 | 行为 |
+| --- | --- | --- |
+| 创建 | `static result<virtual_interface> open()` | 创建临时三层接口，失败返回原因 |
+| 身份 | `string_view name() const`、`bool is_open() const` | 接口名的视图随句柄关闭而失效 |
+| 生命周期 | 移动构造 / 赋值、`close()`、析构 | 唯一拥有系统接口；关闭时不可有尚未完成的 I/O |
+| 报文 | `read(void*, size_t, nanoseconds)`、`write(const void*, size_t, nanoseconds)` | 协程里按整包收发；超时必填，负数为一直等待 |
+
+完整程序在 [`examples/net_virtual.cpp`](../../../examples/net_virtual.cpp)。本机 Windows 未安装 Wintun DLL，实际输出是 `virtual interface unavailable: not_found: 加载 Wintun DLL 失败：126`；WSL2 root 创建 TUN 时输出 `opened tun0`，然后因未配置地址、无输入包而输出 `read: timeout: 读取 TUN 失败：110`。示例把不可用和超时作为可诊断结果，不修改系统地址或路由。
 
 ## 关键取舍
 

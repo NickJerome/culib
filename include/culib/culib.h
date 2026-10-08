@@ -13,6 +13,7 @@
 #include <culib/lexical_cast.h>
 #include <culib/log.h>
 #include <culib/net.h>
+#include <culib/net_virtual.h>
 #include <culib/optional.h>
 #include <culib/os.h>
 #include <culib/result.h>

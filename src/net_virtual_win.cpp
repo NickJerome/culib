@@ -162,6 +162,10 @@ result<std::size_t> virtual_interface_read(virtual_interface_state* state, void*
         DWORD packet_size = 0;
         BYTE* const packet = state->api.receive_packet(state->session, &packet_size);
         if (packet) {
+            if (packet_size == 0) {
+                state->api.release_packet(state->session, packet);
+                return make_error(error_kind::io, "Wintun 返回空 IP 报文");
+            }
             if (packet_size > capacity || packet_size > virtual_max_packet_size) {
                 state->api.release_packet(state->session, packet);
                 return make_error(error_kind::out_of_range, "Wintun 报文超出接收缓冲区");

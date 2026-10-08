@@ -48,6 +48,14 @@ UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发
 
 `stun_public_endpoint(socket, server, timeout)` 在给定 UDP socket 上发送一次 STUN Binding 请求，返回服务器看到的公网 `endpoint`。它使用系统随机源生成事务 ID，校验应答来源、事务 ID、长度和 `XOR-MAPPED-ADDRESS`；无应答返回 `timeout`。这个结果只对应**这一个 socket 当前的 NAT 映射**，因此后续打洞和数据传输必须复用它。查询期间由调用方独占该 socket 的接收端；函数会消费并跳过来自其他地址或旧事务的报文。不自动重试。完整用法见 [`examples/net_stun.cpp`](../examples/net_stun.cpp)，运行时传入数字 IP 的 STUN 服务器地址和可选端口。实现和本地假服务器测试已通过 [Linux/macOS/Windows CI](https://github.com/NickJerome/culib/actions/runs/37772593308)。
 
+## 虚拟网卡
+
+`<culib/net_virtual.h>` 的 `virtual_interface::open()` 创建临时三层接口，返回可移动的 RAII 句柄；`name()` 返回系统分配的接口名。库不替应用配置 IP 地址和路由。`read(buffer, capacity, timeout)` 读取一个完整 IP 包，`write(packet, size, timeout)` 发送一个包；两者在调度器协程中使用，负超时表示一直等待。可运行示例见 [`examples/net_virtual.cpp`](../examples/net_virtual.cpp)。
+
+缓冲区可按实际 MTU 分配，例如 2048 字节；最大支持 65535 字节。包比缓冲区大时，该包会被消费并返回 `out_of_range`，不会返回截断数据。最小接收容量为 20 字节；关闭后读写返回 `invalid_argument`。同一接口不能跨 vCPU 使用，也不要在有协程等待读取时关闭它。
+
+Linux 使用 TUN，创建接口通常需要 `CAP_NET_ADMIN`；macOS 使用 utun；Windows 运行时加载 `wintun.dll` 并创建临时适配器，缺少 DLL 时 `open()` 返回 `not_found`。Windows 的 Wintun 驱动必须事先可用，库不分发驱动。Linux 已做实际 IP 包往返测试；Windows 有驱动环境下的收发仍待验证。
+
 ## 平台路径
 
 - Linux：TCP 优先 io_uring 的 `ACCEPT` / `CONNECT` / `SEND` / `RECV`，UDP 慢路用 `SENDMSG` / `RECVMSG`；缺少必需操作时退回 epoll。开发时可设 `WAVVIX_IO_BACKEND=epoll` 或 `uring` 强制选择。
