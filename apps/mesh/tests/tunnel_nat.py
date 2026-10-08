@@ -101,7 +101,8 @@ def main():
                     raise RuntimeError("identity create: " + created.stderr)
                 keys.append(created.stdout.strip())
             stun = subprocess.Popen(
-                ["ip", "netns", "exec", hub, sys.executable, str(STUN)],
+                ["ip", "netns", "exec", hub, sys.executable, str(STUN),
+                 "--bind", "198.18.1.1", "--port", "3478"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             processes.append(stun)
             relay = subprocess.Popen(

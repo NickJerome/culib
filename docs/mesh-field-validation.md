@@ -6,7 +6,7 @@
 
 在三台机器上从同一提交构建 `apps/mesh` 的 `mesh` 命令。A、B 分别运行 `mesh identity create node.key` 和 `mesh identity show node.key`，通过可信渠道交换并固定对方的 64 位十六进制公钥。身份文件与口令留在各自机器上；不要把口令放在命令行参数中。
 
-R 运行 `mesh serve 39011`，并允许 A、B 访问其 TCP 39011 端口。若 A、B 经过 NAT，还需要两端可访问的 STUN Binding 服务；`mesh serve` 不是 STUN 服务。下面的 `RELAY_IP` 和 `STUN_IP` 必须替换为可路由的数字 IP 地址，`STUN_PORT` 为该服务实际的 UDP 端口。端点的 UDP 出站及相应返回流量也须被本地防火墙允许。两端系统时钟应接近，候选消息只在有限时间窗口内有效。
+R 运行 `mesh serve 39011`，并允许 A、B 访问其 TCP 39011 端口。若 A、B 经过 NAT，还需要两端可访问的 STUN Binding 服务；`mesh serve` 不是 STUN 服务。受控的临时验收可以在 R 上另运行 `python3 tests/fixtures/stun_echo.py --bind 0.0.0.0 --port 3478`，并只向测试节点开放 UDP 3478。这个测试工具只回答最小的 IPv4 Binding 请求，没有公网服务所需的限流与运维能力。下面的 `RELAY_IP` 和 `STUN_IP` 必须替换为可路由的数字 IP 地址，`STUN_PORT` 为该服务实际的 UDP 端口。端点的 UDP 出站及相应返回流量也须被本地防火墙允许。两端系统时钟应接近，候选消息只在有限时间窗口内有效。
 
 ## 先验收加密 UDP 数据
 

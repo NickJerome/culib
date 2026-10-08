@@ -96,7 +96,8 @@ def main():
                 "-W", "1", "198.18.1.1")
 
         stun = subprocess.Popen(
-            ["ip", "netns", "exec", hub, sys.executable, str(STUN)],
+            ["ip", "netns", "exec", hub, sys.executable, str(STUN),
+             "--bind", "198.18.1.1", "--port", "3478"],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         processes.append(stun)
         relay = subprocess.Popen(

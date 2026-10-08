@@ -1,12 +1,20 @@
-"""Minimal local STUN Binding responder for the isolated NAT integration test."""
+"""Minimal STUN Binding responder for controlled mesh tests."""
 
+import argparse
 import socket
 import struct
 
 
 MAGIC = 0x2112A442
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--bind", default="198.18.1.1",
+                    help="numeric IPv4 address to listen on")
+parser.add_argument("--port", type=int, default=3478)
+options = parser.parse_args()
+if not 1 <= options.port <= 65535:
+    parser.error("--port must be between 1 and 65535")
 server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-server.bind(("198.18.1.1", 3478))
+server.bind((options.bind, options.port))
 
 while True:
     request, peer = server.recvfrom(2048)
