@@ -1,7 +1,4 @@
-// 调度器：协程是这个库的并发模型。
-//
-// 和 examples/coroutine.cpp 的区别：那边是手动 resume 的原语（生成器那种用法），
-// 这边是 spawn 完就不管——调度器负责推。日常用这一层。
+// 调度器的 spawn()/run() 用法；持有句柄并 join() 的用法见 coroutine.cpp。
 
 #include <culib/lexical_cast.h>
 #include <culib/scheduler.h>
