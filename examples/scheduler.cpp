@@ -88,10 +88,6 @@ int main() {
     std::printf("\n5. vCPU 模型：一根线程一个调度器，想用多核就多调几次 run()\n");
     {
         const int vcpus = 3;
-        // static 不是随手写的：下面那个 lambda 要用它，而两个编译器的要求是**互斥**的。
-        // 写成局部 const int 时，clang 认为「只读它的值」不构成 odr-use、不需要捕获，
-        // 捕获了就报 -Wunused-lambda-capture（在 -Wextra 里）；而 MSVC 不捕获就报
-        // C3493。两边都满足的办法是让它有静态存储期——那样根本不需要捕获。
         static const int per_vcpu = 50;
         std::vector<std::size_t> finished(static_cast<std::size_t>(vcpus), 0);
         std::vector<std::thread> carriers;

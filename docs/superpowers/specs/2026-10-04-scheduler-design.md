@@ -249,6 +249,8 @@ vCPU 在第一次 `spawn` 时才建。`scheduled()` 在没 spawn 过时直接读
 
 没有采用 Photon 的 8 MiB：POSIX `mmap` 的未触碰页主要耗虚拟地址，但 Windows 当前的 `VirtualAlloc(MEM_RESERVE | MEM_COMMIT)` 会把整段算入 commit charge。即使只选 1 MiB 的桶，数千根空闲待运行协程也会造成数 GiB 的提交。现在选择 512 KiB 实际桶，优先兼顾常见服务器负载与低占用；需要深递归或大栈帧的调用方显式传栈大小。示例的冷路径从一次创建 20,000 根改为 512 根，峰值约 258 MiB 提交，避免基准本身在 Windows 上申请约 10 GiB。
 
+Windows 的 commit charge 不是已触碰的物理内存，但仍受系统提交上限约束。当前栈不会按需增长，因此一次性 `MEM_RESERVE | MEM_COMMIT`；最低页用 `PAGE_NOACCESS` 持续拦截越界。`PAGE_GUARD` 在首次触碰后会失去保护，适合可增长的线程栈，不适合这里的固定栈。POSIX 则以 `mmap` 获取内存、`mprotect(PROT_NONE)` 保护最低页，未触碰的页不占物理内存。
+
 ### 8.5 效果
 
 以下是旧版 128 KiB 默认值在 Linux 上的记录；当前示例仍在第 6 段量冷热两条路，但冷路径样本数已降至 512，跨版本不能直接比较：

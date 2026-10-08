@@ -11,8 +11,7 @@
 
 #include "coroutine_detail.h"
 
-// 协程是全有或全无的：程序一旦用了，发到哪个平台就必须有那个平台的换栈汇编。
-// 所以没覆盖的架构**在编译期就失败**，而不是等链接时缺符号或者运行时跑飞。
+// 未实现换栈汇编的目标必须在编译期报错。
 #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
 /* x86_64（SysV / PE，GAS / MASM 四份）和 arm64（AAPCS，ELF / Mach-O 共一份）都有 */
 #elif (defined(__i386__) || defined(_M_IX86)) && defined(_WIN32)
@@ -21,17 +20,7 @@
 #  error "culib 的协程还没有这个 (平台, 架构) 的换栈汇编。已覆盖：x86_64、arm64、Windows x86。缺：32 位非 Windows。见 src/asm/"
 #endif
 
-// ASan 不知道我们手搓了一个栈。不告诉它的后果不是「满屏假报错」那么直白：
-// 它在**任何 noreturn 路径**（最常见的是抛异常）之前会调 __asan_handle_no_return
-// 检查栈边界，而它以为栈是从主栈顶一直到协程栈底——实测算出来 393 GB，然后打一句
-// 「False positive error reports may follow」，从此检测退化。
-//
-// 抛异常是完全正常的操作，所以这几行不是可选项。注意**浅测试测不出来**：
-// 三次 yield 的小例子在 ASan 下完全干净，差点让我把这件事判成不存在。
-// 检测必须写成**嵌套**的 #if，不能写成 `defined(__has_feature) && __has_feature(...)`：
-// 短路在预处理器这里不管用——整个表达式仍要被解析，而 GCC 上 __has_feature 是个未定义
-// 标识符、会变成 0，于是 `0(address_sanitizer)` 直接语法错误。
-// GCC 14.2 能容忍这个写法，CI 上更老的 GCC 不能，clang 两版都行——所以这个坑只有 CI 抓得到。
+// 换栈需告知 ASan；嵌套 #if 兼容没有 __has_feature 的预处理器。
 #define WAVVIX_DETAIL_ASAN_FIBERS 0
 #if defined(__SANITIZE_ADDRESS__)
 #  undef WAVVIX_DETAIL_ASAN_FIBERS
@@ -71,11 +60,7 @@ struct coroutine_control {
 
 namespace {
 
-// 每根线程「当前在跑哪根协程」。yield() 靠它找回去的路，inside() 靠它回答。
-//
-// 用 thread_local 而不是全局：协程不能跨线程迁移，但**不同线程各跑自己的协程**是
-// 正常用法（将来的调度器就是每根线程一个）。少了这个，两根线程同时 resume 会互相
-// 踩状态，而那种 bug 只在压力下偶发。
+// 当前协程按线程存储；yield() 和 inside() 共用这份状态。
 #if defined(_MSC_VER)
 __declspec(thread) coroutine_control* current = 0;
 #else
@@ -117,16 +102,7 @@ inline void asan_after_switch(coroutine_control* arrived) {
 #endif
 }
 
-// 每根线程一个**永不复用**的序号。
-//
-// 一开始用的是 pthread_self() / GetCurrentThreadId()，结果实测拦不住：线程 A 跑完
-// 退出、线程 B 启动，glibc 把同一个 pthread_t 回收给了 B，于是「从 B resume 一根
-// 绑在 A 上的协程」因为 id 撞上而被放行——而那正是「工作线程死了换一根重试」这种
-// 真实场景。两根线程同时活着时才拦得住，等于检查在一半的情况下失效。
-//
-// 换成单调递增的序号就撞不上了，而且**不需要任何平台 API**，比原来还少两个平台函数。
-// std::atomic<unsigned long long> 的构造是 constexpr，所以这是常量初始化、
-// 不在 main 之前跑代码；fetch_add 每根线程只做一次。
+// 线程序号不能复用；操作系统线程 ID 可能在线程退出后被重用。
 std::atomic<unsigned long long> next_thread_serial(1);
 #if defined(_MSC_VER)
 __declspec(thread) unsigned long long thread_serial = 0;
@@ -141,28 +117,10 @@ unsigned long long current_thread_serial() noexcept {
     return thread_serial;
 }
 
-// --- 栈池 ---------------------------------------------------------------------
-//
-// 不池化时一根协程的栈要三个系统调用（分配、设保护页、释放），实测 5586 ns；
-// **池命中是 0 ns**。协程当并发模型用（一个请求一根）时这个差别决定能不能用。
-//
-// 设计上借了 mimalloc 的两条，也明确不要它的第三条：
-//
-//   - **每线程一组桶，不加锁**。mimalloc 的核心也是线程本地堆，避免常见路径上的原子操作。
-//   - **空闲链表就放在空闲内存自己身上**（下面那个 pooled_stack 写在栈的低端），
-//     所以池本身不需要任何额外分配。
-//   - **不要 mimalloc 的 thread_free 列表。** 它需要那个，是因为「谁分配的块必须还给谁」；
-//     而我们的块是**栈，彼此可互换**——在哪根线程上释放就进那根线程的池，没有归属问题。
-//     少一条原子链表。
-//
-// **回收时不 madvise 把物理页还给系统**（实测整栈 1587 ns / 只还深处一半 280 ns）：
-// 没被摸过的页本来就不占物理内存，只有真递归很深的协程才会留下常驻页。代价是内存
-// 高水位会留着，所以用下面那个「每线程缓存字节数上限」兜住；真遇到高水位有害的负载，
-// 再把「只还深处一半」那条 280 ns 的做法做成可选。
+// --- 每线程栈池；取舍与测量见调度器设计 8.2–8.4 -----------------------------
 const int pool_bucket_count = 24;                 // 4 KB 起按 2 的幂分桶，到 32 GB
 
-// 每线程缓存的字节数上限。按指针宽度缩放：64 位上地址空间不值钱，32 位上要省。
-// 按**字节**而不是按**个数**封顶，这样 8 MB 的栈不会凭个数把地址空间占光。
+// 按字节限制缓存，避免大栈占满地址空间。
 const std::size_t pool_budget = sizeof(void*) >= 8 ? 32u * 1024 * 1024 : 8u * 1024 * 1024;
 
 struct pooled_stack {
@@ -178,10 +136,7 @@ __thread pooled_stack* pool_buckets[pool_bucket_count];   // 常量初始化，�
 __thread std::size_t pool_bytes = 0;
 #endif
 
-// 桶号：最小的 i 使得 (4096 << i) >= want。太大就返回 -1，那种栈不池化。
-//
-// 桶的大小都是 2 的幂且不小于 4096，所以「按桶大小分配」之后再反查桶号一定得到
-// 同一个桶——释放时不需要额外记住它是从哪个桶来的。
+// 返回能容纳 want 的最小桶；超出池支持范围返回 -1。
 int pool_bucket_of(std::size_t want) noexcept {
     std::size_t size = 4096;
     for (int i = 0; i < pool_bucket_count; ++i) {
@@ -204,8 +159,7 @@ stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
         pool_bytes -= memory.total;
         return memory;
     }
-    // 没命中：**按桶的大小分配，不按请求的大小**，这样下次同桶的请求才能复用。
-    // 多出来的是虚拟地址，没碰到的页不占物理内存。
+    // 按桶大小分配，确保同桶请求可复用。
     const std::size_t rounded = bucket >= 0 ? pool_bucket_size(bucket) : usable;
     return allocate_stack(rounded);
 }
@@ -217,8 +171,7 @@ void pooled_release_stack(const stack_memory& memory) noexcept {
         release_stack(memory);                      // 超预算就真还给系统
         return;
     }
-    // 空闲链表的节点就写在这块栈的低端（保护页上方）。那是栈最深的位置，
-    // 复用时我们在把栈交出去之前就把它读走了，所以不会和新协程的帧打架。
+    // 链表节点放在保护页上方；取出栈时先读走节点。
     pooled_stack* const node = reinterpret_cast<pooled_stack*>(memory.base + memory.guard);
     node->memory = memory;
     node->next = pool_buckets[bucket];
@@ -316,14 +269,7 @@ bool coroutine_resume(coroutine_control* control) noexcept {
     if (control->finished) return false;
     if (current == control) die("wavvix::coroutine: 协程不能 resume 自己");
 
-    // **协程绑定在第一次 resume 它的那根线程上，之后换线程就 abort。**
-    //
-    // 为什么要真的拦住而不是只写在文档里：跨线程 resume **不会崩**，它会「跑通」，
-    // 只是 thread_local 悄悄换成新线程那一份、catch 块里的 std::current_exception()
-    // 变成空的（实测，见设计文档 3.12）。静默给错答案比当场挂掉难查得多。
-    //
-    // 绑在**第一次 resume** 而不是构造：那样「主线程上造一批协程、分给各个工作线程跑」
-    // 仍然可以，而迁移照样被拦住。线程序号是一次 TLS 读，代价量不出来。
+    // 首次 resume 绑定线程；跨线程迁移会破坏 TLS 和异常状态。
     const unsigned long long here = current_thread_serial();
     if (control->owner == 0) {
         control->owner = here;
@@ -336,10 +282,7 @@ bool coroutine_resume(coroutine_control* control) noexcept {
         std::abort();
     }
 
-    // **current 只由 resume() 读写**，yield() 和 trampoline 都不碰它。
-    // 原因是嵌套：协程 A 里 resume 协程 B，B 让出时要恢复的是 A 而不是「没有协程」。
-    // 让一个地方独占这个状态，就不会出现「置 0 之后外层 yield() 找不到自己」。
-    // 中间没有任何代码会跑：切回来的落点就是下面那个 jump 的下一条指令。
+    // current 由 resume() 独占更新，以便嵌套 resume 后恢复外层协程。
     coroutine_control* const leaving = current;
     current = control;
     control->started = true;
