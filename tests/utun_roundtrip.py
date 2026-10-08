@@ -1,8 +1,10 @@
 """Exercise a real macOS utun with the IP stack and example_net_virtual."""
 
+import os
 import pathlib
 import re
 import select
+import signal
 import subprocess
 import sys
 
@@ -17,9 +19,9 @@ def main():
     if len(programs) != 1:
         raise RuntimeError("build exactly one macOS example_net_virtual target first")
 
-    worker = subprocess.Popen([str(programs[0]), "--icmp-echo"],
+    worker = subprocess.Popen(["sudo", "-n", str(programs[0]), "--icmp-echo"],
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              text=True)
+                              text=True, start_new_session=True)
     try:
         ready, _, _ = select.select([worker.stdout], [], [], 10)
         if not ready:
@@ -49,11 +51,17 @@ def main():
             raise RuntimeError("utun ICMP responder failed")
     finally:
         if worker.poll() is None:
-            worker.terminate()
+            try:
+                os.killpg(worker.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         try:
             output, errors = worker.communicate(timeout=5)
         except subprocess.TimeoutExpired:
-            worker.kill()
+            try:
+                os.killpg(worker.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             output, errors = worker.communicate()
         if output:
             print(output, end="")
