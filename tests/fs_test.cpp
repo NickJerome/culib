@@ -3,10 +3,21 @@
 #include <culib/test.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstring>
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winioctl.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -56,6 +67,53 @@ private:
     std::string root_;
     bool ok_;
 };
+
+#ifdef _WIN32
+struct junction_reparse {
+    DWORD tag;
+    WORD length;
+    WORD reserved;
+    WORD substitute_offset;
+    WORD substitute_length;
+    WORD print_offset;
+    WORD print_length;
+    wchar_t path[MAXIMUM_REPARSE_DATA_BUFFER_SIZE / sizeof(wchar_t)];
+};
+
+bool create_directory_junction(const std::string& link, const std::string& target) {
+    const result<std::wstring> wide_link = wavvix::utf8_to_wide(link);
+    const result<std::wstring> wide_target = wavvix::utf8_to_wide(target);
+    if (wide_link.is_err() || wide_target.is_err()) return false;
+    const std::wstring substitute = L"\\??\\" + wide_target.value();
+    const std::wstring print = wide_target.value();
+    const std::size_t names_bytes =
+        (substitute.size() + 1 + print.size() + 1) * sizeof(wchar_t);
+    if (names_bytes > MAXIMUM_REPARSE_DATA_BUFFER_SIZE - offsetof(junction_reparse, path))
+        return false;
+
+    junction_reparse data = {};
+    data.tag = IO_REPARSE_TAG_MOUNT_POINT;
+    data.length = static_cast<WORD>(8 + names_bytes);
+    data.substitute_length = static_cast<WORD>(substitute.size() * sizeof(wchar_t));
+    data.print_offset = static_cast<WORD>((substitute.size() + 1) * sizeof(wchar_t));
+    data.print_length = static_cast<WORD>(print.size() * sizeof(wchar_t));
+    std::memcpy(data.path, substitute.c_str(), data.substitute_length + sizeof(wchar_t));
+    std::memcpy(reinterpret_cast<unsigned char*>(data.path) + data.print_offset,
+                print.c_str(), data.print_length + sizeof(wchar_t));
+
+    const HANDLE handle = ::CreateFileW(
+        wide_link.value().c_str(), GENERIC_WRITE, 0, 0, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, 0);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    DWORD returned = 0;
+    const BOOL created = ::DeviceIoControl(
+        handle, FSCTL_SET_REPARSE_POINT, &data,
+        static_cast<DWORD>(offsetof(junction_reparse, path) + names_bytes),
+        0, 0, &returned, 0);
+    ::CloseHandle(handle);
+    return created != 0;
+}
+#endif
 
 }  // namespace
 
@@ -262,6 +320,36 @@ TEST(fs, removes_files_and_directories) {
     EXPECT(fs::create_directory(empty).is_ok(), ==, true);
     EXPECT(fs::remove_directory(empty).is_ok(), ==, true);
 }
+
+#ifdef _WIN32
+TEST(fs, recursive_remove_does_not_follow_a_directory_junction) {
+    const scratch area("junction_remove");
+    if (!EXPECT(area.ok(), ==, true)) return;
+
+    const std::string outside = area.at("outside");
+    const std::string tree = area.at("tree");
+    const std::string marker = fs::join(outside, "keep.txt");
+    const std::string link = fs::join(tree, "outside_link");
+    if (!EXPECT(fs::create_directory(outside).is_ok(), ==, true)) return;
+    if (!EXPECT(fs::create_directory(tree).is_ok(), ==, true)) return;
+    if (!EXPECT(fs::write_file(marker, "preserved").is_ok(), ==, true)) return;
+    if (!EXPECT(fs::create_directory(link).is_ok(), ==, true)) return;
+    if (!EXPECT(create_directory_junction(link, outside), ==, true)) return;
+
+    EXPECT(fs::remove_file(link).is_ok(), ==, true);
+    EXPECT(fs::read_file(marker).value_or(""), ==, "preserved");
+    if (!EXPECT(fs::create_directory(link).is_ok(), ==, true)) return;
+    if (!EXPECT(create_directory_junction(link, outside), ==, true)) return;
+
+    const result<void> removed = fs::remove_directory(tree, fs::recursive::yes);
+    EXPECT(removed.is_ok(), ==, true);
+    EXPECT(fs::read_file(marker).value_or(""), ==, "preserved");
+    if (fs::exists(link)) {
+        const result<std::wstring> wide_link = wavvix::utf8_to_wide(link);
+        if (wide_link.is_ok()) ::RemoveDirectoryW(wide_link.value().c_str());
+    }
+}
+#endif
 
 #ifndef _WIN32
 TEST(fs, recursive_remove_does_not_follow_a_directory_symlink) {

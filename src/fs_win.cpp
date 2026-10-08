@@ -314,6 +314,15 @@ result<void> remove_empty_directory(string_view path) {
 result<void> remove_file(string_view path) {
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
+    const DWORD attributes = ::GetFileAttributesW(wide.value().c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ==
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
+        // 目录型重解析点要用 RemoveDirectoryW 删除链接本身。
+        if (!::RemoveDirectoryW(wide.value().c_str()))
+            return from_last_error("删除", path, ::GetLastError());
+        return result<void>();
+    }
     if (!::DeleteFileW(wide.value().c_str())) {
         return from_last_error("删除", path, ::GetLastError());
     }
