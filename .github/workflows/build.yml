@@ -65,6 +65,7 @@ jobs:
           - { name: linux-clang, os: ubuntu-latest, toolchain: clang }
           - { name: macos-clang, os: macos-latest, toolchain: clang }
           - { name: windows-msvc, os: windows-latest, toolchain: msvc }
+          - { name: windows-msvc-x86, os: windows-latest, toolchain: msvc, arch_arg: '-a x86' }
 
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +76,7 @@ jobs:
           xmake-version: latest
 
       - name: configure
-        run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
+        run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} ${{ matrix.target.arch_arg }} -y
 
       # 下面五步都经过 report-failure.sh：失败时把完整输出发成 annotation，否则从公开
       # API 那边看只有「exit code 1」，连哪个文件哪一行都不知道。原因写在那个脚本里。

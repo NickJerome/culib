@@ -15,12 +15,10 @@
 // 所以没覆盖的架构**在编译期就失败**，而不是等链接时缺符号或者运行时跑飞。
 #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
 /* x86_64（SysV / PE，GAS / MASM 四份）和 arm64（AAPCS，ELF / Mach-O 共一份）都有 */
-#elif (defined(__i386__) || defined(_M_IX86)) && defined(_WIN32) && !defined(_MSC_VER)
-/* 32 位 Windows 只有 MinGW 那一份（GAS）。MSVC x86 要的是 MASM，而且它的异常建在
-   fs:[0] 的 SEH 链上，需要在协程栈上造一个真的 EXCEPTION_REGISTRATION_RECORD——
-   既没有 CI 格子也没法本机验证，所以没写，而不是写一份「看着对」的。 */
+#elif (defined(__i386__) || defined(_M_IX86)) && defined(_WIN32)
+/* 32 位 Windows：MinGW 用 GAS，MSVC 用 MASM。 */
 #else
-#  error "culib 的协程还没有这个 (平台, 架构) 的换栈汇编。已覆盖：x86_64 全部四种、arm64、MinGW x86。缺：MSVC x86、32 位非 Windows。见 src/asm/"
+#  error "culib 的协程还没有这个 (平台, 架构) 的换栈汇编。已覆盖：x86_64、arm64、Windows x86。缺：32 位非 Windows。见 src/asm/"
 #endif
 
 // ASan 不知道我们手搓了一个栈。不告诉它的后果不是「满屏假报错」那么直白：
