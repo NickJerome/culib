@@ -1,7 +1,7 @@
 # 文件变化监听设计
 
 - 日期：2026-10-08
-- 状态：`poller` 已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37764233014)；`watcher` 的 [Linux](https://github.com/NickJerome/culib/actions/runs/37765563922)、[macOS](https://github.com/NickJerome/culib/actions/runs/37767392319) 和 [Windows](https://github.com/NickJerome/culib/actions/runs/37767725183) 内部后端均已通过三平台 CI。公共 `watcher` 类已在 Windows debug/release 本机测试，待三平台 CI 验证。
+- 状态：`poller` 已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37764233014)；`watcher` 的 [Linux](https://github.com/NickJerome/culib/actions/runs/37765563922)、[macOS](https://github.com/NickJerome/culib/actions/runs/37767392319) 和 [Windows](https://github.com/NickJerome/culib/actions/runs/37767725183) 内部后端、以及[公共接口](https://github.com/NickJerome/culib/actions/runs/37768306364)均已通过三平台 CI。
 - 前置：[文件系统](2026-10-04-fs-design.md)、[调度器](2026-10-04-scheduler-design.md)、[事件引擎](2026-10-05-event-engine-design.md)。
 
 ## 范围与接口
@@ -47,4 +47,4 @@ Windows 的目录句柄一旦关联 IOCP，就不能再关联当前 vCPU 的 IOC
 
 macOS 的 `FSEventStreamScheduleWithRunLoop` 在 macOS 13 SDK 中标记为弃用；这里仅对这一处调用抑制警告。它让现有控制命令和回调共用一根 CFRunLoop 线程，不再引入一根 dispatch queue 线程。若后续系统取消该接口，再迁移到 dispatch queue。
 
-Windows 内部测试覆盖无历史事件、文件创建、递归子目录、多个根目录、重复注册、取消监视后重新注册，以及协程等待不阻塞 vCPU。本机 MSVC debug/release 的全套测试通过，`247c8a6` 的 [CI](https://github.com/NickJerome/culib/actions/runs/37767725183) 十个 job 均通过。公共 `watcher` 的移动、事件视图和完整示例已在本机 Windows debug/release 跑通；跨平台结论要等公共接口提交后的 CI。
+Windows 内部测试覆盖无历史事件、文件创建、递归子目录、多个根目录、重复注册、取消监视后重新注册，以及协程等待不阻塞 vCPU。本机 MSVC debug/release 的全套测试通过，`247c8a6` 的 [CI](https://github.com/NickJerome/culib/actions/runs/37767725183) 十个 job 均通过。公共 `watcher` 的移动、事件视图和完整示例已在本机 Windows debug/release 跑通，`e2dbf77` 的 [CI](https://github.com/NickJerome/culib/actions/runs/37768306364) 十个 job 均通过。
