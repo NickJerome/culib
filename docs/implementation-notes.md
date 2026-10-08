@@ -27,10 +27,10 @@ wait() 实现的，在 wait() 里调它就是自己等自己。（这个坑是 P
 
 ### 为什么是自由函数加不透明指针
 
-三个后端的状态没有公共部分（epoll 要 fd 下标表、kqueue 要变更缓冲、IOCP 要句柄
-关联表），所以 io_engine 只在这里前置声明，**每个后端在自己的 .cpp 里给出完整
-定义**。调度器只拿指针。一次 vCPU 一次分配，而每个调用后面都跟着一个系统调用，
-所以这一层间接的代价量不出来。
+四个后端的状态没有公共部分（epoll 要 fd 下标表、io_uring 要映射环、kqueue 要
+变更缓冲、IOCP 要句柄关联），所以 io_engine 只在这里前置声明。Linux 的
+io_engine_linux.cpp 选择 io_uring 或 epoll，具体环在独立实现文件；调度器只拿指针。
+后端选择只在第一次 I/O 时发生，调用路径多一次分支；这部分代价尚未单独测量。
 
 ## [`io_engine_posix.h`](../src/io_engine_posix.h)
 
@@ -49,7 +49,7 @@ kq 加两个独立的过滤器，没有值得放进公共基类的东西。
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
-事件引擎的 epoll 后端。
+Linux 事件引擎的运行期选择与 epoll 后端。io_uring 可用时选它，探测失败退回 epoll；`WAVVIX_IO_BACKEND` 只供测试时强制选择。
 
 「完成」形状在一个「就绪」后端上要多做的事，就是**醒来之后当场做一次系统调用**——
 那段在 io_engine_posix.h 的 io_complete() 里，和 kqueue 后端共用同一份。本文件只管
@@ -60,6 +60,18 @@ superpowers/specs/2026-10-05-event-engine-design.md 6.1：边沿触发要求
 「一直读到 EAGAIN」，那是配合「一个 fd 一个常驻读循环」的用法，而我们的用法是
 「一个请求一次操作」；EPOLLONESHOT 是按 fd 而不是按方向生效的，同一个 fd 上同时
 挂着读和写时，一边触发会把另一边也解除，于是要补一套重新登记的记账。
+
+## [`io_engine_uring_linux.cpp`](../src/io_engine_uring_linux.cpp)
+
+完整设计和验证见 [io_uring 设计](superpowers/specs/2026-10-08-io-uring-design.md)。
+
+这个后端直接使用 Linux UAPI 的 SQ/CQ 环与 `READV` / `WRITEV`，不依赖 liburing。
+一个 vCPU 独占一个环；同一 fd、同一方向只提交队首请求，其余在栈上串成 FIFO。
+CQE 到来后再提交下一位，避免多个读者抢同一份数据而打乱顺序。
+
+取消已提交的请求时，先提交 `ASYNC_CANCEL`，再等原请求的 CQE：内核仍可能引用
+请求里的 `iovec`，不能因为超时就让协程栈退出。普通文件的直接读写只在这个后端
+可用；epoll 的公共 I/O 范围仍限于可等待的句柄，具体公共句柄语义留给 `net`。
 
 ## [`io_engine_macos.cpp`](../src/io_engine_macos.cpp)
 

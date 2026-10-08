@@ -473,10 +473,10 @@ thread_local 和异常状态在协程脚下变掉，见 coroutine 设计文档 3
 
 ### 当前边界
 
-事件引擎已有 epoll、kqueue、IOCP 后端，超时和取消机制也已完成；
-[sync.h](../include/culib/sync.h) 提供协程感知的同步原语。
-这些 I/O 能力仍在库内部，公共句柄和读写接口要等 `net` 模块。
-`io_uring` 后端也尚未实现。调度策略是轮转，不承诺公平性或优先级。
+事件引擎已有 io_uring、epoll、kqueue、IOCP 四个后端，超时和取消机制也已完成；
+Linux 上 io_uring 不可用时自动退回 epoll。[sync.h](../include/culib/sync.h) 提供协程感知的
+同步原语。这些 I/O 能力仍在库内部，公共句柄和读写接口要等 `net` 模块。
+本次跨平台 CI 尚待验证；调度策略是轮转，不承诺公平性或优先级。
 分期和已完成范围见 [调度器设计](superpowers/specs/2026-10-04-scheduler-design.md)
 及 [超时与同步原语](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
 

@@ -402,7 +402,7 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 ### 9.5 没覆盖什么
 
 - ~~**超时**~~：**第五期已经补上**，见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md)。
-- **`io_uring`**：第四期。
+- **`io_uring`**：第三期尚未覆盖；第四期于 2026-10-08 本地实现，见 [io_uring 设计与验证](2026-10-08-io-uring-design.md)。
 - **多 vCPU**：引擎是每 vCPU 一个，但跨 vCPU 的唤醒（Photon 的 `cancel_wait`）没做，见 7.5。
 - **文件 I/O**：三个后端都只在套接字上跑过。epoll 对普通文件**根本不工作**（普通文件永远「就绪」），这是 `epoll` 的性质而不是实现的缺陷，真正的文件异步要等第四期的 `io_uring`。IOCP 那边 `ReadFile` 对带 `FILE_FLAG_OVERLAPPED` 的文件是通的，但没测。
 - **性能**：只量了 7.1 那一处（就绪路的快路，数字在那一节）。吞吐、并发规模、和手写 epoll 循环的对比都没量——那些要等 `net` 有真调用点才有意义。

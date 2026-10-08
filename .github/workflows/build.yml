@@ -77,9 +77,9 @@ jobs:
       - name: configure
         run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
 
-      # 下面四步都经过 report-failure.sh：失败时把完整输出发成 annotation，否则从公开
+      # 下面五步都经过 report-failure.sh：失败时把完整输出发成 annotation，否则从公开
       # API 那边看只有「exit code 1」，连哪个文件哪一行都不知道。原因写在那个脚本里。
-      # 分成四步而不是合成一步，是因为「哪一步红的」本身就是诊断信息。
+      # 分成五步而不是合成一步，是因为「哪一步红的」本身就是诊断信息。
 
       # -w 显示警告。xmake.lua 已把警告设为错误（三个平台都是），所以这同时是零警告检查。
       - name: build library
@@ -90,6 +90,12 @@ jobs:
         shell: bash
         # 有失败时 -v 打印完整报告
         run: bash .github/report-failure.sh xmake test -v
+
+      # Linux 上即使 io_uring 可用，也强制跑一次 epoll，验证运行期退回路径。
+      - name: run tests with epoll fallback
+        if: startsWith(matrix.target.name, 'linux-')
+        shell: bash
+        run: WAVVIX_IO_BACKEND=epoll bash .github/report-failure.sh xmake test -v
 
       # 示例默认不参与构建，这里显式编译：接口改了而示例没跟着改时就会在这一步失败。
       # 这一步抓到过 examples/os.cpp 的 std::fopen 在 MSVC 上是 C4996。

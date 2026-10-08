@@ -8,6 +8,10 @@
 #include <cstddef>
 #include <vector>
 
+#if defined(__linux__)
+#include <sys/uio.h>
+#endif
+
 namespace wavvix {
 namespace detail {
 
@@ -43,6 +47,9 @@ struct io_request {
     // 继续了」之后怎么排队是调度器的事。调用方（scheduler_io）用同一个 token 挂起自己。
     park_token* waiter;
     io_request* next;             // 同一句柄同一方向上的等待链
+#if defined(__linux__)
+    struct iovec iov;             // io_uring 的 READV/WRITEV 在完成前一直引用它
+#endif
 #if defined(_WIN32)
     // OVERLAPPED 的位置。真正的类型在 io_engine_win.cpp 里 reinterpret 回去——
     // 为的是这个头文件不包含 <windows.h>。大小按 OVERLAPPED 的最大情形留足。
@@ -65,10 +72,10 @@ void io_engine_destroy(io_engine* engine) noexcept;
 // 于是新套接字上的操作永远不会完成。**所以这件事只能由持有句柄生命周期的那一方做**，
 // 也就是将来的 net（在 socket 构造时），现在是测试。libuv 也是在创建时就关联的。
 //
-// POSIX 的两个后端什么都不用做，直接返回 true。
+// POSIX 后端什么都不用做，直接返回 true。
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 
-// 把这次操作挂上去。epoll / kqueue 是登记兴趣，IOCP 是真的发出一个 overlapped 操作。
+// 把这次操作挂上去。epoll / kqueue 登记兴趣，io_uring / IOCP 提交真正的 I/O。
 // **不挂起协程**——挂起是调度器的事。
 //
 // 返回 true 表示挂上了，调用方应当挂起当前协程；返回 false 表示挂不上去，

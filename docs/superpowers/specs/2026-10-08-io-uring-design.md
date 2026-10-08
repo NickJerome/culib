@@ -1,7 +1,7 @@
 # Linux io_uring 后端设计
 
 - 日期：2026-10-08
-- 状态：设计已定，待实现验证。
+- 状态：本机已实现并验证；跨平台 CI 待跑。
 - 前置：[调度器设计](2026-10-04-scheduler-design.md)第四期、[事件引擎设计](2026-10-05-event-engine-design.md)、[超时与同步原语](2026-10-05-sync-and-timeout-design.md)。
 
 ## 范围
@@ -34,4 +34,8 @@
 
 ## 实现验证
 
-待实现后补：编译器与配置、实际后端选择、测试结果、尚未覆盖的条件。性能主张需与手写等价循环同场比较，在这之前不写加速倍数。
+本机 WSL2 Ubuntu 22.04、Linux 6.18 下，`io_uring_setup` 成功。GCC release 和 Clang debug 均用 `WAVVIX_IO_BACKEND=uring` 跑过完整测试；新增普通文件的 `READV` / `WRITEV` 与 CQ 溢出测试后为 275 条。Windows/MSVC x64 release 的完整测试也通过，Linux 强制 epoll 的完整测试通过。300 个已就绪的管道读请求使内核置位 CQ 溢出标志，完成项仍全部交回；Windows/MSVC 的测试数为 273 条。
+
+用 `strace` 观察强制 uring 的 I/O 测试：出现一次 `io_uring_setup` 和多次 `io_uring_enter`，没有 `epoll_create1`。再用 `strace -e inject=io_uring_setup:error=EPERM` 注入创建失败，同一组 I/O 测试通过且观察到 `epoll_create1`。这验证了真实 uring 路径与自动退回，不能把普通的绿测误当成 uring 已被选中。
+
+**尚未覆盖**：macOS 的本次改动 CI；Linux 旧内核及缺少 `linux/io_uring.h` 的编译环境；超出本机 300 请求规模的长期压力测试与吞吐对比。CI 的 Linux 容器可能拒绝创建环，默认测试在那里只证明退回路径。尚无与手写等价循环的同场性能比较，所以不声称加速倍数。
