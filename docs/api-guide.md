@@ -705,10 +705,16 @@ EXPECT 的实现在 culib/detail/expect.h，使用时不需要阅读。
 
 秒和毫秒都是 int64_t，混起来编译通过、静默错 1000 倍。所以构造一律写明单位：
 
-    timestamp::from_unix_seconds(mtime)    // fs::last_write_time 给的就是这个
+    timestamp::from_unix_seconds(mtime_seconds)
     timestamp::from_unix_millis(event)
 
-笔误是编译错误，不是一个 58728 年的时间戳。
+函数名让输入单位在调用点可见。`from_unix_seconds` 的输入必须能换算为有符号 64 位
+Unix 毫秒；超出 `INT64_MAX / 1000` 秒的正负范围会打印诊断并终止。`unix_seconds()`
+对负毫秒向下取整，包括 `INT64_MIN`。
+
+`parse_time` 接受 `2026-10-04T11:12:51Z`、带毫秒和 `+08:00` 这类偏移的写法；
+日期与时间之间可用 `T`、`t` 或空格，UTC 标记可用 `Z` 或 `z`。超过三位的小数截到
+毫秒，不四舍五入。省略秒、省略偏移和 `+0800` 形式的偏移都不接受，输入必须完整消费。
 
 ### 只有一个 now()
 
