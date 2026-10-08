@@ -81,7 +81,7 @@ def start_peer(program, identity, peer_key, port, processes):
     name = wait_line(lines, "virtual interface: ")
     if not re.fullmatch(r"utun[0-9]+", name):
         raise RuntimeError("mesh opened an unexpected interface: " + name)
-    return lines, name
+    return process, lines, name
 
 
 def configure(name, local, remote):
@@ -119,6 +119,15 @@ def check_forward(source, destination, interface):
             finish(capture)
 
 
+def wait_interface_removed(name):
+    for _ in range(50):
+        if subprocess.run(["ifconfig", name], capture_output=True,
+                          timeout=5).returncode != 0:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("mesh utun interface remained after shutdown: " + name)
+
+
 def main():
     if sys.platform != "darwin" or len(sys.argv) != 2 or \
             sys.argv[1] not in ("debug", "release"):
@@ -141,17 +150,33 @@ def main():
                                      text=True, start_new_session=True)
             processes.append(relay)
             time.sleep(0.2)
-            first_lines, first_name = start_peer(
+            first, first_lines, first_name = start_peer(
                 program, files[0], keys[1], relay_port, processes)
             configure(first_name, "10.250.1.1", "10.250.1.2")
-            second_lines, second_name = start_peer(
+            second, second_lines, second_name = start_peer(
                 program, files[1], keys[0], relay_port, processes)
             configure(second_name, "10.250.2.1", "10.250.2.2")
             wait_line(first_lines, "authenticated UDP path:")
             wait_line(second_lines, "authenticated UDP path:")
-            check_forward("10.250.1.1", "10.250.1.2", second_name)
-            check_forward("10.250.2.1", "10.250.2.2", first_name)
-            print("macOS two-utun encrypted forwarding passed")
+            for _ in range(2):
+                check_forward("10.250.1.1", "10.250.1.2", second_name)
+                check_forward("10.250.2.1", "10.250.2.2", first_name)
+
+            os.killpg(second.pid, signal.SIGTERM)
+            second.wait(timeout=8)
+            wait_interface_removed(second_name)
+
+            replacement, replacement_lines, replacement_name = start_peer(
+                program, files[1], keys[0], relay_port, processes)
+            configure(replacement_name, "10.250.2.1", "10.250.2.2")
+            wait_line(first_lines, "authenticated UDP path:", timeout=60)
+            wait_line(replacement_lines, "authenticated UDP path:", timeout=20)
+            if first.poll() is not None or replacement.poll() is not None:
+                raise RuntimeError("mesh peer exited during reconnection")
+            for _ in range(2):
+                check_forward("10.250.1.1", "10.250.1.2", replacement_name)
+                check_forward("10.250.2.1", "10.250.2.2", first_name)
+            print("macOS two-utun forwarding and restart passed")
         finally:
             for process in reversed(processes):
                 if process.poll() is None:
@@ -176,14 +201,8 @@ def main():
                     print(errors, end="", file=sys.stderr)
     if forced_shutdown:
         raise RuntimeError("mesh process did not stop after SIGTERM")
-    for name in (first_name, second_name):
-        for _ in range(20):
-            if subprocess.run(["ifconfig", name], capture_output=True,
-                              timeout=5).returncode != 0:
-                break
-            time.sleep(0.1)
-        else:
-            raise RuntimeError("mesh utun interface remained after shutdown: " + name)
+    for name in (first_name, replacement_name):
+        wait_interface_removed(name)
 
 
 if __name__ == "__main__":
