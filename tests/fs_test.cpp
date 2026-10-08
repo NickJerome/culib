@@ -435,6 +435,19 @@ TEST(fs, copy_without_overwrite_rejects_a_dangling_symlink) {
     EXPECT(fs::read_file(source).value_or(""), ==, "payload");
 }
 
+TEST(fs, copy_onto_a_hard_link_preserves_the_source) {
+    const scratch area("copy_hardlink");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string source = area.at("source.txt");
+    const std::string alias = area.at("alias.txt");
+    if (!EXPECT(fs::write_file(source, "payload").is_ok(), ==, true)) return;
+    if (!EXPECT(::link(source.c_str(), alias.c_str()), ==, 0)) return;
+
+    EXPECT(fs::copy_file(source, alias, fs::overwrite::yes).is_err(), ==, true);
+    EXPECT(fs::read_file(source).value_or(""), ==, "payload");
+    EXPECT(fs::read_file(alias).value_or(""), ==, "payload");
+}
+
 TEST(fs, recursive_remove_does_not_follow_a_directory_symlink) {
     const scratch area("symlink_remove");
     if (!EXPECT(area.ok(), ==, true)) return;
@@ -521,6 +534,17 @@ TEST(fs, copies_a_large_file_across_chunk_boundaries) {
     EXPECT(fs::file_size(from).value_or(0), ==, payload.size());
     EXPECT(fs::copy_file(from, to).is_ok(), ==, true);
     EXPECT(fs::read_file(to).value_or(""), ==, payload);
+}
+
+TEST(fs, copying_a_file_onto_itself_preserves_the_content) {
+    const scratch area("copy_self");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string path = area.at("data.txt");
+    if (!EXPECT(fs::write_file(path, "original").is_ok(), ==, true)) return;
+
+    const result<void> copied = fs::copy_file(path, path, fs::overwrite::yes);
+    EXPECT(copied.is_err(), ==, true);
+    EXPECT(fs::read_file(path).value_or(""), ==, "original");
 }
 
 TEST(fs, lists_directories) {

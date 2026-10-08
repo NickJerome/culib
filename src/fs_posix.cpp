@@ -293,22 +293,40 @@ result<void> copy_file(string_view from, string_view to, overwrite mode) {
     std::FILE* source = std::fopen(native_from.get(), "rb");
     if (!source) return from_errno("打开", from, errno);
 
-    std::FILE* target = 0;
+    const int flags = O_WRONLY | O_CREAT | (mode == overwrite::no ? O_EXCL : 0);
+    const int fd = ::open(native_to.get(), flags, 0666);
+    if (fd < 0) {
+        const int code = errno;
+        std::fclose(source);
+        return from_errno("创建", to, code);
+    }
     if (mode == overwrite::yes) {
-        target = std::fopen(native_to.get(), "wb");
-    } else {
-        const int fd = ::open(native_to.get(), O_WRONLY | O_CREAT | O_EXCL, 0666);
-        if (fd >= 0) {
-            target = ::fdopen(fd, "wb");
-            if (!target) {
-                const int code = errno;
-                ::close(fd);
-                errno = code;
-            }
+        struct stat source_info;
+        struct stat target_info;
+        if (::fstat(::fileno(source), &source_info) != 0 ||
+            ::fstat(fd, &target_info) != 0) {
+            const int code = errno;
+            ::close(fd);
+            std::fclose(source);
+            return from_errno("检查复制文件", to, code);
+        }
+        if (source_info.st_dev == target_info.st_dev &&
+            source_info.st_ino == target_info.st_ino) {
+            ::close(fd);
+            std::fclose(source);
+            return make_error(error_kind::invalid_argument, "复制源和目标是同一文件");
+        }
+        if (::ftruncate(fd, 0) != 0) {
+            const int code = errno;
+            ::close(fd);
+            std::fclose(source);
+            return from_errno("截断", to, code);
         }
     }
+    std::FILE* target = ::fdopen(fd, "wb");
     if (!target) {
         const int code = errno;
+        ::close(fd);
         std::fclose(source);
         return from_errno("创建", to, code);
     }
