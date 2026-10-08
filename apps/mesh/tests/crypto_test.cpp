@@ -75,6 +75,12 @@ int main() {
     if (premature.is_ok() || premature.error().kind() != wavvix::error_kind::timeout)
         return fail("future offer was accepted");
 
+    mesh::identity moved_alice(std::move(alice));
+    if (mesh::seal_offer(alice, bob.public_part(), offer, now).is_ok())
+        return fail("moved-from identity encrypted an offer");
+    if (mesh::seal_offer(moved_alice, bob.public_part(), offer, now).is_err())
+        return fail("moved identity could not encrypt an offer");
+
     std::printf("mesh encrypted offers passed\n");
     return 0;
 }

@@ -46,13 +46,15 @@ wavvix::error auth_error() {
 
 }  // namespace
 
-identity::identity() noexcept : public_(), secret_() {}
+identity::identity() noexcept : public_(), secret_(), valid_(false) {}
 
 identity::~identity() noexcept { sodium_memzero(secret_.data(), secret_.size()); }
 
 identity::identity(identity&& other) noexcept
-    : public_(other.public_), secret_(other.secret_) {
+    : public_(other.public_), secret_(other.secret_), valid_(other.valid_) {
+    sodium_memzero(other.public_.data(), other.public_.size());
     sodium_memzero(other.secret_.data(), other.secret_.size());
+    other.valid_ = false;
 }
 
 identity& identity::operator=(identity&& other) noexcept {
@@ -60,7 +62,10 @@ identity& identity::operator=(identity&& other) noexcept {
         sodium_memzero(secret_.data(), secret_.size());
         public_ = other.public_;
         secret_ = other.secret_;
+        valid_ = other.valid_;
+        sodium_memzero(other.public_.data(), other.public_.size());
         sodium_memzero(other.secret_.data(), other.secret_.size());
+        other.valid_ = false;
     }
     return *this;
 }
@@ -69,7 +74,9 @@ wavvix::result<identity> generate_identity() {
     if (sodium_init() < 0)
         return wavvix::make_error(wavvix::error_kind::io, "libsodium initialization failed");
     identity key;
-    crypto_box_keypair(key.public_.data(), key.secret_.data());
+    if (crypto_box_keypair(key.public_.data(), key.secret_.data()) != 0)
+        return wavvix::make_error(wavvix::error_kind::io, "identity generation failed");
+    key.valid_ = true;
     return key;
 }
 
@@ -78,6 +85,9 @@ wavvix::result<std::vector<unsigned char>> seal_offer(
     const wavvix::net::punch_offer& offer, std::chrono::system_clock::time_point now) {
     if (sodium_init() < 0)
         return wavvix::make_error(wavvix::error_kind::io, "libsodium initialization failed");
+    if (!sender.valid_)
+        return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                  "mesh identity has been moved");
     wavvix::result<std::vector<unsigned char>> encoded =
         wavvix::net::encode_punch_offer(offer);
     if (encoded.is_err()) return std::move(encoded).error();
@@ -118,6 +128,7 @@ wavvix::result<wavvix::net::punch_offer> offer_receiver::open(
                                   "invalid encrypted offer length");
     if (sodium_init() < 0)
         return wavvix::make_error(wavvix::error_kind::io, "libsodium initialization failed");
+    if (!local_.valid_) return auth_error();
     const unsigned char* const packet = static_cast<const unsigned char*>(data);
     if (std::memcmp(packet, "CME1", 4) != 0 ||
         sodium_memcmp(packet + sender_offset, allowed_peer_.data(), 32) != 0 ||

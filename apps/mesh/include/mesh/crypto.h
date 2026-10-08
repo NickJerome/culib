@@ -29,8 +29,10 @@ private:
         const identity&, const public_key&, const wavvix::net::punch_offer&,
         std::chrono::system_clock::time_point);
     friend class offer_receiver;
+    friend class traffic_session;
     public_key public_;
     std::array<unsigned char, 32> secret_;
+    bool valid_;
 };
 
 wavvix::result<identity> generate_identity();
