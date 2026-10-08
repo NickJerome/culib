@@ -316,7 +316,7 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
 
 ## [`net.h`](../include/culib/net.h)
 
-完整范围和后续 TCP/UDP 分期见 [网络设计](superpowers/specs/2026-10-08-net-design.md)。当前已实现的是地址层：
+完整范围见[网络设计](superpowers/specs/2026-10-08-net-design.md)和[UDP 设计](superpowers/specs/2026-10-08-udp-design.md)。地址层用法：
 
     wavvix::result<wavvix::net::endpoint> local =
         wavvix::net::endpoint::parse("127.0.0.1", 8080);
@@ -328,7 +328,7 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
 `resolve` 保留系统返回的地址顺序，不替调用方猜该连哪一个。`endpoint::to_string()`
 把端口一起写出，IPv6 用 `[::1]:8080` 形状。详情见 `examples/net_address.cpp`。
 
-这还不是可收发的 `net`：TCP/UDP 公共套接字正在后续分期实现。
+`tcp_listener` / `tcp_stream` 提供连接式收发；`udp_socket` 的 `send_to` / `recv_from` 保留报文边界与来源地址。完整可运行示例见 [`net_echo.cpp`](../examples/net_echo.cpp) 和 [`net_udp.cpp`](../examples/net_udp.cpp)，边界行为见[网络用法](net.md)。
 
 ## [`optional.h`](../include/culib/optional.h)
 

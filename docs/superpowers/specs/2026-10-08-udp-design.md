@@ -1,7 +1,7 @@
 # UDP 套接字设计
 
 - 日期：2026-10-08
-- 状态：接口与跨平台实现路径已确定；实现验证见文末。
+- 状态：实现已通过 Windows/MSVC、Linux epoll 与 io_uring 本地回环测试；三平台 CI 待验证。
 - 前置：[网络模块](2026-10-08-net-design.md)与[事件引擎](2026-10-05-event-engine-design.md)。
 
 ## 范围与调用点
@@ -37,4 +37,4 @@ UDP 是报文而非字节流：一次 `send_to` 发送一整个报文，一次 `
 
 ## 实现验证
 
-待填写：公共回环示例、IPv4/IPv6（IPv6 不可用时跳过）、来源地址、零字节报文、截断、超时后恢复、多套接字并发；Linux 强制 epoll 与 io_uring、Windows/MSVC 和 macOS 的 debug/release CI。性能只记录测过的结果，不预设加速倍数。
+`examples/net_udp.cpp` 使用公共接口完成回环报文；`tests/net_udp_test.cpp` 覆盖 IPv4/IPv6（IPv6 不可用时跳过）、来源地址、零字节报文、截断后恢复、超时后恢复和两个套接字并发。Windows/MSVC debug 与 Linux/GCC debug 的强制 epoll、io_uring 测试已通过。macOS 与各平台 release 的 CI 尚待验证。性能只记录测过的结果，不预设加速倍数。

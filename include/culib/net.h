@@ -96,5 +96,38 @@ private:
     bool adopted_;
 };
 
+// 接收结果的元数据；报文内容写进调用方的缓冲区。
+struct udp_datagram {
+    udp_datagram(std::size_t count, endpoint source)
+        : size(count), from(source) {}
+    std::size_t size;
+    endpoint from;
+};
+
+class udp_socket {
+public:
+    udp_socket() noexcept : native_(invalid_handle()), adopted_(false) {}
+    ~udp_socket();
+    udp_socket(udp_socket&& other) noexcept;
+    udp_socket& operator=(udp_socket&& other) noexcept;
+    udp_socket(const udp_socket&) = delete;
+    udp_socket& operator=(const udp_socket&) = delete;
+
+    static result<udp_socket> bind(const endpoint& local);
+    result<endpoint> local_endpoint() const;
+    result<std::size_t> send_to(const void* buffer, std::size_t size,
+                                const endpoint& peer, std::chrono::nanoseconds timeout);
+    result<udp_datagram> recv_from(void* buffer, std::size_t size,
+                                   std::chrono::nanoseconds timeout);
+    void close() noexcept;
+    bool is_open() const noexcept { return native_ != invalid_handle(); }
+
+private:
+    explicit udp_socket(std::uintptr_t native) noexcept : native_(native), adopted_(false) {}
+    static std::uintptr_t invalid_handle() noexcept { return ~std::uintptr_t(0); }
+    std::uintptr_t native_;
+    bool adopted_;
+};
+
 }  // namespace net
 }  // namespace wavvix
