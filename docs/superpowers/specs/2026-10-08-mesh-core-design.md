@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析。Linux TUN 的内部后端已在 WSL2 上实际收发 IP 包，并通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37775274414)；macOS utun 的内部后端已写出，尚待 CI 验证。Windows 和公共接口仍待完成；打洞及节点协议未开始。
+- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析。Linux TUN 已在 WSL2 上实际收发 IP 包；macOS utun 已在 CI 上编译并运行打开接口测试。两者的内部后端通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37776334576)。Windows 和公共接口仍待完成；打洞及节点协议未开始。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
