@@ -40,6 +40,9 @@ TEST(time, holds_the_unit_in_the_type) {
     EXPECT(timestamp::from_unix_millis(1500).unix_seconds(), ==, 1);
     EXPECT(timestamp::from_unix_millis(1500).unix_millis(), ==, 1500);
     EXPECT(timestamp().unix_millis(), ==, 0);        // 默认是纪元
+    const std::int64_t limit = (std::numeric_limits<std::int64_t>::max)() / 1000;
+    EXPECT(timestamp::from_unix_seconds(limit).unix_millis(), ==, limit * 1000);
+    EXPECT(timestamp::from_unix_seconds(-limit).unix_millis(), ==, -limit * 1000);
 }
 
 TEST(time, floors_toward_the_past_before_1970) {

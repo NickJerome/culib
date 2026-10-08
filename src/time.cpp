@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -13,6 +14,11 @@
 namespace wavvix {
 
 namespace detail {
+
+[[noreturn]] void timestamp_seconds_out_of_range() noexcept {
+    std::fputs("wavvix::timestamp::from_unix_seconds(): seconds out of range\n", stderr);
+    std::abort();
+}
 
 // Howard Hinnant 公开的日历算法。days 是 1970-01-01 以来的天数，可以为负。
 void civil_from_days(std::int64_t z, int& year, unsigned& month, unsigned& day) noexcept {
