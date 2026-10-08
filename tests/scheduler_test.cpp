@@ -24,6 +24,33 @@ TEST(scheduler, runs_nothing_when_nothing_was_spawned) {
     EXPECT(run(), ==, 0u);
 }
 
+TEST(scheduler, scope_runs_submitted_coroutines_on_exit) {
+    int finished = 0;
+    {
+        wavvix::scheduler_scope scope;
+        spawn([&] { ++finished; });
+        EXPECT(finished, ==, 0);
+        EXPECT(scheduled(), ==, 1u);
+    }
+    EXPECT(finished, ==, 1);
+    EXPECT(scheduled(), ==, 0u);
+}
+
+TEST(scheduler, nested_scopes_finish_at_the_outer_boundary) {
+    int finished = 0;
+    {
+        wavvix::scheduler_scope outer;
+        {
+            wavvix::scheduler_scope inner;
+            spawn([&] { ++finished; });
+        }
+        EXPECT(finished, ==, 0);
+        EXPECT(scheduled(), ==, 1u);
+    }
+    EXPECT(finished, ==, 1);
+    EXPECT(scheduled(), ==, 0u);
+}
+
 TEST(scheduler, runs_a_single_coroutine_to_completion) {
     int ran = 0;
     spawn([&] { ++ran; });

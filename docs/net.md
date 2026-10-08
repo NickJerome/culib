@@ -1,6 +1,6 @@
 # TCP 与地址
 
-`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析和协程中的 TCP 连接。TCP 公共接口已在 Windows/MSVC 和 Linux 的 epoll、io_uring 路径本地验证；macOS 与完整 CI 以最新提交的结果为准。UDP 尚未实现。
+`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析和协程中的 TCP 连接。TCP 公共接口已通过 Windows/MSVC、Linux epoll/io_uring 本地测试及 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37746887017)；UDP 尚未实现。
 
 ## 地址
 
@@ -18,17 +18,21 @@ result<tcp_listener> opened = tcp_listener::listen(address.value());
 tcp_listener listener = std::move(opened).value();
 endpoint local = listener.local_endpoint().value(); // 端口 0 已换成实际端口
 
-spawn([&] {
-    result<tcp_stream> incoming = listener.accept(ms(1000));
-    // 在协程中调用 read / write；检查 result 后处理数据。
-});
-spawn([&] {
-    result<tcp_stream> outgoing = tcp_stream::connect(local, ms(1000));
-});
-run();
+{
+    scheduler_scope runtime;
+    spawn([&] {
+        result<tcp_stream> incoming = listener.accept(ms(1000));
+        // 在协程中调用 read / write；检查 result 后处理数据。
+    });
+    spawn([&] {
+        result<tcp_stream> outgoing = tcp_stream::connect(local, ms(1000));
+    });
+} // 运行全部已提交协程并清理当前 vCPU
 ```
 
 完整的可运行回环示例见 [`examples/net_echo.cpp`](../examples/net_echo.cpp)，用 `xmake run example_net_echo` 启动。`listen`、`local_endpoint`、地址解析可以在协程外调用；`accept`、`connect`、`read`、`write` 首版仅供调度器协程使用。
+
+调度器的 RAII 生命周期和显式 `run()` 用法见[协程调度器](scheduler.md)。
 
 每个 I/O 调用必须显式传超时。传 `std::chrono::nanoseconds(-1)` 表示一直等；超时返回 `error_kind::timeout`。`read` 返回 0 表示对端有序关闭。`write` 可以只写一部分，发送完整消息需要循环。长度为 0 的读写立即返回 0；非零长度配空缓冲区返回 `invalid_argument`。
 

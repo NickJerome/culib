@@ -14,8 +14,22 @@ namespace detail {
 // 接管这根协程的所有权，排进当前 vCPU 的运行队列。
 void scheduler_spawn(coroutine* taken) noexcept;
 void scheduler_sleep_for(std::chrono::nanoseconds duration);
+void* scheduler_scope_enter();
+void scheduler_scope_leave(void* owner) noexcept;
 
 }  // namespace detail
+
+// 当前线程的调度器作用域。析构时跑完已提交的协程并释放 vCPU / I/O 引擎。
+// 可嵌套；只有最外层析构时才收尾。须在创建它的线程上析构。
+class scheduler_scope {
+public:
+    scheduler_scope() : owner_(detail::scheduler_scope_enter()) {}
+    ~scheduler_scope() noexcept { detail::scheduler_scope_leave(owner_); }
+    scheduler_scope(const scheduler_scope&) = delete;
+    scheduler_scope& operator=(const scheduler_scope&) = delete;
+private:
+    void* owner_;
+};
 
 // 起一根协程。可以在协程里调（嵌套 spawn），新协程排到当前 vCPU 的队尾。
 //

@@ -37,6 +37,7 @@ struct vcpu {
     coroutine* current;                 // 正在跑的那根，park 要知道挂起的是谁
     park_token* park_of_current;        // 当前协程挂起了，让出之后由调度器读
     bool running;                       // run() 是否正在这根线程上跑
+    std::size_t scope_depth;            // 显式 RAII 作用域的嵌套层数
 };
 
 #if defined(_MSC_VER)
@@ -94,6 +95,7 @@ vcpu& here() {
         current_vcpu->current = 0;
         current_vcpu->park_of_current = 0;
         current_vcpu->running = false;
+        current_vcpu->scope_depth = 0;
         // 碰一下哨兵，让它登记「这根线程退出时收掉上面那个 vcpu」。一根线程一次。
         static thread_local vcpu_reaper reaper;
         (void)reaper;
@@ -174,6 +176,24 @@ void scheduler_spawn(coroutine* taken) noexcept {
     } else {
         self.ready.push_back(taken);
     }
+}
+
+void* scheduler_scope_enter() {
+    if (coroutine::inside()) die("wavvix::scheduler_scope 只能在 vCPU 线程入口创建");
+    vcpu& self = here();
+    ++self.scope_depth;
+    return &self;
+}
+
+void scheduler_scope_leave(void* owner) noexcept {
+    vcpu* const self = current_vcpu;
+    if (!self || self != owner || self->scope_depth == 0 || self->running)
+        die("wavvix::scheduler_scope 必须在创建它的线程上、run() 外析构");
+    if (--self->scope_depth != 0) return;
+    wavvix::run();
+    current_vcpu = 0;
+    if (self->engine) io_engine_destroy(self->engine);
+    delete self;
 }
 
 bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
