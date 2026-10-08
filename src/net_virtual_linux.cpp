@@ -71,23 +71,31 @@ result<std::size_t> virtual_interface_read(virtual_interface_state* state, void*
                                            std::chrono::nanoseconds timeout) {
     if (!state || !buffer)
         return make_error(error_kind::invalid_argument, "TUN 接收参数无效");
-    if (capacity < virtual_receive_capacity)
+    if (capacity < 20)
         return make_error(error_kind::out_of_range, "TUN 接收缓冲区不足");
     result<void> adopted = adopt(*state);
     if (adopted.is_err()) return adopted.error();
     wavvix::detail::io_request request;
-    request.operation = wavvix::detail::io_transfer;
+    char overflow = 0;
+    const std::size_t readable = capacity < virtual_max_packet_size
+        ? capacity : virtual_max_packet_size;
+    struct iovec vectors[2];
+    request.operation = wavvix::detail::io_vectored_transfer;
     request.direction = wavvix::detail::io_read;
     request.handle = state->fd;
-    request.buffer = buffer;
-    request.length = capacity;
+    vectors[0].iov_base = buffer;
+    vectors[0].iov_len = readable;
+    vectors[1].iov_base = &overflow;
+    vectors[1].iov_len = 1;
+    request.vectors = vectors;
+    request.vector_count = 2;
     wavvix::detail::scheduler_io(request, timeout);
     if (request.transferred < 0) return virtual_error("读取 TUN", request.failure);
     if (request.transferred == 0)
         return make_error(error_kind::io, "TUN 已关闭");
     const std::size_t received = static_cast<std::size_t>(request.transferred);
-    if (received > virtual_max_packet_size)
-        return make_error(error_kind::out_of_range, "TUN 报文超出支持的长度");
+    if (received > readable)
+        return make_error(error_kind::out_of_range, "TUN 报文超出接收缓冲区");
     return received;
 }
 

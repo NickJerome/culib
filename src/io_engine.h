@@ -8,9 +8,11 @@
 #include <cstddef>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/uio.h>
+#endif
 #if defined(__linux__)
 #include <sys/socket.h>
-#include <sys/uio.h>
 #endif
 
 namespace wavvix {
@@ -25,7 +27,10 @@ typedef int io_handle;
 #endif
 
 enum io_direction { io_read, io_write };
-enum io_operation { io_transfer, io_socket_transfer, io_datagram_transfer, io_accept, io_connect };
+enum io_operation {
+    io_transfer, io_vectored_transfer, io_socket_transfer, io_datagram_transfer,
+    io_accept, io_connect
+};
 
 // 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
 // 而 Windows 要求 OVERLAPPED 活到完成包取回来为止，协程挂起期间栈不会动，
@@ -53,8 +58,15 @@ struct io_request {
     // 结构），所以不为写方向另开一个 const void* 字段。
     void* buffer;
     std::size_t length;
-    void* address;                 // connect / datagram 的 sockaddr，须活到完成通知回来
-    int address_length;            // 接收报文时由后端更新为来源地址长度
+#if !defined(_WIN32)
+    union { void* address; struct iovec* vectors; };
+    union { int address_length; int vector_count; };
+#else
+    void* address;
+    int address_length;
+#endif
+    // address 用于 connect / datagram，vectors 用于 readv / writev；两者不同时使用。
+    // 接收报文时由后端更新 address_length。所有指针须活到完成通知回来。
     bool truncated;                // 接收缓冲区不足，报文已被消费
     io_handle accepted;            // accept 的结果；Windows 由调用方预建套接字
     bool connect_started;          // 就绪后端用它区分首次 connect 和 SO_ERROR 检查

@@ -11,7 +11,6 @@ namespace net {
 namespace detail {
 
 const std::size_t virtual_max_packet_size = 65575;
-const std::size_t virtual_receive_capacity = virtual_max_packet_size + 1;
 
 struct virtual_interface_state;
 result<virtual_interface_state*> virtual_interface_open();

@@ -162,6 +162,10 @@ inline bool io_try_now(io_request& request) {
 #endif
                 moved = ::send(fd, request.buffer, request.length, flags);
             }
+        } else if (request.operation == io_vectored_transfer) {
+            moved = request.direction == io_read
+                ? ::readv(fd, request.vectors, request.vector_count)
+                : ::writev(fd, request.vectors, request.vector_count);
         } else {
             moved = (request.direction == io_read) ? ::read(fd, request.buffer, request.length)
                                                   : ::write(fd, request.buffer, request.length);

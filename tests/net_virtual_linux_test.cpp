@@ -89,7 +89,7 @@ TEST(net_virtual_linux, opens_a_tun_and_times_out_without_traffic_when_permitted
     if (short_buffer.is_err())
         EXPECT(short_buffer.error().kind(), ==, wavvix::error_kind::out_of_range);
 
-    std::vector<char> packet(virtual_net::virtual_receive_capacity);
+    std::vector<char> packet(virtual_net::virtual_max_packet_size);
     wavvix::spawn([&] {
         wavvix::result<std::size_t> read = virtual_net::virtual_interface_read(
             state, packet.data(), packet.size(), ms(20));
@@ -138,7 +138,7 @@ TEST(net_virtual_linux, exchanges_an_ip_packet_with_the_kernel_when_permitted) {
     EXPECT(sent, ==, static_cast<ssize_t>(sizeof outgoing - 1));
     if (sent < 0) return;
 
-    std::vector<unsigned char> buffer(virtual_net::virtual_receive_capacity);
+    std::vector<unsigned char> buffer(virtual_net::virtual_max_packet_size);
     wavvix::spawn([&] {
         const std::chrono::steady_clock::time_point deadline =
             std::chrono::steady_clock::now() + ms(1000);
@@ -184,6 +184,20 @@ TEST(net_virtual_linux, exchanges_an_ip_packet_with_the_kernel_when_permitted) {
     char incoming[8] = {};
     EXPECT(::recvfrom(udp, incoming, sizeof incoming, 0, 0, 0), ==, ssize_t(4));
     EXPECT(std::memcmp(incoming, "pong", 4), ==, 0);
+
+    const ssize_t sent_again = ::sendto(udp, outgoing, sizeof outgoing - 1, 0,
+                                         reinterpret_cast<sockaddr*>(&remote), sizeof remote);
+    EXPECT(sent_again, ==, static_cast<ssize_t>(sizeof outgoing - 1));
+    if (sent_again < 0) return;
+    wavvix::spawn([&] {
+        unsigned char small[20] = {};
+        wavvix::result<std::size_t> truncated = virtual_net::virtual_interface_read(
+            state, small, sizeof small, ms(1000));
+        EXPECT(truncated.is_err(), ==, true);
+        if (truncated.is_err())
+            EXPECT(truncated.error().kind(), ==, wavvix::error_kind::out_of_range);
+    });
+    EXPECT(wavvix::run(), ==, std::size_t(1));
 }
 
 #endif
