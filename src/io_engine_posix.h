@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <unistd.h>
+#include <sys/socket.h>
 
 namespace wavvix {
 namespace detail {
@@ -73,8 +74,20 @@ inline bool io_try_now(io_request& request) {
     const int fd = request.handle;
     ssize_t moved;
     for (;;) {
-        moved = (request.direction == io_read) ? ::read(fd, request.buffer, request.length)
-                                              : ::write(fd, request.buffer, request.length);
+        if (request.operation == io_socket_transfer) {
+            if (request.direction == io_read) {
+                moved = ::recv(fd, request.buffer, request.length, 0);
+            } else {
+                int flags = 0;
+#if defined(MSG_NOSIGNAL)
+                flags = MSG_NOSIGNAL;
+#endif
+                moved = ::send(fd, request.buffer, request.length, flags);
+            }
+        } else {
+            moved = (request.direction == io_read) ? ::read(fd, request.buffer, request.length)
+                                                  : ::write(fd, request.buffer, request.length);
+        }
         if (moved >= 0) break;
         if (errno == EINTR) continue;    // 信号打断，重做
         break;

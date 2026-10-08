@@ -73,6 +73,11 @@ CQE 到来后再提交下一位，避免多个读者抢同一份数据而打乱�
 请求里的 `iovec`，不能因为超时就让协程栈退出。普通文件的直接读写只在这个后端
 可用；epoll 的公共 I/O 范围仍限于可等待的句柄，具体公共句柄语义留给 `net`。
 
+为 `net` 增加的套接字传输与普通文件请求分开：套接字使用 `SEND` / `RECV`，
+发送带 `MSG_NOSIGNAL`，避免对端关闭时的 `SIGPIPE`；文件仍走 `READV` / `WRITEV`。
+建环时还探测这两个操作，不支持就退回 epoll。Linux 本地分别强制 uring 和 epoll
+跑过已就绪收发、等待后收发，以及对端关闭时快路和慢路发送的测试。
+
 ## [`io_engine_macos.cpp`](../src/io_engine_macos.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。

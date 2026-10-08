@@ -4,6 +4,7 @@
 #include "io_engine_posix.h"
 
 #include <cerrno>
+#include <climits>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -64,6 +65,8 @@ public:
 namespace {
 
 const unsigned char cancel_opcode = 14;  // UAPI: IORING_OP_ASYNC_CANCEL
+const unsigned char send_opcode = 26;    // UAPI: IORING_OP_SEND
+const unsigned char recv_opcode = 27;    // UAPI: IORING_OP_RECV
 const unsigned no_drop_feature = 1u << 1;
 const unsigned cq_overflow_flag = 1u << 1;
 
@@ -146,15 +149,23 @@ int submit(uring_engine& engine, const io_uring_sqe& operation) {
 }
 
 int submit_request(uring_engine& engine, io_request& request) {
-    request.iov.iov_base = request.buffer;
-    request.iov.iov_len = request.length;
     io_uring_sqe operation;
     std::memset(&operation, 0, sizeof operation);
-    operation.opcode = request.direction == io_read ? IORING_OP_READV : IORING_OP_WRITEV;
     operation.fd = request.handle;
-    operation.off = static_cast<__u64>(-1);
-    operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(&request.iov));
-    operation.len = 1;
+    if (request.operation == io_socket_transfer) {
+        operation.opcode = request.direction == io_read ? recv_opcode : send_opcode;
+        operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(request.buffer));
+        const std::size_t ceiling = static_cast<std::size_t>(UINT_MAX);
+        operation.len = static_cast<__u32>(request.length < ceiling ? request.length : ceiling);
+        operation.rw_flags = request.direction == io_write ? MSG_NOSIGNAL : 0;
+    } else {
+        request.iov.iov_base = request.buffer;
+        request.iov.iov_len = request.length;
+        operation.opcode = request.direction == io_read ? IORING_OP_READV : IORING_OP_WRITEV;
+        operation.off = static_cast<__u64>(-1);
+        operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(&request.iov));
+        operation.len = 1;
+    }
     operation.user_data = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(&request));
     return submit(engine, operation);
 }
@@ -184,6 +195,28 @@ bool probe_cancel(uring_engine& engine) {
             const int result = engine.cqes[head & *engine.cq_mask].res;
             __atomic_store_n(engine.cq_head, head + 1, __ATOMIC_RELEASE);
             if (result == -ENOENT) return true;
+            errno = ENOSYS;
+            return false;
+        }
+        if (enter(engine, 0, 1, IORING_ENTER_GETEVENTS) < 0 && errno != EINTR)
+            return false;
+    }
+}
+
+bool probe_socket_operation(uring_engine& engine, unsigned char opcode) {
+    io_uring_sqe operation;
+    std::memset(&operation, 0, sizeof operation);
+    operation.opcode = opcode;
+    operation.fd = -1;
+    operation.user_data = 1;
+    if (submit(engine, operation) != 0) return false;
+    for (;;) {
+        const unsigned head = __atomic_load_n(engine.cq_head, __ATOMIC_RELAXED);
+        const unsigned tail = __atomic_load_n(engine.cq_tail, __ATOMIC_ACQUIRE);
+        if (head != tail) {
+            const int result = engine.cqes[head & *engine.cq_mask].res;
+            __atomic_store_n(engine.cq_head, head + 1, __ATOMIC_RELEASE);
+            if (result == -EBADF) return true;
             errno = ENOSYS;
             return false;
         }
@@ -262,7 +295,8 @@ uring_engine* uring_engine_create() noexcept {
     uring_engine* const engine = new uring_engine();
     engine->fd = static_cast<int>(fd);
     if (!(params.features & no_drop_feature) || !map_rings(*engine, params) ||
-        !probe_cancel(*engine)) {
+        !probe_cancel(*engine) || !probe_socket_operation(*engine, send_opcode) ||
+        !probe_socket_operation(*engine, recv_opcode)) {
         const int failed = errno ? errno : ENOSYS;
         uring_engine_destroy(engine);
         errno = failed;

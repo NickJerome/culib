@@ -46,6 +46,7 @@ using wavvix::spawn;
 using wavvix::detail::io_handle;
 using wavvix::detail::io_read;
 using wavvix::detail::io_request;
+using wavvix::detail::io_socket_transfer;
 using wavvix::detail::io_write;
 using wavvix::detail::scheduler_io;
 
@@ -213,6 +214,31 @@ std::ptrdiff_t write_now(io_handle handle, const void* buffer, std::size_t lengt
     return request.transferred;
 }
 
+std::ptrdiff_t socket_read_now(io_handle handle, void* buffer, std::size_t length) {
+    io_request request;
+    request.direction = io_read;
+    request.operation = io_socket_transfer;
+    request.handle = handle;
+    request.buffer = buffer;
+    request.length = length;
+    scheduler_io(request, forever);
+    return request.transferred;
+}
+
+std::ptrdiff_t socket_write_now(io_handle handle, const void* buffer, std::size_t length,
+                                int* failure = 0,
+                                std::chrono::nanoseconds timeout = forever) {
+    io_request request;
+    request.direction = io_write;
+    request.operation = io_socket_transfer;
+    request.handle = handle;
+    request.buffer = const_cast<void*>(buffer);
+    request.length = length;
+    scheduler_io(request, timeout);
+    if (failure) *failure = request.failure;
+    return request.transferred;
+}
+
 #if defined(__linux__)
 // 进程当前开着多少个句柄。只有 Linux 有 /proc/self/fd，所以用它的那条测试只在这跑。
 std::size_t open_handle_count() {
@@ -267,6 +293,61 @@ TEST(io_engine, moves_bytes_in_both_directions_over_one_pair) {
     EXPECT(std::string(there, 4), ==, "ping");
     EXPECT(std::string(back, 4), ==, "pong");
 }
+
+TEST(io_engine, socket_transfer_uses_the_same_completion_contract) {
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+
+    char got[8] = {};
+    std::ptrdiff_t received = -1;
+    std::ptrdiff_t sent = -1;
+    spawn([&] { received = socket_read_now(pair.right, got, sizeof got); });
+    spawn([&] { sent = socket_write_now(pair.left, "hello", 5); });
+
+    EXPECT(run(), ==, 2u);
+    EXPECT(sent, ==, 5);
+    EXPECT(received, ==, 5);
+    EXPECT(std::string(got, 5), ==, "hello");
+}
+
+#if defined(__linux__)
+TEST(io_engine, socket_write_after_peer_close_does_not_raise_sigpipe) {
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+    close_handle(pair.right);
+
+    std::ptrdiff_t sent = 0;
+    int failure = 0;
+    spawn([&] { sent = socket_write_now(pair.left, "x", 1, &failure); });
+    EXPECT(run(), ==, 1u);
+    EXPECT(sent, ==, -1);
+    EXPECT(failure, ==, EPIPE);
+}
+
+TEST(io_engine, waiting_socket_write_does_not_raise_sigpipe_after_peer_close) {
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+
+    const int small_buffer = 4096;
+    ::setsockopt(pair.left, SOL_SOCKET, SO_SNDBUF, &small_buffer, sizeof small_buffer);
+    char block[4096] = {};
+    bool full = false;
+    for (int i = 0; i < 1024; ++i) {
+        if (::send(pair.left, block, sizeof block, MSG_DONTWAIT | MSG_NOSIGNAL) >= 0) continue;
+        full = errno == EAGAIN;
+        break;
+    }
+    if (!EXPECT(full, ==, true)) return;
+
+    std::ptrdiff_t sent = 0;
+    int failure = 0;
+    spawn([&] { sent = socket_write_now(pair.left, "x", 1, &failure, ms(500)); });
+    spawn([&] { sleep_for(ms(10)); close_handle(pair.right); });
+    EXPECT(run(), ==, 2u);
+    EXPECT(sent, ==, -1);
+    EXPECT(failure == EPIPE || failure == ECONNRESET, ==, true);
+}
+#endif
 
 TEST(io_engine, keeps_run_from_returning_while_a_coroutine_is_blocked_on_io) {
     // 这条钉住的是一条**跨文件的不变量**：run() 在 blocked 非空时不返回。

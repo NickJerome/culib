@@ -24,13 +24,17 @@ typedef int io_handle;
 #endif
 
 enum io_direction { io_read, io_write };
+enum io_operation { io_transfer, io_socket_transfer };
 
 // 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
 // 而 Windows 要求 OVERLAPPED 活到完成包取回来为止，协程挂起期间栈不会动，
 // 正好满足（协程绑 vCPU，见 coroutine 设计 3.13）。
 struct io_request {
+    io_request() noexcept : operation(io_transfer) {}
+
     // ---- 入参，调用方填 ----
     io_direction direction;
+    io_operation operation;  // 套接字写入需要禁止 SIGPIPE；普通句柄保持原有路径
     io_handle handle;
     // 读方向往这里写，写方向从这里读。**写方向上调用方要去掉一次 const**，而这是
     // 故意的：struct iovec 的 iov_base 也是一个 void*（writev 和 readv 共用同一个
