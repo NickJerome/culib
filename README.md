@@ -49,7 +49,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | 公开接口为构造即提交、`join()` / `detach()` 的线程式句柄；底层换栈原语已完成 x86_64、arm64 与 MinGW x86；**MSVC x86 待补**，要先有 CI 格子 |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | **已完成当前范围**：数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP 监听/连接/收发与 UDP 报文收发均通过三平台 CI。见 [用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
-| fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`poller` 用目录快照轮询，适用于网络挂载，**已可用**；`watcher` 将走内核通知，本机低延迟，但网络挂载上的远程改动可能收不到 | watcher 开发中；见[设计](docs/superpowers/specs/2026-10-08-fs-watcher-design.md) |
+| fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 用内核通知监听本机目录；`poller` 用目录快照轮询，也适用于网络挂载 | **可用**；见[用法](docs/fs-watcher.md)和[设计](docs/superpowers/specs/2026-10-08-fs-watcher-design.md) |
 
 顺序与理由见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)，它按三个目标使用场景（小工具 CLI、多平台服务器、easytier 式精简核心）推导而来。`table` 已从计划中移除，`variant` 评估后不做。
 

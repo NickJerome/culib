@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <condition_variable>
 #include <string>
@@ -76,7 +77,7 @@ struct root_watch {
 struct watcher_state {
     watcher_state() : port(0), worker(0), signal_read(INVALID_SOCKET),
         signal_write(INVALID_SOCKET), started(false), stopping(false), command(0), root_count(0),
-        event_count(0), adopted(false), watch_failure(0) {}
+        event_count(0), adopted(false) {}
     HANDLE port;
     HANDLE worker;
     SOCKET signal_read;
@@ -93,8 +94,7 @@ struct watcher_state {
     std::vector<queued_event> events;
     std::size_t event_count;
     bool adopted;
-    DWORD watch_failure;
-    std::string watch_failure_path;
+    std::map<std::string, DWORD> watch_failures;
 };
 
 namespace {
@@ -224,10 +224,7 @@ void erase_root(watcher_state& state, root_watch* root) {
         state.queued.erase(std::remove_if(state.queued.begin(), state.queued.end(),
             [&](const queued_event& event) { return event.root == root->path; }),
             state.queued.end());
-        if (state.watch_failure_path == root->path) {
-            state.watch_failure = 0;
-            state.watch_failure_path.clear();
-        }
+        state.watch_failures.erase(root->path);
     }
     for (std::size_t i = 0; i < state.roots.size(); ++i) {
         if (state.roots[i].get() == root) {
@@ -381,8 +378,7 @@ void process_completion(watcher_state& state, root_watch& root,
         enqueue(state, root.path, std::string(), change::overflow);
         {
             std::lock_guard<std::mutex> lock(state.mutex);
-            state.watch_failure = code;
-            state.watch_failure_path = root.path;
+            state.watch_failures[root.path] = code;
         }
         ::CloseHandle(root.handle);
         root.handle = INVALID_HANDLE_VALUE;
@@ -465,8 +461,7 @@ void stop_worker(watcher_state& state) {
     state.port = 0;
     state.started = false;
     state.queued.clear();
-    state.watch_failure = 0;
-    state.watch_failure_path.clear();
+    state.watch_failures.clear();
     close_notifier(state);
 }
 
@@ -592,8 +587,10 @@ result<std::size_t> watcher_backend_wait(watcher_state* state,
             }
             state->queued.clear();
             if (state->event_count == 0) {
-                failure = state->watch_failure;
-                if (failure) failure_path = state->watch_failure_path;
+                if (!state->watch_failures.empty()) {
+                    failure = state->watch_failures.begin()->second;
+                    failure_path = state->watch_failures.begin()->first;
+                }
             }
         }
         if (state->event_count != 0) {
