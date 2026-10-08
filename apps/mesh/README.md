@@ -1,6 +1,6 @@
 # mesh 应用层（开发中）
 
-macOS 的 `tests/tunnel_macos.py` 在 CI 上启动两个真实 utun 节点和本机信令中继。两端建立受认证的 UDP 路径后，分别从自己的 utun 发出 ICMP 请求，并在对端 utun 抓到原报文；[debug/release 均通过](https://github.com/NickJerome/culib/actions/runs/37820067582)。两个接口共享同一个 macOS 网络栈，测试目标地址没有配置成对端本地地址，所以系统 ping 不会收到应答。这是双向包转发验证，不是跨机器的 ICMP 往返。
+macOS 的 `tests/tunnel_macos.py` 在 CI 上启动两个真实 utun 节点和本机信令中继。两端建立受认证的 UDP 路径后，双方各发起两次 ICMP 请求并在对端 utun 抓到原报文；随后关闭一端，确认旧 utun 消失，以同一身份重启、重新认证，再重复双向各两次转发。新旧 utun 在最终退出后均消失；[debug/release 均通过](https://github.com/NickJerome/culib/actions/runs/37824128701)。两个接口共享同一个 macOS 网络栈，测试目标地址没有配置成对端本地地址，所以系统 ping 不会收到应答。这是双向包转发与重连验证，不是跨机器的 ICMP 往返。
 
 这个 xmake 工程单独依赖 libsodium 1.0.22，根工程的 `culib` 静态库不引入该依赖。进入 `apps/mesh` 后运行 `xmake f -P . -m debug -y`、`xmake test -P .`，即可构建并测试目前的加密候选与数据包。
 
