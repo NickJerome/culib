@@ -1,7 +1,7 @@
 # 网络模块设计
 
 - 日期：2026-10-08
-- 状态：地址层与 TCP 公共类型已通过三平台 CI；UDP 已实现并通过 Windows/MSVC、Linux epoll 与 io_uring 本地回环测试，三平台 CI 待验证。用法见 [网络模块文档](../../net.md)。
+- 状态：地址层、TCP 与 UDP 公共类型已通过 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37761276843)。用法见 [网络模块文档](../../net.md)。
 - 前置：[调度器](2026-10-04-scheduler-design.md)、[事件引擎](2026-10-05-event-engine-design.md)、[io_uring](2026-10-08-io-uring-design.md)、[bytes](2026-10-05-bytes-design.md)。
 
 ## 要解决的事

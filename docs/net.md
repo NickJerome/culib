@@ -1,6 +1,6 @@
 # 网络地址、TCP 与 UDP
 
-`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析，以及协程中的 TCP 和 UDP 收发。TCP 公共接口已通过 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37746887017)；UDP 已在 Windows/MSVC 和 Linux epoll/io_uring 本地回环测试通过，三平台 CI 待验证。
+`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析，以及协程中的 TCP 和 UDP 收发。TCP 与 UDP 公共接口已通过 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37761276843)；Linux epoll/io_uring 与 Windows/MSVC 的本地回环测试也通过。
 
 ## 地址
 
