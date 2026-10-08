@@ -18,9 +18,20 @@ result<void> stun_random_bytes(unsigned char* out, std::size_t size) {
     ::arc4random_buf(out, size);
     return result<void>();
 #else
-    const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    const int fd = ::open("/dev/urandom", flags);
     if (fd < 0)
         return make_error(error_kind::io, "打开系统随机源失败：" + std::to_string(errno));
+#ifndef O_CLOEXEC
+    if (::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        const int code = errno;
+        ::close(fd);
+        return make_error(error_kind::io, "设置随机源句柄失败：" + std::to_string(code));
+    }
+#endif
     std::size_t received = 0;
     while (received < size) {
         const ssize_t count = ::read(fd, out + received, size - received);

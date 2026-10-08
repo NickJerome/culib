@@ -43,8 +43,19 @@ result<void> adopt(virtual_interface_state& state) {
 }  // namespace
 
 result<virtual_interface_state*> virtual_interface_open() {
-    const int fd = ::open("/dev/net/tun", O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    int flags = O_RDWR | O_NONBLOCK;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    const int fd = ::open("/dev/net/tun", flags);
     if (fd < 0) return virtual_error("打开 /dev/net/tun", errno);
+#ifndef O_CLOEXEC
+    if (::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        const int code = errno;
+        ::close(fd);
+        return virtual_error("设置 TUN 句柄", code);
+    }
+#endif
     ifreq request;
     std::memset(&request, 0, sizeof request);
     request.ifr_flags = IFF_TUN | IFF_NO_PI;

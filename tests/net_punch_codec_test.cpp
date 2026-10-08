@@ -13,7 +13,8 @@ TEST(net_punch_codec, keeps_session_and_transaction_on_the_wire) {
     wavvix::net::detail::punch_encode(sent, wire);
     const unsigned char prefix[] = {'C', 'U', 'P', '1', 1, 0, 1, 2};
     EXPECT(std::memcmp(wire, prefix, sizeof prefix), ==, 0);
-    wavvix::net::detail::punch_message read;
+    wavvix::net::detail::punch_message read = {
+        wavvix::net::detail::punch_probe, {0}, {0}};
     EXPECT(wavvix::net::detail::punch_decode(wire, sizeof wire, read), ==, true);
     EXPECT(read.type, ==, wavvix::net::detail::punch_probe);
     EXPECT(std::memcmp(read.session, sent.session, 16), ==, 0);
