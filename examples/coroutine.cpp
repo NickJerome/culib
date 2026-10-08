@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <functional>
 
 int main() {
     wavvix::coroutine::init();
@@ -12,9 +13,7 @@ int main() {
         wavvix::sleep_for(std::chrono::milliseconds(10));
         ++completed;
     });
-    wavvix::coroutine second([&] {
-        ++completed;
-    });
+    wavvix::coroutine second([](int& count) { ++count; }, std::ref(completed));
 
     first.join();
     second.join();

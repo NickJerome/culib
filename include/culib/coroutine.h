@@ -4,12 +4,57 @@
 
 #include <cstddef>
 #include <exception>
+#include <functional>
 #include <memory>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
 namespace wavvix {
 namespace detail {
+
+template <std::size_t... I>
+struct coroutine_indices {};
+
+template <std::size_t N, std::size_t... I>
+struct make_coroutine_indices : make_coroutine_indices<N - 1, N - 1, I...> {};
+
+template <std::size_t... I>
+struct make_coroutine_indices<0, I...> { typedef coroutine_indices<I...> type; };
+
+template <typename F, typename... Args>
+struct bound_coroutine_call {
+    template <typename U, typename... Values>
+    bound_coroutine_call(U&& function, Values&&... values)
+        : function(std::forward<U>(function)), args(std::forward<Values>(values)...) {}
+
+    void operator()() {
+        call(typename make_coroutine_indices<sizeof...(Args)>::type());
+    }
+
+    template <typename G = F, std::size_t... I>
+    typename std::enable_if<!std::is_member_pointer<G>::value>::type
+    call(coroutine_indices<I...>) {
+        std::move(function)(std::move(std::get<I>(args))...);
+    }
+
+    template <typename G = F, std::size_t... I>
+    typename std::enable_if<std::is_member_pointer<G>::value>::type
+    call(coroutine_indices<I...>) {
+        std::mem_fn(function)(std::move(std::get<I>(args))...);
+    }
+
+    F function;
+    std::tuple<Args...> args;
+};
+
+template <typename F, typename... Args>
+bound_coroutine_call<typename std::decay<F>::type, typename std::decay<Args>::type...>
+bind_coroutine_call(F&& function, Args&&... args) {
+    typedef bound_coroutine_call<typename std::decay<F>::type,
+                                 typename std::decay<Args>::type...> bound_type;
+    return bound_type(std::forward<F>(function), std::forward<Args>(args)...);
+}
 
 template <typename F>
 struct coroutine_body {
@@ -44,8 +89,26 @@ public:
     coroutine() noexcept : task_(0) {}
 
     template <typename F>
-    explicit coroutine(F&& body, std::size_t stack_size = default_stack_size)
-        : task_(detail::make_coroutine_task(std::forward<F>(body), stack_size)) {}
+    explicit coroutine(F&& body)
+        : task_(detail::make_coroutine_task(std::forward<F>(body), default_stack_size)) {}
+
+    template <typename F, typename Arg, typename... Args>
+    explicit coroutine(F&& body, Arg&& arg, Args&&... args)
+        : task_(detail::make_coroutine_task(detail::bind_coroutine_call(
+              std::forward<F>(body), std::forward<Arg>(arg),
+              std::forward<Args>(args)...), default_stack_size)) {}
+
+    template <typename F>
+    static coroutine with_stack(std::size_t stack_size, F&& body) {
+        return coroutine(stack_tag(), stack_size, std::forward<F>(body));
+    }
+
+    template <typename F, typename Arg, typename... Args>
+    static coroutine with_stack(std::size_t stack_size, F&& body, Arg&& arg,
+                                Args&&... args) {
+        return coroutine(stack_tag(), stack_size, std::forward<F>(body),
+                         std::forward<Arg>(arg), std::forward<Args>(args)...);
+    }
 
     ~coroutine() noexcept { if (task_) std::terminate(); }
     coroutine(coroutine&& other) noexcept : task_(other.task_) { other.task_ = 0; }
@@ -78,6 +141,18 @@ public:
     static void shutdown() noexcept { detail::scheduler_shutdown(); }
 
 private:
+    struct stack_tag {};
+
+    template <typename F>
+    coroutine(stack_tag, std::size_t stack_size, F&& body)
+        : task_(detail::make_coroutine_task(std::forward<F>(body), stack_size)) {}
+
+    template <typename F, typename Arg, typename... Args>
+    coroutine(stack_tag, std::size_t stack_size, F&& body, Arg&& arg, Args&&... args)
+        : task_(detail::make_coroutine_task(detail::bind_coroutine_call(
+              std::forward<F>(body), std::forward<Arg>(arg),
+              std::forward<Args>(args)...), stack_size)) {}
+
     detail::task_state* task_;
 };
 

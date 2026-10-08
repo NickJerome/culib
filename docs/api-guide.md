@@ -120,12 +120,12 @@ superpowers/specs/2026-10-03-variant-design.md）。
 
     wavvix::coroutine::init();
     defer { wavvix::coroutine::shutdown(); };
-    wavvix::coroutine worker([&] {
-        for (int i = 0; i < 3; ++i) {
+    wavvix::coroutine worker([&](int count) {
+        for (int i = 0; i < count; ++i) {
             produce(i);
             wavvix::coroutine::yield();
         }
-    });
+    }, 3);
     if (!worker.joinable()) return 1;
     worker.join();
 
@@ -133,6 +133,8 @@ superpowers/specs/2026-10-03-variant-design.md）。
 `std::terminate()`，所以离开作用域前要 `join()` 或 `detach()`。`detach()` 只放弃句柄，
 任务仍需由同一 vCPU 的 `join()`、`run()`、`sleep_for()` 或作用域收尾推进。
 构造后若 `joinable()` 为 `false`，说明协程栈分配失败，任务未提交。
+构造函数与 `std::thread` 一样接受函数及其参数；参数先按值保存，运行时移动到函数中。
+需要自定义栈大小时用 `coroutine::with_stack(bytes, function, args...)`。
 协程只在合作式调度点切换，CPU 密集循环不会自动抢占主线程。
 
 `inside()` 判断当前代码是否运行在协程中。协程里执行真正阻塞系统线程的函数会连带阻塞

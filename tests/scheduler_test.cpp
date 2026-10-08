@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -82,9 +83,37 @@ TEST(scheduler, coroutine_object_accepts_move_only_body) {
     EXPECT(value, ==, 7);
 }
 
+TEST(scheduler, coroutine_object_moves_arguments_into_function) {
+    int value = 0;
+    wavvix::coroutine worker([](std::unique_ptr<int> input, int& output) {
+        output = *input;
+    }, std::unique_ptr<int>(new int(11)), std::ref(value));
+    worker.join();
+    EXPECT(value, ==, 11);
+}
+
+TEST(scheduler, coroutine_object_accepts_member_function) {
+    struct counter {
+        int value;
+        void add(int amount) { value += amount; }
+    } target = {2};
+    wavvix::coroutine worker(&counter::add, &target, 5);
+    worker.join();
+    EXPECT(target.value, ==, 7);
+}
+
+TEST(scheduler, coroutine_object_accepts_size_t_argument_and_explicit_stack) {
+    std::size_t value = 0;
+    wavvix::coroutine worker = wavvix::coroutine::with_stack(
+        32 * 1024, [&](std::size_t input) { value = input; }, std::size_t(42));
+    worker.join();
+    EXPECT(value, ==, std::size_t(42));
+}
+
 TEST(scheduler, coroutine_object_reports_unavailable_stack) {
-    wavvix::coroutine too_small([] {}, 0);
-    wavvix::coroutine too_large([] {}, (std::numeric_limits<std::size_t>::max)());
+    wavvix::coroutine too_small = wavvix::coroutine::with_stack(0, [] {});
+    wavvix::coroutine too_large = wavvix::coroutine::with_stack(
+        (std::numeric_limits<std::size_t>::max)(), [] {});
     EXPECT(too_small.joinable(), ==, false);
     EXPECT(too_large.joinable(), ==, false);
     EXPECT(scheduled(), ==, 0u);
