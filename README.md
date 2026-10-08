@@ -244,32 +244,14 @@ culib/
 ├── xmake.lua                   # 构建脚本
 ├── README.md
 ├── include/
-│   └── culib/                  # 公共头文件（对外 API），一个功能一个头文件
-│       ├── culib.h             # 汇总头文件（不含测试框架）
-│       ├── defer.h
-│       ├── result.h            # 结果与错误处理
-│       ├── stopwatch.h         # 秒表
-│       ├── test.h              # 单元测试框架
-│       ├── version.h
-│       └── detail/             # 内部使用的头文件
-├── src/                        # 实现代码（不对外暴露）；纯模板 / 宏的功能只有头文件
-│   ├── result.cpp
-│   ├── stopwatch.cpp
-│   ├── test.cpp
-│   ├── test_posix.cpp          # 平台相关实现：Linux / macOS 共用
-│   ├── test_runner.h           # 单测运行器的内部接口（私有头文件，不安装）
-│   ├── test_win.cpp            # 平台相关实现：Windows
-│   └── version.cpp
-├── tests/                      # 单元测试，全部编译成一个测试程序 culib_test
-│   ├── xmake.lua
-│   ├── main.cpp
-│   └── <功能>_test.cpp
-├── examples/                   # 示例程序，每个 .cpp 一个目标
-│   ├── xmake.lua
-│   └── result.cpp
-├── docs/superpowers/           # 设计文档（specs）与实现计划（plans）
-├── CLAUDE.md                   # 开发约定（写 culib 时看）
-└── .github/workflows/          # CI：Linux GCC / Clang × debug/release；macOS / Windows 待 runner
+│   └── culib/                  # 公共 API；detail/ 为内部实现
+├── src/                        # 静态库实现、平台后端及 asm/ 换栈代码
+├── tests/                      # culib 单元与平台集成测试
+├── examples/                   # 每个 .cpp 对应一个可运行示例
+├── apps/mesh/                  # 独立的加密 mesh 应用与测试
+├── docs/                       # 使用文档、设计记录和实现计划
+├── CLAUDE.md                   # 开发约定
+└── .github/workflows/          # Linux、macOS、Windows 的构建与测试 CI
 ```
 
 ## 错误处理
