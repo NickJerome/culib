@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+case "$(g++ -dumpversion)" in
+    4.8*) ;;
+    *) echo 'expected GCC 4.8' >&2; exit 1 ;;
+esac
+
 build_dir=$(mktemp -d)
 trap 'rm -rf -- "$build_dir"' EXIT
 
