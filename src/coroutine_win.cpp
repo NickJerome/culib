@@ -2,6 +2,7 @@
 // VirtualAlloc 先 RESERVE 再 COMMIT，保护页用 PAGE_NOACCESS。
 
 #include <cstddef>
+#include <limits>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -33,6 +34,9 @@ stack_memory allocate_stack(std::size_t usable) noexcept {
     out.guard = 0;
 
     const std::size_t page = page_size();
+    if (page > (std::numeric_limits<std::size_t>::max)() / 2 ||
+        usable > (std::numeric_limits<std::size_t>::max)() - (2 * page - 1))
+        return out;
     const std::size_t total = ((usable + page - 1) / page + 1) * page;
 
     // 一步到位 RESERVE | COMMIT：Windows 的 commit 不等于占物理内存，没碰到的页

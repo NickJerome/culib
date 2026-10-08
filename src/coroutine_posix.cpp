@@ -1,6 +1,7 @@
 // coroutine 的 POSIX 栈分配。只做一件事：mmap 一段，最低一页设成不可访问。
 
 #include <cstddef>
+#include <limits>
 
 #include <sys/mman.h>
 #include <unistd.h>
@@ -26,6 +27,9 @@ stack_memory allocate_stack(std::size_t usable) noexcept {
     out.guard = 0;
 
     const std::size_t page = page_size();
+    if (page > (std::numeric_limits<std::size_t>::max)() / 2 ||
+        usable > (std::numeric_limits<std::size_t>::max)() - (2 * page - 1))
+        return out;
     // 向上取整到整页，再多一页做保护页
     const std::size_t total = ((usable + page - 1) / page + 1) * page;
 

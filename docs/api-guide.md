@@ -113,50 +113,33 @@ superpowers/specs/2026-10-03-variant-design.md）。
 
 ## [`coroutine.h`](../include/culib/coroutine.h)
 
-完整背景见 [设计文档](superpowers/specs/2026-10-04-coroutine-design.md)。
+公开 `coroutine` 是有栈协程的线程式句柄。先初始化当前操作系统线程的 vCPU，创建任务即提交，`join()` 等指定任务结束：
 
-有栈协程：能在半路让出、之后从原地继续的函数。
+    #include <culib/coroutine.h>
+    #include <culib/defer.h>
 
+    wavvix::coroutine::init();
+    defer { wavvix::coroutine::shutdown(); };
     wavvix::coroutine worker([&] {
         for (int i = 0; i < 3; ++i) {
             produce(i);
-            wavvix::coroutine::yield();     // 让出，下次 resume 从这里继续
+            wavvix::coroutine::yield();
         }
     });
-    while (worker.resume()) {}              // 跑到它结束
+    if (!worker.joinable()) return 1;
+    worker.join();
 
-### 原语与调度器
+也可用 `scheduler_scope` 管理 vCPU。`coroutine` 可移动；仍可 `join()` 的句柄析构会
+`std::terminate()`，所以离开作用域前要 `join()` 或 `detach()`。`detach()` 只放弃句柄，
+任务仍需由同一 vCPU 的 `join()`、`run()`、`sleep_for()` 或作用域收尾推进。
+构造后若 `joinable()` 为 `false`，说明协程栈分配失败，任务未提交。
+协程只在合作式调度点切换，CPU 密集循环不会自动抢占主线程。
 
-`coroutine` 提供手动 `resume()` / `yield()` 的原语；[scheduler.h](../include/culib/scheduler.h)
-提供 `spawn()` / `run()` / `sleep_for()`，二者不能同时驱动同一根协程。
-`inside()` 可用于识别当前是否在协程内：在协程里调用真正阻塞线程的函数，会连带阻塞
-这个 vCPU 上的其他协程。公共网络 I/O 接口尚未实现。
-
-### 代价
-
-  - **一次 resume + yield 的来回约 33 ns**（x86_64 实测，每次切换约 16 ns）。
-    换栈的汇编本身只要 14.5 ns，其余是控制块簿记和那次 thread_local 写。
-  - **创建加销毁一根约 7 µs**，几乎全是 mmap + mprotect + munmap 三个系统调用。
-    也就是说**创建比切换贵两百倍**：真要频繁起协程时得池化栈，那是调度器的事。
-  - 每根协程一段 mmap 的栈，默认 128 KB。那是**虚拟地址**，没碰到的页不占物理内存。
-  - 栈的最低一页是保护页，所以栈溢出是 SIGSEGV，不是静默踩内存。
-
-### 几条必须知道的
-
-  - **协程绑定在第一次 resume 它的那根线程上**，换线程 resume 会打一行诊断后 abort。
-    绑在**第一次 resume** 而不是构造，所以「主线程造一批、分给各个工作线程跑」是
-    允许的，迁移才被拦。
-
-    为什么要拦而不是只写文档：换栈本身跨线程是通的（测过），坏的是两样**静默**的
-    东西——thread_local 会在脚下换成新线程那一份；在 catch 块里跨线程之后
-    std::current_exception() 变成空的（异常状态 __cxa_eh_globals 按线程存）。
-    两样都不崩，只是给错答案，那比当场挂掉难查得多。
-    M:N 要补什么、哪条库修不了，见设计文档 3.12 和 3.13。
-  - **没跑完就销毁时，栈上的局部对象不会析构。** 所以协程体里别持有「非析构不可」
-    的资源，或者保证把它跑完。debug 下半路销毁会打一行诊断。
-  - **异常不能穿出协程。** 协程体内抛接正常（gdb 回溯也正常），但让异常逃出入口
-    函数会 std::terminate——逃到「谁 resume 了我」那一侧是个坏语义。
-  - resume() 不可重入：协程里不能 resume 自己，也不能 resume 正在跑的那根。
+`inside()` 判断当前代码是否运行在协程中。协程里执行真正阻塞系统线程的函数会连带阻塞
+同一 vCPU 的其他协程。库提供的 TCP、同步、睡眠接口会在等待时让出协程。
+底层手动换栈原语在 `detail::fiber`，不是公开的任务接口。实现背景见
+[协程设计记录](superpowers/specs/2026-10-04-coroutine-design.md)；当前用法见
+[协程调度器](scheduler.md)。
 
 ## [`defer.h`](../include/culib/defer.h)
 
@@ -469,30 +452,27 @@ value() / error() 取错分支会打印信息并终止程序，release 同样检
     wavvix::spawn([] { other_work(); });
     wavvix::run();                                          // 跑到全部结束
 
-**spawn 完就不管**，不需要自己 resume——那是调度器的事。<culib/coroutine.h> 里的
-coroutine 类是这一层的地基，手动 resume 的用法留给生成器那种场合，两者**不要混用
-同一根协程**（一根协程只能有一个驱动者）。
+`spawn()` 用于不需要句柄的任务。需要等待指定任务时，用上面的 `coroutine` 和 `join()`。
 
 ### vCPU 模型
 
-**一根操作系统线程 = 一个 vCPU**，上面跑一个调度器和它的一堆协程。run() 把当前线程
-变成 vCPU。想用多核就在多根线程上各调一次 run()，各自有独立的运行队列。
+**一根操作系统线程 = 一个 vCPU**，上面跑一个调度器和它的一堆协程。可用
+`coroutine::init()` / `shutdown()` 或 `scheduler_scope` 管理其生命周期；不用显式初始化时，
+首次创建任务会按需建立 vCPU。想用多核就在多根系统线程上各建一个 vCPU。
 
 协程**绑在它所在的 vCPU 上**，不会被偷到别的 vCPU 去（为什么不偷：换线程会让
 thread_local 和异常状态在协程脚下变掉，见 coroutine 设计文档 3.12，那条库修不了）。
 
 ### 不 spawn 就什么都不初始化
 
-开发约定里有「零配置、零管理：无需 init() / cleanup()」。带 I/O 引擎的调度器绕不开
-初始化，所以这里的做法是**用到才起**：第一次 spawn 时当前线程才变成 vCPU。
+不显式初始化时，第一次创建任务才建立当前线程的 vCPU。
 一个不用协程的程序（比如 CLI）一分钱不付，「不在 main 之前执行任何代码」也没破。
 
 ### 当前边界
 
-事件引擎已有 io_uring、epoll、kqueue、IOCP 四个后端，超时和取消机制也已完成；
-Linux 上 io_uring 不可用时自动退回 epoll。[sync.h](../include/culib/sync.h) 提供协程感知的
-同步原语。这些 I/O 能力仍在库内部，公共句柄和读写接口要等 `net` 模块。
-本次跨平台 CI 尚待验证；调度策略是轮转，不承诺公平性或优先级。
+事件引擎已有 io_uring、epoll、kqueue、IOCP 四个后端；Linux 上 io_uring 不可用时自动退回 epoll。
+[sync.h](../include/culib/sync.h) 提供协程感知的同步原语，
+[net.h](../include/culib/net.h) 提供 TCP 连接、监听和收发。调度策略是轮转，不承诺抢占或优先级。
 分期和已完成范围见 [调度器设计](superpowers/specs/2026-10-04-scheduler-design.md)
 及 [超时与同步原语](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
 

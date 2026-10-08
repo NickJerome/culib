@@ -11,11 +11,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <thread>
 #include <vector>
 
 namespace wavvix {
 namespace detail {
+
+struct task_state;
 
 namespace {
 
@@ -23,21 +26,22 @@ typedef park_clock clock_type;
 typedef park_instant instant;
 
 // 一个 vCPU 的全部状态。每根线程一份，所以运行队列不需要加锁——
-// 协程不跨 vCPU 迁移（coroutine 那边有运行期检查钉着），所以不会有别人来动它。
+// 协程不跨 vCPU 迁移（fiber 那边有运行期检查钉着），所以不会有别人来动它。
 //
-// 队列里直接是 coroutine*，不是「任务」结构体：**可运行的协程没有任何附加状态**。
+// 队列里直接是 fiber*，不是「任务」结构体：**可运行的协程没有任何附加状态**。
 // 时限和唤醒结果都在挂起凭据里，而凭据只在挂着的时候才存在。
 struct vcpu {
-    std::vector<coroutine*> ready;      // 本轮或下一轮要跑的
-    std::vector<coroutine*> incoming;   // 正在跑的协程 spawn 出来的，下一轮入队
+    std::vector<fiber*> ready;      // 本轮或下一轮要跑的
+    std::vector<fiber*> incoming;   // 正在跑的协程 spawn 出来的，下一轮入队
     std::vector<park_token*> parked;    // 挂起的：等定时器 / 等 I/O / 等同步原语，一视同仁
     std::vector<park_token*> roused;    // 本轮被叫醒的，**按叫醒次序**（公平性靠它）
     std::vector<park_token*> completed; // 引擎每轮交回的凭据，复用缓冲不每轮分配
     io_engine* engine;                  // **比 vCPU 更懒一层**：第一次真做 I/O 才建
-    coroutine* current;                 // 正在跑的那根，park 要知道挂起的是谁
+    fiber* current;                 // 正在跑的那根，park 要知道挂起的是谁
     park_token* park_of_current;        // 当前协程挂起了，让出之后由调度器读
     bool running;                       // run() 是否正在这根线程上跑
     std::size_t scope_depth;            // 显式 RAII 作用域的嵌套层数
+    task_state* detached;               // 放弃句柄但还没结束的任务
 };
 
 #if defined(_MSC_VER)
@@ -50,10 +54,12 @@ bool earlier_deadline(const park_token* left, const park_token* right) {
     return left->deadline < right->deadline;
 }
 
-void reap(std::vector<coroutine*>& queue) {
+void reap(std::vector<fiber*>& queue) {
     for (std::size_t i = 0; i < queue.size(); ++i) delete queue[i];
     queue.clear();
 }
+
+void reap_detached(vcpu& self) noexcept;
 
 // 线程退出时把这根线程的 vCPU 收掉。
 //
@@ -72,13 +78,14 @@ struct vcpu_reaper {
         current_vcpu = 0;    // 先摘掉，免得析构过程里又有人 here() 把它救活
 
         // 没跑完的协程在这儿一并销毁（线程不调 run() 就退出时会有）。它们栈上的局部
-        // 对象不会析构，那是 coroutine 的既有语义，见 culib/coroutine.h。
+        // 对象不会析构，那是 fiber 的既有语义，见 culib/detail/fiber.h。
         //
         // **挂起的不可能有**：挂上去必须先在 run() 里跑过，而 run() 不在还有协程挂着
         // 时返回。所以线程退出时 parked 一定是空的，这里也就没有「谁来销毁它们」的
         // 问题——那条不变量同时也是 IOCP 的 OVERLAPPED 不会被提前释放的依据。
         reap(self->ready);
         reap(self->incoming);
+        reap_detached(*self);
 
         if (self->engine) io_engine_destroy(self->engine);
         delete self;
@@ -96,6 +103,7 @@ vcpu& here() {
         current_vcpu->park_of_current = 0;
         current_vcpu->running = false;
         current_vcpu->scope_depth = 0;
+        current_vcpu->detached = 0;
         // 碰一下哨兵，让它登记「这根线程退出时收掉上面那个 vcpu」。一根线程一次。
         static thread_local vcpu_reaper reaper;
         (void)reaper;
@@ -157,14 +165,46 @@ void idle(vcpu& self, bool have_deadline, instant nearest) {
 
 }  // namespace
 
-void scheduler_spawn(coroutine* taken) noexcept {
+struct task_state {
+    explicit task_state(vcpu* parent) noexcept
+        : owner(parent), body(0), waiter(0), next_detached(0),
+          prev_next_detached(0), done(false), detached(false) {}
+    vcpu* owner;
+    fiber* body;
+    park_token* waiter;
+    task_state* next_detached;
+    task_state** prev_next_detached;
+    bool done;
+    bool detached;
+};
+
+namespace {
+
+void reap_detached(vcpu& self) noexcept {
+    task_state* task = self.detached;
+    while (task) {
+        task_state* const next = task->next_detached;
+        delete task;
+        task = next;
+    }
+}
+
+void unlink_detached(task_state* task) noexcept {
+    *task->prev_next_detached = task->next_detached;
+    if (task->next_detached)
+        task->next_detached->prev_next_detached = task->prev_next_detached;
+}
+
+}  // namespace
+
+void scheduler_spawn(fiber* taken) {
     if (!taken) return;
+    std::unique_ptr<fiber> owned(taken);
     if (!taken->ok()) {
         // 栈没分到。不 abort（服务器要降级不要殉职），但 debug 下吭一声。
 #ifndef NDEBUG
         std::fputs("wavvix::spawn: 协程栈分配失败，这根协程不会跑\n", stderr);
 #endif
-        delete taken;
         return;
     }
 
@@ -176,10 +216,11 @@ void scheduler_spawn(coroutine* taken) noexcept {
     } else {
         self.ready.push_back(taken);
     }
+    owned.release();
 }
 
 void* scheduler_scope_enter() {
-    if (coroutine::inside()) die("wavvix::scheduler_scope 只能在 vCPU 线程入口创建");
+    if (fiber::inside()) die("wavvix::scheduler_scope 只能在 vCPU 线程入口创建");
     vcpu& self = here();
     ++self.scope_depth;
     return &self;
@@ -196,8 +237,58 @@ void scheduler_scope_leave(void* owner) noexcept {
     delete self;
 }
 
+void scheduler_init() { scheduler_scope_enter(); }
+
+void scheduler_shutdown() noexcept { scheduler_scope_leave(current_vcpu); }
+
+task_state* scheduler_task_create() { return new task_state(&here()); }
+
+void scheduler_task_discard(task_state* task) noexcept { delete task; }
+
+void scheduler_task_schedule(task_state* task, fiber* body) {
+    task->body = body;
+    scheduler_spawn(body);
+}
+
+void scheduler_task_complete(task_state* task) noexcept {
+    task->done = true;
+    if (task->waiter) scheduler_wake(*task->waiter);
+    if (task->detached) {
+        unlink_detached(task);
+        delete task;
+    }
+}
+
+void scheduler_task_join(task_state* task) {
+    if (task->done) { delete task; return; }
+    vcpu& self = here();
+    if (task->owner != &self) die("wavvix::coroutine::join() 必须在创建它的 vCPU 上调用");
+    if (fiber::inside() && self.current == task->body)
+        die("wavvix::coroutine 不能 join 自己");
+    if (fiber::inside()) {
+        park_token token;
+        task->waiter = &token;
+        scheduler_park(token, std::chrono::nanoseconds(-1));
+        task->waiter = 0;
+    } else {
+        scheduler_run_until(task);
+    }
+    delete task;
+}
+
+void scheduler_task_detach(task_state* task) noexcept {
+    if (task->done) { delete task; return; }
+    if (task->owner != &here()) die("wavvix::coroutine::detach() 必须在创建它的 vCPU 上调用");
+    task->detached = true;
+    vcpu& self = *task->owner;
+    task->next_detached = self.detached;
+    task->prev_next_detached = &self.detached;
+    if (self.detached) self.detached->prev_next_detached = &task->next_detached;
+    self.detached = task;
+}
+
 bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
-    if (!coroutine::inside()) die("wavvix 的挂起只能在协程里调用");
+    if (!fiber::inside()) die("wavvix 的挂起只能在协程里调用");
     vcpu& self = here();
 
     token.owner = self.current;
@@ -209,7 +300,7 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
     // 再调这里的。动了就会把别人的队列拆开。
 
     self.park_of_current = &token;
-    coroutine::yield();          // 调度器读到 park_of_current 就把我们挪进 parked
+    fiber::yield();          // 调度器读到 park_of_current 就把我们挪进 parked
     return token.roused;
 }
 
@@ -230,7 +321,7 @@ bool scheduler_adopt(io_handle handle) {
 }
 
 void scheduler_io(io_request& request, std::chrono::nanoseconds timeout) {
-    if (!coroutine::inside()) die("wavvix 的 I/O 只能在协程里调用");
+    if (!fiber::inside()) die("wavvix 的 I/O 只能在协程里调用");
     vcpu& self = here();
 
     if (!engine_here(self)) {
@@ -265,15 +356,21 @@ void scheduler_io(io_request& request, std::chrono::nanoseconds timeout) {
 }  // namespace detail
 
 void yield() {
-    if (!coroutine::inside()) detail::die("wavvix::yield() 只能在协程里调用");
-    coroutine::yield();
+    if (detail::fiber::inside()) {
+        detail::fiber::yield();
+    } else if (detail::current_vcpu) {
+        detail::scheduler_yield_main();
+    } else {
+        detail::die("wavvix::yield() 需要先初始化当前 vCPU");
+    }
 }
 
 void sleep_for(std::chrono::nanoseconds duration) {
-    if (coroutine::inside()) {
+    if (detail::fiber::inside()) {
         detail::scheduler_sleep_for(duration);
+    } else if (detail::current_vcpu) {
+        detail::scheduler_run_for(duration);
     } else {
-        // 不在协程里就真睡这根线程。这样「随手写个 sleep」在哪儿都是对的。
         std::this_thread::sleep_for(duration);
     }
 }
@@ -286,9 +383,10 @@ std::size_t scheduled() noexcept {
            current_vcpu->parked.size();
 }
 
-std::size_t run() {
+std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
+                                    std::chrono::steady_clock::time_point deadline, bool once) {
     using namespace detail;
-    if (coroutine::inside()) {
+    if (fiber::inside()) {
         die("wavvix::run() 不能在协程里调用：那是在调度器里再跑一个调度器");
     }
     vcpu& self = here();
@@ -296,10 +394,12 @@ std::size_t run() {
 
     self.running = true;
     std::size_t completed = 0;
-    std::vector<coroutine*> round;
+    std::vector<fiber*> round;
     std::vector<park_token*> expired;    // 本轮到点的，复用缓冲不每轮分配
 
     for (;;) {
+        if (target && target->done) break;
+        if (timed && clock_type::now() >= deadline) break;
         // 1. 上一轮 spawn 进来的入队
         if (!self.incoming.empty()) {
             self.ready.insert(self.ready.end(), self.incoming.begin(), self.incoming.end());
@@ -355,13 +455,18 @@ std::size_t run() {
             }
         }
 
+        if (timed && (!have_deadline || deadline < nearest)) {
+            nearest = deadline;
+            have_deadline = true;
+        }
         if (self.ready.empty()) {
+            if (once) break;
             // 没人可跑、没人挂着，才算活干完了。
             //
             // 引擎那一问是**第二道锁**：挂起集为空本来就意味着没有未完成的 I/O（每个
             // 挂上去的操作都对应一根挂着的协程）。留着它是因为它守的是最难查的一类
             // bug——IOCP 的 OVERLAPPED 随栈帧消失，见 docs/implementation-notes.md。
-            if (self.parked.empty() && io_engine_pending(self.engine) == 0) break;
+            if (!timed && self.parked.empty() && io_engine_pending(self.engine) == 0) break;
             idle(self, have_deadline, nearest);
             continue;
         }
@@ -371,7 +476,7 @@ std::size_t run() {
         round.clear();
         round.swap(self.ready);
         for (std::size_t i = 0; i < round.size(); ++i) {
-            coroutine* const body = round[i];
+            fiber* const body = round[i];
             self.park_of_current = 0;
             self.current = body;          // park 要知道挂起的是哪根
 
@@ -386,10 +491,27 @@ std::size_t run() {
                 self.ready.push_back(body);        // 让出了，下一轮继续
             }
         }
+        if (once) break;
     }
 
+    self.current = 0;
     self.running = false;
     return completed;
 }
+
+std::size_t detail::scheduler_run_until(detail::task_state* target) {
+    return scheduler_drive(target, false, std::chrono::steady_clock::time_point(), false);
+}
+
+void detail::scheduler_run_for(std::chrono::nanoseconds duration) {
+    if (duration.count() <= 0) return;
+    scheduler_drive(0, true, std::chrono::steady_clock::now() + duration, false);
+}
+
+void detail::scheduler_yield_main() {
+    scheduler_drive(0, false, std::chrono::steady_clock::time_point(), true);
+}
+
+std::size_t run() { return detail::scheduler_run_until(0); }
 
 }  // namespace wavvix

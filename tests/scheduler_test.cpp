@@ -1,10 +1,14 @@
+#include <culib/coroutine.h>
 #include <culib/scheduler.h>
 #include <culib/stopwatch.h>
 #include <culib/test.h>
 
 #include <chrono>
 #include <cstddef>
+#include <limits>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -16,6 +20,15 @@ using wavvix::spawn;
 using wavvix::yield;
 
 typedef std::chrono::milliseconds ms;
+
+struct move_only_task {
+    explicit move_only_task(int& result) : result_(&result), value_(new int(7)) {}
+    move_only_task(move_only_task&&) = default;
+    move_only_task(const move_only_task&) = delete;
+    void operator()() { *result_ = *value_; }
+    int* result_;
+    std::unique_ptr<int> value_;
+};
 
 }  // namespace
 
@@ -49,6 +62,113 @@ TEST(scheduler, nested_scopes_finish_at_the_outer_boundary) {
     }
     EXPECT(finished, ==, 1);
     EXPECT(scheduled(), ==, 0u);
+}
+
+TEST(scheduler, coroutine_object_joins_like_a_thread) {
+    int ran = 0;
+    wavvix::coroutine worker([&] { ++ran; });
+    EXPECT(worker.joinable(), ==, true);
+    worker.join();
+    EXPECT(ran, ==, 1);
+    EXPECT(worker.joinable(), ==, false);
+    EXPECT(scheduled(), ==, 0u);
+}
+
+TEST(scheduler, coroutine_object_accepts_move_only_body) {
+    int value = 0;
+    wavvix::coroutine worker{move_only_task(value)};
+    worker.join();
+    EXPECT(value, ==, 7);
+}
+
+TEST(scheduler, coroutine_object_reports_unavailable_stack) {
+    wavvix::coroutine too_small([] {}, 0);
+    wavvix::coroutine too_large([] {}, (std::numeric_limits<std::size_t>::max)());
+    EXPECT(too_small.joinable(), ==, false);
+    EXPECT(too_large.joinable(), ==, false);
+    EXPECT(scheduled(), ==, 0u);
+}
+
+TEST(scheduler, coroutine_object_transfers_join_ownership) {
+    int ran = 0;
+    wavvix::coroutine original([&] { ++ran; });
+    wavvix::coroutine moved(std::move(original));
+    EXPECT(original.joinable(), ==, false);
+    EXPECT(moved.joinable(), ==, true);
+    moved.join();
+    EXPECT(ran, ==, 1);
+}
+
+TEST(scheduler, coroutine_object_joins_from_another_coroutine) {
+    bool finished = false;
+    bool joined = false;
+    spawn([&] {
+        wavvix::coroutine worker([&] {
+            sleep_for(ms(10));
+            finished = true;
+        });
+        worker.join();
+        joined = finished;
+    });
+    EXPECT(run(), ==, 2u);
+    EXPECT(joined, ==, true);
+}
+
+TEST(scheduler, coroutine_object_detach_releases_ownership) {
+    int ran = 0;
+    {
+        wavvix::coroutine worker([&] { ++ran; });
+        worker.detach();
+        EXPECT(worker.joinable(), ==, false);
+    }
+    EXPECT(run(), ==, 1u);
+    EXPECT(ran, ==, 1);
+}
+
+TEST(scheduler, detached_coroutine_finishes_at_scope_exit) {
+    int ran = 0;
+    {
+        wavvix::scheduler_scope runtime;
+        wavvix::coroutine worker([&] { ++ran; });
+        worker.detach();
+        EXPECT(ran, ==, 0);
+    }
+    EXPECT(ran, ==, 1);
+}
+
+TEST(scheduler, main_thread_sleep_drives_initialized_vcpu) {
+    wavvix::coroutine::init();
+    int ran = 0;
+    wavvix::coroutine worker([&] {
+        sleep_for(ms(5));
+        ++ran;
+    });
+    sleep_for(ms(20));
+    EXPECT(ran, ==, 1);
+    worker.join();
+    wavvix::coroutine::shutdown();
+    EXPECT(scheduled(), ==, 0u);
+}
+
+TEST(scheduler, main_thread_yield_runs_another_coroutine) {
+    wavvix::coroutine::init();
+    int ran = 0;
+    wavvix::coroutine worker([&] { ++ran; });
+    wavvix::yield();
+    EXPECT(ran, ==, 1);
+    worker.join();
+    wavvix::coroutine::shutdown();
+}
+
+TEST(scheduler, joining_one_coroutine_leaves_unrelated_work_scheduled) {
+    int other = 0;
+    spawn([&] { sleep_for(ms(20)); ++other; });
+    wavvix::coroutine worker([] {});
+    worker.join();
+    EXPECT(other, ==, 0);
+    EXPECT(scheduled(), ==, 1u);
+    EXPECT(run(), ==, 1u);
+    EXPECT(other, ==, 1);
 }
 
 TEST(scheduler, runs_a_single_coroutine_to_completion) {

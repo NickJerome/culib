@@ -1,4 +1,4 @@
-#include <culib/coroutine.h>
+#include <culib/detail/fiber.h>
 #include <culib/test.h>
 
 #include <cstddef>
@@ -8,7 +8,7 @@
 
 namespace {
 
-using wavvix::coroutine;
+using wavvix::detail::fiber;
 
 // 析构有没有被调用，用来验证「没跑过就销毁时 body 会被析构」
 int live_bodies = 0;
@@ -22,9 +22,9 @@ struct tracked {
 
 }  // namespace
 
-TEST(coroutine, runs_nothing_until_resumed) {
+TEST(fiber, runs_nothing_until_resumed) {
     int ran = 0;
-    coroutine worker([&] { ++ran; });
+    fiber worker([&] { ++ran; });
     EXPECT(worker.ok(), ==, true);
     EXPECT(ran, ==, 0);                  // 构造时不执行
     EXPECT(worker.done(), ==, false);
@@ -34,12 +34,12 @@ TEST(coroutine, runs_nothing_until_resumed) {
     EXPECT(worker.done(), ==, true);
 }
 
-TEST(coroutine, resumes_where_it_yielded) {
+TEST(fiber, resumes_where_it_yielded) {
     std::vector<int> produced;
-    coroutine worker([&] {
+    fiber worker([&] {
         for (int i = 0; i < 3; ++i) {
             produced.push_back(i);
-            coroutine::yield();
+            fiber::yield();
         }
     });
 
@@ -53,15 +53,15 @@ TEST(coroutine, resumes_where_it_yielded) {
     EXPECT(worker.done(), ==, true);
 }
 
-TEST(coroutine, keeps_its_own_stack_across_yields) {
+TEST(fiber, keeps_its_own_stack_across_yields) {
     // 局部变量必须活过让出——这是「有栈」的全部意义
-    coroutine worker([] {
+    fiber worker([] {
         int counter = 0;
         char filler[1024];
         for (int i = 0; i < 1024; ++i) filler[i] = static_cast<char>(i);
         for (int round = 0; round < 4; ++round) {
             ++counter;
-            coroutine::yield();
+            fiber::yield();
         }
         // 四轮之后局部变量都还在原样
         EXPECT(counter, ==, 4);
@@ -72,44 +72,44 @@ TEST(coroutine, keeps_its_own_stack_across_yields) {
     EXPECT(worker.done(), ==, true);
 }
 
-TEST(coroutine, resuming_a_finished_one_is_a_no_op) {
+TEST(fiber, resuming_a_finished_one_is_a_no_op) {
     int ran = 0;
-    coroutine worker([&] { ++ran; });
+    fiber worker([&] { ++ran; });
     EXPECT(worker.resume(), ==, false);
     EXPECT(worker.resume(), ==, false);
     EXPECT(worker.resume(), ==, false);
     EXPECT(ran, ==, 1);                  // 只跑了一次
 }
 
-TEST(coroutine, answers_whether_we_are_inside_one) {
-    EXPECT(coroutine::inside(), ==, false);
+TEST(fiber, answers_whether_we_are_inside_one) {
+    EXPECT(fiber::inside(), ==, false);
 
     bool inside_reported = false;
-    coroutine worker([&] {
-        inside_reported = coroutine::inside();
-        coroutine::yield();
+    fiber worker([&] {
+        inside_reported = fiber::inside();
+        fiber::yield();
         // 让出再回来，还在协程里
-        inside_reported = inside_reported && coroutine::inside();
+        inside_reported = inside_reported && fiber::inside();
     });
     while (worker.resume()) {
         // 在协程外面，所以这里必须是 false
-        EXPECT(coroutine::inside(), ==, false);
+        EXPECT(fiber::inside(), ==, false);
     }
     EXPECT(inside_reported, ==, true);
-    EXPECT(coroutine::inside(), ==, false);
+    EXPECT(fiber::inside(), ==, false);
 }
 
-TEST(coroutine, carries_a_capturing_lambda_without_heap) {
+TEST(fiber, carries_a_capturing_lambda_without_heap) {
     // body 就地构造在协程自己的栈顶，所以捕获的东西要能正常用
     const std::string prefix = "前缀";
     std::string collected;
     int times = 0;
 
-    coroutine worker([&] {
+    fiber worker([&] {
         for (int i = 0; i < 3; ++i) {
             collected += prefix;
             ++times;
-            coroutine::yield();
+            fiber::yield();
         }
     });
     while (worker.resume()) {}
@@ -118,13 +118,13 @@ TEST(coroutine, carries_a_capturing_lambda_without_heap) {
     EXPECT(collected, ==, "前缀前缀前缀");
 }
 
-TEST(coroutine, destroys_a_body_that_never_ran) {
+TEST(fiber, destroys_a_body_that_never_ran) {
     live_bodies = 0;
     {
-        // 注意是花括号：写成 coroutine worker(tracked()); 会被解析成函数声明
+        // 注意是花括号：写成 fiber worker(tracked()); 会被解析成函数声明
         // （most vexing parse），而且报错信息很难看懂。传 lambda 时碰不到这个坑，
         // 因为 lambda 没法写成 T() 的形状。
-        coroutine worker{tracked()};
+        fiber worker{tracked()};
         EXPECT(worker.ok(), ==, true);
         EXPECT(live_bodies, ==, 1);      // 构造时拷进了协程栈
     }
@@ -132,9 +132,9 @@ TEST(coroutine, destroys_a_body_that_never_ran) {
     EXPECT(live_bodies, ==, 0);
 }
 
-TEST(coroutine, reports_its_usable_stack) {
-    coroutine small([] {}, 32 * 1024);
-    coroutine large([] {}, 512 * 1024);
+TEST(fiber, reports_its_usable_stack) {
+    fiber small([] {}, 32 * 1024);
+    fiber large([] {}, 512 * 1024);
     EXPECT(small.ok(), ==, true);
     EXPECT(large.ok(), ==, true);
 
@@ -144,23 +144,23 @@ TEST(coroutine, reports_its_usable_stack) {
     EXPECT(large.stack_size() > small.stack_size(), ==, true);
 
     // 默认那个
-    coroutine standard([] {});
+    fiber standard([] {});
     EXPECT(standard.stack_size() >= wavvix::default_stack_size, ==, true);
 }
 
-TEST(coroutine, nests_one_inside_another) {
+TEST(fiber, nests_one_inside_another) {
     // 协程里 resume 另一根协程：外层让出时内层的状态要留着
     std::string trace;
-    coroutine outer([&] {
+    fiber outer([&] {
         trace += "外1";
-        coroutine inner([&] {
+        fiber inner([&] {
             trace += "内1";
-            coroutine::yield();
+            fiber::yield();
             trace += "内2";
         });
         inner.resume();
         trace += "外2";
-        coroutine::yield();          // 内层还没跑完，外层先让出
+        fiber::yield();          // 内层还没跑完，外层先让出
         trace += "外3";
         while (inner.resume()) {}
         trace += "外4";
@@ -170,17 +170,17 @@ TEST(coroutine, nests_one_inside_another) {
     EXPECT(trace, ==, "外1内1外2外3内2外4");
 }
 
-TEST(coroutine, runs_many_of_them_interleaved) {
+TEST(fiber, runs_many_of_them_interleaved) {
     const int count = 64;
     std::vector<int> ticks(static_cast<std::size_t>(count), 0);
-    std::vector<coroutine*> workers;
+    std::vector<fiber*> workers;
     for (int i = 0; i < count; ++i) {
         int* const tick = &ticks[static_cast<std::size_t>(i)];
-        workers.push_back(new coroutine(
+        workers.push_back(new fiber(
             [tick] {
                 for (int round = 0; round < 8; ++round) {
                     ++*tick;
-                    coroutine::yield();
+                    fiber::yield();
                 }
             },
             32 * 1024));
@@ -208,11 +208,11 @@ TEST(coroutine, runs_many_of_them_interleaved) {
 //
 // **abort 那一侧不在单元测试里**：进程会死，测不了。那条用独立程序验证过，
 // 三种情形（owner 还活着、owner 已退出、允许的首次绑定）的输出贴在设计文档 3.13。
-TEST(coroutine, binds_to_the_thread_that_first_resumes_it) {
+TEST(fiber, binds_to_the_thread_that_first_resumes_it) {
     int ran = 0;
-    coroutine worker([&] {
+    fiber worker([&] {
         ++ran;
-        coroutine::yield();
+        fiber::yield();
         ++ran;
     });
 
@@ -230,18 +230,18 @@ TEST(coroutine, binds_to_the_thread_that_first_resumes_it) {
 //
 // 这条**不靠计时**（那会在 CI 上抖）：看同一个位置的局部变量地址。栈被复用的话
 // 两根协程里的 local 会落在同一个地址上，这是确定性的。
-TEST(coroutine, reuses_stacks_from_the_pool) {
+TEST(fiber, reuses_stacks_from_the_pool) {
     void* first = 0;
     void* second = 0;
     {
-        coroutine a([&] {
+        fiber a([&] {
             int local = 0;
             first = &local;
         });
         while (a.resume()) {}
     }
     {
-        coroutine b([&] {
+        fiber b([&] {
             int local = 0;
             second = &local;
         });
@@ -253,16 +253,16 @@ TEST(coroutine, reuses_stacks_from_the_pool) {
 
 // 请求的大小被向上取整到 2 的幂的桶，这样不同请求能落进同一个桶、互相复用。
 // 多出来的是虚拟地址，没碰到的页不占物理内存。
-TEST(coroutine, rounds_stack_requests_into_buckets) {
+TEST(fiber, rounds_stack_requests_into_buckets) {
     void* small_first = 0;
     void* small_again = 0;
     {
-        coroutine a([&] { int local = 0; small_first = &local; }, 40 * 1024);
+        fiber a([&] { int local = 0; small_first = &local; }, 40 * 1024);
         while (a.resume()) {}
     }
     {
         // 40 KB 和 50 KB 取整到同一个桶，所以复用同一块栈
-        coroutine b([&] { int local = 0; small_again = &local; }, 50 * 1024);
+        fiber b([&] { int local = 0; small_again = &local; }, 50 * 1024);
         while (b.resume()) {}
     }
     EXPECT(small_first == small_again, ==, true);
@@ -270,7 +270,7 @@ TEST(coroutine, rounds_stack_requests_into_buckets) {
     // 差很远的大小落进不同的桶，各自独立
     void* large = 0;
     {
-        coroutine c([&] { int local = 0; large = &local; }, 4 * 1024 * 1024);
+        fiber c([&] { int local = 0; large = &local; }, 4 * 1024 * 1024);
         while (c.resume()) {}
     }
     EXPECT(large != 0, ==, true);
@@ -279,13 +279,13 @@ TEST(coroutine, rounds_stack_requests_into_buckets) {
 
 // 大量复用之后每根协程的栈还是干净可用的——池化最怕的是「上一根留下的东西
 // 把下一根搞坏」，所以这里每根都把自己的栈写满再核对。
-TEST(coroutine, keeps_pooled_stacks_usable_after_heavy_churn) {
+TEST(fiber, keeps_pooled_stacks_usable_after_heavy_churn) {
     for (int round = 0; round < 200; ++round) {
         bool verified = false;
-        coroutine worker([&] {
+        fiber worker([&] {
             char filler[4096];
             for (int i = 0; i < 4096; ++i) filler[i] = static_cast<char>(round + i);
-            coroutine::yield();
+            fiber::yield();
             bool ok = true;
             for (int i = 0; i < 4096; ++i) {
                 if (filler[i] != static_cast<char>(round + i)) ok = false;
@@ -297,13 +297,13 @@ TEST(coroutine, keeps_pooled_stacks_usable_after_heavy_churn) {
     }
 }
 
-TEST(coroutine, lets_exceptions_throw_and_catch_inside) {
+TEST(fiber, lets_exceptions_throw_and_catch_inside) {
     // 协程栈内抛接是正常的（gdb 回溯也正常）。穿出协程不行，那条不测——
     // 它会 std::terminate，测不了。
     std::string caught;
-    coroutine worker([&] {
+    fiber worker([&] {
         try {
-            coroutine::yield();
+            fiber::yield();
             throw std::string("协程里的异常");
         } catch (const std::string& error) {
             caught = error;

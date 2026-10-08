@@ -1,10 +1,11 @@
 // coroutine 的平台无关部分：控制块、trampoline、每线程状态、ASan 注解。
 // 换栈的汇编在 src/asm/ 下，栈的分配在 coroutine_posix.cpp / coroutine_win.cpp。
 
-#include <culib/coroutine.h>
+#include <culib/detail/fiber.h>
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
 
@@ -259,8 +260,13 @@ void trampoline(context_transfer from) {
 
 coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_size,
                                     std::size_t body_align, void** body_slot) noexcept {
-    // 控制块和 body 都住在栈顶，所以要多要一点空间
-    const std::size_t extra = sizeof(coroutine_control) + body_size + body_align + 64;
+    const std::size_t max = (std::numeric_limits<std::size_t>::max)();
+    if (stack_size < 16 * 1024 || body_size > max - sizeof(coroutine_control)) return 0;
+    std::size_t extra = sizeof(coroutine_control) + body_size;
+    if (body_align > max - extra) return 0;
+    extra += body_align;
+    if (extra > max - 64 || stack_size > max - (extra + 64)) return 0;
+    extra += 64;
     const stack_memory memory = pooled_allocate_stack(stack_size + extra);
     if (!memory.base) return 0;
 

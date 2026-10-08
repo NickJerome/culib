@@ -2,8 +2,6 @@
 
 // 单个 vCPU 内的协程同步原语，不用于跨线程同步。
 
-#include <culib/coroutine.h>
-
 #include <chrono>
 #include <cstddef>
 
