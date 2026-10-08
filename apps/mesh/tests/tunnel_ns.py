@@ -1,7 +1,8 @@
 """Root-only Linux integration test for two encrypted mesh TUN peers.
 
 Build apps/mesh in debug mode, then run this script in WSL/Linux as root.
-Pass --restart to also restart one peer and verify that the other reconnects.
+Pass --restart to restart one peer, or --address-change to change both peers'
+underlay addresses and verify that they reconnect using fresh candidates.
 It creates three temporary network namespaces and removes them on exit.
 """
 
@@ -76,8 +77,9 @@ def main():
             processes.append(relay)
             time.sleep(0.1)
             peers = []
-            for name, identity, peer_key in (
-                (peer_a, files[0], keys[1]), (peer_b, files[1], keys[0])
+            for name, identity, peer_key, local, remote in (
+                (peer_a, files[0], keys[1], "10.250.0.1", "10.250.0.2"),
+                (peer_b, files[1], keys[0], "10.250.0.2", "10.250.0.1"),
             ):
                 process = subprocess.Popen(
                     ["ip", "netns", "exec", name, str(MESH), "tunnel",
@@ -89,11 +91,7 @@ def main():
                 process.stdin.close()
                 process.stdin = None
                 peers.append(process)
-            interfaces = [wait_line(peer, "virtual interface: ", 10) for peer in peers]
-            for name, interface, local, remote in (
-                (peer_a, interfaces[0], "10.250.0.1", "10.250.0.2"),
-                (peer_b, interfaces[1], "10.250.0.2", "10.250.0.1"),
-            ):
+                interface = wait_line(process, "virtual interface: ", 10)
                 run("ip", "-n", name, "addr", "add", local + "/32",
                     "dev", interface)
                 run("ip", "-n", name, "link", "set", interface, "up")
@@ -109,6 +107,37 @@ def main():
             print(result.stdout, end="")
             if result.returncode != 0:
                 raise RuntimeError("mesh TUN ping failed: " + result.stderr)
+            if "--address-change" in sys.argv:
+                for peer, hub_if, peer_if, old_address, gateway, new_address in (
+                    (peer_a, "ha", "ea", "198.18.1.2", "198.18.1.5", "198.18.1.6"),
+                    (peer_b, "hb", "eb", "198.18.2.2", "198.18.2.5", "198.18.2.6"),
+                ):
+                    run("ip", "-n", hub, "addr", "add", gateway + "/30",
+                        "dev", hub_if)
+                    run("ip", "-n", peer, "addr", "add", new_address + "/30",
+                        "dev", peer_if)
+                    run("ip", "-n", peer, "route", "replace", "default",
+                        "via", gateway)
+                    run("ip", "-n", peer, "addr", "del", old_address + "/30",
+                        "dev", peer_if)
+                for source, target in ((peer_a, "198.18.2.6"),
+                                       (peer_b, "198.18.1.6")):
+                    run("ip", "netns", "exec", source, "ping", "-c", "1",
+                        "-W", "2", target)
+                paths = [wait_line(peer, "authenticated UDP path: ", 45)
+                         for peer in peers]
+                if not paths[0].startswith("198.18.2.6:") or not paths[1].startswith("198.18.1.6:"):
+                    raise RuntimeError("reconnect used an outdated underlay address: " +
+                                       repr(paths))
+                for path in paths:
+                    print("reconnected to " + path)
+                result = subprocess.run(
+                    ["ip", "netns", "exec", peer_a, "ping", "-c", "2", "-W", "5",
+                     "10.250.0.2"],
+                    text=True, capture_output=True, timeout=20)
+                print(result.stdout, end="")
+                if result.returncode != 0:
+                    raise RuntimeError("mesh address-change ping failed: " + result.stderr)
             if "--restart" in sys.argv:
                 peers[1].terminate()
                 peers[1].wait(timeout=5)

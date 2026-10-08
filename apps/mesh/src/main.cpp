@@ -148,21 +148,26 @@ int run_peer(const std::vector<std::string>& args, bool tunnel) {
         wavvix::net::udp_socket::bind(bind_address.value());
     if (opened.is_err()) { print_error(opened.error()); return 1; }
     wavvix::net::udp_socket socket = std::move(opened).value();
-    wavvix::result<std::vector<wavvix::net::endpoint>> listed =
-        wavvix::net::local_candidates(socket);
-    if (listed.is_err()) { print_error(listed.error()); return 1; }
-    std::vector<wavvix::net::endpoint> base_candidates = std::move(listed).value();
-    if (base_candidates.size() > wavvix::net::max_punch_offer_candidates - 1)
-        base_candidates.erase(base_candidates.begin() +
-            static_cast<std::ptrdiff_t>(wavvix::net::max_punch_offer_candidates - 1),
-            base_candidates.end());
-
     bool succeeded = false;
     {
         wavvix::scheduler_scope runtime;
         wavvix::coroutine worker([&] {
             do {
-                std::vector<wavvix::net::endpoint> candidates = base_candidates;
+                wavvix::result<std::vector<wavvix::net::endpoint>> listed =
+                    wavvix::net::local_candidates(socket);
+                if (listed.is_err()) {
+                    print_error(listed.error());
+                    if (!tunnel) return;
+                    wavvix::sleep_for(seconds(1));
+                    continue;
+                }
+                std::vector<wavvix::net::endpoint> candidates =
+                    std::move(listed).value();
+                if (candidates.size() > wavvix::net::max_punch_offer_candidates - 1)
+                    candidates.erase(candidates.begin() +
+                        static_cast<std::ptrdiff_t>(
+                            wavvix::net::max_punch_offer_candidates - 1),
+                        candidates.end());
                 if (args.size() >= 8) {
                     wavvix::result<wavvix::net::endpoint> stun =
                         wavvix::net::endpoint::parse(args[6], stun_port);

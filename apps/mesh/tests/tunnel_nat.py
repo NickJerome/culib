@@ -107,9 +107,9 @@ def main():
             processes.append(relay)
             time.sleep(0.2)
             peers = []
-            for name, filename, peer_key, port in (
-                (peer_a, files[0], keys[1], 44001),
-                (peer_b, files[1], keys[0], 44002),
+            for name, filename, peer_key, port, local, remote in (
+                (peer_a, files[0], keys[1], 44001, "10.250.0.1", "10.250.0.2"),
+                (peer_b, files[1], keys[0], 44002, "10.250.0.2", "10.250.0.1"),
             ):
                 process = subprocess.Popen(
                     ["ip", "netns", "exec", name, str(MESH), "tunnel",
@@ -122,11 +122,7 @@ def main():
                 process.stdin.close()
                 process.stdin = None
                 peers.append(process)
-            interfaces = [wait_line(peer, "virtual interface: ", 10) for peer in peers]
-            for name, interface, local, remote in (
-                (peer_a, interfaces[0], "10.250.0.1", "10.250.0.2"),
-                (peer_b, interfaces[1], "10.250.0.2", "10.250.0.1"),
-            ):
+                interface = wait_line(process, "virtual interface: ", 10)
                 run("ip", "-n", name, "addr", "add", local + "/32",
                     "dev", interface)
                 run("ip", "-n", name, "link", "set", interface, "up")
