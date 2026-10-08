@@ -62,15 +62,19 @@ jobs:
           exit $status
 
   no-exceptions-rtti:
-    name: GCC C++11 without exceptions or RTTI
+    name: Linux ${{ matrix.toolchain }} C++11 without exceptions or RTTI
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [gcc, clang]
     steps:
       - uses: actions/checkout@v4
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
       - name: configure without exceptions or RTTI
-        run: xmake f -m release --toolchain=gcc --cxxflags="-fno-exceptions -fno-rtti" --ccache=n -y
+        run: xmake f -m release --toolchain=${{ matrix.toolchain }} --cxxflags="-fno-exceptions -fno-rtti" --ccache=n -y
       - name: build library
         shell: bash
         run: bash .github/report-failure.sh xmake -w -y
