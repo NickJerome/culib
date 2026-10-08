@@ -69,13 +69,19 @@ int main() {
     const result<int> port = load_port();
     std::printf("  load_port() -> %d   （PORT 没设置，用了默认值 8080）\n", port.value_or(-1));
 
+#if defined(__GLIBCXX__) && defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
+    const bool small_trivial = false;
+    const bool string_trivial = false;
+#else
+    const bool small_trivial = std::is_trivially_copyable<optional<int> >::value;
+    const bool string_trivial = std::is_trivially_copyable<optional<std::string> >::value;
+#endif
     std::printf("\n开销：\n");
-    std::printf("  optional<int>         %zu 字节，平凡可复制=%s（走寄存器返回）\n",
-                sizeof(optional<int>),
-                std::is_trivially_copyable<optional<int> >::value ? "是" : "否");
+    std::printf("  optional<int>         %zu 字节，平凡可复制=%s%s\n",
+                sizeof(optional<int>), small_trivial ? "是" : "否",
+                small_trivial ? "（走寄存器返回）" : "");
     std::printf("  optional<std::string> %zu 字节，平凡可复制=%s\n",
-                sizeof(optional<std::string>),
-                std::is_trivially_copyable<optional<std::string> >::value ? "是" : "否");
+                sizeof(optional<std::string>), string_trivial ? "是" : "否");
 
     std::printf("\n两个容易误读的地方：\n");
     optional<std::string> moved_from = std::string("abc");
