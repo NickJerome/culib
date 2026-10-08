@@ -119,7 +119,7 @@ std::string relative_path(const std::string& root, const char* absolute_path) {
     return std::string("\0", 1);
 }
 
-void stream_callback(const FSEventStreamRef, void* info, size_t count, void* paths,
+void stream_callback(ConstFSEventStreamRef, void* info, size_t count, void* paths,
                      const FSEventStreamEventFlags flags[],
                      const FSEventStreamEventId[]) {
     root_watch* const root = static_cast<root_watch*>(info);
@@ -163,7 +163,10 @@ result<void> start_stream(watcher_state& state, root_watch& root) {
         paths, kFSEventStreamEventIdSinceNow, 0.05, flags);
     ::CFRelease(paths);
     if (!root.stream) return make_error(error_kind::io, "创建 FSEvents stream 失败");
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     ::FSEventStreamScheduleWithRunLoop(root.stream, state.loop, kCFRunLoopDefaultMode);
+#pragma clang diagnostic pop
     if (!::FSEventStreamStart(root.stream)) {
         ::FSEventStreamInvalidate(root.stream);
         ::FSEventStreamRelease(root.stream);
