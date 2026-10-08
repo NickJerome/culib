@@ -73,8 +73,40 @@ error from_last_error(string_view what, string_view path, DWORD code) {
                       what.to_string() + " " + path.to_string() + " 失败：" + describe(code));
 }
 
-// 路径转 UTF-16。转换失败说明传进来的不是合法 UTF-8，那本身就是错误。
-result<std::wstring> wide_path(string_view path) { return utf8_to_wide(path); }
+result<std::wstring> wide_path(string_view path) {
+    result<std::wstring> converted = utf8_to_wide(path);
+    if (converted.is_err()) return std::move(converted).error();
+    std::wstring wide = std::move(converted).value();
+    // 建目录时 Win32 还需给尾随的 8.3 文件名预留 12 个字符。
+    if (wide.size() < MAX_PATH - 12 ||
+        (wide.size() >= 4 && wide[0] == L'\\' && wide[1] == L'\\' &&
+         (wide[2] == L'?' || wide[2] == L'.') && wide[3] == L'\\'))
+        return wide;
+
+    DWORD capacity = ::GetFullPathNameW(wide.c_str(), 0, 0, 0);
+    if (capacity == 0) return from_last_error("解析路径", path, ::GetLastError());
+    std::wstring absolute;
+    bool resolved = false;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        absolute.resize(capacity);
+        const DWORD length = ::GetFullPathNameW(wide.c_str(), capacity, &absolute[0], 0);
+        if (length == 0) return from_last_error("解析路径", path, ::GetLastError());
+        if (length < capacity) {
+            absolute.resize(length);
+            resolved = true;
+            break;
+        }
+        capacity = length + 1;
+    }
+    if (!resolved)
+        return make_error(error_kind::out_of_range, "路径在解析时发生变化");
+    for (std::size_t i = 0; i < absolute.size(); ++i) {
+        if (absolute[i] == L'/') absolute[i] = L'\\';
+    }
+    if (absolute.size() >= 2 && absolute[0] == L'\\' && absolute[1] == L'\\')
+        return std::wstring(L"\\\\?\\UNC\\") + absolute.substr(2);
+    return std::wstring(L"\\\\?\\") + absolute;
+}
 
 result<DWORD> attributes_of(string_view path) {
     const result<std::wstring> wide = wide_path(path);

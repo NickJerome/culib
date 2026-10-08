@@ -349,6 +349,38 @@ TEST(fs, recursive_remove_does_not_follow_a_directory_junction) {
         if (wide_link.is_ok()) ::RemoveDirectoryW(wide_link.value().c_str());
     }
 }
+
+TEST(fs, handles_extended_length_windows_paths) {
+    const scratch area("extended_path");
+    if (!EXPECT(area.ok(), ==, true)) return;
+
+    const std::string root = "\\\\?\\" + area.root();
+    const std::string first_name(90, 'a');
+    const std::string second_name(90, 'b');
+    const std::string third_name(90, 'c');
+    const std::string first = fs::join(root, first_name);
+    const std::string second = fs::join(first, second_name);
+    const std::string third = fs::join(second, third_name);
+    const std::string file = fs::join(third, "payload.txt");
+    const std::string plain_third = fs::join(
+        fs::join(fs::join(area.root(), first_name), second_name), third_name);
+    const std::string plain_file = fs::join(plain_third, "payload.txt");
+    EXPECT(file.size() > MAX_PATH, ==, true);
+    if (!EXPECT(fs::create_directory(plain_third, fs::recursive::yes).is_ok(),
+                ==, true)) return;
+    EXPECT(fs::write_file(file, "extended path").is_ok(), ==, true);
+    EXPECT(fs::read_file(file).value_or(""), ==, "extended path");
+    EXPECT(fs::read_file(plain_file).value_or(""), ==, "extended path");
+    EXPECT(fs::write_file(plain_file, "ordinary path").is_ok(), ==, true);
+    EXPECT(fs::read_file(file).value_or(""), ==, "ordinary path");
+    const result<std::vector<std::string>> listed = fs::list_directory(plain_third);
+    if (EXPECT(listed.is_ok(), ==, true)) {
+        EXPECT(listed.value().size(), ==, 1u);
+        if (!listed.value().empty()) EXPECT(listed.value()[0], ==, "payload.txt");
+    }
+    EXPECT(fs::remove_directory(area.root(), fs::recursive::yes).is_ok(), ==, true);
+    EXPECT(fs::exists(root), ==, false);
+}
 #endif
 
 #ifndef _WIN32
