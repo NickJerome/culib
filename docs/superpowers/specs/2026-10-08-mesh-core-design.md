@@ -46,7 +46,7 @@ Windows 后端运行时加载 `wintun.dll`，为每次 `open()` 创建临时命�
 
 `tests/wintun_roundtrip.ps1` 用同一真实 DLL 运行 `example_net_virtual --icmp-echo`，给临时适配器分配文档测试地址 `198.51.100.1/30`，等地址进入 Preferred 状态后由 Windows `ping 198.51.100.2`。示例只响应目标地址的 IPv4 ICMP Echo Request，重算 IP/ICMP 校验和并通过 Wintun 写回。两次运行都得到 `Reply from 198.51.100.2` 与 `ICMP echo replied`，退出后没有残留适配器或测试地址。这是 Windows 网络栈经真实虚拟网卡的本机往返，不证明远端节点、隧道加密或重连。
 
-WSL2 Ubuntu 22.04 上以有 `CAP_NET_ADMIN` 的 root 创建 TUN，给接口设置 `192.0.2.1/30`，经内核发出 UDP 生成 IPv4 报文，再将反向 IPv4/UDP 报文写回 TUN，应用套接字收到 `pong`。同一测试强制 epoll 和 io_uring 均通过；主工程的无特权 CI 只检查错误路径。mesh 的独立 [Linux 特权 CI](https://github.com/NickJerome/culib/actions/runs/37829715273) 已实际运行双 NAT、TUN、映射变化、节点重启和底层地址变化测试。接口启动时可能先产生 IPv6 控制报文，因此测试按目标 IPv4 地址筛选，不能假定第一包就是测试包。
+WSL2 Ubuntu 22.04 上以有 `CAP_NET_ADMIN` 的 root 创建 TUN，给接口设置 `192.0.2.1/30`，经内核发出 UDP 生成 IPv4 报文，再将反向 IPv4/UDP 报文写回 TUN，应用套接字收到 `pong`。同一测试强制 epoll 和 io_uring 均通过；主工程的无特权 CI 只检查错误路径。mesh 的独立 [Linux 特权 CI](https://github.com/NickJerome/culib/actions/runs/37830720816) 已实际运行双 NAT、TUN、映射变化、节点重启和底层地址变化测试；其中 NAT 同时覆盖端口保持与非端口保持映射。接口启动时可能先产生 IPv6 控制报文，因此测试按目标 IPv4 地址筛选，不能假定第一包就是测试包。
 
 STUN 仅做 RFC 8489 Binding 所需的最小子集，优先解析 `XOR-MAPPED-ADDRESS`；它返回的是当前 socket 的映射，不把一次查询推广成“这个 NAT 是什么类型”的结论。12 字节 transaction ID 来自系统随机源；响应必须匹配 ID 和服务器地址，长度、属性边界与 IPv6 异或规则都逐项检查。查询期间调用方独占该 UDP socket，避免把业务报文误当响应或由查询函数吞掉。
 
