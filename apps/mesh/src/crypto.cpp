@@ -80,6 +80,41 @@ wavvix::result<identity> generate_identity() {
     return key;
 }
 
+wavvix::result<wavvix::net::punch_session_id> derive_session_id(
+    const public_key& local, const wavvix::net::punch_session_id& local_challenge,
+    const public_key& peer, const wavvix::net::punch_session_id& peer_challenge) {
+    if (sodium_init() < 0)
+        return wavvix::make_error(wavvix::error_kind::io, "libsodium initialization failed");
+    const int ordering = std::memcmp(local.data(), peer.data(), local.size());
+    if (ordering == 0)
+        return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                  "mesh session requires distinct peer identities");
+    static const char domain[] = "culib-mesh-session-v1";
+    unsigned char context[sizeof(domain) - 1 + 2 * (32 + 16)];
+    std::size_t offset = 0;
+    std::memcpy(context + offset, domain, sizeof(domain) - 1);
+    offset += sizeof(domain) - 1;
+    const public_key& first_key = ordering < 0 ? local : peer;
+    const public_key& second_key = ordering < 0 ? peer : local;
+    const wavvix::net::punch_session_id& first_challenge =
+        ordering < 0 ? local_challenge : peer_challenge;
+    const wavvix::net::punch_session_id& second_challenge =
+        ordering < 0 ? peer_challenge : local_challenge;
+    std::memcpy(context + offset, first_key.data(), first_key.size());
+    offset += first_key.size();
+    std::memcpy(context + offset, first_challenge.data(), first_challenge.size());
+    offset += first_challenge.size();
+    std::memcpy(context + offset, second_key.data(), second_key.size());
+    offset += second_key.size();
+    std::memcpy(context + offset, second_challenge.data(), second_challenge.size());
+    wavvix::net::punch_session_id session = {};
+    if (crypto_generichash(session.data(), session.size(),
+                           context, sizeof(context), 0, 0) != 0)
+        return wavvix::make_error(wavvix::error_kind::io,
+                                  "mesh session derivation failed");
+    return session;
+}
+
 wavvix::result<std::vector<unsigned char>> seal_offer(
     const identity& sender, const public_key& recipient,
     const wavvix::net::punch_offer& offer, std::chrono::system_clock::time_point now) {

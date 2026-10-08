@@ -48,6 +48,12 @@ wavvix::result<identity> create_identity_file(
 wavvix::result<identity> load_identity_file(
     wavvix::string_view path, wavvix::string_view passphrase);
 
+// Both offers carry independent random session contributions. Combine them after
+// authenticating the peer offer; the result is identical on both endpoints.
+wavvix::result<wavvix::net::punch_session_id> derive_session_id(
+    const public_key& local, const wavvix::net::punch_session_id& local_challenge,
+    const public_key& peer, const wavvix::net::punch_session_id& peer_challenge);
+
 // Encrypt an offer for a pinned peer. The relay sees public routing keys only.
 wavvix::result<std::vector<unsigned char>> seal_offer(
     const identity& sender, const public_key& recipient,

@@ -75,6 +75,31 @@ int main() {
     if (premature.is_ok() || premature.error().kind() != wavvix::error_kind::timeout)
         return fail("future offer was accepted");
 
+    wavvix::net::punch_offer bob_offer = offer;
+    bob_offer.session[0] = 2;
+    wavvix::result<std::vector<unsigned char>> bob_sealed =
+        mesh::seal_offer(bob, alice.public_part(), bob_offer, now);
+    if (bob_sealed.is_err()) return fail("reverse offer encryption failed");
+    mesh::offer_receiver alice_receiver(alice, bob.public_part());
+    wavvix::result<wavvix::net::punch_offer> alice_received =
+        alice_receiver.open(bob_sealed.value().data(), bob_sealed.value().size(), now);
+    if (alice_received.is_err()) return fail("reverse offer authentication failed");
+    wavvix::result<wavvix::net::punch_session_id> alice_session =
+        mesh::derive_session_id(alice.public_part(), offer.session,
+                                bob.public_part(), alice_received.value().session);
+    wavvix::result<wavvix::net::punch_session_id> bob_session =
+        mesh::derive_session_id(bob.public_part(), bob_offer.session,
+                                alice.public_part(), opened.value().session);
+    if (alice_session.is_err() || bob_session.is_err() ||
+        alice_session.value() != bob_session.value())
+        return fail("authenticated peers derived different session IDs");
+    bob_offer.session[0] ^= 1;
+    wavvix::result<wavvix::net::punch_session_id> changed =
+        mesh::derive_session_id(alice.public_part(), offer.session,
+                                bob.public_part(), bob_offer.session);
+    if (changed.is_err() || changed.value() == alice_session.value())
+        return fail("changing a peer contribution reused the session ID");
+
     mesh::identity moved_alice(std::move(alice));
     if (mesh::seal_offer(alice, bob.public_part(), offer, now).is_ok())
         return fail("moved-from identity encrypted an offer");

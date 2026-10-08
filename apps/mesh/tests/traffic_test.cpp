@@ -23,8 +23,15 @@ int main() {
     mesh::identity alice = std::move(alice_key).value();
     mesh::identity bob = std::move(bob_key).value();
     mesh::identity stranger = std::move(stranger_key).value();
-    wavvix::net::punch_session_id session = {};
-    session[0] = 7;
+    wavvix::net::punch_session_id alice_challenge = {};
+    wavvix::net::punch_session_id bob_challenge = {};
+    alice_challenge[0] = 7;
+    bob_challenge[0] = 9;
+    wavvix::result<wavvix::net::punch_session_id> derived_session =
+        mesh::derive_session_id(alice.public_part(), alice_challenge,
+                                bob.public_part(), bob_challenge);
+    if (derived_session.is_err()) return fail("session derivation failed");
+    const wavvix::net::punch_session_id session = derived_session.value();
 
     wavvix::result<mesh::traffic_session> alice_open =
         mesh::traffic_session::create(alice, bob.public_part(), session);
