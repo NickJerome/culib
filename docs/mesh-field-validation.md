@@ -18,7 +18,7 @@ mesh peer node.key PEER_PUBLIC_KEY RELAY_IP 39011 STUN_IP STUN_PORT
 
 没有 NAT、双方已有可直接访问的地址时可省去末尾两个 STUN 参数。两端都必须先打印 `authenticated UDP path: ...`，再打印 `encrypted UDP probe: ok`，并以退出码 0 结束。后一行意味着该端在当前认证会话中收到自己发出的加密请求的有效应答；只看到前一行说明控制报文打洞成功，不能证明加密数据双向可达。记录两端显示的对端 UDP 地址及网络类型，尤其是 STUN 反射端口。若其中一端失败，不要把另一端的成功输出当成整条路径验收通过。
 
-本仓库的无特权回环对照是 `python3 apps/mesh/tests/peer_probe.py debug`（Windows 使用 `python`）。它启动本机中继和两个独立节点，已进入三平台 CI；它不是公网 NAT 测试。
+本仓库的无特权回环对照是 `python3 apps/mesh/tests/peer_probe.py debug`（Windows 使用 `python`）。它启动本机中继和两个独立节点，已进入三平台 CI。Linux root 还可运行 `python3 apps/mesh/tests/tunnel_nat.py --probe`，在两个隔离的端口保持 NAT 后检查同一入口的加密数据应答；两者都不是真实公网 NAT 测试。
 
 ## 再验收虚拟网卡往返
 

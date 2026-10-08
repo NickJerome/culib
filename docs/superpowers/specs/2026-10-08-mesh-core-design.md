@@ -68,4 +68,6 @@ Linux root 下的 `tests/net_punch_nat.py` 创建两个 peer、两个独立端�
 
 现场验收先用无特权的 `mesh peer` 缩小问题范围：认证与打洞后，两端都用新会话的 `CMD1` 密钥每 200 ms 发送一字节加密请求，收到请求就回加密应答；每端收到自己的有效应答后继续短暂回应对端重试，再成功退出。十秒内缺少有效应答即报超时，不把控制报文打洞成功当作数据通路成功。`apps/mesh/tests/peer_probe.py` 在两个独立进程和本机中继上验证这一入口，[三平台 debug/release CI](https://github.com/NickJerome/culib/actions/runs/37826252912) 已通过；它不能替代两台真实公网机器，也不覆盖虚拟网卡路由或 IP 往返。后者仍须按[跨机器验收检查单](../../mesh-field-validation.md)用 `mesh tunnel` 验收。
 
+2026-10-09 的本机复验发现 Linux 和 Windows↔WSL 集成脚本仍指向旧的 `apps/mesh/build/`，而 `xmake -P apps/mesh` 更新的是仓库根目录 `build/`。修正路径后用当前二进制重跑：`tunnel_nat.py --probe` 在两个端口保持 NAT 后的双方都收到加密应答，自动、强制 epoll、强制 io_uring 均通过；原有 NAT 端口变化的 TUN 双向往返在三种后端下通过，节点重启和双方底层地址变化也各完成变化前后八次单包 ping。Windows 真实 Wintun 与 WSL Linux TUN 从双方各主动发起两次单包 ping，四次均收到回复，退出清理检查通过。这些是本机受控环境的复验，不是公网或独立 macOS 主机证据。
+
 `apps/mesh/tests/tunnel_windows_wsl.py` 在 Windows 管理员环境使用官方签名的 x64 Wintun DLL，启动真实 Wintun 节点、WSL2 的 Linux TUN 节点和 Linux 信令中继。两端完成固定公钥认证和 UDP 打洞后，Windows 和 WSL 轮流主动发起各两次单包 ping，四次均经加密隧道收到对端 ICMP Echo Reply；退出后没有残留 Wintun 适配器或 Linux TUN。此前仅从 Windows 发起的两轮测试也通过。首次尝试因 Windows 对坏候选的 UDP `WSAECONNRESET` 中断打洞而失败，因此在 Windows socket 创建时关闭该 Winsock 行为，并添加回归测试。这项验证跨两个内核和真实驱动，但共享同一物理主机与网络，不替代远端公网 NAT 验收。
