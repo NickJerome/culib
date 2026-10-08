@@ -47,7 +47,7 @@ std::chrono::nanoseconds remaining(bool timed, clock_type::time_point deadline) 
 }  // namespace
 
 result<punch_session_id> random_punch_session_id() {
-    punch_session_id id = {};
+    punch_session_id id = {{}};
     result<void> random = detail::stun_random_bytes(id.data(), id.size());
     if (random.is_err()) return std::move(random).error();
     return id;

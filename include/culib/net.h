@@ -149,7 +149,7 @@ const std::size_t max_punch_offer_candidates = 32;
 const std::size_t max_punch_offer_size = 4 + 16 + 1 +
     max_punch_offer_candidates * (1 + 2 + 4 + 16);
 struct punch_offer {
-    punch_session_id session = {};
+    punch_session_id session = {{}};
     std::vector<endpoint> candidates;
 };
 result<std::vector<unsigned char>> encode_punch_offer(const punch_offer& offer);

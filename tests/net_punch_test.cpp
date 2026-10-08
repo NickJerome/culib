@@ -24,7 +24,7 @@ TEST(net_punch, two_peers_discover_each_other_over_the_same_udp_sockets) {
     const wavvix::result<net::endpoint> left_address = left.local_endpoint();
     const wavvix::result<net::endpoint> right_address = right.local_endpoint();
     if (!EXPECT(left_address.is_ok() && right_address.is_ok(), ==, true)) return;
-    net::punch_session_id session = {};
+    net::punch_session_id session = {{}};
     for (unsigned i = 0; i < session.size(); ++i)
         session[i] = static_cast<unsigned char>(i + 1);
 
@@ -56,7 +56,7 @@ TEST(net_punch, ignores_unrelated_data_and_times_out_without_a_peer) {
     const wavvix::result<net::endpoint> active_address = active.local_endpoint();
     const wavvix::result<net::endpoint> passive_address = passive.local_endpoint();
     if (!EXPECT(active_address.is_ok() && passive_address.is_ok(), ==, true)) return;
-    net::punch_session_id session = {};
+    net::punch_session_id session = {{}};
     wavvix::spawn([&] {
         const std::vector<net::endpoint> candidates(1, passive_address.value());
         wavvix::result<net::endpoint> selected = net::udp_punch(active, candidates, session, ms(50));
@@ -89,7 +89,7 @@ TEST(net_punch, accepts_confirmed_peer_at_a_changed_mapping) {
     const wavvix::result<net::endpoint> rebound_address = rebound.local_endpoint();
     if (!EXPECT(active_address.is_ok() && candidate_address.is_ok() &&
                 rebound_address.is_ok(), ==, true)) return;
-    net::punch_session_id session = {};
+    net::punch_session_id session = {{}};
     for (unsigned i = 0; i < session.size(); ++i)
         session[i] = static_cast<unsigned char>(i + 1);
 
@@ -142,7 +142,7 @@ TEST(net_punch, does_not_finish_after_only_one_side_is_confirmed) {
     const wavvix::result<net::endpoint> active_address = active.local_endpoint();
     const wavvix::result<net::endpoint> passive_address = passive.local_endpoint();
     if (!EXPECT(active_address.is_ok() && passive_address.is_ok(), ==, true)) return;
-    net::punch_session_id session = {};
+    net::punch_session_id session = {{}};
     session[0] = 1;
     wavvix::spawn([&] {
         const std::vector<net::endpoint> candidates(1, passive_address.value());
@@ -170,7 +170,7 @@ TEST(net_punch, does_not_finish_after_only_one_side_is_confirmed) {
 
 TEST(net_punch, rejects_an_empty_candidate_set) {
     net::udp_socket socket;
-    net::punch_session_id session = {};
+    net::punch_session_id session = {{}};
     const std::vector<net::endpoint> empty;
     wavvix::result<net::endpoint> selected = net::udp_punch(socket, empty, session, ms(1));
     EXPECT(selected.is_err(), ==, true);
@@ -186,7 +186,7 @@ TEST(net_punch, does_not_confirm_its_own_probe) {
     net::udp_socket socket = std::move(opened).value();
     const wavvix::result<net::endpoint> local = socket.local_endpoint();
     if (!EXPECT(local.is_ok(), ==, true)) return;
-    net::punch_session_id session = {};
+    net::punch_session_id session = {{}};
     wavvix::spawn([&] {
         const std::vector<net::endpoint> candidates(1, local.value());
         wavvix::result<net::endpoint> selected =
@@ -206,7 +206,7 @@ TEST(net_punch, rejects_an_unspecified_candidate) {
     wavvix::result<net::udp_socket> opened = net::udp_socket::bind(loopback.value());
     if (!EXPECT(opened.is_ok(), ==, true)) return;
     net::udp_socket socket = std::move(opened).value();
-    net::punch_session_id session = {};
+    net::punch_session_id session = {{}};
     const std::vector<net::endpoint> candidates(1, unspecified.value());
     const wavvix::result<net::endpoint> selected =
         net::udp_punch(socket, candidates, session, ms(50));
