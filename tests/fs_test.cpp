@@ -294,6 +294,20 @@ TEST(fs, reports_permission_denied_for_an_unreadable_file) {
     if (read.is_err()) EXPECT(read.error().kind(), ==, error_kind::permission_denied);
     EXPECT(::chmod(path.c_str(), S_IRUSR | S_IWUSR), ==, 0);
 }
+
+TEST(fs, handles_a_long_path_view_without_a_trailing_nul) {
+    const scratch area("long_path");
+    if (!EXPECT(area.ok(), ==, true)) return;
+
+    const std::string path = area.at(std::string(240, 'x'));
+    if (!EXPECT(path.size() > 255, ==, true)) return;
+    const std::string storage = path + "ignored";
+    const string_view view(storage.data(), path.size());
+    EXPECT(fs::write_file(view, "payload").is_ok(), ==, true);
+    EXPECT(fs::read_file(view).value_or(""), ==, "payload");
+    EXPECT(fs::remove_file(view).is_ok(), ==, true);
+    EXPECT(fs::exists(path), ==, false);
+}
 #endif
 
 TEST(fs, copies_and_renames) {
