@@ -1,7 +1,7 @@
 # Linux io_uring 后端设计
 
 - 日期：2026-10-08
-- 状态：本机已实现并验证；跨平台 CI 待跑。
+- 状态：已实现；本机验证和跨平台 CI 均通过。
 - 前置：[调度器设计](2026-10-04-scheduler-design.md)第四期、[事件引擎设计](2026-10-05-event-engine-design.md)、[超时与同步原语](2026-10-05-sync-and-timeout-design.md)。
 
 ## 范围
@@ -38,4 +38,6 @@
 
 用 `strace` 观察强制 uring 的 I/O 测试：出现一次 `io_uring_setup` 和多次 `io_uring_enter`，没有 `epoll_create1`。再用 `strace -e inject=io_uring_setup:error=EPERM` 注入创建失败，同一组 I/O 测试通过且观察到 `epoll_create1`。这验证了真实 uring 路径与自动退回，不能把普通的绿测误当成 uring 已被选中。
 
-**尚未覆盖**：macOS 的本次改动 CI；Linux 旧内核及缺少 `linux/io_uring.h` 的编译环境；超出本机 300 请求规模的长期压力测试与吞吐对比。CI 的 Linux 容器可能拒绝创建环，默认测试在那里只证明退回路径。尚无与手写等价循环的同场性能比较，所以不声称加速倍数。
+2026-10-08 推送 `14abc22` 后，[GitHub Actions build](https://github.com/NickJerome/culib/actions/runs/37739733870) 的 Linux GCC/Clang、macOS Clang、Windows MSVC debug/release、公共头文件检查和作为依赖消费检查均通过。CI 的 Linux 容器可能拒绝创建环，默认测试在那里只证明自动退回；真实 io_uring 路径由上面的本机强制测试与 `strace` 验证。
+
+**尚未覆盖**：Linux 旧内核及缺少 `linux/io_uring.h` 的编译环境；超出本机 300 请求规模的长期压力测试与吞吐对比。尚无与手写等价循环的同场性能比较，所以不声称加速倍数。
