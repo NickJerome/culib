@@ -1,5 +1,6 @@
 #include <culib/string_view.h>
 #include <culib/test.h>
+#include "triviality_compat.h"
 
 #include <sstream>
 #include <string>
@@ -14,7 +15,7 @@ const string_view::size_type npos = string_view::npos;
 // 视图是一个指针加一个长度，而且必须是平凡可复制的，否则按值传参就不是零开销了。
 static_assert(sizeof(string_view) == sizeof(const char*) + sizeof(std::size_t),
               "string_view must be just a pointer and a size");
-static_assert(std::is_trivially_copyable<string_view>::value,
+static_assert(wavvix_test::is_trivially_copyable<string_view>::value,
               "string_view must be trivially copyable so passing it by value is free");
 
 // 身份不能随语言标准变化，否则 culib（C++11）和使用方（C++17）的签名对不上。

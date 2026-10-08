@@ -650,7 +650,8 @@ TEST(io_engine, uring_reads_and_writes_a_regular_file) {
     }
     const int fd = ::fileno(file);
     const char message[] = "abc";
-    wavvix::detail::park_token write_token = {};
+    wavvix::detail::park_token write_token = {
+        0, wavvix::detail::park_instant(), false, false, false, 0};
     io_request writing = {};
     writing.direction = io_write;
     writing.handle = fd;
@@ -671,7 +672,8 @@ TEST(io_engine, uring_reads_and_writes_a_regular_file) {
 
     EXPECT(::lseek(fd, 0, SEEK_SET), ==, 0);
     char got[4] = {};
-    wavvix::detail::park_token read_token = {};
+    wavvix::detail::park_token read_token = {
+        0, wavvix::detail::park_instant(), false, false, false, 0};
     io_request reading = {};
     reading.direction = io_read;
     reading.handle = fd;
@@ -704,7 +706,7 @@ TEST(io_engine, uring_keeps_completions_when_the_cq_fills) {
         wavvix::detail::park_token token;
         io_request request;
         bool armed;
-    } slots[count] = {};
+    } slots[count];
     int created = 0;
     for (; created < count; ++created) {
         if (::pipe(slots[created].fds) != 0) break;

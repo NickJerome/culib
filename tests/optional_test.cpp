@@ -1,5 +1,6 @@
 #include <culib/optional.h>
 #include <culib/test.h>
+#include "triviality_compat.h"
 
 #include <memory>
 #include <string>
@@ -12,9 +13,9 @@ using wavvix::nullopt;
 using wavvix::optional;
 
 // 可平凡复制的 T 要让 optional 自己也平凡可复制，否则按值返回就不是零开销了。
-static_assert(std::is_trivially_copyable<optional<int> >::value,
+static_assert(wavvix_test::is_trivially_copyable<optional<int> >::value,
               "optional<int> must stay trivially copyable");
-static_assert(!std::is_trivially_copyable<optional<std::string> >::value,
+static_assert(!wavvix_test::is_trivially_copyable<optional<std::string> >::value,
               "optional<std::string> cannot be trivially copyable");
 
 // 数一下析构：确认没有值时不析构、有值时只析构一次。

@@ -1,5 +1,6 @@
 #include <culib/result.h>
 #include <culib/test.h>
+#include "triviality_compat.h"
 
 #include <memory>
 #include <sstream>
@@ -31,8 +32,8 @@ struct ambiguous {
 
 using small_result = result<int, parse_error>;
 using pointer_result = result<std::unique_ptr<int>, parse_error>;
-static_assert(std::is_trivially_copyable<small_result>::value, "small result must stay trivial");
-static_assert(std::is_trivially_copyable<result<void, parse_error>>::value, "void result must stay trivial");
+static_assert(wavvix_test::is_trivially_copyable<small_result>::value, "small result must stay trivial");
+static_assert(wavvix_test::is_trivially_copyable<result<void, parse_error>>::value, "void result must stay trivial");
 static_assert(!std::is_default_constructible<small_result>::value, "value result has no empty state");
 static_assert(std::is_default_constructible<result<void>>::value, "void default means success");
 static_assert(std::is_copy_constructible<result<std::string>>::value, "strings can be copied");
