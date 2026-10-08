@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773133078)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析；虚拟网卡、打洞及节点协议仍待完成。
+- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析。Linux TUN 的内部后端已实现并在 WSL2 上实际收发 IP 包；macOS、Windows 和公共接口仍待完成。打洞及节点协议未开始。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -20,6 +20,10 @@
 ## 关键取舍
 
 `virtual_interface` 的公共接口使用 `result`、RAII、调用方缓冲区和 `std::chrono::nanoseconds` 超时，与 TCP/UDP 保持一致。单次读取返回一整个 IP 包；缓冲区太小时显式报错，不返回截断包。Linux 用 `/dev/net/tun` 的 `IFF_TUN | IFF_NO_PI`；macOS 用 utun 控制套接字并处理它自带的四字节地址族前缀；Windows 运行时加载已安装的 Wintun DLL，不在构建时链接或分发驱动。没有驱动时 `open()` 返回可诊断的错误。读取在协程内不得阻塞 vCPU。
+
+Linux 内部后端目前要求接收缓冲区至少 65576 字节：标准 IPv6 非 jumbo IP 包最多 65575 字节，再留 1 字节用于识别超限报文。TUN 读取会消费报文，若直接读进较小的调用方缓冲区，就无法分辨“刚好装满”和“被截断”。后端先检查容量，避免把截断内容当完整 IP 包交给调用方。开放公共接口前需要在三平台上统一这一约束，并评估常见 MTU 下要求 64 KiB 缓冲区是否过重。
+
+WSL2 Ubuntu 22.04 上以有 `CAP_NET_ADMIN` 的 root 创建 TUN，给接口设置 `192.0.2.1/30`，经内核发出 UDP 生成 IPv4 报文，再将反向 IPv4/UDP 报文写回 TUN，应用套接字收到 `pong`。同一测试强制 epoll 和 io_uring 均通过；无权限的常规 CI 环境只检查错误路径。接口启动时可能先产生 IPv6 控制报文，因此测试按目标 IPv4 地址筛选，不能假定第一包就是测试包。
 
 STUN 仅做 RFC 8489 Binding 所需的最小子集，优先解析 `XOR-MAPPED-ADDRESS`；它返回的是当前 socket 的映射，不把一次查询推广成“这个 NAT 是什么类型”的结论。12 字节 transaction ID 来自系统随机源；响应必须匹配 ID 和服务器地址，长度、属性边界与 IPv6 异或规则都逐项检查。查询期间调用方独占该 UDP socket，避免把业务报文误当响应或由查询函数吞掉。
 
