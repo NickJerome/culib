@@ -50,8 +50,15 @@ struct wintun_api {
 
 template <typename Function>
 bool load_function(HMODULE library, const char* name, Function& target) {
-    target = reinterpret_cast<Function>(::GetProcAddress(library, name));
-    return target != 0;
+    static_assert(sizeof(Function) == sizeof(FARPROC), "Wintun function pointer size differs");
+    const FARPROC found = ::GetProcAddress(library, name);
+    if (!found) {
+        target = 0;
+        return false;
+    }
+    // The Wintun signature differs from FARPROC; copying avoids a mismatched function cast.
+    std::memcpy(&target, &found, sizeof target);
+    return true;
 }
 
 error virtual_error(const char* action, DWORD code) {

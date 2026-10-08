@@ -12,7 +12,7 @@ namespace net {
 namespace detail {
 
 struct udp_address {
-    alignas(long double) unsigned char storage[256];
+    alignas(16) unsigned char storage[256];
     int length;
 };
 
