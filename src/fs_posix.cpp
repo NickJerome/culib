@@ -47,13 +47,23 @@ error from_errno(string_view what, string_view path, int code) {
                                          std::strerror(code));
 }
 
+error invalid_path() {
+    return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
+}
+
+bool contains_nul(string_view path) noexcept {
+    return !path.empty() && std::memchr(path.data(), 0, path.size()) != 0;
+}
+
 // string_view 不保证 '\0' 结尾，而所有系统调用都要 C 字符串。
 // 短路径走栈，长路径才分配——路径在 HDD / 网络盘上本来就慢，这点优化是为了循环遍历。
 class c_path {
 public:
-    explicit c_path(string_view path) {
+    explicit c_path(string_view path)
+        : text_(0), valid_(!contains_nul(path)) {
+        if (!valid_) return;
         if (path.size() < sizeof stack_) {
-            std::memcpy(stack_, path.data(), path.size());
+            if (!path.empty()) std::memcpy(stack_, path.data(), path.size());
             stack_[path.size()] = '\0';
             text_ = stack_;
         } else {
@@ -62,6 +72,7 @@ public:
         }
     }
     const char* get() const { return text_; }
+    bool valid() const noexcept { return valid_; }
 
     // text_ 可能指向 heap_ 内部，复制会悬垂
     c_path(const c_path&) = delete;
@@ -71,15 +82,18 @@ private:
     char stack_[256];
     std::string heap_;
     const char* text_;
+    bool valid_;
 };
 
 bool stat_path(string_view path, struct stat& info) {
     const c_path native(path);
+    if (!native.valid()) { errno = EINVAL; return false; }
     return ::stat(native.get(), &info) == 0;   // stat 跟随符号链接，见头文件约定
 }
 
 result<void> write_with_mode(string_view path, string_view content, const char* mode) {
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     std::FILE* file = std::fopen(native.get(), mode);
     if (!file) return from_errno("打开", path, errno);
     if (!content.empty()) {
@@ -115,7 +129,8 @@ bool is_directory(string_view path) noexcept {
 
 result<std::uint64_t> file_size(string_view path) {
     struct stat info;
-    if (!stat_path(path, info)) return from_errno("取大小", path, errno);
+    if (!stat_path(path, info))
+        return contains_nul(path) ? invalid_path() : from_errno("取大小", path, errno);
     if (S_ISDIR(info.st_mode)) {
         return make_error(error_kind::unsupported, path.to_string() + " 是目录，没有文件大小");
     }
@@ -124,7 +139,8 @@ result<std::uint64_t> file_size(string_view path) {
 
 result<timestamp> last_write_time(string_view path) {
     struct stat info;
-    if (!stat_path(path, info)) return from_errno("取修改时间", path, errno);
+    if (!stat_path(path, info))
+        return contains_nul(path) ? invalid_path() : from_errno("取修改时间", path, errno);
     return timestamp::from_unix_seconds(static_cast<std::int64_t>(info.st_mtime));
 }
 
@@ -132,6 +148,7 @@ result<timestamp> last_write_time(string_view path) {
 
 result<void> read_file(string_view path, std::string& out) {
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     std::FILE* file = std::fopen(native.get(), "rb");
     if (!file) return from_errno("打开", path, errno);
 
@@ -193,6 +210,7 @@ void output_file::close() noexcept {
 result<void> output_file::open(string_view path) {
     close();
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     int flags = O_WRONLY | O_CREAT | O_APPEND;
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;   // 别让子进程继承一个它用不上的日志句柄
@@ -239,6 +257,7 @@ namespace detail {
 
 result<void> make_directory(string_view path) {
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     if (::mkdir(native.get(), 0777) == 0) return result<void>();
     return from_errno("创建目录", path, errno);   // EEXIST 会映射成 already_exists
 }
@@ -246,12 +265,14 @@ result<void> make_directory(string_view path) {
 bool is_directory_not_link(string_view path) noexcept {
     // lstat 不跟随符号链接，所以指向目录的链接在这里是 false，递归删除不会跟进去
     const c_path native(path);
+    if (!native.valid()) return false;
     struct stat info;
     return ::lstat(native.get(), &info) == 0 && S_ISDIR(info.st_mode);
 }
 
 result<void> remove_empty_directory(string_view path) {
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     if (::rmdir(native.get()) != 0) return from_errno("删除目录", path, errno);
     return result<void>();
 }
@@ -260,19 +281,21 @@ result<void> remove_empty_directory(string_view path) {
 
 result<void> remove_file(string_view path) {
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     if (::unlink(native.get()) != 0) return from_errno("删除", path, errno);
     return result<void>();
 }
 
 result<void> copy_file(string_view from, string_view to, overwrite mode) {
+    const c_path native_from(from);
+    const c_path native_to(to);
+    if (!native_from.valid() || !native_to.valid()) return invalid_path();
     if (mode == overwrite::no && exists(to)) {
         return make_error(error_kind::already_exists, to.to_string() + " 已存在");
     }
-    const c_path native_from(from);
     std::FILE* source = std::fopen(native_from.get(), "rb");
     if (!source) return from_errno("打开", from, errno);
 
-    const c_path native_to(to);
     std::FILE* target = std::fopen(native_to.get(), "wb");
     if (!target) {
         const int code = errno;
@@ -305,6 +328,7 @@ result<void> copy_file(string_view from, string_view to, overwrite mode) {
 result<void> rename(string_view from, string_view to) {
     const c_path native_from(from);
     const c_path native_to(to);
+    if (!native_from.valid() || !native_to.valid()) return invalid_path();
     if (::rename(native_from.get(), native_to.get()) != 0) {
         return from_errno("重命名", from, errno);
     }
@@ -333,6 +357,7 @@ result<std::string> current_directory() {
 
 result<void> set_current_directory(string_view path) {
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     if (::chdir(native.get()) != 0) return from_errno("切换到", path, errno);
     return result<void>();
 }
@@ -343,6 +368,7 @@ namespace detail {
 
 result<directory_handle> directory_handle::open(string_view path) {
     const c_path native(path);
+    if (!native.valid()) return invalid_path();
     DIR* dir = ::opendir(native.get());
     if (!dir) return from_errno("打开目录", path, errno);
     return directory_handle(dir);

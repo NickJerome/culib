@@ -77,6 +77,8 @@ result<std::wstring> wide_path(string_view path) {
     result<std::wstring> converted = utf8_to_wide(path);
     if (converted.is_err()) return std::move(converted).error();
     std::wstring wide = std::move(converted).value();
+    if (wide.find(L'\0') != std::wstring::npos)
+        return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
     // 建目录时 Win32 还需给尾随的 8.3 文件名预留 12 个字符。
     if (wide.size() < MAX_PATH - 12 ||
         (wide.size() >= 4 && wide[0] == L'\\' && wide[1] == L'\\' &&

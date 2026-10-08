@@ -5,6 +5,7 @@
 #include <culib/strings.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace wavvix {
@@ -168,6 +169,8 @@ std::string normalize(string_view path) {
 }
 
 result<std::string> absolute(string_view path) {
+    if (!path.empty() && std::memchr(path.data(), 0, path.size()))
+        return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
     if (is_absolute(path)) return normalize(path);
     result<std::string> here = current_directory();
     if (here.is_err()) return std::move(here).error();
@@ -178,6 +181,8 @@ result<std::string> absolute(string_view path) {
 
 result<void> create_directory(string_view path, recursive mode) {
     if (path.empty()) return make_error(error_kind::invalid_argument, "路径是空的");
+    if (std::memchr(path.data(), 0, path.size()))
+        return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
 
     if (mode == recursive::yes) {
         // 逐级建。中间某级已存在是正常情况，所以只有「不是已存在」的错误才中断。

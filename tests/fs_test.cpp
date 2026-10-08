@@ -241,6 +241,41 @@ TEST(fs, distinguishes_why_it_failed) {
     EXPECT(fs::file_size(area.root()).error().kind(), ==, error_kind::unsupported);
 }
 
+TEST(fs, rejects_embedded_nul_without_touching_the_prefix_path) {
+    const scratch area("nul_path");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string marker = area.at("keep.txt");
+    if (!EXPECT(fs::write_file(marker, "original").is_ok(), ==, true)) return;
+    const std::string malformed = marker + std::string("\0tail", 5);
+    const string_view path(malformed.data(), malformed.size());
+
+    EXPECT(fs::exists(path), ==, false);
+    EXPECT(fs::absolute(path).error().kind(), ==, error_kind::invalid_argument);
+    const result<std::string> read = fs::read_file(path);
+    if (EXPECT(read.is_err(), ==, true))
+        EXPECT(read.error().kind(), ==, error_kind::invalid_argument);
+    const result<void> written = fs::write_file(path, "changed");
+    if (EXPECT(written.is_err(), ==, true))
+        EXPECT(written.error().kind(), ==, error_kind::invalid_argument);
+    EXPECT(fs::file_size(path).error().kind(), ==, error_kind::invalid_argument);
+    EXPECT(fs::last_write_time(path).error().kind(), ==, error_kind::invalid_argument);
+    EXPECT(fs::read_file(marker).value_or(""), ==, "original");
+    EXPECT(fs::copy_file(marker, path, fs::overwrite::yes).error().kind(), ==,
+           error_kind::invalid_argument);
+    EXPECT(fs::rename(path, area.at("moved.txt")).error().kind(), ==,
+           error_kind::invalid_argument);
+    const result<void> removed = fs::remove_file(path);
+    if (EXPECT(removed.is_err(), ==, true))
+        EXPECT(removed.error().kind(), ==, error_kind::invalid_argument);
+    EXPECT(fs::read_file(marker).value_or(""), ==, "original");
+
+    const std::string malformed_dir = area.at("new") + std::string("/child\0tail", 11);
+    EXPECT(fs::create_directory(string_view(malformed_dir.data(), malformed_dir.size()),
+                                fs::recursive::yes).error().kind(), ==,
+           error_kind::invalid_argument);
+    EXPECT(fs::exists(area.at("new")), ==, false);
+}
+
 TEST(fs, queries_existence_and_kind) {
     const scratch area("query");
     EXPECT(area.ok(), ==, true);
