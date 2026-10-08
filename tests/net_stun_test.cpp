@@ -85,17 +85,20 @@ TEST(net_stun, times_out_when_the_server_does_not_reply) {
     EXPECT(wavvix::run(), ==, std::size_t(1));
 }
 
-TEST(net_stun, queries_ipv6_loopback_when_available) {
+TEST(net_stun, queries_ipv6_loopback) {
     const wavvix::result<net::endpoint> loopback = net::endpoint::parse("::1", 0);
+    EXPECT(loopback.is_ok(), ==, true);
     if (loopback.is_err()) return;
     wavvix::result<net::udp_socket> server_open = net::udp_socket::bind(loopback.value());
     wavvix::result<net::udp_socket> client_open = net::udp_socket::bind(loopback.value());
+    EXPECT(server_open.is_ok() && client_open.is_ok(), ==, true);
     if (server_open.is_err() || client_open.is_err()) return;
     net::udp_socket server = std::move(server_open).value();
     net::udp_socket client = std::move(client_open).value();
     const wavvix::result<net::endpoint> server_address = server.local_endpoint();
     const wavvix::result<net::endpoint> expected =
         net::endpoint::parse("2001:db8::1", 3478);
+    EXPECT(server_address.is_ok() && expected.is_ok(), ==, true);
     if (server_address.is_err() || expected.is_err()) return;
 
     wavvix::spawn([&] {
