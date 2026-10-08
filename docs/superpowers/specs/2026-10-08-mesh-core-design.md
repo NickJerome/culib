@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。Windows 真实 Wintun 已完成临时适配器的 ICMP IP 往返验收；两节点 mesh 转发仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式、双进程本机验证，以及端口保持 NAT 命名空间中的双向数据交换；面向公网的信令服务、保活、映射变化恢复和真实公网 NAT 验证仍待完成。第四项已有独立的 libsodium 应用工程、加密候选消息、加密数据包、口令加密身份文件及本机双节点 TCP 密文中继测试，完整节点协议未完成。
+- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。Windows 真实 Wintun 已完成临时适配器的 ICMP IP 往返验收。第四项已将身份认证、加密信令、UDP 打洞、保活、虚拟网卡转发和静默后重连组成最小节点；WSL2 网络命名空间中已验证双向 TUN ping、节点重启后重连，以及端口保持 NAT 的公网映射端口从 44001 变为 45001 后自动重新打洞并恢复 ping。真实公网 NAT、Windows/macOS 的两节点转发以及本增量的三平台 CI 仍待验证。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -61,3 +61,5 @@ Linux root 下的 `tests/net_punch_nat.py` 创建两个 peer、两个独立端�
 `udp_punch()` 的返回值只证明一次双向可达，不能替代后续的候选交换信令、定时保活、STUN 映射变化检测和重新打洞，也不是身份认证。只靠共享会话 ID 不能构成最终节点安全协议；真实 NAT 网络里的成功率仍未验证。
 
 跨公网的节点协议必须先定身份和加密方案。culib 的“零第三方依赖”约束适用于通用库，不能促使这里手写加密原语；成熟密码库的依赖应留在具体 mesh 应用层，不污染未使用 mesh 的 culib 程序。`apps/mesh` 是单独的 xmake 工程，使用 libsodium 1.0.22。`CME1` 消息让固定公钥的节点加密交换 `punch_offer`，拒绝篡改、错误身份、近期重放和过期消息。双方各自把随机贡献放进加密候选，认证后按公钥排序哈希，得到共同的打洞与数据会话 ID；中继不能单独选定它。`CMD1` 数据包从固定公钥与该会话 ID 派生方向密钥，使用 XChaCha20-Poly1305 认证，并在 64 包窗口内拒绝重放；逐包 API 写入调用方缓冲区。`CMI1` 文件用 Argon2id 与 XChaCha20-Poly1305 保存固定 X25519 身份，创建时不覆盖原文件；尚无口令轮换或前向保密，安全边界和待做事项见 [mesh 应用说明](../../../apps/mesh/README.md)。完成第四程前必须有真实公网 NAT 环境与两节点虚拟网卡转发验证，三平台编译通过只能证明可构建，不能证明穿透和转发成功。
+
+应用层 `connect_peer()` 保持信令连接直到双方停止回应 UDP 探测，并经第二道屏障进入加密数据阶段；`run_tunnel()` 用两个协程分别执行 TUN→UDP 和 UDP→TUN，发送五秒保活，二十秒没有认证入站报文就触发重新信令。节点收到来自新 UDP 地址的有效密文会更新回程地址；双方路径完全失效时依靠同一 socket 重新查询 STUN 和重新打洞。`apps/mesh/tests/tunnel_ns.py --restart` 在隔离命名空间中验证节点重启后路径与虚拟网卡 ping 恢复；`apps/mesh/tests/tunnel_nat.py` 把一端 NAT 外部端口从 44001 改成 45001，双方静默超时后重建会话，前后各两次 ICMP Echo 均成功。这些是可控 Linux 网络栈测试，不能代表公网穿透成功率。

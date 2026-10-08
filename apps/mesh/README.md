@@ -6,12 +6,16 @@
 
 建立连接时，双方分别调用 `random_punch_session_id()`，把所得随机值放进自己 `punch_offer.session` 并发送加密候选。**收到对端消息并完成认证后**，两侧用 `derive_session_id(本端公钥, 本端随机值, 对端公钥, 对端随机值)` 得到相同的共享会话 ID。这个派生值才传给 `udp_punch()` 和 `traffic_session::create()`；任何一侧换一个随机值都会得到另一个会话。中继只负责转发加密消息，无权单独决定会话 ID。
 
-TCP 信令层现在提供两字节长度分帧的 `send_encrypted_offer()` / `receive_encrypted_offer()`，以及只服务一对连接的 `relay_offer_pair()`。中继校验公开的收发公钥能互相对应后原样转发密文；端点仍须用 `offer_receiver` 完成认证。`signaling_barrier()` 在双方打洞结束后放行数据阶段。本机双节点测试已通过真实 TCP 回环、双向认证、会话派生与屏障；长期运行的中继服务及节点 CLI 尚未接入。
+TCP 信令层提供两字节长度分帧的 `send_encrypted_offer()` / `receive_encrypted_offer()`，以及只服务一对连接的 `relay_offer_pair()`。中继核对公开的收发公钥后原样转发密文；端点仍须用 `offer_receiver` 完成认证。打洞完成后双方继续回应探测，直到第一道信令屏障放行；停止探测后经第二道屏障一同进入数据阶段。
 
 首次使用时，调用 `create_identity_file(path, passphrase)` 生成并保存身份；以后调用 `load_identity_file(path, passphrase)`，得到相同的公钥。创建操作将加密内容先写入同目录的临时文件，再以不覆盖已有文件的方式发布；路径按 UTF-8 处理。文件用 Argon2id 从口令派生密钥，再用 XChaCha20-Poly1305 加密公私钥，格式为 `CMI1`，共 124 字节。应使用足够强且可保管的口令；忘记口令就无法恢复该身份，也无法继续被原对端公钥信任。文件本身还没有口令轮换接口。
 
-`mesh` 命令目前提供身份创建和公钥查看：在 `apps/mesh` 目录运行 `xmake build -P . mesh` 后，执行 `xmake run -P . mesh identity create node.key`；重启后用 `xmake run -P . mesh identity show node.key` 检查同一个公钥。终端输入口令时关闭回显，标准输入被重定向时读取第一行；口令不作为命令行参数。把显示的 64 位十六进制公钥交给对端固定。节点连接、信令和转发命令仍在开发中。
+在 `apps/mesh` 目录运行 `xmake build -P . mesh` 后，执行 `xmake run -P . mesh identity create node.key` 生成身份；重启后用 `xmake run -P . mesh identity show node.key` 查看同一个公钥。终端输入口令时关闭回显，标准输入被重定向时读取第一行；口令不作为命令行参数。把显示的 64 位十六进制公钥交给对端固定。
+
+`mesh relay PORT` 转发一对节点的加密候选后退出，`mesh serve PORT` 持续服务下一对。`mesh peer IDENTITY_PATH PEER_PUBLIC_KEY RELAY_IP RELAY_PORT [STUN_IP STUN_PORT [LOCAL_UDP_PORT]]` 建立一次受认证的 UDP 路径并退出。需要持续转发时把 `peer` 换成 `tunnel`：它创建三层虚拟网卡，打印接口名，经同一 UDP socket 查询可选的 STUN 反射地址、打洞、加密双向转发 IP 包，每 5 秒发保活；20 秒收不到认证入站报文时重新通过信令建立会话。来自对端新 UDP 地址的认证数据也会更新回程地址。`tunnel` 收到终止信号后关闭网卡和 socket；虚拟网卡地址与路由由使用者配置，命令不会修改系统路由。中继一次只处理一对连接，没有用户管理、流量配额或抗拒绝服务能力。
+
+Linux root 下可运行 `python3 tests/tunnel_ns.py --restart`，它在三个临时网络命名空间中建立两个虚拟网卡并验证双向 ICMP 与节点重启后恢复；`python3 tests/tunnel_nat.py` 再引入两个独立端口保持 NAT、STUN 和信令中继，先验证隧道 ping，再把一端的公网 UDP 端口从 44001 改为 45001，等待重新认证和打洞后再次验证 ping。这是可控 NAT 模型的实测；真实公网 NAT 网络、Windows 与 macOS 上的两节点转发尚待验证。
 
 `traffic_session::create()` 用双方固定的公钥与上述共享会话 ID 派生两个方向不同的密钥。`seal()` / `open()` 写入调用方缓冲区，不在逐包路径上分配内存；XChaCha20-Poly1305 校验数据及包头，接收端允许 64 个序号的乱序窗口并拒绝重复包。每次连接都必须重新生成双方的随机值。单个 UDP 包最多 65507 字节，其中 28 字节用于包头和认证码，超长 IP 包尚无分片机制。
 
-候选消息格式为 `CME1`（4 字节）、发送者公钥（32）、收件者公钥（32）、随机 nonce（24）、`crypto_box` 密文及认证码。密文内含 8 字节大端 Unix 秒数和 `punch_offer`，最大 873 字节。数据消息格式为 `CMD1`（4 字节）、8 字节大端序号、密文及 16 字节认证码。私钥与会话密钥在移动或析构时清零。固定 X25519 身份密钥派生的数据密钥不提供前向保密；重建相同会话 ID 的对象也会重置重放窗口，所以节点协议必须保证会话 ID 唯一且不复用。这些只是协议构件；完整握手、保活、NAT 映射变化恢复和虚拟网卡转发仍未实现，不能作为可部署 mesh 节点使用。
+候选消息格式为 `CME1`（4 字节）、发送者公钥（32）、收件者公钥（32）、随机 nonce（24）、`crypto_box` 密文及认证码。密文内含 8 字节大端 Unix 秒数和 `punch_offer`，最大 873 字节。数据消息格式为 `CMD1`（4 字节）、8 字节大端序号、密文及 16 字节认证码。私钥与会话密钥在移动或析构时清零。固定 X25519 身份密钥派生的数据密钥不提供前向保密；重建相同会话 ID 的对象也会重置重放窗口，所以节点协议必须保证会话 ID 唯一且不复用。双方每次连接各自贡献新随机值，重新派生会话密钥。虚拟网卡报文超过单 UDP 包容量时当前版本不能分片；跨公网可用性和真实 NAT 映射恢复仍需现场验收。

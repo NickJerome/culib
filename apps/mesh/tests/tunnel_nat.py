@@ -1,0 +1,181 @@
+"""Root-only mesh TUN test through two NATs, including a mapping change.
+
+Build apps/mesh in Linux debug mode first. This test needs iptables, IP
+forwarding, network namespaces, and /dev/net/tun. It cleans up its namespaces.
+"""
+
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+import time
+
+from tunnel_ns import MESH, run, wait_line
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+STUN = ROOT / "tests/fixtures/stun_echo.py"
+
+
+def ping(namespace):
+    result = subprocess.run(
+        ["ip", "netns", "exec", namespace, "ping", "-c", "2", "-W", "5",
+         "10.250.0.2"], text=True, capture_output=True, timeout=20)
+    print(result.stdout, end="")
+    if result.returncode != 0:
+        raise RuntimeError("encrypted TUN ping failed: " + result.stderr)
+
+
+def main():
+    if os.geteuid() != 0 or not MESH.is_file():
+        raise RuntimeError("run as root after building apps/mesh in Linux debug mode")
+    suffix = str(os.getpid())
+    hub, nat_a, nat_b, peer_a, peer_b = [
+        "mesh-" + name + suffix for name in ("h", "na", "nb", "pa", "pb")
+    ]
+    namespaces = []
+    processes = []
+    try:
+        for name in (hub, nat_a, nat_b, peer_a, peer_b):
+            run("ip", "netns", "add", name)
+            namespaces.append(name)
+            run("ip", "-n", name, "link", "set", "lo", "up")
+        for router, peer, hub_if, router_if, inside_if, peer_if, hub_ip, public_ip, private_ip, port in (
+            (nat_a, peer_a, "ha", "na", "ia", "ea", "198.18.1.1",
+             "198.18.1.2", "10.101.0.2", 44001),
+            (nat_b, peer_b, "hb", "nb", "ib", "eb", "198.18.2.1",
+             "198.18.2.2", "10.102.0.2", 44002),
+        ):
+            run("ip", "-n", hub, "link", "add", hub_if, "type", "veth",
+                "peer", "name", router_if)
+            run("ip", "-n", hub, "link", "set", router_if, "netns", router)
+            run("ip", "-n", router, "link", "add", inside_if, "type", "veth",
+                "peer", "name", peer_if)
+            run("ip", "-n", router, "link", "set", peer_if, "netns", peer)
+            for name, address, interface in (
+                (hub, hub_ip + "/30", hub_if),
+                (router, public_ip + "/30", router_if),
+                (router, "10.101.0.1/24" if router == nat_a else "10.102.0.1/24", inside_if),
+                (peer, private_ip + "/24", peer_if),
+            ):
+                run("ip", "-n", name, "addr", "add", address, "dev", interface)
+                run("ip", "-n", name, "link", "set", interface, "up")
+            run("ip", "-n", router, "route", "add", "default", "via", hub_ip)
+            run("ip", "-n", peer, "route", "add", "default", "via",
+                "10.101.0.1" if router == nat_a else "10.102.0.1")
+            run("ip", "netns", "exec", router, "sysctl", "-q", "-w",
+                "net.ipv4.ip_forward=1")
+            run("ip", "netns", "exec", router, "sysctl", "-q", "-w",
+                "net.netfilter.nf_conntrack_udp_timeout=2")
+            run("ip", "netns", "exec", router, "sysctl", "-q", "-w",
+                "net.netfilter.nf_conntrack_udp_timeout_stream=2")
+            run("ip", "netns", "exec", router, "iptables", "-t", "nat",
+                "-A", "POSTROUTING", "-o", router_if, "-j", "MASQUERADE")
+            run("ip", "netns", "exec", router, "iptables", "-t", "nat",
+                "-I", "POSTROUTING", "1", "-s", private_ip, "-p", "udp",
+                "--sport", str(port), "-j", "SNAT", "--to-source",
+                public_ip + ":" + str(port))
+            run("ip", "netns", "exec", router, "iptables", "-t", "nat",
+                "-A", "PREROUTING", "-i", router_if, "-p", "udp",
+                "--dport", str(port), "-j", "DNAT", "--to-destination",
+                private_ip + ":" + str(port))
+            run("ip", "netns", "exec", router, "iptables", "-I", "FORWARD",
+                "1", "-i", router_if, "-o", inside_if, "-p", "udp", "-m",
+                "conntrack", "!", "--ctstate", "ESTABLISHED,RELATED", "-j", "DROP")
+        run("ip", "netns", "exec", hub, "sysctl", "-q", "-w",
+            "net.ipv4.ip_forward=1")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            files = [str(pathlib.Path(temporary) / name) for name in ("a.key", "b.key")]
+            keys = []
+            for filename in files:
+                created = subprocess.run(
+                    [str(MESH), "identity", "create", filename],
+                    input="mesh-test-password\n", text=True,
+                    capture_output=True, timeout=20)
+                if created.returncode != 0:
+                    raise RuntimeError("identity create: " + created.stderr)
+                keys.append(created.stdout.strip())
+            stun = subprocess.Popen(
+                ["ip", "netns", "exec", hub, sys.executable, str(STUN)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            processes.append(stun)
+            relay = subprocess.Popen(
+                ["ip", "netns", "exec", hub, str(MESH), "serve", "39011"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            processes.append(relay)
+            time.sleep(0.2)
+            peers = []
+            for name, filename, peer_key, port in (
+                (peer_a, files[0], keys[1], 44001),
+                (peer_b, files[1], keys[0], 44002),
+            ):
+                process = subprocess.Popen(
+                    ["ip", "netns", "exec", name, str(MESH), "tunnel",
+                     filename, peer_key, "198.18.1.1", "39011",
+                     "198.18.1.1", "3478", str(port)],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True)
+                processes.append(process)
+                process.stdin.write("mesh-test-password\n")
+                process.stdin.close()
+                process.stdin = None
+                peers.append(process)
+            interfaces = [wait_line(peer, "virtual interface: ", 10) for peer in peers]
+            for name, interface, local, remote in (
+                (peer_a, interfaces[0], "10.250.0.1", "10.250.0.2"),
+                (peer_b, interfaces[1], "10.250.0.2", "10.250.0.1"),
+            ):
+                run("ip", "-n", name, "addr", "add", local + "/32",
+                    "dev", interface)
+                run("ip", "-n", name, "link", "set", interface, "up")
+                run("ip", "-n", name, "route", "add", remote + "/32",
+                    "dev", interface, "src", local)
+            first = [wait_line(peer, "authenticated UDP path: ", 20) for peer in peers]
+            print("initial paths:", first)
+            if ":44002" not in first[0] or ":44001" not in first[1]:
+                raise RuntimeError("initial NAT ports do not match the mapping")
+            ping(peer_a)
+
+            # Change only NAT A's public UDP port. Existing conntrack state
+            # expires after two seconds; both peers must discover a new session.
+            prefix = ("ip", "netns", "exec", nat_a, "iptables", "-t", "nat")
+            run(*prefix, "-D", "POSTROUTING", "-s", "10.101.0.2", "-p", "udp",
+                "--sport", "44001", "-j", "SNAT", "--to-source",
+                "198.18.1.2:44001")
+            run(*prefix, "-I", "POSTROUTING", "1", "-s", "10.101.0.2", "-p", "udp",
+                "--sport", "44001", "-j", "SNAT", "--to-source",
+                "198.18.1.2:45001")
+            run(*prefix, "-D", "PREROUTING", "-i", "na", "-p", "udp",
+                "--dport", "44001", "-j", "DNAT", "--to-destination",
+                "10.101.0.2:44001")
+            run(*prefix, "-A", "PREROUTING", "-i", "na", "-p", "udp",
+                "--dport", "45001", "-j", "DNAT", "--to-destination",
+                "10.101.0.2:44001")
+            second = [wait_line(peer, "authenticated UDP path: ", 50)
+                      for peer in peers]
+            print("reconnected paths:", second)
+            if ":45001" not in second[1]:
+                raise RuntimeError("peer did not learn NAT A's new public port")
+            ping(peer_a)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+        for process in processes:
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            errors = process.stderr.read() if process.stderr else ""
+            if errors:
+                print(errors, file=sys.stderr, end="")
+        for name in reversed(namespaces):
+            subprocess.run(["ip", "netns", "del", name], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+if __name__ == "__main__":
+    main()

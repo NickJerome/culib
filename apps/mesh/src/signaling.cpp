@@ -97,14 +97,17 @@ wavvix::result<std::vector<unsigned char>> receive_encrypted_offer(
 }
 
 wavvix::result<void> signaling_barrier(
-    wavvix::net::tcp_stream& stream, std::chrono::nanoseconds timeout) {
-    const unsigned char ready = 1;
-    wavvix::result<void> sent = write_exact(stream, &ready, 1, timeout);
+    wavvix::net::tcp_stream& stream, std::chrono::nanoseconds timeout,
+    unsigned char phase) {
+    if (phase != 1 && phase != 2)
+        return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                  "invalid mesh signaling phase");
+    wavvix::result<void> sent = write_exact(stream, &phase, 1, timeout);
     if (sent.is_err()) return std::move(sent).error();
     unsigned char released = 0;
     wavvix::result<void> read = read_exact(stream, &released, 1, timeout);
     if (read.is_err()) return std::move(read).error();
-    if (released != ready)
+    if (released != phase)
         return wavvix::make_error(wavvix::error_kind::invalid_argument,
                                   "invalid mesh signaling barrier");
     return wavvix::result<void>();
@@ -147,7 +150,22 @@ wavvix::result<void> relay_offer_pair(
     const unsigned char release = 1;
     wavvix::result<void> release_a = write_exact(first, &release, 1, timeout);
     if (release_a.is_err()) return std::move(release_a).error();
-    return write_exact(second, &release, 1, timeout);
+    wavvix::result<void> release_b = write_exact(second, &release, 1, timeout);
+    if (release_b.is_err()) return std::move(release_b).error();
+    unsigned char data_a = 0;
+    unsigned char data_b = 0;
+    wavvix::result<void> stop_a = read_exact(first, &data_a, 1, timeout);
+    if (stop_a.is_err()) return std::move(stop_a).error();
+    wavvix::result<void> stop_b = read_exact(second, &data_b, 1, timeout);
+    if (stop_b.is_err()) return std::move(stop_b).error();
+    if (data_a != 2 || data_b != 2)
+        return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                  "invalid mesh data barrier");
+    const unsigned char data_release = 2;
+    wavvix::result<void> data_release_a =
+        write_exact(first, &data_release, 1, timeout);
+    if (data_release_a.is_err()) return std::move(data_release_a).error();
+    return write_exact(second, &data_release, 1, timeout);
 }
 
 }  // namespace mesh

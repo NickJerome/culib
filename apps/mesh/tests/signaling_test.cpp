@@ -45,6 +45,8 @@ wavvix::result<wavvix::net::punch_session_id> exchange(
     if (session.is_err()) return std::move(session).error();
     wavvix::result<void> ready = mesh::signaling_barrier(stream, seconds(5));
     if (ready.is_err()) return std::move(ready).error();
+    wavvix::result<void> data_ready = mesh::signaling_barrier(stream, seconds(5), 2);
+    if (data_ready.is_err()) return std::move(data_ready).error();
     return session;
 }
 

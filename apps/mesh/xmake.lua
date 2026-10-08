@@ -14,7 +14,7 @@ target("mesh_crypto")
     set_warnings("allextra", "pedantic", "error")
     set_encodings("utf-8")
     add_files("src/crypto.cpp", "src/traffic.cpp", "src/identity_store.cpp",
-              "src/signaling.cpp")
+              "src/signaling.cpp", "src/node.cpp")
     if is_plat("windows", "mingw") then
         add_files("src/identity_store_win.cpp")
     else
@@ -85,6 +85,19 @@ target("mesh_signaling_test")
     set_warnings("allextra", "pedantic", "error")
     set_encodings("utf-8")
     add_files("tests/signaling_test.cpp")
+    add_deps("mesh_crypto")
+    add_tests("default")
+target_end()
+
+target("mesh_node_test")
+    set_kind("binary")
+    set_default(false)
+    if not is_plat("windows") then
+        set_languages("c++11")
+    end
+    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
+    add_files("tests/node_test.cpp")
     add_deps("mesh_crypto")
     add_tests("default")
 target_end()
