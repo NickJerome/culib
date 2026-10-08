@@ -270,6 +270,7 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 `create_directory` 在目标已经是目录时成功；`recursive::yes` 会逐级创建。
 `remove_directory(recursive::yes)` 会删除目录下全部内容，但不会进入符号链接指向的
 目录。`copy_file` 默认不覆盖已有目标；POSIX 上目标即使是悬空符号链接也视为已存在。
+POSIX 复制会保留权限位；若设置权限失败则返回错误，此时目标可能已有复制内容。
 复制不保证保留权限以外的元数据。`rename` 在同一文件系统内是原子操作；POSIX 跨
 文件系统会返回错误。回调版 `list_directory` 在回调
 返回 `false` 时停止；条目顺序不保证，`entry::name` 视图只在本次回调内有效。
