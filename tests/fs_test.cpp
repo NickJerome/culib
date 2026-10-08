@@ -7,6 +7,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -278,6 +279,20 @@ TEST(fs, recursive_remove_does_not_follow_a_directory_symlink) {
     if (!EXPECT(::symlink("../outside", link.c_str()), ==, 0)) return;
     EXPECT(fs::remove_directory(tree, fs::recursive::yes).is_ok(), ==, true);
     EXPECT(fs::read_file(marker).value_or(""), ==, "preserved");
+}
+
+TEST(fs, reports_permission_denied_for_an_unreadable_file) {
+    if (::geteuid() == 0) return;
+    const scratch area("unreadable");
+    if (!EXPECT(area.ok(), ==, true)) return;
+
+    const std::string path = area.at("private.txt");
+    if (!EXPECT(fs::write_file(path, "secret").is_ok(), ==, true)) return;
+    if (!EXPECT(::chmod(path.c_str(), 0), ==, 0)) return;
+    const result<std::string> read = fs::read_file(path);
+    EXPECT(read.is_err(), ==, true);
+    if (read.is_err()) EXPECT(read.error().kind(), ==, error_kind::permission_denied);
+    EXPECT(::chmod(path.c_str(), S_IRUSR | S_IWUSR), ==, 0);
 }
 #endif
 
