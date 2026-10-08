@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <limits>
 #include <string>
 
 namespace {
@@ -49,6 +50,8 @@ TEST(time, floors_toward_the_past_before_1970) {
     EXPECT(timestamp::from_unix_millis(-1001).unix_seconds(), ==, -2);
     EXPECT(timestamp::from_unix_millis(0).unix_seconds(), ==, 0);
     EXPECT(timestamp::from_unix_millis(999).unix_seconds(), ==, 0);
+    const std::int64_t minimum = (std::numeric_limits<std::int64_t>::min)();
+    EXPECT(timestamp::from_unix_millis(minimum).unix_seconds(), ==, minimum / 1000 - 1);
 }
 
 TEST(time, compares_as_instants) {

@@ -27,7 +27,8 @@ public:
 
     // 向下取整，1970 以前也对：-1 毫秒的 unix_seconds() 是 -1，不是 0
     std::int64_t unix_seconds() const noexcept {
-        return millis_ >= 0 ? millis_ / 1000 : (millis_ - 999) / 1000;
+        const std::int64_t quotient = millis_ / 1000;
+        return quotient - (millis_ < 0 && millis_ % 1000 != 0);
     }
     std::int64_t unix_millis() const noexcept { return millis_; }
 
