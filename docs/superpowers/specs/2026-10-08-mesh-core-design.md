@@ -23,6 +23,8 @@
 
 Linux TUN 与 macOS utun 都用 `readv` 接收：一段写入调用方缓冲区，末尾另留 1 字节辨认“刚好装满”和“实际被截断”。utun 还用第一段单独接收四字节地址族前缀；发送时用 `writev` 把前缀与调用方的 IP 包一起交给内核。常见 MTU 下可以只给约 1500 字节的缓冲区，不用每次准备约 64 KiB，也不用为前缀复制整包。三平台统一支持最多 65535 字节的 IP 包，受 [Wintun 的上限](https://git.zx2c4.com/wintun/tree/api/wintun.h?id=ec0a6b9) 约束；超过缓冲区或该上限的报文会被消费并返回 `out_of_range`，不会把截断包当完整包交给调用方。最小接收容量为 20 字节。
 
+Windows Wintun 的接收 API 在队列空时返回 `ERROR_NO_MORE_ITEMS`，随后要等待 `WintunGetReadWaitEvent()`。不能在协程里直接调用 `WaitForSingleObject`，否则整个 vCPU 会停住。IOCP 后端新增一次性 Windows 线程池事件等待：事件触发后回调向当前 vCPU 的完成端口投递完成项，调度器照常唤醒对应协程。超时撤销先以原子状态阻止尚未投递的回调，并同步注销等待；若完成项已经投递，继续等它出队再释放协程栈上的请求。本机 MSVC x64 的事件唤醒、超时和原有 I/O 测试已通过；Wintun 本体尚待接入。
+
 WSL2 Ubuntu 22.04 上以有 `CAP_NET_ADMIN` 的 root 创建 TUN，给接口设置 `192.0.2.1/30`，经内核发出 UDP 生成 IPv4 报文，再将反向 IPv4/UDP 报文写回 TUN，应用套接字收到 `pong`。同一测试强制 epoll 和 io_uring 均通过；无权限的常规 CI 环境只检查错误路径。接口启动时可能先产生 IPv6 控制报文，因此测试按目标 IPv4 地址筛选，不能假定第一包就是测试包。
 
 STUN 仅做 RFC 8489 Binding 所需的最小子集，优先解析 `XOR-MAPPED-ADDRESS`；它返回的是当前 socket 的映射，不把一次查询推广成“这个 NAT 是什么类型”的结论。12 字节 transaction ID 来自系统随机源；响应必须匹配 ID 和服务器地址，长度、属性边界与 IPv6 异或规则都逐项检查。查询期间调用方独占该 UDP socket，避免把业务报文误当响应或由查询函数吞掉。

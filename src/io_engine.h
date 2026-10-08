@@ -30,6 +30,9 @@ enum io_direction { io_read, io_write };
 enum io_operation {
     io_transfer, io_vectored_transfer, io_socket_transfer, io_datagram_transfer,
     io_accept, io_connect
+#if defined(_WIN32)
+    , io_event_wait
+#endif
 };
 
 // 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
@@ -89,7 +92,7 @@ struct io_request {
     // OVERLAPPED 的位置。真正的类型在 io_engine_win.cpp 里 reinterpret 回去——
     // 为的是这个头文件不包含 <windows.h>。大小按 OVERLAPPED 的最大情形留足。
     void* overlapped[8];
-    char accept_addresses[288];    // AcceptEx: 两个 sockaddr_storage + 各 16 字节
+    alignas(void*) char accept_addresses[288];  // AcceptEx 地址或等待事件的登记状态
 #endif
 };
 
