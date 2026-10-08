@@ -43,3 +43,7 @@ jobs:
       - name: build mesh command
         shell: bash
         run: bash .github/report-failure.sh xmake build -P apps/mesh mesh
+      - name: exercise macOS utun mesh forwarding
+        if: matrix.target.plat == 'macosx'
+        shell: bash
+        run: bash .github/report-failure.sh python3 apps/mesh/tests/tunnel_macos.py ${{ matrix.mode }}
