@@ -55,3 +55,41 @@ jobs:
         if: matrix.target.plat == 'macosx'
         shell: bash
         run: bash .github/report-failure.sh python3 apps/mesh/tests/tunnel_macos.py ${{ matrix.mode }}
+
+  linux-network-integration:
+    name: Linux network namespaces / NAT / TUN
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
+        with:
+          xmake-version: latest
+      - name: install network test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables iputils-ping
+      - name: verify runner network privileges
+        shell: bash
+        run: |
+          sudo modprobe tun
+          sudo test -c /dev/net/tun
+          probe="mesh-ci-${{ github.run_id }}"
+          sudo ip netns add "$probe"
+          sudo ip netns del "$probe"
+      - name: build Linux mesh command
+        shell: bash
+        run: |
+          xmake f -P apps/mesh -m debug -p linux --toolchain=gcc -y
+          bash .github/report-failure.sh xmake build -P apps/mesh mesh
+      - name: encrypted peer data through two NATs
+        shell: bash
+        run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_nat.py --probe
+      - name: TUN traffic after NAT mapping changes
+        shell: bash
+        run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_nat.py
+      - name: TUN traffic after peer restart
+        shell: bash
+        run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_ns.py --restart
+      - name: TUN traffic after underlay address changes
+        shell: bash
+        run: bash .github/report-failure.sh sudo python3 apps/mesh/tests/tunnel_ns.py --address-change
