@@ -200,6 +200,13 @@ result<void> output_file::open(string_view path) {
 #endif
     const int fd = ::open(native.get(), flags, 0644);
     if (fd < 0) return from_errno("打开", path, errno);
+#ifndef O_CLOEXEC
+    if (::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        const int code = errno;
+        ::close(fd);
+        return from_errno("设置文件句柄", path, code);
+    }
+#endif
 
     // 记下已有的长度，这样 size() 不用每次去 stat。
     struct stat info;
