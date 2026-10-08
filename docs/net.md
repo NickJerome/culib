@@ -48,7 +48,7 @@ UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发
 
 `punch_offer` 把双方需要交换的会话 ID 和候选地址放在一起。会话 ID 应用 `random_punch_session_id()` 生成；全零 ID 会被拒绝。`encode_punch_offer(offer)` 产生最多 757 字节的二进制消息，`decode_punch_offer(data, size)` 严格检查版本、数量（1–32）、长度、地址族、非零端口、单播地址和尾部数据。消息可以交给应用已有的信令通道传输；通道须自行确定消息边界并完成身份认证。格式不加密，也不证明地址确实属于声称的节点。
 
-[`examples/net_punch_pair.cpp`](../examples/net_punch_pair.cpp) 有两种本机试验：两个终端分别运行 `xmake run example_net_punch_pair listen 39001` 和 `xmake run example_net_punch_pair connect 127.0.0.1 39001`，让两端直接交换候选；或在三个终端运行 `xmake run example_net_punch_pair relay 39001`，再各运行一次 `xmake run example_net_punch_pair peer 127.0.0.1 39001`，让两端经中继交换候选。`peer` 后还可加 `STUN_IP STUN_PORT`，在**同一 UDP socket** 上取反射地址并放进候选。中继只服务一对节点后退出，不认证双方；这些明文 TCP 流程用于连通性验证，不能作为最终节点协议。
+[`examples/net_punch_pair.cpp`](../examples/net_punch_pair.cpp) 有两种本机试验：两个终端分别运行 `xmake run example_net_punch_pair listen 39001` 和 `xmake run example_net_punch_pair connect 127.0.0.1 39001`，让两端直接交换候选；或在三个终端运行 `xmake run example_net_punch_pair relay 39001`，再各运行一次 `xmake run example_net_punch_pair peer 127.0.0.1 39001`，让两端经中继交换候选。`peer` 后还可加 `STUN_IP STUN_PORT`，在**同一 UDP socket** 上取反射地址并放进候选；再加 `LOCAL_UDP_PORT` 可固定该 socket 的本地端口，便于 NAT 试验。中继只服务一对节点后退出，不认证双方；这些明文 TCP 流程用于连通性验证，不能作为最终节点协议。
 
 ## STUN 地址发现
 
@@ -58,7 +58,7 @@ UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发
 
 双方先用带外信令交换同一个 `punch_session_id` 和各自的候选地址。会话 ID 可由一方调用 `random_punch_session_id()` 生成；候选地址可包含局域网地址及同一 UDP socket 的 STUN 反射地址。随后双方**并发**在各自的协程中、原 socket 上调用 `udp_punch(socket, peer_candidates, session, timeout)`。它每 100 ms 向候选地址发探测包，接收匹配会话 ID 的探测并回确认；必须同时收到回显自己随机事务 ID 的确认、收到并回应**同一来源**的探测，才返回该地址。探测期间调用方必须独占该 socket 的接收端；没有匹配候选、所有发送都失败或到期时返回对应错误。[`examples/net_punch.cpp`](../examples/net_punch.cpp) 演示了两个本地端点的并发调用。
 
-返回成功只证明当时的一次双向 UDP 探测。此接口不负责信令、连接保活、NAT 映射变化检测或节点身份认证；拿到的地址也不能直接视为可信节点。真实公网打洞仍需相应的 NAT 环境验证。
+返回成功只证明当时的一次双向 UDP 探测。此接口不负责信令、连接保活、NAT 映射变化检测或节点身份认证；拿到的地址也不能直接视为可信节点。`tests/net_punch_nat.py` 可在 Linux root 环境下创建两个隔离的 peer、两个端口保持且有状态过滤的 NAT 命名空间，以及独立 STUN 和 TCP 中继进程；先构建 `example_net_punch_pair`，再以 root 运行脚本，可复现跨 NAT 的双向探测。测试夹具明确保持 UDP 端口，通用 `MASQUERADE` 在不同目的地址上可能重映射端口；端点相关映射的 NAT 和真实公网环境仍待验证。
 
 ## 虚拟网卡
 

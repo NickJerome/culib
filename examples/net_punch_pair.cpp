@@ -181,18 +181,20 @@ int main(int argc, char* argv[]) {
     const bool server = argc == 3 && std::strcmp(argv[1], "listen") == 0;
     const bool client = argc == 4 && std::strcmp(argv[1], "connect") == 0;
     const bool relay = argc == 3 && std::strcmp(argv[1], "relay") == 0;
-    const bool relay_peer = (argc == 4 || argc == 6) &&
+    const bool relay_peer = (argc == 4 || argc == 6 || argc == 7) &&
                             std::strcmp(argv[1], "peer") == 0;
     if (!server && !client && !relay && !relay_peer) {
         std::fprintf(stderr,
             "usage: net_punch_pair listen PORT | connect IP PORT | relay PORT | "
-            "peer RELAY_IP PORT [STUN_IP STUN_PORT]\n");
+            "peer RELAY_IP PORT [STUN_IP STUN_PORT [LOCAL_UDP_PORT]]\n");
         return 1;
     }
     std::uint16_t port = 0;
     if (!parse_port(argv[(server || relay) ? 2 : 3], port)) return 1;
     std::uint16_t stun_port = 0;
-    if (relay_peer && argc == 6 && !parse_port(argv[5], stun_port)) return 1;
+    if (relay_peer && argc >= 6 && !parse_port(argv[5], stun_port)) return 1;
+    std::uint16_t local_udp_port = 0;
+    if (relay_peer && argc == 7 && !parse_port(argv[6], local_udp_port)) return 1;
     const wavvix::result<net::endpoint> signaling =
         net::endpoint::parse((server || relay) ? "0.0.0.0" : argv[2], port);
     if (signaling.is_err()) return 1;
@@ -214,7 +216,7 @@ int main(int argc, char* argv[]) {
         return succeeded ? 0 : 1;
     }
     const wavvix::result<net::endpoint> wildcard =
-        net::endpoint::parse("0.0.0.0", 0);
+        net::endpoint::parse("0.0.0.0", local_udp_port);
     if (wildcard.is_err()) return 1;
     wavvix::result<net::udp_socket> opened = net::udp_socket::bind(wildcard.value());
     if (opened.is_err()) return 1;
@@ -228,7 +230,7 @@ int main(int argc, char* argv[]) {
         wavvix::coroutine peer([&] {
             wavvix::result<net::endpoint> selected =
                 relay_peer ? run_relay_peer(signaling.value(), socket,
-                                           candidates.value(), argc == 6 ? argv[4] : 0,
+                                           candidates.value(), argc >= 6 ? argv[4] : 0,
                                            stun_port)
                            : run_pair(server, signaling.value(), socket,
                                       candidates.value());
