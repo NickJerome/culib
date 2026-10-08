@@ -4,7 +4,7 @@
 
 culib 从个人实际需求出发，把各个项目里反复编写的基础代码沉淀下来、统一封装平台差异，让新程序可以直接在它之上快速搭建，而不必每次从零开始。
 
-> **状态**：早期规划阶段，模块与 API 尚未稳定。
+> **状态**：早期开发阶段。CLI 常用模块已可用；服务器基础设施仍在建设，API 尚未稳定。
 
 ## 设计目标
 
@@ -40,7 +40,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version`；位置参数、GNU 风格重排、`set()` 和按名字问的 `was_given()` 给配置文件用 | **已完成**（`was_given(string_view)` 是 `config` 逼出来的） |
 | strings | 操作字符串的自由函数：split / join / trim / 大小写 / replace、UTF-8 ⇄ UTF-16 转换。**不是字符串类**，全库一律用 `std::string`；大小写只做 ASCII，格式化另行缩范围 | **已完成**（East Asian Width 推后） |
 | fs | 路径拆分与拼接、文件与目录操作、整文件读写、目录遍历（C++11 没有 `std::filesystem`）、**常开的追加写句柄** `output_file`（日志那种连续写同一个文件的场合，比每行开关一次快 7.7 倍） | **已完成**。`output_file` 和 Windows 共享模式那处修复是 `log` 那一期逼出来的 |
-| term | 终端彩色输出：`fg::red("x")` 形状，样式是可组合的值类型（**漏掉括号就编译报错**，所以不会出现「设了颜色没恢复」）；自动判断是否该上色（终端 / `NO_COLOR` / `TERM`） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-01-test-term-table-design.md) 第 5 节。测试框架的彩色报告就是它的第一个消费者。Windows 走 VT 模式，开不起来就降级成纯文字（不做旧版控制台 API，理由见 `src/term_win.cpp`） |
+| term | 终端彩色输出：`fg::red("x")` 形状，样式是可组合的值类型（**漏掉括号就编译报错**，所以不会出现「设了颜色没恢复」）；自动判断是否该上色（终端 / `NO_COLOR` / `TERM`） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-01-test-term-table-design.md) 第 5 节。测试框架的彩色报告就是它的第一个消费者。Windows 走 VT 模式，开不起来就降级成纯文字（不做旧版控制台 API，理由见[实现说明](docs/implementation-notes.md)） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
 | 调度器与 I/O | vCPU 模型 + 四个事件后端（`io_uring` / `epoll` / `kqueue` / `IOCP`）一套抽象；协程感知的 `mutex` / `condition_variable` / `semaphore` / `rwlock` | **进行中**：vCPU + 调度器、栈池、**事件引擎三个后端**、**超时与协程感知的同步原语**（`culib/sync.h`：`mutex` / `semaphore` / `condition_variable` / `lock_guard`）已完成。**还没有公共 I/O 接口**（句柄类型要等 `net`）；`io_uring` 是第四期，`net` 是第六期。见 [调度器设计](docs/superpowers/specs/2026-10-04-scheduler-design.md)、[事件引擎](docs/superpowers/specs/2026-10-05-event-engine-design.md)、[超时与同步原语](docs/superpowers/specs/2026-10-05-sync-and-timeout-design.md) |
@@ -333,6 +333,12 @@ wavvix::result<config> load(const std::string& path) {
 - **字符串一律 UTF-8**：包括文件路径；Windows 下由库内部转成 UTF-16 调用 `W` 系列 API。
 - **不污染你的构建**：公共头文件不包含 `<windows.h>`、`<unistd.h>`、`<iostream>`；被 `includes` 引入时不会把 `-Werror` 强加给你。
 - **头文件可独立包含**：每个公共头文件都能单独 `#include`，不依赖包含顺序。
+
+## 文档
+
+- [公共 API 用法与设计说明](docs/api-guide.md)：各模块的示例、行为边界和接口取舍。
+- [实现说明](docs/implementation-notes.md)：调度器、事件引擎等实现文件的结构与平台决策。
+- [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)：模块顺序、已完成范围与后续工作。
 
 ## 参与开发
 

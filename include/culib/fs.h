@@ -1,27 +1,6 @@
 ﻿#pragma once
 
-// 文件系统。C++11 没有 std::filesystem，这是缺失感最强的一块。
-//
-//     wavvix::result<std::string> text = wavvix::fs::read_file("config.toml");
-//     if (text.is_err()) return std::move(text).error();
-//
-//     for (const std::string& name : wavvix::fs::list_directory("/tmp").value_or({})) { ... }
-//
-// 约定：
-//
-// - 路径一律是 UTF-8 的 std::string / string_view，没有专门的 path 类型。代价是路径
-//   和普通字符串混用时编译器发现不了，好处是每个接口少一层转换。
-// - 输入接受 '/' 和 '\\' 两种分隔符。**join 只为自己插入的那一个分隔符用平台原生字符，
-//   不改写输入里已有的**：Windows 上 join("/a", "b") 是 "/a\\b" 而不是 "\\a\\b"。混用在
-//   Windows 上是合法的（"C:/foo\\bar" 能用）；要全部统一成原生分隔符就用 normalize，
-//   它是按段重建路径的。这条是 CI 第一次在 Windows 上跑时，被一个写错的测试暴露出来的。
-// - 整文件读写一律二进制，不做换行转换：读到的就是磁盘上的字节。
-// - **符号链接默认跟随**（用 stat 而不是 lstat）：exists / is_file / file_size 问的是
-//   「那里有个能打开的文件吗」。唯一的例外是 remove_directory(recursive::yes)，它**不**
-//   跟进符号链接——跟进去会删掉链接指向的别处内容，那个代价太大。
-// - 目标存储包含 HDD 和网络挂载。一次 stat 在本地缓存热时 ~475 ns，在冷的 HDD 上
-//   5–10 ms，在 NFS 上 0.2–1 ms。**所以这里每个函数都只做它名字说的那件事**，
-//   不替调用方多问一次磁盘，见 CLAUDE.md「性能与占用」。
+// 文件系统操作；路径使用 UTF-8。
 
 #include <culib/result.h>
 #include <culib/string_view.h>

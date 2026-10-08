@@ -1,54 +1,6 @@
 ﻿#pragma once
 
-// 命令行参数。选项是全局对象，定义在哪里就能在哪里读，不用从 main 一路传下去。
-//
-//     namespace flag = wavvix::flag;
-//
-//     flag::int64  port("port", 8080, "监听端口", {"p"});
-//     flag::string host("host", "0.0.0.0", "监听地址");
-//     flag::boolean verbose("verbose", false, "打印详细日志", {"v"});
-//     flag::string input("input", flag::required, "输入文件");
-//
-//     int main(int argc, char* argv[]) {
-//         flag::init(argc, argv, "1.2.3");          // 失败时打印用法并退出进程
-//         listen(host, port);                        // 像普通变量一样用
-//         for (wavvix::string_view path : flag::args()) { ... }   // 位置参数
-//     }
-//
-// ---- 陷阱：别用 auto 拷贝 -------------------------------------------------------
-//
-//     auto v = verbose;          // 拷的是 flag::boolean（而且编译失败，不可拷贝）
-//     auto v = verbose.get();    // 这才是 bool
-//
-// 隐式转换是为了「像普通变量一样读取和输出」而保留的，代价就是这一条。选项不可拷贝，
-// 所以第一种写法是编译错误而不是静默的怪行为。
-//
-// ---- 接受的写法 ---------------------------------------------------------------
-//
-//   --port=8080   --port 8080   -p 8080   --verbose   --verbose=true   --   -
-//
-// 不支持粘连短选项 -p8080（和 -p -8080 容易混），也不支持合并 -abc。
-//
-// 四条解析规则：
-//
-//   1. 位置参数之后继续解析选项（GNU 风格）。`crop a.png --width=1024 b.png` 里
-//      --width 生效。不用「遇到第一个非选项就停」那套——那会让 `crop *.png --width=1024`
-//      静默失效，是 Go flag 包最常被抱怨的一点。
-//   2. **布尔选项不吃下一个 token**，只接受 --verbose 和 --verbose=true。否则
-//      `crop --verbose a.png` 里的 a.png 会被当成 --verbose 的值。
-//   3. `--` 之后全部算位置参数，哪怕长得像选项。处理以 '-' 开头的文件名要靠它。
-//   4. 单独一个 `-` 算位置参数（惯例表示标准输入）。
-//
-// **未知选项报错退出**，不收进位置参数——静默接受拼错的 --widht 是最常见的 CLI 坑。
-//
-// ---- 生命周期 -----------------------------------------------------------------
-//
-// args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标准允许程序修改 argv，
-// 所以**init 之后不要改写 argv**（例如 setproctitle 那样改进程标题），否则视图会跟着变。
-//
-// 选项的 name / help / 别名字符串必须是静态存续的（字面量就行），库不拷贝它们。
-//
-// 全局选项对象在 main 之前登记，这是「无启动开销」的第二个例外（第一个是 TEST）。
+// 全局选项的命令行解析。
 
 #include <culib/lexical_cast.h>
 #include <culib/result.h>

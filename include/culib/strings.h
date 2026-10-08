@@ -1,21 +1,6 @@
 ﻿#pragma once
 
-// 操作字符串的自由函数，**不是**字符串类——全库一律用 std::string。
-//
-//     std::vector<wavvix::string_view> parts = wavvix::split("a,b,c", ',');
-//     std::string joined = wavvix::join(parts, " / ");
-//     wavvix::string_view clean = wavvix::trim("  x  ");          // 不分配
-//
-// 两类函数，返回类型就说明了会不会分配：
-//
-//   - 返回 string_view 的（trim 系、split 的元素）不分配，视图指向输入。
-//     **调用方必须保证输入活得比结果长**，这是视图的固有约束。
-//   - 返回 std::string / std::vector 的会分配；需要反复产出时用带 out 参数的重载复用缓冲区。
-//
-// 大小写只处理 ASCII，这是明确的范围缩减：Unicode 的大小写映射要内置上千码点的表、
-// 还有 locale 特例（土耳其语的 i），而三个目标场景没一个需要。
-//
-// starts_with / ends_with / contains / find 在 string_view 上，不在这里重复一遍。
+// 字符串处理函数。
 
 #include <culib/result.h>
 #include <culib/string_view.h>

@@ -168,5 +168,5 @@ string_view().back()            wavvix::string_view::back() out of range: index 
 
 - **Clang、MSVC、macOS、最低版本编译器（GCC 4.8.1 / VS2015）都没跑过**，本机只有 GCC 14.2，CI 还没有真正运行过（待 Push Mirror）。
 - `__has_include(<string_view>)` 那段条件编译只在 C++11 下验证过「不启用」，C++17 下的那个转换构造函数本机编译通过但没有在真实的 C++17 使用方工程里试过（CI 的 `consumed-as-dependency` 会覆盖，同样待运行）。
-- 悬垂视图没有任何检测手段，只有头文件注释和示例里的说明。这是 `string_view` 的固有风险，`std::string_view` 也一样。
+- 悬垂视图没有任何检测手段，由 [API 指南](../../api-guide.md) 和示例说明。这是 `string_view` 的固有风险，`std::string_view` 也一样。
 - `find(string_view)` 的性能没有和 `std::string::find` 或 `std::search` 做对比，只论证了「不比朴素循环差」。真有热点再测。

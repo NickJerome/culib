@@ -1,47 +1,6 @@
 ﻿#pragma once
 
-// 操作系统的那些差异：环境变量、进程与机器信息、优雅退出。
-//
-// 这个模块的核心是**优雅退出**——让长期运行的进程被 Ctrl-C 或 kill 时能把手上的活
-// 做完再停。其余几项是顺带的，因为它们同样是「一件事三个平台 API 名字不同」。
-//
-// ---- 优雅退出：唯一安全的形状 ---------------------------------------------------
-//
-//     int main() {
-//         if (wavvix::os::install_stop_handler().is_err()) return 1;
-//         while (!wavvix::os::stop_requested()) {
-//             do_one_unit_of_work();          // 一个工作单元要么做完要么没开始
-//         }
-//         flush_and_close();                  // 一定会执行到
-//         return 0;
-//     }
-//
-// **信号处理函数里几乎什么都不能调。** printf、fclose、malloc、加锁全都不是
-// async-signal-safe 的——信号可能正好打在 malloc 持锁的时候，此时再 malloc 就是死锁。
-// POSIX 只允许调 signal-safety(7) 里那张很短的白名单。
-//
-// 所以这里**只提供一个标志**，不提供「注册一个在信号里跑的回调」那种接口：那个接口
-// 没法安全使用，给出来就是发一把枪。真要自定义处理就自己调 std::signal，后果自负。
-//
-// 收到信号后 stop_requested() 永远返回 true，不会自己复位——「该停了」是单向的。
-// 第二次 Ctrl-C 不做特殊处理：想要「再按一次强杀」就自己数次数然后 std::_Exit。
-//
-// ---- 平台差异 -------------------------------------------------------------------
-//
-//   - POSIX：SIGINT 和 SIGTERM。**SIGHUP 保持默认行为**，因为按惯例它是「重载配置」
-//     而不是「停止」（nginx、apache 都这样），而热加载要等第三程的 fs::watcher。
-//   - Windows：SetConsoleCtrlHandler，它能收到 Ctrl-C、Ctrl-Break、关窗口、注销、
-//     关机五种事件。注意**回调在一根独立线程里跑**，不是信号上下文，但接口形状不变。
-//
-// 最低系统版本按 Windows 7 / glibc 2.17 算，不用更新的 API。
-//
-// ---- 不做 -----------------------------------------------------------------------
-//
-//   - **动态库加载**（dlopen / LoadLibrary）。三个目标场景里没有插件架构，而它是
-//     本模块平台差异最大的部分（符号修饰、RTLD 标志、DLL 搜索路径）。真要做插件时再加。
-//   - **崩溃时打印调用栈**。要 dbghelp（Windows，还得分发 PDB）或 backtrace（glibc
-//     扩展，musl 没有），跨平台一致性最差；而 core dump 加 gdb 能解决同样的问题。
-//   - 进程创建与管道（fork/exec、CreateProcess）：没有消费者。
+// 操作系统信息与优雅退出。
 
 #include <culib/optional.h>
 #include <culib/result.h>

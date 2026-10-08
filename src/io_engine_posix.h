@@ -1,14 +1,6 @@
 #pragma once
 
-// 两个 POSIX 后端（epoll 和 kqueue）真正共享的那部分。不是公共头文件。
-//
-// **抽出来的理由是 kqueue 本机编不了。** 没有 macOS 也没有 <sys/event.h>，连
-// -fsyntax-only 都过不去，所以那个后端的第一个读者是 CI。既然如此，就该让它尽可能
-// 复用已经在 Linux 上测过的代码——剩下的未验证面只有「怎么登记兴趣」这一件事，
-// 而最容易写错的 complete()（EINTR、EAGAIN、对端关闭、错误码归谁）两边是同一份。
-//
-// 不共享的是 io_engine 本身：epoll 要一个 epoll fd 加合并后的事件掩码，kqueue 要一个
-// kq 加两个独立的过滤器，没有值得放进公共基类的东西。
+// epoll 和 kqueue 共享的内部 I/O 逻辑。
 
 #include "io_engine.h"
 

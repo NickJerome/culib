@@ -1,57 +1,6 @@
 ﻿#pragma once
 
-// 字节缓冲：一段可增长的字节 + 一个读游标 + 一个写游标，外加**显式字节序**的整数读写。
-//
-//     wavvix::buffer out;
-//     out.write_u32_be(payload.size());
-//     out.write(payload);
-//     send(out.data(), out.size());
-//
-// ---- 字节序一律写明，不做「主机字节序」这种事 -----------------------------------
-//
-// 每个整数读写函数的名字里都带 `_be` 或 `_le`。**没有不带后缀的版本**，因为那种函数
-// 的含义取决于你在哪台机器上跑，而协议不是。`htonl` 那套把「转换」和「目标字节序」
-// 混成一件事，读代码的人得先知道主机是什么字节序才能回答「线上是什么」。
-//
-// 实现是按位移写的，不是 `htonl`：**和主机字节序无关**，所以同一份代码在大端机上
-// 也对，而且编译器认得出这个式样、会折成一条 bswap 加一次存储（量过，见设计文档）。
-//
-// ---- 读不够的时候 ---------------------------------------------------------------
-//
-// 整数读函数返回 **`optional<T>`**，**不够就是空的，而且游标不动**。
-//
-// 不用 `result` 是因为「数据还没到齐」不是错误——那是流式解析的常态，不该为它付一次
-// 错误消息的分配。而 `optional` 正是本库表达「可能没有值」的那个类型。
-//
-// **不用「返回 bool + 出参」**，虽然那是本库别处的习惯（`fs::read_file`）。那种写法
-// 在这里有个真陷阱：把调用和读出参写进同一个表达式时，求值顺序是未定义的——
-//
-//     std::printf("%s 值是 %u", in.read_u16_be(v) ? "成了" : "不够", v);   // v 可能先被读
-//
-// 这不是假想的，是 `examples/bytes.cpp` 第一版真踩出来的。返回值形式写不出这个 bug。
-//
-// 推荐的用法是**先确认整帧都到了，再一口气解析**：
-//
-//     if (in.size() < 6) return need_more;        // 2 字节类型 + 4 字节长度
-//     const std::uint16_t kind = in.read_u16_be().value();
-//     const std::uint32_t length = in.read_u32_be().value();
-//
-// 这样还能直接初始化 const 局部变量。逐字段判断也是安全的（不够时游标不动）：
-//
-//     const wavvix::optional<std::uint32_t> length = in.read_u32_be();
-//     if (!length.has_value()) return need_more;
-//
-// ---- 给 I/O 用的那三个 ----------------------------------------------------------
-//
-// `prepare` / `commit` / `consume` 是给「直接读进缓冲、直接从缓冲发出去」用的，
-// 可以少一次拷贝：
-//
-//     unsigned char* room = in.prepare(4096);
-//     const ssize_t got = read(fd, room, 4096);
-//     if (got > 0) in.commit(got);                // 只认账真读到的那些
-//
-//     const ssize_t sent = write(fd, out.data(), out.size());
-//     if (sent > 0) out.consume(sent);            // 发出去多少就丢掉多少
+// 字节缓冲和显式字节序读写。
 
 #include <culib/optional.h>
 #include <culib/string_view.h>

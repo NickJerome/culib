@@ -1,21 +1,6 @@
 ﻿#pragma once
 
-// 秒表：测量经过的时间，构造时开始计时。
-//
-//     #include <culib/stopwatch.h>
-//
-//     wavvix::stopwatch watch;                          // 开始计时
-//     do_work();
-//     std::chrono::nanoseconds cost = watch.elapsed();  // 可以多次读取，不影响计时
-//     std::cout << wavvix::format_duration(cost);       // 例如 "1.25 ms"
-//     watch.restart();                                  // 从现在重新开始计时
-//
-// 需要在离开作用域时记录耗时，就和 defer 组合：
-//
-//     wavvix::stopwatch watch;
-//     defer { log(wavvix::format_duration(watch.elapsed())); };
-//
-// 使用 std::chrono::steady_clock：单调递增，不受修改系统时间的影响。
+// 基于单调时钟的计时器。
 
 #include <chrono>
 #include <string>

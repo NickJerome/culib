@@ -1,14 +1,4 @@
 // 事件引擎的 IOCP 后端。
-//
-// **这一边不用模拟任何东西。** IOCP 原生就是「完成」形状：发出一个 overlapped 操作，
-// 完成包回来时结果已经在里面——epoll / kqueue 那边要在醒来之后补一次 read / write，
-// 这里一次都不用。参照实现为了把 IOCP 塞进「就绪」形状付了什么（`\Device\Afd`、
-// 硬编码的 IOCTL_AFD_POLL、一个自管道、一套重提交状态机，外加一整套平行的完成式
-// API），见 docs/superpowers/specs/2026-10-05-event-engine-design.md 第 2 节。
-// 那张账单是选定这个形状的全部理由。
-//
-// 写的时候本机只有 MinGW 交叉编译 + wine，真 MSVC 是推上 CI 才第一次编到、跑到的
-// （`3a766aa` 那次全绿，`3e8ed8d` 记录）。
 
 #include "io_engine.h"
 

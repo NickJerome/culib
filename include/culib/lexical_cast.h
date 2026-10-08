@@ -1,23 +1,6 @@
 ﻿#pragma once
 
-// 字符串 ⇄ 数值 / 布尔。
-//
-//     wavvix::result<int> port = wavvix::lexical_cast<int>(text);
-//     if (port.is_err()) return std::move(port).error();
-//
-//     std::string s = wavvix::to_string(8080);        // 反方向不会失败，直接返回值
-//
-// 解析是严格的，和 strtol 的默认行为相反：整个输入必须被完全消费，不接受前后空白。
-// lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") 都失败。
-// 理由是「没有意外」——宽松解析会把 --port=80x 静默当成 80。要容忍空白自己先 trim。
-//
-// 失败时 kind 是 error_kind::invalid_argument（格式不对）或 error_kind::out_of_range
-// （超出目标类型范围），消息里带上出错的那段输入和允许的范围。要说明「这是哪个字段」
-// 时，在自己那一层把上下文拼进去，见 CLAUDE.md「错误处理」。
-//
-// 不受 locale 影响：小数点一律是 '.'。整数完全自己解析；浮点的语法自己严格校验，换算
-// 交给 strtod（它是正确舍入的），但先把 '.' 换成当前 locale 的小数点——不调 setlocale，
-// 那是进程级的、会影响别的线程。
+// 严格转换字符串与数值、布尔值。
 
 #include <culib/result.h>
 #include <culib/string_view.h>

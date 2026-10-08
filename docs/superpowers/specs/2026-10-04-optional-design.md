@@ -63,7 +63,7 @@ bool operator==(const optional<T>&, nullopt_t) noexcept;   // != 以及两个方
 
 **全库一致赢。** 决定性的理由是这两个类型会**并排出现在同一个函数里**——`examples/optional.cpp` 的 `load_port()` 就是：`os::getenv` 给 `optional`，`lexical_cast` 给 `result`。那时 `if (home)` 紧挨着 `if (parsed.is_err())` 就是「同一件事两种写法」，正是「每次都要先想一下」要挡的东西。
 
-代价是从 `std::optional` 过来的人要多打几个字，写进了头文件注释的开头。
+代价是从 `std::optional` 过来的人要多打几个字，写进了 [API 指南](../../api-guide.md)。
 
 ### 3.2 存储结构照抄 result，而且是故意不共用
 

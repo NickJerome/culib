@@ -1,32 +1,6 @@
 ﻿#pragma once
 
-// 可能没有值的返回：有值时直接 return 值，没有时 return wavvix::nullopt。
-//
-//     wavvix::optional<std::string> home = wavvix::os::getenv("HOME");
-//     if (!home.has_value()) return use_default();
-//     use(home.value());
-//
-// ---- 什么时候用 optional，什么时候用 result ------------------------------------
-//
-//   - 「没有」是**正常结果**  -> optional。环境变量没设置、队列是空的、查表没命中。
-//   - 「没有」是**失败**      -> result。文件打不开、输入不是数字、权限不足。
-//
-// 判据是「调用方需不需要知道为什么」：需要原因就用 result，`optional` 一个字节都
-// 不带原因。把正常结果包成 result 会迫使调用方处理一个不是错误的错误。
-//
-// ---- 和 std::optional 的区别 ---------------------------------------------------
-//
-// **没有 operator bool、operator*、operator->**，和 `result` 一致：判断有无和取值
-// 各只保留一种写法。标准库那套 `if (opt)` / `*opt` 更短，但这两个类型会并排出现在
-// 同一个函数里（`fs::read_file` 返回 result、`os::getenv` 返回 optional），那时
-// `if (opt)` 紧挨着 `if (text.is_ok())` 就是「同一件事两种写法」。
-//
-// 其余行为和 std::optional 一致：
-//
-//   - T 可平凡复制时 optional<T> 也可平凡复制（optional<int> 是 8 字节、走寄存器返回）；
-//   - value() 在没有值时打印诊断并终止，release 同样检查；
-//   - **移动之后源对象仍然 has_value() == true**，里面是一个被移走的 T。这和 std::optional
-//     一样，但容易被误读成「移动会清空它」。要变回「没有」就显式 reset()。
+// 表示值可能不存在。
 
 #include <culib/detail/macros.h>
 #include <culib/detail/optional_storage.h>

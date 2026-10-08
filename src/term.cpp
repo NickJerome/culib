@@ -1,9 +1,4 @@
-// term 里和平台无关的那部分：颜色模式、「该不该上色」的判断、ANSI 颜色码。
-//
-// **只有这个文件引入 <iostream>。** 判断「这个流是不是 std::cout」要比较地址，
-// 而公共头文件不能引入 <iostream>（开发约定：公共头文件不引入 <iostream>）。
-// 代价是 GCC 13 以前的 libstdc++ 会因此多一个 main 之前的静态对象——但用到
-// std::cout 的程序本来就有它。
+// 终端颜色模式与 ANSI 输出。
 
 #include <culib/term.h>
 

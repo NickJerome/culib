@@ -1,9 +1,4 @@
-// os 的 Windows 实现。
-//
-// 和 POSIX 的实质区别只有一处：优雅退出走 SetConsoleCtrlHandler，而**它的回调在一根
-// 由系统创建的独立线程里跑**，不是信号上下文。所以那里的限制不是「只能调
-// async-signal-safe 的函数」，而是「别在那根线程上做耗时的事」——Windows 给的时间很短
-// （关机时约 5 秒，之后强杀进程）。接口形状不变：只翻一个标志。
+// Windows 平台的操作系统接口。
 
 #include <culib/lexical_cast.h>   // to_string
 #include <culib/os.h>

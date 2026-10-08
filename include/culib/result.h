@@ -1,29 +1,6 @@
 ﻿#pragma once
 
-// 可能失败的操作：成功时直接 return 值，失败时 return make_error(...)。
-//
-//     wavvix::result<int> port = 8080;
-//     if (port.is_err()) { log(port.error().to_string()); return; }
-//     use(port.value());
-//
-// 把失败原样传给调用方时自己写 if，别包成宏：
-//
-//     wavvix::result<int> port = parse_port(text);
-//     if (port.is_err()) return std::move(port).error();
-//
-// std::move 不能省：没有它取到的是 error() 的左值重载，错误会被复制一次。
-// 错误类型只能移动时漏写是编译错误，可复制时（默认的 error 就是）却编译通过且零警告，
-// 只是静默多复制一次说明字符串——所以一律写成 std::move(x).error()，不留第二种写法。
-//
-// 多出来的那一行换到的是「每一处 return 都看得见」。库里曾经有个 WAVVIX_TRY 宏，
-// 展开后藏着一个 return，看起来却像变量声明——已删除，理由见 result 设计文档 11.10。
-// result<void> 默认构造表示成功。
-// 错误类型一律用默认的 error：culib 不为「性能敏感」的接口另开枚举，代价量过，见 CLAUDE.md。
-// E 仍是模板参数（约束只有「非数组对象类型、非 cv、析构不抛、和 T 不可互转」，并不要求是枚举），
-// 自己的代码真需要时可以传任意小而平凡可复制的类型，但跨层传给返回 result<T> 的函数要自己转换。
-// value() / error() 取错分支会打印信息并终止程序，release 同样检查。
-// 容器自身不分配内存；值或错误自身可能分配（如 error 的说明字符串）。
-// 不支持引用类型；需要引用语义时使用指针。
+// 表示成功值或错误。
 
 #include <culib/detail/macros.h>
 #include <culib/detail/result_storage.h>

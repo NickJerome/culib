@@ -1,29 +1,6 @@
 ﻿#pragma once
 
-// 单元测试框架：用法接近 Google Test，只有 TEST 和 EXPECT 两个宏。
-//
-//     #include <culib/test.h>
-//
-//     TEST(math, adds_numbers) {              // 组名, 测试名
-//         EXPECT(1 + 1, ==, 2);               // EXPECT(a, op, b)
-//     }
-//
-//     int main(int argc, char* argv[]) {     // 整个测试程序只需要一个 main
-//         return wavvix::test::run_all(argc, argv);
-//     }
-//
-// EXPECT(a, op, b)：
-// - op 只能是 ==、!=、<、<=、>、>=；a 和 b 各只求值一次。
-// - 有符号与无符号整数按数学值比较；两边都是 C 字符串（char 指针或数组）时比较内容。
-// - 失败时打印位置、表达式和两边的值，测试继续执行。EXPECT 返回 bool，
-//   需要失败就停时写 if (!EXPECT(p, !=, nullptr)) { return; }。
-// - 操作数里有不在括号内的逗号（如模板参数）时，给操作数再加一层括号。
-// - 只能在运行测试的线程里调用。
-//
-// 与其他库的 TEST / EXPECT 冲突时，在包含本头文件之前定义 WAVVIX_NO_TEST_SHORT_NAMES，
-// 改用 WAVVIX_TEST / WAVVIX_EXPECT。
-//
-// EXPECT 的实现在 culib/detail/expect.h，使用时不需要阅读。
+// 单元测试宏与运行器。
 
 #include <culib/detail/expect.h>
 #include <culib/detail/macros.h>

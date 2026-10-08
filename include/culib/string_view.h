@@ -1,22 +1,6 @@
 ﻿#pragma once
 
-// 只读的字符串视图：一个指针加一个长度，不拥有数据、不分配内存。
-//
-//     void log(wavvix::string_view message);     // 传 const char*、std::string 都不分配
-//     log("hello");
-//     log(text);                                 // text 是 std::string
-//
-// 三件必须知道的事：
-//
-// 1. 没有 c_str()，视图不保证以 '\0' 结尾。要传给 C API 时先 to_string()。
-// 2. 视图不拥有数据，不要让它活过它看的那个字符串：
-//        string_view bad = std::string("临时的");   // 悬垂，语句结束字符串就没了
-// 3. 越界访问（operator[] / front / back / substr 的 pos > size()）打印诊断并终止，
-//    release 同样检查。那是编程错误，和 result::value() 取错分支一样 fail fast。
-//
-// 不要把它在 C++17 下别名到 std::string_view：culib 自己按 C++11 编译而使用方可以用更高
-// 标准，别名会让同一个名字在两边是不同类型，以它为参数的公共函数链接不上。C++17 下额外提供
-// 一个从 std::string_view 的转换构造函数，那是纯增量。
+// 非拥有字符串视图；被引用的数据必须活得更久。
 
 #include <culib/detail/macros.h>
 

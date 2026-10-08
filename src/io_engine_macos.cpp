@@ -1,12 +1,4 @@
 // 事件引擎的 kqueue 后端。
-//
-// 「完成」形状多付的那次系统调用在 io_engine_posix.h 的 io_complete() 里，和 epoll
-// 后端共用同一份——**那是故意的**：这个后端本机编译不了（没有 macOS，连
-// -fsyntax-only 都过不去），所以未验证的面要尽量小，只剩「怎么登记兴趣」这一件事。
-//
-// 和 epoll 的结构差别只有一处：kqueue 的读和写是**两条独立的过滤器**
-// （EVFILT_READ / EVFILT_WRITE），不像 epoll 要把两个方向合并成一个掩码再整体
-// 提交。所以这里是两次独立的增删，反而比 epoll 那边干净。
 
 #include "io_engine_posix.h"
 
@@ -37,24 +29,7 @@ short filter_for(io_direction direction) {
     return static_cast<short>((direction == io_read) ? EVFILT_READ : EVFILT_WRITE);
 }
 
-// 登记或撤销一个方向，**立刻提交，不攒批**。
-//
-// kqueue 本可以把变更搭在下一次 kevent() 上免费捎走（Photon 就是那么做的，
-// io/kqueue.cpp 的 enqueue），省掉这一次系统调用。这里不那么做，两个理由：
-//
-//   1. **开发约定里「性能主张必须有对比」，而手上没有 macOS。** 省下的那次系统调用
-//      值多少就只是个说法，按约定不该写进文档，也就不该据此改实现。
-//   2. **这个后端本机一行都跑不了**（见文件头），所以每多一点状态都是在加未验证的
-//      面积。攒批要一个变更缓冲区，还要保证它活到下一次 kevent()——为一个量不出来的
-//      收益换这些，方向不对。
-//
-// **什么时候重开**：有 macOS 能跑同场对比，量出来确实值。
-//
-// 注意这一条**不是**拿「三个后端行为一致」当理由——那把尺子在设计文档 7.1 上用错过
-// 一次（它压过了「零开销」这条硬约束，后来改回来了）。调度次序本来就不是契约。
-//
-// nevents 传 0 表示只提交不收事件。这种调用下变更的错误走返回值和 errno——
-// 放不进 eventlist 就不会以 EV_ERROR 的形式出现，这是 kevent(2) 明写的。
+// 登记或撤销一个方向，立刻提交；nevents 为 0 时通过返回值和 errno 检查错误。
 bool submit(int kq, int fd, io_direction direction, bool add) {
     struct kevent change;
     const unsigned short flags =

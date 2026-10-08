@@ -1,40 +1,6 @@
 ﻿#pragma once
 
-// 终端彩色输出。
-//
-//     #include <culib/term.h>
-//     using namespace wavvix::term;
-//
-//     std::cout << fg::red("error") << '\n';                     // 红字
-//     std::cout << bg::yellow("warning") << '\n';                // 黄底
-//     std::cout << (fg::white | bg::red)(" FAIL ") << '\n';      // 白字红底
-//     std::cout << fg::green(42) << '\n';                        // 任何能 << 的值
-//
-//     const style fail = fg::white | bg::red;                    // 样式是值，可以存
-//     const style levels[] = {style(), fg::cyan, fg::yellow, fail};   // 也可以放数组
-//
-// ---- 为什么是 `fg::red("x")` 而不是 `cout << fg::red << "x" << reset` ------------
-//
-// **`style` 不能直接 `<<`。** 写成 `std::cout << fail` 而忘了括号和文字时是**编译
-// 报错**，所以不可能出现「颜色设上了却没恢复」——那是另一种写法最常见的 bug，而且
-// 它只在某条分支上才暴露（提前 return 跳过了 reset）。
-//
-// 代价是颜色作用的范围必须写在一对括号里。换来的是这个错误类别整个消失。
-//
-// ---- 什么时候真的上色 -----------------------------------------------------------
-//
-// 默认 `automatic`：**同时**满足才上色——流是 `std::cout` / `std::cerr` / `std::clog`、
-// 对应的 stdout / stderr 是终端、`NO_COLOR` 没设置或为空、`TERM` 不是 `dumb`
-// （Windows 不看 `TERM`）。写进文件流或 `std::ostringstream` 时只出纯文字。
-//
-// `set_color_mode(color_mode::always)` 强制上色（给「管道给 less -R」那种场合），
-// `never` 强制不上色。
-//
-// ---- 开销 -----------------------------------------------------------------------
-//
-// `style` 两个字节，`|` 和颜色常量都在编译期算完。`fg::red(x)` 对左值只存引用、对临时
-// 对象移动一次，**不拷贝字符串也不分配**。每次输出多一次函数调用和几次比较，用来判断
-// 要不要上色——相对一次流输出本身可以忽略。
+// 终端样式与颜色。
 
 #include <ostream>
 #include <utility>

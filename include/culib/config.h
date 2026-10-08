@@ -1,52 +1,6 @@
 ﻿#pragma once
 
-// 配置文件：ini 的一个子集。
-//
-//     const wavvix::result<wavvix::config> loaded = wavvix::config::load("app.conf");
-//     if (!loaded.is_ok()) return loaded.error();
-//     const wavvix::config& settings = loaded.value();
-//
-//     const wavvix::result<long long> port = settings.get_int64("server.port", 8080);
-//     if (!port.is_ok()) return port.error();        // 文件里写错了
-//
-// **行尾注释的规则：前面有空白的 `#` 或 `;` 开始注释。** 不在任何 `#` 上都切，
-// 是因为 URL 的片段和密码里带 `#` 是常事；要求有空白隔开既符合直觉又好记。
-//
-// 认的语法就这些：
-//
-//     # 井号开头是注释
-//     ; 分号也是
-//     name = culib                 # 等号两边的空白都会去掉，行尾注释也会去掉
-//     greeting = " 带空格 "        # 带引号的值到下一个引号结束，首尾空格留得住
-//     url = http://x/#fragment     # `#` 前面没有空白，所以它不是注释
-//     note = "a # b"               # 引号里的 `#` 也不是注释
-//
-//     [server]                     # 段，下面的键变成 server.xxx
-//     port = 8080
-//     host = 0.0.0.0
-//
-// **嵌套用 `section.key` 这种扁平键表示，不做任意深度的树。** 这样就不需要
-// `variant` 那种递归值类型（而 `variant` 已经评估过不做，见
-// docs/superpowers/specs/2026-10-03-variant-design.md）。
-//
-// ---- 为什么是 ini 而不是 toml 或 json ------------------------------------------
-//
-// 路线图定了「ini 或 toml 子集，不要 json」，这里取 ini。**toml 要回答的问题比 ini
-// 多得多**：数组、内联表、多行字符串、日期时间、各种数字写法——每一条都是设计面，
-// 而服务配置一条都用不上。ini 的子集反而**没有设计自由度**：注释、段、键等于值，
-// 就这三样。
-//
-// ---- 「不存在」和「写错了」是两件事 --------------------------------------------
-//
-//   - **键不存在不是错误**，用你给的默认值；
-//   - **键在、但值解析不了是错误**，一定报出来。
-//
-// 所以带类型的读法返回 `result<T>`：
-//
-//     settings.get_int64("port", 8080)      // 没写 port → ok(8080)
-//                                           // 写了 port = 80x80 → error
-//
-// **不把第二种悄悄当成默认值**：`port = 80 80` 静默变成 8080 是那种要查一下午的事。
+// 读取 ini 子集配置。
 
 #include <culib/optional.h>
 #include <culib/result.h>

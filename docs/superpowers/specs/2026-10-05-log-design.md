@@ -48,7 +48,7 @@
 
 ### 1.4 加锁：`std::mutex`，不是 `wavvix::mutex`
 
-sink 是**进程全局**的，多个 vCPU 会写同一个，而协程锁只在一个 vCPU 内部有效（`culib/sync.h` 开头那段）。所以只能用线程锁。
+sink 是**进程全局**的，多个 vCPU 会写同一个，而协程锁只在一个 vCPU 内部有效（见 [sync.h 用法](../../api-guide.md)）。所以只能用线程锁。
 
 那一小段会真的挡住 vCPU。能接受，因为：
 

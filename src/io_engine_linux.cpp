@@ -1,14 +1,4 @@
 // 事件引擎的 epoll 后端。
-//
-// 「完成」形状在一个「就绪」后端上要多做的事，就是**醒来之后当场做一次系统调用**——
-// 那段在 io_engine_posix.h 的 io_complete() 里，和 kqueue 后端共用同一份。本文件只管
-// epoll 独有的那件事：怎么登记和撤销兴趣。
-//
-// 取**水平触发**，不用 EPOLLET 也不用 EPOLLONESHOT。理由见
-// docs/superpowers/specs/2026-10-05-event-engine-design.md 6.1：边沿触发要求
-// 「一直读到 EAGAIN」，那是配合「一个 fd 一个常驻读循环」的用法，而我们的用法是
-// 「一个请求一次操作」；EPOLLONESHOT 是按 fd 而不是按方向生效的，同一个 fd 上同时
-// 挂着读和写时，一边触发会把另一边也解除，于是要补一套重新登记的记账。
 
 #include "io_engine_posix.h"
 
