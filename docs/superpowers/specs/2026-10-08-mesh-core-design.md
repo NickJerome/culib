@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析。Linux TUN 已在 WSL2 上实际收发 IP 包；macOS utun 已在 CI 上编译并运行打开接口测试。Windows Wintun 内部后端及事件等待已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37778749317)，缺 DLL 错误路径通过；有驱动的收发仍待验证。统一的 `net::virtual_interface` RAII 接口和示例已写出，待跨平台 CI。打洞及节点协议未开始。
+- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 缺 DLL 错误路径通过。Windows 测试替身的包收发已在本机 MSVC x64 跑通，待 CI；真实 Wintun 驱动收发仍待验证。打洞及节点协议未开始。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -37,6 +37,8 @@ Linux TUN 与 macOS utun 都用 `readv` 接收：一段写入调用方缓冲区�
 Windows Wintun 的接收 API 在队列空时返回 `ERROR_NO_MORE_ITEMS`，随后要等待 `WintunGetReadWaitEvent()`。不能在协程里直接调用 `WaitForSingleObject`，否则整个 vCPU 会停住。IOCP 后端新增一次性 Windows 线程池事件等待：事件触发后回调向当前 vCPU 的完成端口投递完成项，调度器照常唤醒对应协程。超时撤销先以原子状态阻止尚未投递的回调，并同步注销等待；若完成项已经投递，继续等它出队再释放协程栈上的请求。本机 MSVC x64/x86 的事件唤醒、超时和原有 I/O 测试已通过。
 
 Windows 后端运行时加载 `wintun.dll`，为每次 `open()` 创建临时命名的适配器和 1 MiB 环形缓冲区，关闭时移除适配器；缺少 DLL 时返回 `not_found`。Wintun 的读事件自动复位，同一接口的读取用协程感知的互斥量串行化，避免多个等待者漏掉唤醒。发送环满时 Wintun 没有对应的可等待事件；后端按 1 ms 协作式睡眠后重试，直到写入或超时。这条低频背压路径有轮询代价，实际驱动上的吞吐和延迟仍需验证。
+
+测试目录的 `fixtures/fake_wintun.cpp` 构建为独立 DLL，只在 Windows x64 测试进程里显式加载，不进入 culib 静态库。它按 Wintun 导出的函数签名模拟环形队列和自动复位读事件；本机 MSVC x64 已验证公开接口从空队列挂起、被事件唤醒、收包、发包、缓冲区不足报错和后续超时。该替身验证了调用顺序和协程/IOCP 集成，不能证明真实驱动的安装、路由、吞吐或内核交互。
 
 WSL2 Ubuntu 22.04 上以有 `CAP_NET_ADMIN` 的 root 创建 TUN，给接口设置 `192.0.2.1/30`，经内核发出 UDP 生成 IPv4 报文，再将反向 IPv4/UDP 报文写回 TUN，应用套接字收到 `pong`。同一测试强制 epoll 和 io_uring 均通过；无权限的常规 CI 环境只检查错误路径。接口启动时可能先产生 IPv6 控制报文，因此测试按目标 IPv4 地址筛选，不能假定第一包就是测试包。
 
