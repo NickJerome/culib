@@ -129,6 +129,7 @@ def main():
     program = programs[0]
     relay_port = 39011
     processes = []
+    forced_shutdown = False
     with tempfile.TemporaryDirectory() as temporary:
         try:
             files = [str(pathlib.Path(temporary) / name)
@@ -160,13 +161,29 @@ def main():
                         pass
             for process in reversed(processes):
                 try:
-                    process.wait(timeout=5)
+                    process.wait(timeout=8)
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    forced_shutdown = True
+                    print("mesh process exceeded shutdown deadline: " +
+                          str(process.args), file=sys.stderr)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     process.wait()
                 errors = process.stderr.read()
                 if errors:
                     print(errors, end="", file=sys.stderr)
+    if forced_shutdown:
+        raise RuntimeError("mesh process did not stop after SIGTERM")
+    for name in (first_name, second_name):
+        for _ in range(20):
+            if subprocess.run(["ifconfig", name], capture_output=True,
+                              timeout=5).returncode != 0:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("mesh utun interface remained after shutdown: " + name)
 
 
 if __name__ == "__main__":
