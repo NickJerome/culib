@@ -292,6 +292,12 @@ result<void> copy_file(string_view from, string_view to, overwrite mode) {
     if (!native_from.valid() || !native_to.valid()) return invalid_path();
     std::FILE* source = std::fopen(native_from.get(), "rb");
     if (!source) return from_errno("打开", from, errno);
+    struct stat source_info;
+    if (::fstat(::fileno(source), &source_info) != 0) {
+        const int code = errno;
+        std::fclose(source);
+        return from_errno("检查复制源", from, code);
+    }
 
     const int flags = O_WRONLY | O_CREAT | (mode == overwrite::no ? O_EXCL : 0);
     const int fd = ::open(native_to.get(), flags, 0666);
@@ -301,10 +307,8 @@ result<void> copy_file(string_view from, string_view to, overwrite mode) {
         return from_errno("创建", to, code);
     }
     if (mode == overwrite::yes) {
-        struct stat source_info;
         struct stat target_info;
-        if (::fstat(::fileno(source), &source_info) != 0 ||
-            ::fstat(fd, &target_info) != 0) {
+        if (::fstat(fd, &target_info) != 0) {
             const int code = errno;
             ::close(fd);
             std::fclose(source);
@@ -344,12 +348,21 @@ result<void> copy_file(string_view from, string_view to, overwrite mode) {
     }
     const bool read_failed = std::ferror(source) != 0;
     std::fclose(source);
+    if (read_failed) {
+        std::fclose(target);
+        return from_errno("读取", from, EIO);
+    }
+    if (std::fflush(target) != 0) {
+        const int code = errno;
+        std::fclose(target);
+        return from_errno("写入", to, code ? code : EIO);
+    }
+    if (::fchmod(fd, source_info.st_mode & 07777) != 0) {
+        const int code = errno;
+        std::fclose(target);
+        return from_errno("设置权限", to, code);
+    }
     if (std::fclose(target) != 0) return from_errno("关闭", to, errno);
-    if (read_failed) return from_errno("读取", from, EIO);
-
-    // 权限一起带过去，否则复制可执行文件会丢掉执行位
-    struct stat info;
-    if (stat_path(from, info)) ::chmod(native_to.get(), info.st_mode & 07777);
     return result<void>();
 }
 

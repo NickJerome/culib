@@ -448,6 +448,24 @@ TEST(fs, copy_onto_a_hard_link_preserves_the_source) {
     EXPECT(fs::read_file(alias).value_or(""), ==, "payload");
 }
 
+TEST(fs, copy_preserves_posix_permissions) {
+    const scratch area("copy_permissions");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string source = area.at("source");
+    const std::string target = area.at("target");
+    if (!EXPECT(fs::write_file(source, "payload").is_ok(), ==, true)) return;
+    if (!EXPECT(::chmod(source.c_str(), 0751), ==, 0)) return;
+    if (!EXPECT(fs::copy_file(source, target).is_ok(), ==, true)) return;
+
+    struct stat info;
+    if (EXPECT(::stat(target.c_str(), &info), ==, 0))
+        EXPECT(info.st_mode & 0777, ==, 0751);
+    if (!EXPECT(::chmod(source.c_str(), 0640), ==, 0)) return;
+    if (!EXPECT(fs::copy_file(source, target, fs::overwrite::yes).is_ok(), ==, true)) return;
+    if (EXPECT(::stat(target.c_str(), &info), ==, 0))
+        EXPECT(info.st_mode & 0777, ==, 0640);
+}
+
 TEST(fs, recursive_remove_does_not_follow_a_directory_symlink) {
     const scratch area("symlink_remove");
     if (!EXPECT(area.ok(), ==, true)) return;
