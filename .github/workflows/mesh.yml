@@ -48,8 +48,10 @@ jobs:
         run: |
           if [ "${{ runner.os }}" = Windows ]; then
             bash .github/report-failure.sh python apps/mesh/tests/peer_probe.py ${{ matrix.mode }}
+            bash .github/report-failure.sh python apps/mesh/tests/peer_probe.py ${{ matrix.mode }} --stun-unavailable
           else
             bash .github/report-failure.sh python3 apps/mesh/tests/peer_probe.py ${{ matrix.mode }}
+            bash .github/report-failure.sh python3 apps/mesh/tests/peer_probe.py ${{ matrix.mode }} --stun-unavailable
           fi
       - name: exercise macOS utun mesh forwarding
         if: matrix.target.plat == 'macosx'

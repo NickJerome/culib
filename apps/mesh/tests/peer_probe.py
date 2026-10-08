@@ -44,10 +44,16 @@ def finish(process):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("debug", "release"):
-        raise RuntimeError("usage: peer_probe.py debug|release")
+    if len(sys.argv) not in (2, 3) or sys.argv[1] not in ("debug", "release") or \
+            (len(sys.argv) == 3 and sys.argv[2] != "--stun-unavailable"):
+        raise RuntimeError("usage: peer_probe.py debug|release [--stun-unavailable]")
+    stun_unavailable = len(sys.argv) == 3
     program = program_for(sys.argv[1])
-    with tempfile.TemporaryDirectory() as temporary:
+    with tempfile.TemporaryDirectory() as temporary, \
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as silent_stun:
+        silent_stun.bind(("127.0.0.1", 0))
+        stun_args = (["127.0.0.1", str(silent_stun.getsockname()[1])]
+                     if stun_unavailable else [])
         files = [str(pathlib.Path(temporary) / name)
                  for name in ("a.key", "b.key")]
         keys = [run(str(program), "identity", "create", name, input=PASSWORD)
@@ -67,7 +73,7 @@ def main():
             for filename, peer_key in ((files[0], keys[1]), (files[1], keys[0])):
                 peer = subprocess.Popen(
                     [str(program), "peer", filename, peer_key,
-                     "127.0.0.1", str(port)],
+                     "127.0.0.1", str(port)] + stun_args,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, text=True)
                 processes.append(peer)
@@ -80,6 +86,8 @@ def main():
                 print(output, end="", flush=True)
                 if errors:
                     print(errors, end="", file=sys.stderr, flush=True)
+                if stun_unavailable and not errors:
+                    raise RuntimeError("unavailable STUN was not reported")
                 if peer.returncode != 0 or \
                         "authenticated UDP path:" not in output or \
                         "encrypted UDP probe: ok" not in output:
@@ -91,7 +99,8 @@ def main():
             for process in reversed(processes):
                 if process.poll() is None:
                     finish(process)
-    print("two-process encrypted mesh probe passed")
+    print("two-process encrypted mesh probe passed" +
+          (" with unavailable STUN" if stun_unavailable else ""))
 
 
 if __name__ == "__main__":

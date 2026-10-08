@@ -136,13 +136,18 @@ def main():
                 run("ip", "-n", name, "route", "add", remote + "/32",
                     "dev", interface, "src", local)
             if probe:
-                for process, expected_port in zip(peers, (public_b, public_a)):
+                for process, expected_port, expected_stun in zip(
+                        peers, (public_b, public_a),
+                        ("STUN public endpoint: 198.18.1.2:" + str(public_a),
+                         "STUN public endpoint: 198.18.2.2:" + str(public_b))):
                     output, errors = process.communicate(timeout=35)
                     print(output, end="", flush=True)
+                    print(errors, end="", file=sys.stderr, flush=True)
                     if process.returncode != 0 or \
                             "authenticated UDP path:" not in output or \
                             "encrypted UDP probe: ok" not in output or \
-                            ":" + str(expected_port) not in output:
+                            ":" + str(expected_port) not in output or \
+                            expected_stun not in errors:
                         raise RuntimeError("NAT encrypted peer probe failed: " + errors)
                 print("two-NAT encrypted peer probe passed")
                 return

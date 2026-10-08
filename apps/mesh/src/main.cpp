@@ -163,10 +163,10 @@ int run_peer(const std::vector<std::string>& args, bool tunnel) {
                 }
                 std::vector<wavvix::net::endpoint> candidates =
                     std::move(listed).value();
-                if (candidates.size() > wavvix::net::max_punch_offer_candidates - 1)
+                if (candidates.size() > wavvix::net::max_punch_offer_candidates)
                     candidates.erase(candidates.begin() +
                         static_cast<std::ptrdiff_t>(
-                            wavvix::net::max_punch_offer_candidates - 1),
+                            wavvix::net::max_punch_offer_candidates),
                         candidates.end());
                 if (args.size() >= 8) {
                     wavvix::result<wavvix::net::endpoint> stun =
@@ -176,11 +176,13 @@ int run_peer(const std::vector<std::string>& args, bool tunnel) {
                         wavvix::net::stun_public_endpoint(socket, stun.value(), seconds(3));
                     if (reflected.is_err()) {
                         print_error(reflected.error());
-                        if (!tunnel) return;
-                        wavvix::sleep_for(seconds(1));
-                        continue;
+                    } else {
+                        std::fprintf(stderr, "STUN public endpoint: %s\n",
+                                     reflected.value().to_string().c_str());
+                        if (candidates.size() == wavvix::net::max_punch_offer_candidates)
+                            candidates.pop_back();
+                        candidates.push_back(reflected.value());
                     }
-                    candidates.push_back(reflected.value());
                 }
                 wavvix::result<mesh::peer_connection> connection =
                     mesh::connect_peer(local, peer_key, socket, candidates,
