@@ -66,7 +66,7 @@ UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发
 
 缓冲区可按实际 MTU 分配，例如 2048 字节；最大支持 65535 字节。包比缓冲区大时，该包会被消费并返回 `out_of_range`，不会返回截断数据。最小接收容量为 20 字节；关闭后读写返回 `invalid_argument`。同一接口不能跨 vCPU 使用，也不要在有协程等待读取时关闭它。
 
-Linux 使用 TUN，创建接口通常需要 `CAP_NET_ADMIN`；macOS 使用 utun；Windows 运行时加载 `wintun.dll` 并创建临时适配器，缺少 DLL 时 `open()` 返回 `not_found`。Windows 的 Wintun 驱动必须事先可用，库不分发驱动。Linux 已做实际 IP 包往返测试；Windows 有驱动环境下的收发仍待验证。
+Linux 使用 TUN，创建接口通常需要 `CAP_NET_ADMIN`；macOS 使用 utun；Windows 运行时加载 `wintun.dll` 并创建临时适配器，缺少 DLL 时 `open()` 返回 `not_found`。Windows 的 Wintun 驱动必须事先可用，库不分发驱动。Linux 已做实际 IP 包往返测试。Windows 上用 [Wintun 0.14.1 官方签名 DLL](https://www.wintun.net/) 实测创建了临时适配器、读到 Windows 发出的 IPv6 包，并通过 `example_net_virtual --probe-write` 向驱动提交了 20 字节 IPv4 测试包；这还不能证明 IP 路由或两节点往返。该可选模式在接口无法打开或写入失败时返回非零，默认示例不会发送测试包。
 
 ## 平台路径
 

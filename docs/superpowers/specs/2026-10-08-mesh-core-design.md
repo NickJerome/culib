@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。真实 Wintun 驱动收发仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式、双进程本机验证，以及端口保持 NAT 命名空间中的双向数据交换；面向公网的信令服务、保活、映射变化恢复和真实公网 NAT 验证仍待完成。节点协议未开始。
+- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。Windows 真实 Wintun 现已验证适配器创建、实际 IPv6 包读取和测试包写入，IP 路由往返仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式、双进程本机验证，以及端口保持 NAT 命名空间中的双向数据交换；面向公网的信令服务、保活、映射变化恢复和真实公网 NAT 验证仍待完成。节点协议未开始。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -39,6 +39,8 @@ Windows Wintun 的接收 API 在队列空时返回 `ERROR_NO_MORE_ITEMS`，随�
 Windows 后端运行时加载 `wintun.dll`，为每次 `open()` 创建临时命名的适配器和 1 MiB 环形缓冲区，关闭时移除适配器；缺少 DLL 时返回 `not_found`。Wintun 的读事件自动复位，同一接口的读取用协程感知的互斥量串行化，避免多个等待者漏掉唤醒。发送环满时 Wintun 没有对应的可等待事件；后端按 1 ms 协作式睡眠后重试，直到写入或超时。这条低频背压路径有轮询代价，实际驱动上的吞吐和延迟仍需验证。
 
 测试目录的 `fixtures/fake_wintun.cpp` 构建为独立 DLL，只在 Windows x64 测试进程里显式加载，不进入 culib 静态库。它按 Wintun 导出的函数签名模拟环形队列和自动复位读事件；本机 MSVC x64 已验证公开接口从空队列挂起、被事件唤醒、收包、发包、缓冲区不足报错和后续超时。该替身验证了调用顺序和协程/IOCP 集成，不能证明真实驱动的安装、路由、吞吐或内核交互。
+
+本机管理员环境从 [Wintun 官方站点](https://www.wintun.net/) 取得 0.14.1 包，SHA-256 与官网给出的 `07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51` 一致，AMD64 DLL 的 Authenticode 签名有效。把该 DLL 放入运行时搜索路径后，`example_net_virtual` 多次创建临时适配器，从真实驱动读到了 Windows 自发的 IPv6 包（64/76 字节）；没有包的一次按 100 ms 时限超时。`--probe-write` 模式向真实驱动提交合法的 20 字节 IPv4 头并返回成功。这个验证覆盖驱动 API 的收发与资源生命周期；尚未配置 IP、路由或完成 Windows 网络栈的往返验收。
 
 WSL2 Ubuntu 22.04 上以有 `CAP_NET_ADMIN` 的 root 创建 TUN，给接口设置 `192.0.2.1/30`，经内核发出 UDP 生成 IPv4 报文，再将反向 IPv4/UDP 报文写回 TUN，应用套接字收到 `pong`。同一测试强制 epoll 和 io_uring 均通过；无权限的常规 CI 环境只检查错误路径。接口启动时可能先产生 IPv6 控制报文，因此测试按目标 IPv4 地址筛选，不能假定第一包就是测试包。
 
