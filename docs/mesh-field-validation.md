@@ -20,6 +20,8 @@ mesh peer node.key PEER_PUBLIC_KEY RELAY_IP 39011 STUN_IP STUN_PORT
 
 本仓库的无特权回环对照是 `python3 apps/mesh/tests/peer_probe.py debug`（Windows 使用 `python`）。它启动本机中继和两个独立节点，已进入三平台 CI。Linux root 还可运行 `python3 apps/mesh/tests/tunnel_nat.py --probe`，在两个隔离的 NAT 后检查同一入口的加密数据应答；加 `--non-preserving` 可让公网映射端口不同于本地端口。两种映射的探针及后续 TUN 重连场景已进入 [Linux 特权 CI](https://github.com/NickJerome/culib/actions/runs/37830720816)。这些都不是真实公网 NAT 测试。
 
+常规 mesh 矩阵还覆盖 [Linux arm64](https://github.com/NickJerome/culib/actions/runs/37842372921) 和 [macOS Intel](https://github.com/NickJerome/culib/actions/runs/37842632917) 的 debug/release；后者运行了同机双 utun 转发测试。这两项扩展不替代本检查单中的跨机器验收。
+
 ## 再验收虚拟网卡往返
 
 在两端近乎同时运行 `mesh tunnel node.key PEER_PUBLIC_KEY RELAY_IP 39011 STUN_IP STUN_PORT`，记下各自打印的 `virtual interface: NAME`。Linux 需要 TUN 权限，macOS 需要 utun 权限，Windows 需要管理员权限，且官方签名的 x64 `wintun.dll` 必须处于程序搜索路径。把 A 的虚拟 IP 设为 `10.250.1.1`、B 设为 `10.250.1.2`；这些文档测试地址只用于独立隔离的验收环境，若与现有网络冲突须换一对未使用的地址。
