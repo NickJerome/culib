@@ -22,11 +22,13 @@ void spin_for(steady_clock::time_point start, nanoseconds duration) {
     }
 }
 
-// 每三位加一个逗号的数字格式，用来确认结果不受全局 locale 影响
+// libstdc++ 安装自定义 facet 时需要 RTTI。
+#if defined(__cpp_rtti) || defined(__GXX_RTTI) || defined(_CPPRTTI)
 struct thousands_grouping : std::numpunct<char> {
     char do_thousands_sep() const override { return ','; }
     std::string do_grouping() const override { return "\3"; }
 };
+#endif
 
 }  // namespace
 
@@ -99,10 +101,11 @@ TEST(stopwatch, formats_other_duration_units) {
     EXPECT(wavvix::format_duration(std::chrono::seconds(2)), ==, "2.00 s");
 }
 
-// Review focus：程序改了全局 locale（数字带千位分隔符）时，结果不变
+#if defined(__cpp_rtti) || defined(__GXX_RTTI) || defined(_CPPRTTI)
 TEST(stopwatch, formats_durations_regardless_of_the_global_locale) {
     const std::locale previous = std::locale::global(std::locale(std::locale::classic(), new thousands_grouping));
     defer { std::locale::global(previous); };
     EXPECT(wavvix::format_duration(std::chrono::hours(1)), ==, "3600.00 s");
     EXPECT(wavvix::format_duration(nanoseconds(1234567)), ==, "1.23 ms");
 }
+#endif

@@ -297,6 +297,7 @@ TEST(fiber, keeps_pooled_stacks_usable_after_heavy_churn) {
     }
 }
 
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
 TEST(fiber, lets_exceptions_throw_and_catch_inside) {
     // 协程栈内抛接是正常的（gdb 回溯也正常）。穿出协程不行，那条不测——
     // 它会 std::terminate，测不了。
@@ -312,3 +313,4 @@ TEST(fiber, lets_exceptions_throw_and_catch_inside) {
     while (worker.resume()) {}
     EXPECT(caught, ==, "协程里的异常");
 }
+#endif
