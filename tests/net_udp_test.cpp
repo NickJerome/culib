@@ -201,3 +201,41 @@ TEST(net_udp, invalid_buffers_fail_before_submission) {
     if (bad_send.is_err()) EXPECT(bad_send.error().kind(), ==, error_kind::invalid_argument);
     if (bad_receive.is_err()) EXPECT(bad_receive.error().kind(), ==, error_kind::invalid_argument);
 }
+
+#ifdef _WIN32
+TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
+    const wavvix::result<endpoint> loopback = endpoint::parse("127.0.0.1", 0);
+    if (loopback.is_err()) return;
+    wavvix::result<udp_socket> probe_open = udp_socket::bind(loopback.value());
+    wavvix::result<udp_socket> reply_open = udp_socket::bind(loopback.value());
+    wavvix::result<udp_socket> unused_open = udp_socket::bind(loopback.value());
+    EXPECT(probe_open.is_ok(), ==, true);
+    EXPECT(reply_open.is_ok(), ==, true);
+    EXPECT(unused_open.is_ok(), ==, true);
+    if (probe_open.is_err() || reply_open.is_err() || unused_open.is_err()) return;
+    udp_socket probe = std::move(probe_open).value();
+    udp_socket reply = std::move(reply_open).value();
+    udp_socket unused = std::move(unused_open).value();
+    const wavvix::result<endpoint> dead = unused.local_endpoint();
+    const wavvix::result<endpoint> live = probe.local_endpoint();
+    if (dead.is_err() || live.is_err()) return;
+    unused.close();
+
+    wavvix::spawn([&] {
+        const wavvix::result<std::size_t> sent =
+            probe.send_to("x", 1, dead.value(), ms(1000));
+        EXPECT(sent.is_ok(), ==, true);
+        wavvix::sleep_for(ms(50));
+        const wavvix::result<std::size_t> response =
+            reply.send_to("ok", 2, live.value(), ms(1000));
+        EXPECT(response.is_ok(), ==, true);
+        char bytes[8] = {};
+        const wavvix::result<udp_datagram> received =
+            probe.recv_from(bytes, sizeof bytes, ms(1000));
+        EXPECT(received.is_ok(), ==, true);
+        if (received.is_ok())
+            EXPECT(std::string(bytes, received.value().size), ==, std::string("ok"));
+    });
+    EXPECT(wavvix::run(), ==, std::size_t(1));
+}
+#endif

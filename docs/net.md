@@ -44,6 +44,8 @@ endpoint local = listener.local_endpoint().value(); // 端口 0 已换成实际�
 
 UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发送，`recv_from(nullptr, 0, ...)` 会消费。接收缓冲区太小时，报文已被消费并返回 `out_of_range`；调用方可继续接收下一包。`send_to` 若不能完整发送一包则报错，不会把剩余字节当第二包重试。与 TCP 一样，超时必填，负数表示一直等待；非零长度配空缓冲区是 `invalid_argument`。`bind` 和查询可在协程外调用，收发需要调度器协程。同一句柄不能跨 vCPU 使用，关闭时不得仍有其他协程等待。
 
+Windows 会把此前发向不可达 UDP 端口的 ICMP 错误作为下一次 `recv_from` 的 `WSAECONNRESET` 返回。socket 创建时关闭这一 Winsock 行为，使打洞时一个坏候选不会中断对其他候选的接收；真正的发送失败仍由 `send_to` 报告。
+
 `local_candidates(socket)` 取得可交给对端的本机候选地址。socket 绑定具体 IP 时只返回该地址和实际端口；绑定 `0.0.0.0` 或 `::` 时，枚举启用中的同地址族接口，把每个地址配上 socket 的端口，去掉通配、多播和重复地址。结果含回环地址，调用方按通信场景筛选；顺序不保证。此调用在连接建立阶段执行，可能分配内存或阻塞当前线程。不包含 STUN 反射地址，后者要在同一 socket 上单独查询并加入候选集。可运行示例见 [`examples/net_candidates.cpp`](../examples/net_candidates.cpp)。
 
 `punch_offer` 把双方需要交换的会话 ID 和候选地址放在一起。会话 ID 应用 `random_punch_session_id()` 生成；全零 ID 会被拒绝。`encode_punch_offer(offer)` 产生最多 757 字节的二进制消息，`decode_punch_offer(data, size)` 严格检查版本、数量（1–32）、长度、地址族、非零端口、单播地址和尾部数据。消息可以交给应用已有的信令通道传输；通道须自行确定消息边界并完成身份认证。格式不加密，也不证明地址确实属于声称的节点。

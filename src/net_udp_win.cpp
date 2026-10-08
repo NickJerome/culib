@@ -13,6 +13,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mswsock.h>
 
 namespace wavvix {
 namespace net {
@@ -77,6 +78,16 @@ result<std::uintptr_t> udp_bind_socket(const endpoint& local) {
     const SOCKET socket = ::WSASocketW(family, SOCK_DGRAM, IPPROTO_UDP, 0, 0,
                                        WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET) return udp_error("socket", ::WSAGetLastError());
+    // A probe sent to an unreachable candidate must not turn the next receive
+    // into WSAECONNRESET; UDP callers need to keep listening for other peers.
+    BOOL report_unreachable = FALSE;
+    DWORD returned = 0;
+    if (::WSAIoctl(socket, SIO_UDP_CONNRESET, &report_unreachable,
+                   sizeof report_unreachable, 0, 0, &returned, 0, 0) == SOCKET_ERROR) {
+        const int failed = ::WSAGetLastError();
+        ::closesocket(socket);
+        return udp_error("SIO_UDP_CONNRESET", failed);
+    }
     udp_address address;
     udp_encode_address(local, address);
     if (::bind(socket, reinterpret_cast<const sockaddr*>(address.storage),
