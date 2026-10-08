@@ -254,12 +254,13 @@ TEST(time, agrees_with_libc_across_130_years) {
     std::int64_t checked = 0;
     std::int64_t mismatched = 0;
     for (std::int64_t when = 0; when < 4102444800LL; when += 100003) {
-        const std::time_t raw = static_cast<std::time_t>(when);
         std::tm broken;
         std::memset(&broken, 0, sizeof broken);
 #if defined(_WIN32)
-        if (::gmtime_s(&broken, &raw) != 0) continue;
+        const __time64_t raw = static_cast<__time64_t>(when);
+        if (::_gmtime64_s(&broken, &raw) != 0) continue;
 #else
+        const std::time_t raw = static_cast<std::time_t>(when);
         if (!::gmtime_r(&raw, &broken)) continue;
 #endif
         char reference[40];

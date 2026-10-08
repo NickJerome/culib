@@ -74,8 +74,7 @@ struct date_time {
 // UTC 的日历字段。纯整数运算，不碰 locale、不碰系统时区，所以不会失败。
 date_time utc_parts(timestamp point) noexcept;
 
-// 本地时区的日历字段，另带 offset_minutes。要问系统时区，所以可能失败
-// （time_t 放不下这个时刻时就会）。
+// 本地时区的日历字段，另带 offset_minutes；系统时区查询可能失败。
 result<date_time> local_parts(timestamp point);
 
 // ISO 8601；UTC 结尾是 'Z'，本地时间结尾是 ±HH:MM。
