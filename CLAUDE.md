@@ -177,7 +177,7 @@
 | --- | --- | --- |
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 四种编译器 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | **已在 GitHub 上实际运行，10/10 绿。** 覆盖 Linux GCC/Clang、macOS Clang、Windows MSVC × debug/release；MinGW 由本机交叉编译覆盖（见上）；Windows x86、Linux arm64、最低版本编译器（GCC 4.8.1 / VS2015）仍未覆盖 |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | **已在 GitHub 上实际运行，13/13 绿。** 覆盖 Linux GCC/Clang、macOS Clang、Windows MSVC x64/x86 × debug/release，以及 GCC 4.8 容器；MinGW 由本机交叉编译覆盖（见上）。macOS x86_64、Linux arm64、VS2015 尚未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上，**外加本机 MinGW 交叉编译全部示例**（见下） |
 | CI 失败能诊断 | `.github/report-failure.sh`，把失败命令的输出发成 `::error::` annotation | 编译 / 测试 / 示例四个步骤全经过它，**编译器诊断和测试失败两种式样都认**。**不这么做的话从公开 API 看只有「exit code 1」**——job 日志要仓库 admin 权限，而 `run:` 步骤里编译器的原始诊断不会自动变成 annotation。**测试失败那一半原先是漏的**，代价是 macOS 红了五个提交没人知道原因，见下 |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
