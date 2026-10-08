@@ -38,8 +38,9 @@ def main():
     if len(programs) != 1:
         raise RuntimeError("build exactly one macOS example_net_virtual target first")
 
-    worker = subprocess.Popen(["sudo", "-n", str(programs[0]), "--icmp-echo"],
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    worker = subprocess.Popen(["sudo", "-n", str(programs[0]), "--icmp-echo-hold"],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
                               text=True, start_new_session=True)
     capture = None
     try:
@@ -67,28 +68,38 @@ def main():
             raise RuntimeError("test route does not use " + name + ": " + route.stdout)
 
         capture = subprocess.Popen(["sudo", "-n", "tcpdump", "-n", "-U", "-l",
-                                    "-vvv", "-i", name, "-c", "4", "icmp"],
+                                    "-vvv", "-i", name, "-c", "2", "icmp"],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)
         time.sleep(0.3)
         ping = subprocess.run(["ping", "-c", "1", "-W", "5000", "198.51.100.2"],
                               text=True, capture_output=True, timeout=10)
         print(ping.stdout, end="", flush=True)
+        try:
+            capture.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
         if ping.returncode != 0:
             raise RuntimeError("utun ICMP ping failed: " + ping.stderr)
-        if worker.wait(timeout=15) != 0:
-            raise RuntimeError("utun ICMP responder failed")
     finally:
         captured, capture_errors = finish(capture)
         if captured:
             print("utun capture:\n" + captured, end="")
         if capture_errors:
             print(capture_errors, end="", file=sys.stderr)
-        output, errors = finish(worker)
+        if worker.stdin:
+            worker.stdin.close()
+            worker.stdin = None
+        try:
+            output, errors = worker.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            output, errors = finish(worker)
         if output:
             print(output, end="")
         if errors:
             print(errors, end="", file=sys.stderr)
+    if worker.returncode != 0:
+        raise RuntimeError("utun ICMP responder failed")
     if "ICMP echo replied" not in output:
         raise RuntimeError("utun responder did not confirm a reply")
     print("macOS utun IP roundtrip passed")

@@ -51,9 +51,12 @@ bool make_echo_reply(unsigned char* packet, std::size_t& size) {
 
 int main(int argc, char* argv[]) {
     const bool probe_write = argc == 2 && std::strcmp(argv[1], "--probe-write") == 0;
-    const bool icmp_echo = argc == 2 && std::strcmp(argv[1], "--icmp-echo") == 0;
+    const bool hold_after_echo = argc == 2 &&
+        std::strcmp(argv[1], "--icmp-echo-hold") == 0;
+    const bool icmp_echo = hold_after_echo ||
+        (argc == 2 && std::strcmp(argv[1], "--icmp-echo") == 0);
     if (argc != 1 && !probe_write && !icmp_echo) {
-        std::fprintf(stderr, "usage: net_virtual [--probe-write | --icmp-echo]\n");
+        std::fprintf(stderr, "usage: net_virtual [--probe-write | --icmp-echo | --icmp-echo-hold]\n");
         return 1;
     }
     wavvix::result<wavvix::net::virtual_interface> opened =
@@ -108,7 +111,10 @@ int main(int argc, char* argv[]) {
     });
     if (!reader.joinable()) return 1;
     reader.join();
-    if (icmp_echo) return echoed ? 0 : 1;
+    if (icmp_echo) {
+        if (echoed && hold_after_echo) std::getchar();
+        return echoed ? 0 : 1;
+    }
     if (probe_write) {
         // Valid IPv4 header for the documentation-only 192.0.2.0/24 network.
         const unsigned char packet[20] = {
