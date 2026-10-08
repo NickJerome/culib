@@ -24,13 +24,20 @@ typedef int io_handle;
 #endif
 
 enum io_direction { io_read, io_write };
-enum io_operation { io_transfer, io_socket_transfer };
+enum io_operation { io_transfer, io_socket_transfer, io_accept, io_connect };
 
 // 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
 // 而 Windows 要求 OVERLAPPED 活到完成包取回来为止，协程挂起期间栈不会动，
 // 正好满足（协程绑 vCPU，见 coroutine 设计 3.13）。
 struct io_request {
-    io_request() noexcept : operation(io_transfer) {}
+    io_request() noexcept
+        : operation(io_transfer), address(0), address_length(0),
+#if defined(_WIN32)
+          accepted(0),
+#else
+          accepted(-1),
+#endif
+          connect_started(false) {}
 
     // ---- 入参，调用方填 ----
     io_direction direction;
@@ -41,6 +48,10 @@ struct io_request {
     // 结构），所以不为写方向另开一个 const void* 字段。
     void* buffer;
     std::size_t length;
+    const void* address;           // connect 的 sockaddr，须活到完成通知回来
+    int address_length;
+    io_handle accepted;            // accept 的结果；Windows 由调用方预建套接字
+    bool connect_started;          // 就绪后端用它区分首次 connect 和 SO_ERROR 检查
 
     // ---- 结果，引擎填 ----
     std::ptrdiff_t transferred;   // >= 0 传了几字节（0 = 对端关了）；< 0 失败
@@ -58,6 +69,7 @@ struct io_request {
     // OVERLAPPED 的位置。真正的类型在 io_engine_win.cpp 里 reinterpret 回去——
     // 为的是这个头文件不包含 <windows.h>。大小按 OVERLAPPED 的最大情形留足。
     void* overlapped[8];
+    char accept_addresses[288];    // AcceptEx: 两个 sockaddr_storage + 各 16 字节
 #endif
 };
 

@@ -13,6 +13,8 @@
 #ifndef NOMINMAX
 #  define NOMINMAX        // 否则 windows.h 的 min / max 宏会污染使用方
 #endif
+#include <winsock2.h>
+#include <mswsock.h>
 #include <windows.h>
 
 namespace wavvix {
@@ -33,6 +35,9 @@ static_assert(sizeof(io_request::overlapped) >= sizeof(OVERLAPPED),
               "io_request::overlapped is too small to hold an OVERLAPPED");
 static_assert(alignof(void*) >= alignof(OVERLAPPED),
               "io_request::overlapped is not aligned well enough for an OVERLAPPED");
+static_assert(sizeof(io_request::accept_addresses) >=
+                  2 * (sizeof(sockaddr_storage) + 16),
+              "io_request::accept_addresses is too small for AcceptEx");
 
 OVERLAPPED* overlapped_of(io_request& request) {
     return reinterpret_cast<OVERLAPPED*>(&request.overlapped[0]);
@@ -47,6 +52,16 @@ io_request* request_of(OVERLAPPED* overlapped) {
 
 bool unusable(io_handle handle) {
     return handle == 0 || handle == INVALID_HANDLE_VALUE;
+}
+
+template <typename Function>
+Function socket_extension(SOCKET socket, GUID id) {
+    Function function = 0;
+    DWORD moved = 0;
+    if (::WSAIoctl(socket, SIO_GET_EXTENSION_FUNCTION_POINTER, &id, sizeof id,
+                   &function, sizeof function, &moved, 0, 0) == SOCKET_ERROR)
+        return 0;
+    return function;
 }
 
 }  // namespace
@@ -90,25 +105,50 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     // 每次都要清零：残留的 Offset / OffsetHigh 会被当成读写位置。
     ::ZeroMemory(overlapped, sizeof *overlapped);
 
-    // 一次最多 MAXDWORD 字节。用 < 而不是 > 写这个夹取，因为 32 位上
-    // size_t 和 MAXDWORD 一样宽，写成 > 会变成「恒为假」的比较而招来警告。
-    const std::size_t ceiling = static_cast<std::size_t>(MAXDWORD);
-    const DWORD length =
-        static_cast<DWORD>(request.length < ceiling ? request.length : ceiling);
-
     const HANDLE handle = static_cast<HANDLE>(request.handle);
     DWORD moved = 0;
-    // 套接字和文件走同一条路。套接字句柄在 Win32 里就是文件句柄，而 socket() 默认
-    // 就是 overlapped 的，所以不分 WSARecv / ReadFile 两套——少一半代码，也少一个
-    // 「这个句柄是什么」的运行期判断。代价写在设计文档 8.5：将来要 recvfrom 那类
-    // 套接字专有操作时这条路得拆开。
-    const BOOL finished = (request.direction == io_read)
-                              ? ::ReadFile(handle, request.buffer, length, &moved, overlapped)
-                              : ::WriteFile(handle, request.buffer, length, &moved, overlapped);
+    // 普通收发仍共用 ReadFile / WriteFile；连接与接受连接需要 Winsock 扩展函数。
+    BOOL finished = FALSE;
+    DWORD failed = 0;
+    if (request.operation == io_accept) {
+        const SOCKET listener = reinterpret_cast<SOCKET>(request.handle);
+        const GUID id = WSAID_ACCEPTEX;
+        const LPFN_ACCEPTEX accept = socket_extension<LPFN_ACCEPTEX>(listener, id);
+        if (!accept) {
+            request.transferred = -1;
+            request.failure = ::WSAGetLastError();
+            return false;
+        }
+        const DWORD address_length = static_cast<DWORD>(sizeof(sockaddr_storage) + 16);
+        finished = accept(listener, reinterpret_cast<SOCKET>(request.accepted),
+                          request.accept_addresses, 0, address_length, address_length,
+                          &moved, overlapped);
+        if (!finished) failed = static_cast<DWORD>(::WSAGetLastError());
+    } else if (request.operation == io_connect) {
+        const SOCKET socket = reinterpret_cast<SOCKET>(request.handle);
+        const GUID id = WSAID_CONNECTEX;
+        const LPFN_CONNECTEX connect = socket_extension<LPFN_CONNECTEX>(socket, id);
+        if (!connect) {
+            request.transferred = -1;
+            request.failure = ::WSAGetLastError();
+            return false;
+        }
+        finished = connect(socket, static_cast<const sockaddr*>(request.address),
+                           request.address_length, 0, 0, &moved, overlapped);
+        if (!finished) failed = static_cast<DWORD>(::WSAGetLastError());
+    } else {
+        // 一次最多 MAXDWORD 字节；32 位上 size_t 与 MAXDWORD 同宽。
+        const std::size_t ceiling = static_cast<std::size_t>(MAXDWORD);
+        const DWORD length =
+            static_cast<DWORD>(request.length < ceiling ? request.length : ceiling);
+        finished = (request.direction == io_read)
+                       ? ::ReadFile(handle, request.buffer, length, &moved, overlapped)
+                       : ::WriteFile(handle, request.buffer, length, &moved, overlapped);
+        if (!finished) failed = ::GetLastError();
+    }
 
     if (!finished) {
-        const DWORD failed = ::GetLastError();
-        if (failed != ERROR_IO_PENDING) {
+        if (failed != ERROR_IO_PENDING && failed != WSA_IO_PENDING) {
             // 真失败：**不会有完成包来**，所以不能挂起协程，否则它永远醒不过来。
             request.transferred = -1;
             request.failure = static_cast<int>(failed);

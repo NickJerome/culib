@@ -65,6 +65,8 @@ public:
 namespace {
 
 const unsigned char cancel_opcode = 14;  // UAPI: IORING_OP_ASYNC_CANCEL
+const unsigned char accept_opcode = 13;  // UAPI: IORING_OP_ACCEPT
+const unsigned char connect_opcode = 16; // UAPI: IORING_OP_CONNECT
 const unsigned char send_opcode = 26;    // UAPI: IORING_OP_SEND
 const unsigned char recv_opcode = 27;    // UAPI: IORING_OP_RECV
 const unsigned no_drop_feature = 1u << 1;
@@ -152,7 +154,14 @@ int submit_request(uring_engine& engine, io_request& request) {
     io_uring_sqe operation;
     std::memset(&operation, 0, sizeof operation);
     operation.fd = request.handle;
-    if (request.operation == io_socket_transfer) {
+    if (request.operation == io_accept) {
+        operation.opcode = accept_opcode;
+        operation.accept_flags = SOCK_NONBLOCK | SOCK_CLOEXEC;
+    } else if (request.operation == io_connect) {
+        operation.opcode = connect_opcode;
+        operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(request.address));
+        operation.off = static_cast<__u64>(request.address_length);
+    } else if (request.operation == io_socket_transfer) {
         operation.opcode = request.direction == io_read ? recv_opcode : send_opcode;
         operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(request.buffer));
         const std::size_t ceiling = static_cast<std::size_t>(UINT_MAX);
@@ -269,7 +278,12 @@ std::size_t drain(uring_engine& engine, std::vector<park_token*>& completed) {
         const unsigned bit = request->direction == io_read ? io_armed_read : io_armed_write;
         if (queue != request) continue;
 
-        request->transferred = item.res < 0 ? -1 : item.res;
+        if (request->operation == io_accept && item.res >= 0) {
+            request->accepted = item.res;
+            request->transferred = 0;
+        } else {
+            request->transferred = item.res < 0 ? -1 : item.res;
+        }
         request->failure = item.res < 0 ? -item.res : 0;
         io_hand_back(queue, completed, engine.pending);
         ++fired;
@@ -296,7 +310,9 @@ uring_engine* uring_engine_create() noexcept {
     engine->fd = static_cast<int>(fd);
     if (!(params.features & no_drop_feature) || !map_rings(*engine, params) ||
         !probe_cancel(*engine) || !probe_socket_operation(*engine, send_opcode) ||
-        !probe_socket_operation(*engine, recv_opcode)) {
+        !probe_socket_operation(*engine, recv_opcode) ||
+        !probe_socket_operation(*engine, accept_opcode) ||
+        !probe_socket_operation(*engine, connect_opcode)) {
         const int failed = errno ? errno : ENOSYS;
         uring_engine_destroy(engine);
         errno = failed;
@@ -331,7 +347,8 @@ bool uring_engine_arm(uring_engine* engine, io_request& request) noexcept {
         engine->slots.resize(index * 2 + 2, io_empty_slot());
     io_fd_slot& slot = engine->slots[index];
     io_request*& queue = request.direction == io_read ? slot.readers : slot.writers;
-    if (!queue && try_socket_now(request)) return false;
+    if (!queue && request.operation != io_accept && request.operation != io_connect &&
+        try_socket_now(request)) return false;
 
     request.next = 0;
     io_request** tail = &queue;

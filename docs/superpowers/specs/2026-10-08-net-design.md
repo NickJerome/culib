@@ -1,7 +1,7 @@
 # 网络模块设计
 
 - 日期：2026-10-08
-- 状态：地址层已实现；内部套接字收发路径已本地验证。TCP/UDP 公共类型仍待实现，地址层的 macOS CI 修复待跑。
+- 状态：地址层与 TCP 公共类型已实现；Windows/MSVC、Linux epoll 与 io_uring 本地回环测试通过。TCP 的 macOS/完整 CI 待跑；UDP 待实现。用法见 [网络模块文档](../../net.md)。
 - 前置：[调度器](2026-10-04-scheduler-design.md)、[事件引擎](2026-10-05-event-engine-design.md)、[io_uring](2026-10-08-io-uring-design.md)、[bytes](2026-10-05-bytes-design.md)。
 
 ## 要解决的事

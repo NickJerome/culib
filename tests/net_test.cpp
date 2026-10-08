@@ -1,8 +1,11 @@
 #include <culib/net.h>
+#include <culib/scheduler.h>
 #include <culib/test.h>
 
+#include <chrono>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -10,6 +13,9 @@ namespace {
 using wavvix::error_kind;
 using wavvix::net::address_family;
 using wavvix::net::endpoint;
+using wavvix::net::tcp_listener;
+using wavvix::net::tcp_stream;
+typedef std::chrono::milliseconds ms;
 
 }  // namespace
 
@@ -64,4 +70,127 @@ TEST(net, rejects_empty_and_embedded_nul_host) {
         wavvix::net::resolve(wavvix::string_view(hidden, sizeof hidden - 1), 80);
     EXPECT(nul.is_err(), ==, true);
     if (nul.is_err()) EXPECT(nul.error().kind(), ==, error_kind::invalid_argument);
+}
+
+TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
+    const wavvix::result<endpoint> address = endpoint::parse("127.0.0.1", 0);
+    EXPECT(address.is_ok(), ==, true);
+    if (address.is_err()) return;
+    wavvix::result<tcp_listener> opened = tcp_listener::listen(address.value());
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) return;
+    tcp_listener listener = std::move(opened).value();
+    const wavvix::result<endpoint> local = listener.local_endpoint();
+    EXPECT(local.is_ok(), ==, true);
+    if (local.is_err()) return;
+    EXPECT(local.value().port() != 0, ==, true);
+
+    wavvix::spawn([&] {
+        wavvix::result<tcp_stream> accepted = listener.accept(ms(1000));
+        EXPECT(accepted.is_ok(), ==, true);
+        if (accepted.is_err()) return;
+        char input[5] = {};
+        std::size_t received = 0;
+        while (received < 4) {
+            const wavvix::result<std::size_t> part =
+                accepted.value().read(input + received, 4 - received, ms(1000));
+            EXPECT(part.is_ok(), ==, true);
+            if (part.is_err() || part.value() == 0) return;
+            received += part.value();
+        }
+        EXPECT(std::string(input, received), ==, std::string("ping"));
+        const char reply[] = "pong";
+        std::size_t sent = 0;
+        while (sent < 4) {
+            const wavvix::result<std::size_t> part =
+                accepted.value().write(reply + sent, 4 - sent, ms(1000));
+            EXPECT(part.is_ok(), ==, true);
+            if (part.is_err() || part.value() == 0) return;
+            sent += part.value();
+        }
+        const wavvix::result<std::size_t> eof = accepted.value().read(input, 1, ms(1000));
+        EXPECT(eof.is_ok(), ==, true);
+        if (eof.is_ok()) EXPECT(eof.value(), ==, std::size_t(0));
+    });
+    wavvix::spawn([&] {
+        wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
+        EXPECT(connected.is_ok(), ==, true);
+        if (connected.is_err()) return;
+        const char request[] = "ping";
+        std::size_t sent = 0;
+        while (sent < 4) {
+            const wavvix::result<std::size_t> part =
+                connected.value().write(request + sent, 4 - sent, ms(1000));
+            EXPECT(part.is_ok(), ==, true);
+            if (part.is_err() || part.value() == 0) return;
+            sent += part.value();
+        }
+        char answer[5] = {};
+        std::size_t received = 0;
+        while (received < 4) {
+            const wavvix::result<std::size_t> part =
+                connected.value().read(answer + received, 4 - received, ms(1000));
+            EXPECT(part.is_ok(), ==, true);
+            if (part.is_err() || part.value() == 0) return;
+            received += part.value();
+        }
+        EXPECT(std::string(answer, received), ==, std::string("pong"));
+    });
+    EXPECT(wavvix::run(), ==, std::size_t(2));
+}
+
+TEST(net, tcp_accept_recovers_after_timeout) {
+    const wavvix::result<endpoint> address = endpoint::parse("127.0.0.1", 0);
+    EXPECT(address.is_ok(), ==, true);
+    if (address.is_err()) return;
+    wavvix::result<tcp_listener> opened = tcp_listener::listen(address.value());
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) return;
+    tcp_listener listener = std::move(opened).value();
+    const wavvix::result<endpoint> local = listener.local_endpoint();
+    EXPECT(local.is_ok(), ==, true);
+    if (local.is_err()) return;
+
+    wavvix::spawn([&] {
+        const wavvix::result<tcp_stream> timed = listener.accept(ms(10));
+        EXPECT(timed.is_err(), ==, true);
+        if (timed.is_err()) EXPECT(timed.error().kind(), ==, error_kind::timeout);
+        const wavvix::result<tcp_stream> accepted = listener.accept(ms(1000));
+        EXPECT(accepted.is_ok(), ==, true);
+    });
+    wavvix::spawn([&] {
+        wavvix::sleep_for(ms(30));
+        const wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
+        EXPECT(connected.is_ok(), ==, true);
+    });
+    EXPECT(wavvix::run(), ==, std::size_t(2));
+}
+
+TEST(net, tcp_ipv6_loopback_when_available) {
+    const wavvix::result<endpoint> address = endpoint::parse("::1", 0);
+    EXPECT(address.is_ok(), ==, true);
+    if (address.is_err()) return;
+    wavvix::result<tcp_listener> opened = tcp_listener::listen(address.value());
+    if (opened.is_err()) return;  // IPv6 可能在测试环境中关闭。
+    tcp_listener listener = std::move(opened).value();
+    const wavvix::result<endpoint> local = listener.local_endpoint();
+    EXPECT(local.is_ok(), ==, true);
+    if (local.is_err()) return;
+    EXPECT(local.value().family(), ==, address_family::ipv6);
+    wavvix::spawn([&] {
+        const wavvix::result<tcp_stream> accepted = listener.accept(ms(1000));
+        EXPECT(accepted.is_ok(), ==, true);
+    });
+    wavvix::spawn([&] {
+        wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
+        EXPECT(connected.is_ok(), ==, true);
+        if (connected.is_err()) return;
+        const wavvix::result<std::size_t> empty = connected.value().write(0, 0, ms(1000));
+        EXPECT(empty.is_ok(), ==, true);
+        if (empty.is_ok()) EXPECT(empty.value(), ==, std::size_t(0));
+        const wavvix::result<std::size_t> bad = connected.value().read(0, 1, ms(1000));
+        EXPECT(bad.is_err(), ==, true);
+        if (bad.is_err()) EXPECT(bad.error().kind(), ==, error_kind::invalid_argument);
+    });
+    EXPECT(wavvix::run(), ==, std::size_t(2));
 }

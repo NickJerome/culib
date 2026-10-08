@@ -6,6 +6,7 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <fcntl.h>
 #include <vector>
 
 #include <unistd.h>
@@ -64,14 +65,58 @@ inline bool io_would_block(int code) {
 #endif
 }
 
-// 做一次系统调用，结果写进请求。**完成形状在一个「就绪」后端上多付的就是这里**——
-// 调度器设计 §2 说的那三行，有名有姓就在下面那个三元表达式。整个后端只有这一处碰
-// read / write，快路（还没登记就先试）和慢路（醒来之后补一次）共用它。
-//
-// 返回 false 只有一个意思：**现在还做不了，得等**（EAGAIN）。其余情况都算有结果了，
-// 包括失败和「传了 0 字节」（对端关了，那不是失败）。
+// 做一次系统调用。false 表示暂不可做；快路和就绪后都使用此函数。
 inline bool io_try_now(io_request& request) {
     const int fd = request.handle;
+    if (request.operation == io_accept) {
+        int accepted;
+        for (;;) {
+            accepted = ::accept(fd, 0, 0);
+            if (accepted >= 0 || errno != EINTR) break;
+        }
+        if (accepted < 0 && io_would_block(errno)) return false;
+        if (accepted >= 0) {
+            const int flags = ::fcntl(accepted, F_GETFL, 0);
+            const int descriptor_flags = ::fcntl(accepted, F_GETFD, 0);
+            if (flags < 0 || descriptor_flags < 0 ||
+                ::fcntl(accepted, F_SETFL, flags | O_NONBLOCK) < 0 ||
+                ::fcntl(accepted, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) {
+                const int failed = errno;
+                ::close(accepted);
+                request.transferred = -1;
+                request.failure = failed;
+                return true;
+            }
+            request.accepted = accepted;
+        }
+        request.transferred = accepted < 0 ? -1 : 0;
+        request.failure = accepted < 0 ? errno : 0;
+        return true;
+    }
+    if (request.operation == io_connect) {
+        if (!request.connect_started) {
+            const int connected = ::connect(fd, static_cast<const sockaddr*>(request.address),
+                                            static_cast<socklen_t>(request.address_length));
+            if (connected == 0) {
+                request.transferred = 0;
+                request.failure = 0;
+                return true;
+            }
+            if (errno != EINPROGRESS && errno != EALREADY && errno != EINTR) {
+                request.transferred = -1;
+                request.failure = errno;
+                return true;
+            }
+            request.connect_started = true;
+            return false;
+        }
+        int failed = 0;
+        socklen_t length = sizeof failed;
+        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &failed, &length) < 0) failed = errno;
+        request.transferred = failed ? -1 : 0;
+        request.failure = failed;
+        return true;
+    }
     ssize_t moved;
     for (;;) {
         if (request.operation == io_socket_transfer) {
