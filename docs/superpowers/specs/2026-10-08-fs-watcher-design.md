@@ -1,7 +1,7 @@
 # 文件变化监听设计
 
 - 日期：2026-10-08
-- 状态：`poller` 已实现并通过 Windows 与 Linux 本地测试；`watcher` 待实现。
+- 状态：`poller` 已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37764233014)；`watcher` 的 Linux 内核通知后端已做内部验证，macOS / Windows 待实现，公共 `watcher` 类尚未开放。
 - 前置：[文件系统](2026-10-04-fs-design.md)、[调度器](2026-10-04-scheduler-design.md)、[事件引擎](2026-10-05-event-engine-design.md)。
 
 ## 范围与接口
@@ -37,4 +37,6 @@
 
 目前 `poller` 用 `std::map` 保存每棵目录树的快照，扫描时读取每项的文件身份、类型、大小和高精度修改时间。POSIX 用 `lstat`，Windows 用 `CreateFileW` / `GetFileInformationByHandle`；不递归跟进符号链接。扫描结束后做有序差分，检测同名替换。事件路径先放入监听器自己的可复用存储，差分全部结束后再填调用方的 `string_view`，避免扩容时悬垂。等待扫描间隔时调用 `sleep_for()`，但扫描系统调用本身会阻塞 vCPU；大目录或慢速网络挂载应放在专用工作线程。
 
-本地 Windows/MSVC debug 与 Linux/GCC debug 的 `xmake test` 已通过，`examples/fs_poller.cpp` 在 Linux 上输出 `created: item.txt`。跨平台 CI 尚未验证，不能据此声称 macOS 已通过。
+本地 Windows/MSVC debug 与 Linux/GCC debug 的 `xmake test` 已通过，`examples/fs_poller.cpp` 在 Windows 和 Linux 上都输出 `created: item.txt`。`ad615b2` 的 [CI](https://github.com/NickJerome/culib/actions/runs/37764233014) 十个 job 全部通过，覆盖 Linux、macOS、Windows debug/release、独立公共头文件和源码依赖工程。
+
+Linux 内部后端使用一个非阻塞 inotify fd，递归模式为每层目录分别注册；事件到来时再给新目录注册监视，旧子树移动/移除时撤掉旧路径绑定。一个内核 watch descriptor 可以对应多个监视根目录，事件会各自带上根目录；显式撤销产生的 `IN_IGNORED` 与内核自行撤销分开处理，防止目录移动后误删新绑定。`IN_Q_OVERFLOW` 和补注册失败都报告 `overflow`。内部测试覆盖创建/删除、新目录、目录移动、取消后重新监视及协程等待；强制 epoll、io_uring 时各自全套 318 条测试均通过。下一步是实现 macOS / Windows 后端，然后开放公共 `watcher` 类并跑 CI。
