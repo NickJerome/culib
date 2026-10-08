@@ -6,6 +6,7 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <cstring>
 #include <fcntl.h>
 #include <vector>
 
@@ -70,7 +71,8 @@ inline bool io_try_datagram_now(io_request& request) {
     for (;;) {
         if (request.direction == io_read) {
             struct iovec part = {request.buffer, request.length};
-            struct msghdr message = {};
+            struct msghdr message;
+            std::memset(&message, 0, sizeof message);
             message.msg_name = request.address;
             message.msg_namelen = static_cast<socklen_t>(request.address_length);
             message.msg_iov = &part;

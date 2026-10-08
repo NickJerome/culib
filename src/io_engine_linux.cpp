@@ -9,6 +9,7 @@
 #include <cstring>
 #include <vector>
 
+#include <fcntl.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
@@ -24,6 +25,23 @@ public:
 };
 
 namespace {
+
+int open_epoll() {
+#if defined(EPOLL_CLOEXEC)
+    const int modern = ::epoll_create1(EPOLL_CLOEXEC);
+    if (modern >= 0 || errno != ENOSYS) return modern;
+#endif
+    const int fd = ::epoll_create(1);
+    if (fd < 0) return -1;
+    const int flags = ::fcntl(fd, F_GETFD);
+    if (flags < 0 || ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
+        const int code = errno;
+        ::close(fd);
+        errno = code;
+        return -1;
+    }
+    return fd;
+}
 
 std::uint32_t epoll_mask(unsigned armed) {
     std::uint32_t mask = 0;
@@ -72,7 +90,7 @@ io_engine* io_engine_create() noexcept {
         if (force_uring) return 0;
     }
 
-    const int epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
+    const int epoll_fd = open_epoll();
     if (epoll_fd < 0) return 0;
     io_engine* const engine = new io_engine();
     engine->uring = 0;
