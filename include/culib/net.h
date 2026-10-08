@@ -134,5 +134,12 @@ private:
 result<endpoint> stun_public_endpoint(udp_socket& socket, const endpoint& server,
                                       std::chrono::nanoseconds timeout);
 
+// 两端经带外信令交换同一个随机会话 ID 和候选地址后，在同一 UDP socket 上相互探测。
+// 查询期间独占此 socket 的接收端；返回收到有效确认的对端地址，并不代替节点身份认证。
+typedef std::array<unsigned char, 16> punch_session_id;
+result<punch_session_id> random_punch_session_id();
+result<endpoint> udp_punch(udp_socket& socket, const std::vector<endpoint>& peer_candidates,
+                           const punch_session_id& session, std::chrono::nanoseconds timeout);
+
 }  // namespace net
 }  // namespace wavvix
