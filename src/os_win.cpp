@@ -78,8 +78,6 @@ optional<std::string> getenv(string_view name) {
     // 两次调用的返回值含义不同，混起来会把「值为空」当成「没设置」：
     //   - 不给缓冲区时返回**需要的大小，含结尾 '\0'**，返回 0 才是没设置；
     //   - 给了缓冲区时返回**存进去的字符数，不含 '\0'**，值为空时就是 0。
-    // 第一版拿第二次的 0 判断「没设置」，于是设成空字符串的变量读不回来——
-    // 这是 MinGW + wine 第一次跑时抓到的（Linux 上 getenv 没有这个歧义）。
     const DWORD needed = ::GetEnvironmentVariableW(wide_name.value().c_str(), 0, 0);
     if (needed == 0) return nullopt;              // 不存在
     if (needed == 1) return std::string();        // 存在，值是空字符串

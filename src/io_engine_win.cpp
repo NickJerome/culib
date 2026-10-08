@@ -315,9 +315,6 @@ bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
     // **CancelIoEx 只是「请求」撤销。** 不管它成功还是失败，这次操作的完成包都还会
     // 回来（撤销成功时带 ERROR_OPERATION_ABORTED），而 OVERLAPPED 必须活到那时候——
     // 它住在调用方的栈帧里。所以这里返回 false，让调用方再挂起一次等那个包。
-    //
-    // **这正是设计文档 7.2 当初把超时推后的那个理由**：epoll / kqueue 撤销是同步的，
-    // 这边不是，而两边要在同一个调用点上写对。解法是把差别放进返回值。
     if (::CancelIoEx(static_cast<HANDLE>(request.handle), overlapped_of(request))) {
         return false;
     }

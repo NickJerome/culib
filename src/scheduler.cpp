@@ -418,10 +418,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         //    记下剩下那些里最早的时限（给空闲路径当超时用）。
         //
         //    到点的那一批要**按时限排序再入队**，不能按它们在容器里的次序。一轮里只
-        //    到期一个时两者没区别，而那是 Linux 上的常态（空闲路径正好睡到最早那个
-        //    时限）；但 macOS 和 Windows 的定时器粒度更粗，一次等待会 overshoot 到好
-        //    几个一起到点，这时按容器次序入队就等于按 spawn 次序唤醒。**「定时器按时间
-        //    排序唤醒」原先只是在 Linux 上碰巧成立**，CI 上 macOS 拿到的是 "CAB"。
+        //    到期一个时两者没区别；多个一起到期时按容器次序会误用 spawn 次序。
         //
         //    用 stable_sort 而不是 sort：时限相同时按挂起次序醒，那是能预期也能测的
         //    行为，unstable 排序会让它变成「不保证」。

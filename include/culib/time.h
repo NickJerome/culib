@@ -17,7 +17,7 @@ public:
     // 纪元，1970-01-01T00:00:00Z
     timestamp() noexcept : millis_(0) {}
 
-    // 毫秒精度，实测 49 ns
+    // 毫秒精度
     static timestamp now() noexcept;
 
     static timestamp from_unix_seconds(std::int64_t seconds) noexcept {

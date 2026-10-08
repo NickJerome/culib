@@ -1,7 +1,4 @@
 // fs 的 Windows 实现。
-//
-// **本文件从未被任何机器编译过**（本地只有 Linux / GCC，CI 还没真正运行过）。
-// 这是继 src/test_win.cpp、strings 的 utf8_to_wide 之后第三处这样的代码。
 // 一律走 W 系列 API：路径是 UTF-8，先转 UTF-16 再调。
 
 #include <culib/fs.h>
@@ -176,12 +173,7 @@ result<timestamp> last_write_time(string_view path) {
 result<void> read_file(string_view path, std::string& out) {
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
-    // **共享模式要带 FILE_SHARE_WRITE**，否则读不了「别人正开着写」的文件——
-    // 日志就是那种文件。POSIX 上读一个正在被写的文件永远可以，而 README 承诺
-    // 「同一套 API 在三个平台上行为一致」，所以这里要跟上。
-    //
-    // 这是 log 那一期撞出来的：日志 sink 握着写句柄时 read_file 返回
-    // ERROR_SHARING_VIOLATION，四条测试在 wine 下红了，而 Linux 上全绿。
+    // 允许读取仍由日志等写入方打开的文件。
     const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_READ,
                                       FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);

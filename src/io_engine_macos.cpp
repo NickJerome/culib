@@ -89,8 +89,7 @@ void io_engine_destroy(io_engine* engine) noexcept {
 }
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
-    // kqueue 的登记每次操作各管各的，没有一次性的关联要做。为什么 IOCP 那边需要这一步，
-    // 见 io_engine.h。
+    // kqueue 每次操作单独登记，无需一次性关联。
     return engine != 0 && handle >= 0;
 }
 
@@ -102,13 +101,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         return false;
     }
 
-    // **先试一次，不登记。** 就绪的时候这一个系统调用就是全部开销，和手写的
-    // read / write 一样；不先试的话同一次读要付四个（epoll_ctl + 让出 +
-    // epoll_wait + read）。开发约定里「零开销」是硬约束——用到的功能不比手写的
-    // 更慢——所以这一步不是优化，是补一笔本来不该欠的账。量过的数字见
-    // docs/superpowers/specs/2026-10-05-event-engine-design.md 7.1。
-    //
-    // 返回 false 的含义正好对得上：**已经有结果了，调用方不要挂起协程。**
+    // 先试一次；若已完成则返回 false，调用方无需挂起协程。
     const std::size_t index = static_cast<std::size_t>(fd);
     if ((index >= engine->slots.size() ||
          !(request.direction == io_read ? engine->slots[index].readers

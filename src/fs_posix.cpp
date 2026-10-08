@@ -176,8 +176,7 @@ result<void> append_file(string_view path, string_view content) {
 
 // --- 一直开着的追加写句柄 -----------------------------------------------------
 //
-// 用裸 open / write，不用 stdio：stdio 有用户态缓冲，而日志最怕的就是「崩的时候
-// 最后几行还在缓冲里」。一行一次系统调用，实测 340 ns，换来的是写出去就不会丢。
+// 用裸 open / write，避免 stdio 的用户态缓冲滞留已写出的日志。
 
 output_file::output_file() noexcept : handle_(-1), written_(0) {}
 
