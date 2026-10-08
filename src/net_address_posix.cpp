@@ -45,12 +45,12 @@ result<std::vector<endpoint>> lookup(string_view host, std::uint16_t port, bool 
             const sockaddr_in* value = reinterpret_cast<const sockaddr_in*>(item->ai_addr);
             result_addresses.push_back(detail::endpoint_access::make(address_family::ipv4,
                 reinterpret_cast<const unsigned char*>(&value->sin_addr),
-                ::ntohs(value->sin_port), 0));
+                ntohs(value->sin_port), 0));
         } else if (item->ai_family == AF_INET6 && item->ai_addrlen >= sizeof(sockaddr_in6)) {
             const sockaddr_in6* value = reinterpret_cast<const sockaddr_in6*>(item->ai_addr);
             result_addresses.push_back(detail::endpoint_access::make(address_family::ipv6,
                 reinterpret_cast<const unsigned char*>(&value->sin6_addr),
-                ::ntohs(value->sin6_port), value->sin6_scope_id));
+                ntohs(value->sin6_port), value->sin6_scope_id));
         }
     }
     ::freeaddrinfo(addresses);
