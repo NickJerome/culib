@@ -69,6 +69,8 @@ const unsigned char accept_opcode = 13;  // UAPI: IORING_OP_ACCEPT
 const unsigned char connect_opcode = 16; // UAPI: IORING_OP_CONNECT
 const unsigned char send_opcode = 26;    // UAPI: IORING_OP_SEND
 const unsigned char recv_opcode = 27;    // UAPI: IORING_OP_RECV
+const unsigned char sendmsg_opcode = 9;  // UAPI: IORING_OP_SENDMSG
+const unsigned char recvmsg_opcode = 10; // UAPI: IORING_OP_RECVMSG
 const unsigned no_drop_feature = 1u << 1;
 const unsigned cq_overflow_flag = 1u << 1;
 
@@ -167,6 +169,18 @@ int submit_request(uring_engine& engine, io_request& request) {
         const std::size_t ceiling = static_cast<std::size_t>(UINT_MAX);
         operation.len = static_cast<__u32>(request.length < ceiling ? request.length : ceiling);
         operation.rw_flags = request.direction == io_write ? MSG_NOSIGNAL : 0;
+    } else if (request.operation == io_datagram_transfer) {
+        request.iov.iov_base = request.buffer;
+        request.iov.iov_len = request.length;
+        std::memset(&request.message, 0, sizeof request.message);
+        request.message.msg_name = request.address;
+        request.message.msg_namelen = static_cast<socklen_t>(request.address_length);
+        request.message.msg_iov = &request.iov;
+        request.message.msg_iovlen = 1;
+        operation.opcode = request.direction == io_read ? recvmsg_opcode : sendmsg_opcode;
+        operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(&request.message));
+        operation.len = 1;
+        operation.rw_flags = request.direction == io_write ? MSG_NOSIGNAL : 0;
     } else {
         request.iov.iov_base = request.buffer;
         request.iov.iov_len = request.length;
@@ -225,7 +239,7 @@ bool probe_socket_operation(uring_engine& engine, unsigned char opcode) {
         if (head != tail) {
             const int result = engine.cqes[head & *engine.cq_mask].res;
             __atomic_store_n(engine.cq_head, head + 1, __ATOMIC_RELEASE);
-            if (result == -EBADF) return true;
+            if (result == -EBADF || result == -EFAULT) return true;
             errno = ENOSYS;
             return false;
         }
@@ -236,6 +250,7 @@ bool probe_socket_operation(uring_engine& engine, unsigned char opcode) {
 
 // 套接字的立即可用路径只做一次系统调用；非套接字交给 io_uring。
 bool try_socket_now(io_request& request) {
+    if (request.operation == io_datagram_transfer) return io_try_datagram_now(request);
     ssize_t moved;
     for (;;) {
         moved = request.direction == io_read
@@ -278,6 +293,11 @@ std::size_t drain(uring_engine& engine, std::vector<park_token*>& completed) {
         const unsigned bit = request->direction == io_read ? io_armed_read : io_armed_write;
         if (queue != request) continue;
 
+        if (request->operation == io_datagram_transfer &&
+            request->direction == io_read && item.res >= 0) {
+            request->address_length = static_cast<int>(request->message.msg_namelen);
+            request->truncated = (request->message.msg_flags & MSG_TRUNC) != 0;
+        }
         if (request->operation == io_accept && item.res >= 0) {
             request->accepted = item.res;
             request->transferred = 0;
@@ -311,6 +331,8 @@ uring_engine* uring_engine_create() noexcept {
     if (!(params.features & no_drop_feature) || !map_rings(*engine, params) ||
         !probe_cancel(*engine) || !probe_socket_operation(*engine, send_opcode) ||
         !probe_socket_operation(*engine, recv_opcode) ||
+        !probe_socket_operation(*engine, sendmsg_opcode) ||
+        !probe_socket_operation(*engine, recvmsg_opcode) ||
         !probe_socket_operation(*engine, accept_opcode) ||
         !probe_socket_operation(*engine, connect_opcode)) {
         const int failed = errno ? errno : ENOSYS;

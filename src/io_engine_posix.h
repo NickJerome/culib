@@ -65,9 +65,42 @@ inline bool io_would_block(int code) {
 #endif
 }
 
+inline bool io_try_datagram_now(io_request& request) {
+    ssize_t moved;
+    for (;;) {
+        if (request.direction == io_read) {
+            struct iovec part = {request.buffer, request.length};
+            struct msghdr message = {};
+            message.msg_name = request.address;
+            message.msg_namelen = static_cast<socklen_t>(request.address_length);
+            message.msg_iov = &part;
+            message.msg_iovlen = 1;
+            moved = ::recvmsg(request.handle, &message, MSG_DONTWAIT);
+            if (moved >= 0) {
+                request.address_length = static_cast<int>(message.msg_namelen);
+                request.truncated = (message.msg_flags & MSG_TRUNC) != 0;
+            }
+        } else {
+            int flags = MSG_DONTWAIT;
+#if defined(MSG_NOSIGNAL)
+            flags |= MSG_NOSIGNAL;
+#endif
+            moved = ::sendto(request.handle, request.buffer, request.length, flags,
+                             static_cast<const sockaddr*>(request.address),
+                             static_cast<socklen_t>(request.address_length));
+        }
+        if (moved >= 0 || errno != EINTR) break;
+    }
+    if (moved < 0 && io_would_block(errno)) return false;
+    request.transferred = moved < 0 ? -1 : moved;
+    request.failure = moved < 0 ? errno : 0;
+    return true;
+}
+
 // 做一次系统调用。false 表示暂不可做；快路和就绪后都使用此函数。
 inline bool io_try_now(io_request& request) {
     const int fd = request.handle;
+    if (request.operation == io_datagram_transfer) return io_try_datagram_now(request);
     if (request.operation == io_accept) {
         int accepted;
         for (;;) {

@@ -136,6 +136,23 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         finished = connect(socket, static_cast<const sockaddr*>(request.address),
                            request.address_length, 0, 0, &moved, overlapped);
         if (!finished) failed = static_cast<DWORD>(::WSAGetLastError());
+    } else if (request.operation == io_datagram_transfer) {
+        const SOCKET socket = reinterpret_cast<SOCKET>(request.handle);
+        const std::size_t ceiling = static_cast<std::size_t>(MAXDWORD);
+        WSABUF payload;
+        payload.buf = static_cast<char*>(request.buffer);
+        payload.len = static_cast<ULONG>(request.length < ceiling ? request.length : ceiling);
+        if (request.direction == io_read) {
+            request.datagram_flags = 0;
+            finished = ::WSARecvFrom(socket, &payload, 1, &moved, &request.datagram_flags,
+                                     static_cast<sockaddr*>(request.address),
+                                     &request.address_length, overlapped, 0) == 0;
+        } else {
+            finished = ::WSASendTo(socket, &payload, 1, &moved, 0,
+                                   static_cast<const sockaddr*>(request.address),
+                                   request.address_length, overlapped, 0) == 0;
+        }
+        if (!finished) failed = static_cast<DWORD>(::WSAGetLastError());
     } else {
         // 一次最多 MAXDWORD 字节；32 位上 size_t 与 MAXDWORD 同宽。
         const std::size_t ceiling = static_cast<std::size_t>(MAXDWORD);
@@ -195,12 +212,19 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         // 后端的卖点恰恰是不碰未公开的东西（第 2 节那张账单）。操作已经完成时
         // bWait 为 FALSE 的这次调用不进内核。
         DWORD moved = 0;
-        if (::GetOverlappedResult(static_cast<HANDLE>(request->handle), overlapped, &moved,
-                                  FALSE)) {
+        DWORD datagram_flags = request->datagram_flags;
+        const bool received = request->operation == io_datagram_transfer
+            ? ::WSAGetOverlappedResult(reinterpret_cast<SOCKET>(request->handle),
+                                       reinterpret_cast<WSAOVERLAPPED*>(overlapped),
+                                       &moved, FALSE, &datagram_flags) != FALSE
+            : ::GetOverlappedResult(static_cast<HANDLE>(request->handle), overlapped,
+                                    &moved, FALSE) != FALSE;
+        if (received) {
             request->transferred = static_cast<std::ptrdiff_t>(moved);   // 0 就是对端关了
             request->failure = 0;
         } else {
-            const DWORD failed = ::GetLastError();
+            const DWORD failed = request->operation == io_datagram_transfer
+                ? static_cast<DWORD>(::WSAGetLastError()) : ::GetLastError();
             // **读**方向上的「没有了」要报成 0 而不是错误，和 POSIX 那边 read()
             // 返回 0 对齐。套接字优雅关闭本来就是 0 字节成功完成，但管道那边会以
             // ERROR_BROKEN_PIPE 报，所以两个都收。
