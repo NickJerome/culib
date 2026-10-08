@@ -113,9 +113,11 @@ TEST(fs_watcher_win, restarts_after_last_root_is_removed) {
     scratch dir("restart");
     EXPECT(dir.ready(), ==, true);
     watcher_owner watcher = make_watcher();
-    EXPECT(fs::detail::watcher_backend_add(watcher.get(), dir.root(), fs::recursive::no)
-               .is_ok(), ==, true);
-    EXPECT(fs::detail::watcher_backend_remove(watcher.get(), dir.root()).is_ok(), ==, true);
+    for (int cycle = 0; cycle < 32; ++cycle) {
+        EXPECT(fs::detail::watcher_backend_add(watcher.get(), dir.root(), fs::recursive::no)
+                   .is_ok(), ==, true);
+        EXPECT(fs::detail::watcher_backend_remove(watcher.get(), dir.root()).is_ok(), ==, true);
+    }
     EXPECT(fs::detail::watcher_backend_add(watcher.get(), dir.root(), fs::recursive::no)
                .is_ok(), ==, true);
     EXPECT(fs::write_file(dir.at("again"), "x").is_ok(), ==, true);

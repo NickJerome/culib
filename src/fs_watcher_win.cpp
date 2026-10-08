@@ -401,14 +401,6 @@ DWORD WINAPI worker_main(LPVOID arg) {
             root_watch* const root = reinterpret_cast<root_watch*>(key);
             process_completion(state, *root, success, bytes, failure);
         }
-        watcher_command* command;
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            command = state.command;
-        }
-        if (command && command->operation == watcher_command::stop && state.roots.empty()) {
-            finish_command(state, *command, true);
-        }
         if (state.stopping && state.roots.empty()) break;
     }
     return 0;
