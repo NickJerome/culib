@@ -139,7 +139,8 @@ result<endpoint> stun_public_endpoint(udp_socket& socket, const endpoint& server
                                       std::chrono::nanoseconds timeout);
 
 // 两端经带外信令交换同一个随机会话 ID 和候选地址后，在同一 UDP socket 上相互探测。
-// 查询期间独占此 socket 的接收端；返回收到有效确认的对端地址，并不代替节点身份认证。
+// 查询期间独占此 socket 的接收端；收到本端探测的确认且已回应同一来源的探测才返回。
+// 这只证明一次双向可达，不代替节点身份认证。
 typedef std::array<unsigned char, 16> punch_session_id;
 result<punch_session_id> random_punch_session_id();
 

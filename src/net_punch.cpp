@@ -71,6 +71,9 @@ result<endpoint> udp_punch(udp_socket& socket,
     }
     if (targets.empty())
         return make_error(error_kind::invalid_argument, "没有与 UDP socket 地址族匹配的候选地址");
+    const std::size_t target_limit = targets.size() + 32;
+    std::vector<endpoint> probed;
+    std::vector<endpoint> confirmed;
 
     detail::punch_message probe = {};
     probe.type = detail::punch_probe;
@@ -119,21 +122,30 @@ result<endpoint> udp_punch(udp_socket& socket,
         detail::punch_message message = {};
         if (!detail::punch_decode(incoming, received.value().size, message) ||
             std::memcmp(message.session, session.data(), session.size()) != 0) continue;
+        const endpoint& source = received.value().from;
+        if (message.type == detail::punch_probe &&
+            std::memcmp(message.transaction, probe.transaction,
+                        sizeof probe.transaction) == 0) continue;
+        if (message.type == detail::punch_ack &&
+            std::memcmp(message.transaction, probe.transaction,
+                        sizeof probe.transaction) != 0) continue;
+        if (!contains(targets, source)) {
+            if (targets.size() >= target_limit) continue;
+            targets.push_back(source);
+        }
         if (message.type == detail::punch_probe) {
-            if (std::memcmp(message.transaction, probe.transaction,
-                            sizeof probe.transaction) == 0) continue;
             detail::punch_message ack = message;
             ack.type = detail::punch_ack;
             unsigned char reply[detail::punch_packet_size];
             detail::punch_encode(ack, reply);
             result<std::size_t> replied = socket.send_to(
-                reply, sizeof reply, received.value().from, remaining(timed, deadline));
+                reply, sizeof reply, source, remaining(timed, deadline));
             if (replied.is_err()) continue;
-            if (!contains(targets, received.value().from))
-                targets.push_back(received.value().from);
-        } else if (std::memcmp(message.transaction, probe.transaction,
-                               sizeof probe.transaction) == 0) {
-            return received.value().from;
+            if (!contains(probed, source)) probed.push_back(source);
+            if (contains(confirmed, source)) return source;
+        } else {
+            if (!contains(confirmed, source)) confirmed.push_back(source);
+            if (contains(probed, source)) return source;
         }
     }
 }

@@ -122,6 +122,48 @@ TEST(net_punch, accepts_confirmed_peer_at_a_changed_mapping) {
         net::detail::punch_encode(message, wire);
         EXPECT(rebound.send_to(wire, sizeof wire, active_address.value(), ms(200))
                    .is_ok(), ==, true);
+        message.type = net::detail::punch_probe;
+        message.transaction[0] ^= 1;
+        net::detail::punch_encode(message, wire);
+        EXPECT(rebound.send_to(wire, sizeof wire, active_address.value(), ms(200))
+                   .is_ok(), ==, true);
+    });
+    EXPECT(wavvix::run(), ==, std::size_t(2));
+}
+
+TEST(net_punch, does_not_finish_after_only_one_side_is_confirmed) {
+    const wavvix::result<net::endpoint> loopback = net::endpoint::parse("127.0.0.1", 0);
+    if (!EXPECT(loopback.is_ok(), ==, true)) return;
+    wavvix::result<net::udp_socket> active_open = net::udp_socket::bind(loopback.value());
+    wavvix::result<net::udp_socket> passive_open = net::udp_socket::bind(loopback.value());
+    if (!EXPECT(active_open.is_ok() && passive_open.is_ok(), ==, true)) return;
+    net::udp_socket active = std::move(active_open).value();
+    net::udp_socket passive = std::move(passive_open).value();
+    const wavvix::result<net::endpoint> active_address = active.local_endpoint();
+    const wavvix::result<net::endpoint> passive_address = passive.local_endpoint();
+    if (!EXPECT(active_address.is_ok() && passive_address.is_ok(), ==, true)) return;
+    net::punch_session_id session = {};
+    session[0] = 1;
+    wavvix::spawn([&] {
+        const std::vector<net::endpoint> candidates(1, passive_address.value());
+        wavvix::result<net::endpoint> selected =
+            net::udp_punch(active, candidates, session, ms(50));
+        EXPECT(selected.is_err(), ==, true);
+        if (selected.is_err())
+            EXPECT(selected.error().kind(), ==, wavvix::error_kind::timeout);
+    });
+    wavvix::spawn([&] {
+        unsigned char wire[net::detail::punch_packet_size] = {};
+        wavvix::result<net::udp_datagram> received =
+            passive.recv_from(wire, sizeof wire, ms(30));
+        if (!EXPECT(received.is_ok(), ==, true)) return;
+        net::detail::punch_message message = {};
+        if (!EXPECT(net::detail::punch_decode(wire, received.value().size, message), ==, true))
+            return;
+        message.type = net::detail::punch_ack;
+        net::detail::punch_encode(message, wire);
+        EXPECT(passive.send_to(wire, sizeof wire, active_address.value(), ms(30))
+                   .is_ok(), ==, true);
     });
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }

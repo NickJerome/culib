@@ -56,7 +56,7 @@ UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发
 
 ## UDP 双向探测
 
-双方先用带外信令交换同一个 `punch_session_id` 和各自的候选地址。会话 ID 可由一方调用 `random_punch_session_id()` 生成；候选地址可包含局域网地址及同一 UDP socket 的 STUN 反射地址。随后双方**并发**在各自的协程中、原 socket 上调用 `udp_punch(socket, peer_candidates, session, timeout)`。它每 100 ms 向候选地址发探测包，接收匹配会话 ID 的探测并回确认；只有收到回显自己随机事务 ID 的确认才返回对端地址。探测期间调用方必须独占该 socket 的接收端；没有匹配候选、所有发送都失败或到期时返回对应错误。[`examples/net_punch.cpp`](../examples/net_punch.cpp) 演示了两个本地端点的并发调用。
+双方先用带外信令交换同一个 `punch_session_id` 和各自的候选地址。会话 ID 可由一方调用 `random_punch_session_id()` 生成；候选地址可包含局域网地址及同一 UDP socket 的 STUN 反射地址。随后双方**并发**在各自的协程中、原 socket 上调用 `udp_punch(socket, peer_candidates, session, timeout)`。它每 100 ms 向候选地址发探测包，接收匹配会话 ID 的探测并回确认；必须同时收到回显自己随机事务 ID 的确认、收到并回应**同一来源**的探测，才返回该地址。探测期间调用方必须独占该 socket 的接收端；没有匹配候选、所有发送都失败或到期时返回对应错误。[`examples/net_punch.cpp`](../examples/net_punch.cpp) 演示了两个本地端点的并发调用。
 
 返回成功只证明当时的一次双向 UDP 探测。此接口不负责信令、连接保活、NAT 映射变化检测或节点身份认证；拿到的地址也不能直接视为可信节点。真实公网打洞仍需相应的 NAT 环境验证。
 
