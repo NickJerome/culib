@@ -70,6 +70,8 @@ Windows 会把此前发向不可达 UDP 端口的 ICMP 错误作为下一次 `re
 
 Linux 使用 TUN，创建接口通常需要 `CAP_NET_ADMIN`；macOS 使用 utun；Windows 运行时加载 `wintun.dll` 并创建临时适配器，缺少 DLL 时 `open()` 返回 `not_found`。Windows 的 Wintun 驱动必须事先可用，库不分发驱动。Linux 已做实际 IP 包往返测试。Windows 上用 [Wintun 0.14.1 官方签名 DLL](https://www.wintun.net/) 实测创建了临时适配器、读到 Windows 发出的 IPv6 包，并通过 `example_net_virtual --probe-write` 向驱动提交了 20 字节 IPv4 测试包。`tests/wintun_roundtrip.ps1` 进一步给临时适配器配置 `198.51.100.1/30`，让系统 `ping 198.51.100.2`，由 `example_net_virtual --icmp-echo` 读取请求并写回响应；真实 Windows 网络栈的 IP 往返已连续两次成功，退出后适配器和测试地址均被移除。运行脚本需管理员权限、Windows x64 debug 构建及官方签名 DLL，调用形式为 `tests/wintun_roundtrip.ps1 -WintunDll <绝对路径>`。这仍是本机驱动验收，不是两节点 mesh 转发。
 
+macOS 的 `tests/utun_roundtrip.py` 用 `sudo` 打开 utun，让系统 ping 经真实接口发出请求，示例读包并写回响应；[debug/release 各通过一次](https://github.com/NickJerome/culib/actions/runs/37811835157/attempts/2)。此前 release 曾丢失一次响应，稳定性仍待复验。这也是本机 IP 往返验收，不代表两节点 mesh 转发。
+
 ## 平台路径
 
 - Linux：TCP 优先 io_uring 的 `ACCEPT` / `CONNECT` / `SEND` / `RECV`，UDP 慢路用 `SENDMSG` / `RECVMSG`；缺少必需操作时退回 epoll。开发时可设 `WAVVIX_IO_BACKEND=epoll` 或 `uring` 强制选择。
