@@ -115,8 +115,8 @@ def main():
             processes.append(process)
             peers.append(process)
         failed = False
-        expected = ("UDP peer: 198.18.2.2:44002",
-                    "UDP peer: 198.18.1.2:44001", "offers relayed")
+        expected = ("UDP data exchanged with: 198.18.2.2:44002",
+                    "UDP data exchanged with: 198.18.1.2:44001", "offers relayed")
         for label, process, marker in zip(("peer A", "peer B", "relay"),
                                           peers + [relay], expected):
             output, errors = process.communicate(timeout=20)

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -77,6 +78,47 @@ wavvix::result<net::punch_offer> receive_offer(net::tcp_stream& stream) {
     return net::decode_punch_offer(bytes.data(), bytes.size());
 }
 
+wavvix::result<void> peer_barrier(net::tcp_stream& stream) {
+    const unsigned char ready = 1;
+    wavvix::result<void> sent = write_exact(stream, &ready, 1);
+    if (sent.is_err()) return std::move(sent).error();
+    unsigned char released = 0;
+    wavvix::result<void> received = read_exact(stream, &released, 1);
+    if (received.is_err()) return std::move(received).error();
+    if (released != ready)
+        return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                  "invalid signaling barrier");
+    return wavvix::result<void>();
+}
+
+wavvix::result<void> exchange_data(net::udp_socket& socket, const net::endpoint& peer,
+                                   const net::punch_session_id& session) {
+    unsigned char packet[21] = {'C', 'U', 'D', '1'};
+    std::memcpy(packet + 4, session.data(), session.size());
+    const std::string peer_name = peer.to_string();
+    for (unsigned char stage = 1; stage <= 2; ++stage) {
+        packet[20] = stage;
+        wavvix::result<std::size_t> sent = socket.send_to(packet, sizeof packet, peer, seconds(5));
+        if (sent.is_err()) return std::move(sent).error();
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + seconds(5);
+        for (;;) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            if (now >= deadline)
+                return wavvix::make_error(wavvix::error_kind::timeout,
+                                          "UDP data exchange timed out");
+            unsigned char incoming[64] = {};
+            wavvix::result<net::udp_datagram> received = socket.recv_from(
+                incoming, sizeof incoming, deadline - now);
+            if (received.is_err()) return std::move(received).error();
+            if (received.value().from.to_string() == peer_name &&
+                received.value().size == sizeof packet &&
+                std::memcmp(incoming, packet, sizeof packet) == 0) break;
+        }
+    }
+    return wavvix::result<void>();
+}
+
 wavvix::result<net::endpoint> run_pair(bool server, const net::endpoint& signaling,
                                         net::udp_socket& socket,
                                         const std::vector<net::endpoint>& candidates) {
@@ -113,8 +155,14 @@ wavvix::result<net::endpoint> run_pair(bool server, const net::endpoint& signali
         wavvix::result<void> sent = send_offer(stream, local);
         if (sent.is_err()) return std::move(sent).error();
     }
-    stream.close();
-    return net::udp_punch(socket, peer.value().candidates, local.session, seconds(5));
+    wavvix::result<net::endpoint> selected =
+        net::udp_punch(socket, peer.value().candidates, local.session, seconds(5));
+    if (selected.is_err()) return std::move(selected).error();
+    wavvix::result<void> ready = peer_barrier(stream);
+    if (ready.is_err()) return std::move(ready).error();
+    wavvix::result<void> data = exchange_data(socket, selected.value(), local.session);
+    if (data.is_err()) return std::move(data).error();
+    return selected;
 }
 
 wavvix::result<void> run_relay(const net::endpoint& signaling) {
@@ -137,7 +185,21 @@ wavvix::result<void> run_relay(const net::endpoint& signaling) {
     second_offer.value().session = session.value();
     wavvix::result<void> to_first = send_offer(first, second_offer.value());
     if (to_first.is_err()) return std::move(to_first).error();
-    return send_offer(second, first_offer.value());
+    wavvix::result<void> to_second = send_offer(second, first_offer.value());
+    if (to_second.is_err()) return std::move(to_second).error();
+    unsigned char ready_first = 0;
+    unsigned char ready_second = 0;
+    wavvix::result<void> first_done = read_exact(first, &ready_first, 1);
+    if (first_done.is_err()) return std::move(first_done).error();
+    wavvix::result<void> second_done = read_exact(second, &ready_second, 1);
+    if (second_done.is_err()) return std::move(second_done).error();
+    if (ready_first != 1 || ready_second != 1)
+        return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                  "invalid signaling barrier");
+    const unsigned char release = 1;
+    wavvix::result<void> first_released = write_exact(first, &release, 1);
+    if (first_released.is_err()) return std::move(first_released).error();
+    return write_exact(second, &release, 1);
 }
 
 wavvix::result<net::endpoint> run_relay_peer(
@@ -170,9 +232,15 @@ wavvix::result<net::endpoint> run_relay_peer(
     if (sent.is_err()) return std::move(sent).error();
     wavvix::result<net::punch_offer> peer = receive_offer(stream);
     if (peer.is_err()) return std::move(peer).error();
-    stream.close();
-    return net::udp_punch(socket, peer.value().candidates, peer.value().session,
-                          seconds(5));
+    wavvix::result<net::endpoint> selected =
+        net::udp_punch(socket, peer.value().candidates, peer.value().session,
+                       seconds(5));
+    if (selected.is_err()) return std::move(selected).error();
+    wavvix::result<void> ready = peer_barrier(stream);
+    if (ready.is_err()) return std::move(ready).error();
+    wavvix::result<void> data = exchange_data(socket, selected.value(), peer.value().session);
+    if (data.is_err()) return std::move(data).error();
+    return selected;
 }
 
 }  // namespace
@@ -238,7 +306,8 @@ int main(int argc, char* argv[]) {
                 std::fprintf(stderr, "%s\n", selected.error().to_string().c_str());
                 return;
             }
-            std::printf("UDP peer: %s\n", selected.value().to_string().c_str());
+            std::printf("UDP data exchanged with: %s\n",
+                        selected.value().to_string().c_str());
             succeeded = true;
         });
         peer.join();

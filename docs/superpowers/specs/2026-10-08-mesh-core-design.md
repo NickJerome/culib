@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。真实 Wintun 驱动收发仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式和双进程本机验证；面向公网的信令服务、保活、映射变化恢复和真实 NAT 验证仍待完成。节点协议未开始。
+- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。真实 Wintun 驱动收发仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式、双进程本机验证，以及端口保持 NAT 命名空间中的双向数据交换；面向公网的信令服务、保活、映射变化恢复和真实公网 NAT 验证仍待完成。节点协议未开始。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -51,6 +51,8 @@ STUN 仅做 RFC 8489 Binding 所需的最小子集，优先解析 `XOR-MAPPED-AD
 候选交换的消息格式已落地为 `punch_offer`：`CUO1` 版本标识、16 字节会话 ID、1 字节数量（1–32），其后每个地址是地址族、网络序端口、网络序 scope ID 和 4/16 字节 IP。最大 757 字节，解码器拒绝截断、尾随数据、错误地址族、无端口、非单播地址和非法 IPv4 scope。格式不限定信令传输，应用必须对通道做身份认证并自行分帧。`net_punch_pair` 示例用明文 TCP 交换消息，已在 Linux 和 Windows 上以两个独立进程完成本机 UDP 双向探测；它仅是连通性测试，不代表公网节点协议。探测器现在也忽略与自己事务 ID 相同的探测，防止通配绑定的候选列表包含本机地址时发生自我确认。
 
 示例又加了仅服务一对节点的 TCP 中继模式：两个端点都主动连中继，送出各自候选；中继生成一个共享会话 ID 并交换两份候选。端点可选在发送前从同一 UDP socket 查询 STUN 反射地址。Linux 和 Windows 上已由三个独立进程完成本机双向探测。该中继没有身份认证或长期服务能力，不属于最终节点协议；跨公网还需有公网可达的中继与 STUN 服务，并在真实 NAT 环境中验证。
+
+Linux root 下的 `tests/net_punch_nat.py` 创建两个 peer、两个独立端口保持 NAT、STUN 服务和 TCP 信令中继，验证双方探测后仍能通过原 socket 与选中的公网地址交换数据。示例在双方打洞完成后经 TCP 信令屏障同步，再交换两轮带会话 ID 的 UDP 测试报文；隔离 NAT 试验连续六次成功。NAT 夹具用静态 SNAT/DNAT 保持端口并用 conntrack 限制入站流量。曾直接用 `MASQUERADE` 试验，内核对不同目的地址重映射了源端口，STUN 公布的地址不再对应 peer 流，双方正确超时。这个夹具证明端口保持模型中的收发，不代表端点相关映射或真实公网的成功率。
 
 `udp_punch()` 的返回值只证明一次双向可达，不能替代后续的候选交换信令、定时保活、STUN 映射变化检测和重新打洞，也不是身份认证。只靠共享会话 ID 不能构成最终节点安全协议；真实 NAT 网络里的成功率仍未验证。
 
