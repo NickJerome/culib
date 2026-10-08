@@ -1,7 +1,7 @@
 # 调度器与 I/O 引擎：定位和那个决定全局的岔路
 
 - 日期：2026-10-04
-- 状态：**第一至五期已有实现**。第三期见 [事件引擎设计](2026-10-05-event-engine-design.md)，第四期见 [io_uring 设计](2026-10-08-io-uring-design.md)，第五期见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md)。第四期本机与跨平台 CI 已验证；**第六期 `net` 尚未实现**，见 [网络设计](2026-10-08-net-design.md)。
+- 状态：**六期均已有实现**。第三期见 [事件引擎设计](2026-10-05-event-engine-design.md)，第四期见 [io_uring 设计](2026-10-08-io-uring-design.md)，第五期见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md)，第六期 TCP/UDP 见 [网络设计](2026-10-08-net-design.md)。各期跨平台验证范围以对应设计文档和 CI 记录为准。
 - 前置：[coroutine 设计](2026-10-04-coroutine-design.md)（原语已完成）、路线图 4.2 / 4.6。
 - **本文改变了库的定位**，见第 1 节。
 
