@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。Windows 真实 Wintun 已完成临时适配器的 ICMP IP 往返验收。第四项已将身份认证、加密信令、UDP 打洞、保活、虚拟网卡转发和静默后重连组成最小节点；WSL2 网络命名空间中已验证双向 TUN ping、节点重启后重连，以及端口保持 NAT 的公网映射端口从 44001 变为 45001 后自动重新打洞并恢复 ping。真实公网 NAT、Windows/macOS 的两节点转发以及本增量的三平台 CI 仍待验证。
+- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。Windows 真实 Wintun 已完成临时适配器的 ICMP IP 往返验收。第四项已将身份认证、加密信令、UDP 打洞、保活、虚拟网卡转发和静默后重连组成最小节点；WSL2 网络命名空间中已验证双向 TUN ping、节点重启后重连，以及端口保持 NAT 的公网映射端口从 44001 变为 45001 后自动重新打洞并恢复 ping。节点实现已通过 [mesh 三平台 debug/release CI](https://github.com/NickJerome/culib/actions/runs/37802519360) 与[主工程 CI](https://github.com/NickJerome/culib/actions/runs/37802519370)。真实公网 NAT 和 Windows/macOS 的两节点转发仍待验证。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
