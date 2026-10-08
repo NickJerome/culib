@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。真实 Wintun 驱动收发仍待验证。第三项已有 UDP 双向探测原语、本地回环测试和本机候选地址枚举；带外候选交换、保活、映射变化恢复和真实 NAT 验证仍待完成。节点协议未开始。
+- 状态：STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773715527)。统一的 `net::virtual_interface` RAII 接口和示例已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)；Linux TUN 已在 WSL2 上实际收发 IP 包，macOS utun 已在 CI 上打开接口，Windows 测试替身的包收发也已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37780042592)。真实 Wintun 驱动收发仍待验证。第三项已有 UDP 双向探测、本机候选枚举、候选交换格式和双进程本机验证；面向公网的信令服务、保活、映射变化恢复和真实 NAT 验证仍待完成。节点协议未开始。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
@@ -46,7 +46,9 @@ STUN 仅做 RFC 8489 Binding 所需的最小子集，优先解析 `XOR-MAPPED-AD
 
 第三项先落一个可独立验证的 `udp_punch()`：双方经带外渠道交换同一个 16 字节随机会话 ID 和对端候选地址，在将用于数据传输的原 UDP socket 上并发探测。33 字节控制报文由 `CUP1`、类型、会话 ID 和 12 字节事务 ID 组成。每端每 100 ms 向所有匹配地址族的候选发送探测；收到有效探测就向实际来源回显事务 ID，并把该来源加入后续候选。只有收到匹配自己的事务 ID 的确认才返回地址。不同会话、畸形报文和旧事务都跳过；全部候选发送失败时返回发送错误。回环测试还模拟了对端映射端口变化，验证可以接收来自新端口的有效确认。Linux 的 epoll/io_uring 和 Windows MSVC x64/x86 本地测试、示例均已通过，新代码也通过了 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37781745450)。
 
-`local_candidates(socket)` 补上候选收集的本地一半：具体地址绑定原样返回，通配绑定时从启用中的网络接口枚举同地址族地址并配上 socket 的实际端口，排除通配、多播和重复地址。它保留回环和虚拟网卡地址，供调用方按场景筛选；STUN 反射地址仍需从同一 socket 查询并加入。这个调用在建立连接时使用，接口枚举可能阻塞或分配内存，不放在协程热路径。带外信令协议和候选交换仍待完成。
+`local_candidates(socket)` 补上候选收集的本地一半：具体地址绑定原样返回，通配绑定时从启用中的网络接口枚举同地址族地址并配上 socket 的实际端口，排除通配、多播和重复地址。它保留回环和虚拟网卡地址，供调用方按场景筛选；STUN 反射地址仍需从同一 socket 查询并加入。这个调用在建立连接时使用，接口枚举可能阻塞或分配内存，不放在协程热路径。面向实际部署的带外信令服务仍待完成。
+
+候选交换的消息格式已落地为 `punch_offer`：`CUO1` 版本标识、16 字节会话 ID、1 字节数量（1–32），其后每个地址是地址族、网络序端口、网络序 scope ID 和 4/16 字节 IP。最大 757 字节，解码器拒绝截断、尾随数据、错误地址族、无端口、非单播地址和非法 IPv4 scope。格式不限定信令传输，应用必须对通道做身份认证并自行分帧。`net_punch_pair` 示例用明文 TCP 交换消息，已在 Linux 和 Windows 上以两个独立进程完成本机 UDP 双向探测；它仅是连通性测试，不代表公网节点协议。探测器现在也忽略与自己事务 ID 相同的探测，防止通配绑定的候选列表包含本机地址时发生自我确认。
 
 `udp_punch()` 的返回值只证明一次双向可达，不能替代后续的候选交换信令、定时保活、STUN 映射变化检测和重新打洞，也不是身份认证。只靠共享会话 ID 不能构成最终节点安全协议；真实 NAT 网络里的成功率仍未验证。
 

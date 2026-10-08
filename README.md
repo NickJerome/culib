@@ -48,7 +48,7 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | 公开接口为构造即提交、`join()` / `detach()` 的线程式句柄；底层换栈原语已覆盖 x86_64、arm64 与 Windows x86。Windows x86 已在 MSVC 本机和 CI 运行验证 |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
-| net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发、STUN Binding 地址发现和 UDP 双向探测已通过三平台 CI；候选交换与保活仍待完成。见 [用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
+| net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发、STUN Binding 地址发现和 UDP 双向探测已通过三平台 CI；本机候选枚举及有界交换格式已落地，面向公网的信令服务、保活和真实 NAT 验证仍待完成。见 [用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
 | net::virtual_interface | 临时三层虚拟网卡，协程中按整包读写 IPv4/IPv6；不替应用配置地址和路由 | **基础接口可用**，已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37779382550)。Linux TUN 已做真实收发；macOS utun 可在 CI 打开；Windows Wintun 的缺 DLL 路径通过，真实驱动收发仍待验证。见[用法](docs/net.md)和[第四程设计](docs/superpowers/specs/2026-10-08-mesh-core-design.md) |
 | fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 用内核通知监听本机目录；`poller` 用目录快照轮询，也适用于网络挂载 | **可用**；见[用法](docs/fs-watcher.md)和[设计](docs/superpowers/specs/2026-10-08-fs-watcher-design.md) |
 
