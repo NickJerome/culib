@@ -1,7 +1,7 @@
 # 文件变化监听设计
 
 - 日期：2026-10-08
-- 状态：`poller` 已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37764233014)；`watcher` 的 Linux 内核通知后端已做内部验证，macOS / Windows 待实现，公共 `watcher` 类尚未开放。
+- 状态：`poller` 已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37764233014)；`watcher` 的 Linux 内核通知后端已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37765563922)；macOS FSEvents 后端待本机 CI 验证，Windows 待实现，公共 `watcher` 类尚未开放。
 - 前置：[文件系统](2026-10-04-fs-design.md)、[调度器](2026-10-04-scheduler-design.md)、[事件引擎](2026-10-05-event-engine-design.md)。
 
 ## 范围与接口
@@ -39,4 +39,6 @@
 
 本地 Windows/MSVC debug 与 Linux/GCC debug 的 `xmake test` 已通过，`examples/fs_poller.cpp` 在 Windows 和 Linux 上都输出 `created: item.txt`。`ad615b2` 的 [CI](https://github.com/NickJerome/culib/actions/runs/37764233014) 十个 job 全部通过，覆盖 Linux、macOS、Windows debug/release、独立公共头文件和源码依赖工程。
 
-Linux 内部后端使用一个非阻塞 inotify fd，递归模式为每层目录分别注册；事件到来时再给新目录注册监视，旧子树移动/移除时撤掉旧路径绑定。一个内核 watch descriptor 可以对应多个监视根目录，事件会各自带上根目录；显式撤销产生的 `IN_IGNORED` 与内核自行撤销分开处理，防止目录移动后误删新绑定。`IN_Q_OVERFLOW` 和补注册失败都报告 `overflow`。内部测试覆盖创建/删除、新目录、目录移动、取消后重新监视及协程等待；强制 epoll、io_uring 时各自全套 318 条测试均通过。下一步是实现 macOS / Windows 后端，然后开放公共 `watcher` 类并跑 CI。
+Linux 内部后端使用一个非阻塞 inotify fd，递归模式为每层目录分别注册；事件到来时再给新目录注册监视，旧子树移动/移除时撤掉旧路径绑定。一个内核 watch descriptor 可以对应多个监视根目录，事件会各自带上根目录；显式撤销产生的 `IN_IGNORED` 与内核自行撤销分开处理，防止目录移动后误删新绑定。`IN_Q_OVERFLOW` 和补注册失败都报告 `overflow`。内部测试覆盖创建/删除、新目录、目录移动、取消后重新监视及协程等待；强制 epoll、io_uring 时各自全套 318 条测试均通过。
+
+macOS 后端每个监视根目录建一条 FSEvents stream，共用一根 CFRunLoop 线程。控制操作通过 CFRunLoopSource 交给该线程处理，调用方等待完成；事件回调把路径写入受锁保护的队列，只有队列从空变为非空时才往非阻塞管道写一个字节。`wait()` 在协程内由 kqueue 等待这个管道，在线程入口由 `poll()` 等待。FSEvents 默认递归，非递归模式在回调里过滤子目录事件。为避免 macOS `/var` → `/private/var` 等符号链接使前缀匹配落空，注册时解析实际目录用于 FSEvents，事件仍报告调用方的原始根目录。普通通知统一报告 `changed`，丢事件标志报告 `overflow`；不在回调里用 `stat` 猜测具体类型。每根 FSEvents stream 启动失败会独立返回错误，不会破坏已有监视。
