@@ -22,7 +22,7 @@ int main() {
 
 显式调用 `shutdown()` 前，先对仍持有的协程句柄调用 `join()` 或 `detach()`。`shutdown()` 会运行当前 vCPU 剩余的任务；若任务持续等待，须先由应用发出停止信号。
 协程栈分配失败时构造不会提交任务，刚构造的句柄 `joinable()` 为 `false`；需要确认任务已提交时检查它。
-和 Photon 的 `photon_std::thread` 一样，构造时可以直接传函数参数；参数按值保存，启动时移动到目标函数。传引用请显式用 `std::ref`。自定义栈大小用 `coroutine::with_stack(bytes, function, args...)`，避免整数函数参数和栈大小混淆。
+和 Photon 的 `photon_std::thread` 一样，构造时可以直接传函数参数；参数按值保存，启动时移动到目标函数。传引用请显式用 `std::ref`。默认请求 256 KiB 可用栈；当前按 2 的幂分桶，普通小回调实际分配约 512 KiB 栈加一页保护页。Windows 会提交这整段内存，创建大量并发协程时要把它计入进程提交预算。需要更深的栈时用 `coroutine::with_stack(bytes, function, args...)`，避免整数函数参数和栈大小混淆。
 
 `<culib/scheduler.h>` 提供 `spawn()` 供不持有句柄的场合使用，也提供 `yield()`、`sleep_for()` 和 `scheduler_scope`。后者是 `init()` / `shutdown()` 的 RAII 形式，一个作用域可以统一跑完其间提交的任务：
 

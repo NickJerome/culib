@@ -119,10 +119,11 @@ int main() {
         std::printf("   每个 vCPU 有自己的运行队列，不加锁，协程也不会被偷到别的 vCPU\n");
     }
 
-    std::printf("\n6. spawn 的开销：冷和热差两个数量级\n");
+    std::printf("\n6. spawn 的开销：冷分配与热复用\n");
     {
         // 冷：先 spawn 一大批再跑。池是空的，每根都要真分配一次栈。
-        const int burst = 20000;
+        // 默认栈在 Windows 上会整段 commit，控制冷启动样本的峰值占用。
+        const int burst = 512;
         wavvix::stopwatch watch;
         for (int i = 0; i < burst; ++i) spawn([] {});
         const double cold = static_cast<double>(watch.elapsed().count()) / burst;
@@ -138,8 +139,8 @@ int main() {
         }
         const double warm = static_cast<double>(watch.elapsed().count()) / steady;
 
-        std::printf("   冷（先攒两万根再跑）  %6.0f ns/根   池是空的，每根真分配一次栈\n",
-                    cold);
+        std::printf("   冷（先攒 %d 根再跑）   %6.0f ns/根   池是空的，每根真分配一次栈\n",
+                    burst, cold);
         std::printf("   热（spawn 一根跑一根）%6.0f ns/根   池命中，零系统调用\n", warm);
         std::printf("   服务器是第二种形状；池按每线程 %zu MB 封顶，超了才真还给系统\n",
                     static_cast<std::size_t>(sizeof(void*) >= 8 ? 32 : 8));

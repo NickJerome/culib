@@ -1,9 +1,11 @@
 # coroutine 设计
 
 - 日期：2026-10-04
-- 状态：**已实现**；MSVC x86 已补齐。本机 MSVC x86 debug/release 测试与 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37771093446) 通过。
+- 状态：**原语已实现**；MSVC x86 已补齐。本机 MSVC x86 debug/release 测试与 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37771093446) 通过。
 - 第二程第 8 项。路线图 4.2（为什么在 net 之前）、4.3（已定的两条）、4.4（成本在哪）、4.6（也挡在 thread 和 log 前面）是前置阅读。
 - **本文修正了路线图 4.3 关于 CFI 工作量的估计，见 3.4。**
+
+本文记录 2026-10-04 的原语设计，接口章节中的 `coroutine::resume()` 和 128 KiB 默认栈是当时的决策。调度器落地后，手动 `resume()` 已移至内部 `detail::fiber`，公开 `coroutine` 改为构造即提交、`join()` / `detach()` 的线程式句柄；默认请求栈在 2026-10-09 提至 256 KiB。当前用法与实际分配量见[协程调度器](../../scheduler.md)及[调度器设计 8.4](2026-10-04-scheduler-design.md)。
 
 ## 1. 先说范围，这是本模块最大的决定
 
