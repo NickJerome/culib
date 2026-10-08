@@ -104,6 +104,11 @@ jobs:
         shell: bash
         run: bash .github/report-failure.sh xmake build -w -y -g examples
 
+      - name: exercise macOS utun with an ICMP roundtrip
+        if: startsWith(matrix.target.name, 'macos-')
+        shell: bash
+        run: bash .github/report-failure.sh python3 tests/utun_roundtrip.py ${{ matrix.mode }}
+
       - name: run examples
         shell: bash
         run: bash .github/report-failure.sh xmake run example_result
