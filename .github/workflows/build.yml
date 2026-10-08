@@ -16,6 +16,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  mingw-i686:
+    name: MinGW i686 C++11
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          install: mingw-w64-i686-gcc
+          suppress-deprecation-warnings: msystem-mingw32
+      - name: build and run 32-bit tests
+        shell: msys2 {0}
+        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_i686.sh
+
   legacy-gcc:
     name: GCC 4.8 C++11
     runs-on: ubuntu-latest
