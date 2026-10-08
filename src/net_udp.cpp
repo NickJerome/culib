@@ -94,11 +94,12 @@ result<udp_datagram> udp_socket::recv_from(void* buffer, std::size_t size,
     request.direction = wavvix::detail::io_read;
     request.handle = detail::udp_io_handle(native_);
     request.buffer = buffer ? buffer : &empty;
-    request.length = size;
+    request.length = size == 0 ? 1 : size;
     request.address = address.storage;
     request.address_length = address.length;
     wavvix::detail::scheduler_io(request, timeout);
-    if (request.truncated || detail::udp_is_truncated(request.failure))
+    if (request.truncated || detail::udp_is_truncated(request.failure) ||
+        (size == 0 && request.transferred > 0))
         return make_error(error_kind::out_of_range, "UDP datagram was truncated");
     if (request.transferred < 0) return detail::udp_error("recv_from", request.failure);
     address.length = request.address_length;

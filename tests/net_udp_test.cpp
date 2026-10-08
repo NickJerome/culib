@@ -80,12 +80,18 @@ TEST(net_udp, zero_length_datagram_is_not_eof) {
         const wavvix::result<udp_datagram> packet = received_socket.recv_from(0, 0, ms(1000));
         EXPECT(packet.is_ok(), ==, true);
         if (packet.is_ok()) EXPECT(packet.value().size, ==, std::size_t(0));
+        const wavvix::result<udp_datagram> nonempty = received_socket.recv_from(0, 0, ms(1000));
+        EXPECT(nonempty.is_err(), ==, true);
+        if (nonempty.is_err()) EXPECT(nonempty.error().kind(), ==, error_kind::out_of_range);
     });
     wavvix::spawn([&] {
         const wavvix::result<std::size_t> sent =
             sent_socket.send_to(0, 0, target.value(), ms(1000));
         EXPECT(sent.is_ok(), ==, true);
         if (sent.is_ok()) EXPECT(sent.value(), ==, std::size_t(0));
+        const wavvix::result<std::size_t> next =
+            sent_socket.send_to("x", 1, target.value(), ms(1000));
+        EXPECT(next.is_ok(), ==, true);
     });
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
