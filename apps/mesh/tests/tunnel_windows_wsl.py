@@ -21,7 +21,7 @@ import threading
 import uuid
 
 
-MESH_WIN = pathlib.Path(__file__).resolve().parents[1] / "build/windows/x64/debug/mesh.exe"
+MESH_WIN = pathlib.Path(__file__).resolve().parents[3] / "build/windows/x64/debug/mesh.exe"
 PASSWORD = "mesh-cross-test-password\n"
 
 

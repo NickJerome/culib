@@ -8,20 +8,19 @@ import tempfile
 import time
 
 
-PROJECT = pathlib.Path(__file__).resolve().parents[1]
-ROOT = PROJECT.parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 PASSWORD = "mesh-probe-test-password\n"
 
 
 def program_for(mode):
     platform = ("windows" if sys.platform == "win32" else
                 "macosx" if sys.platform == "darwin" else "linux")
-    for base in (ROOT / "build", PROJECT / "build"):
-        programs = [path for suffix in ("mesh", "mesh.exe")
-                    for path in base.glob(platform + "/*/" + mode + "/" + suffix)
-                    if path.is_file()]
-        if len(programs) == 1:
-            return programs[0]
+    programs = [path for suffix in ("mesh", "mesh.exe")
+                for path in (ROOT / "build").glob(
+                    platform + "/*/" + mode + "/" + suffix)
+                if path.is_file()]
+    if len(programs) == 1:
+        return programs[0]
     raise RuntimeError("build exactly one mesh binary for " + mode)
 
 

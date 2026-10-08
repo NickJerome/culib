@@ -1,7 +1,9 @@
-"""Root-only mesh TUN test through two NATs, including a mapping change.
+"""Root-only mesh test through two NATs.
 
 Build apps/mesh in Linux debug mode first. This test needs iptables, IP
-forwarding, network namespaces, and /dev/net/tun. It cleans up its namespaces.
+forwarding and network namespaces. The default tunnel test also needs
+/dev/net/tun and changes one NAT mapping; --probe tests encrypted peer data
+without creating a virtual interface. It cleans up its namespaces.
 """
 
 import os
@@ -19,6 +21,9 @@ STUN = ROOT / "tests/fixtures/stun_echo.py"
 
 
 def main():
+    if sys.argv[1:] not in ([], ["--probe"]):
+        raise RuntimeError("usage: tunnel_nat.py [--probe]")
+    probe = "--probe" in sys.argv
     if os.geteuid() != 0 or not MESH.is_file():
         raise RuntimeError("run as root after building apps/mesh in Linux debug mode")
     suffix = str(os.getpid())
@@ -103,7 +108,8 @@ def main():
                 (peer_b, files[1], keys[0], 44002, "10.250.0.2", "10.250.0.1"),
             ):
                 process = subprocess.Popen(
-                    ["ip", "netns", "exec", name, str(MESH), "tunnel",
+                    ["ip", "netns", "exec", name, str(MESH),
+                     "peer" if probe else "tunnel",
                      filename, peer_key, "198.18.1.1", "39011",
                      "198.18.1.1", "3478", str(port)],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -113,12 +119,25 @@ def main():
                 process.stdin.close()
                 process.stdin = None
                 peers.append(process)
+                if probe:
+                    continue
                 interface = wait_line(process, "virtual interface: ", 10)
                 run("ip", "-n", name, "addr", "add", local + "/32",
                     "dev", interface)
                 run("ip", "-n", name, "link", "set", interface, "up")
                 run("ip", "-n", name, "route", "add", remote + "/32",
                     "dev", interface, "src", local)
+            if probe:
+                for process, expected_port in zip(peers, (44002, 44001)):
+                    output, errors = process.communicate(timeout=35)
+                    print(output, end="", flush=True)
+                    if process.returncode != 0 or \
+                            "authenticated UDP path:" not in output or \
+                            "encrypted UDP probe: ok" not in output or \
+                            ":" + str(expected_port) not in output:
+                        raise RuntimeError("NAT encrypted peer probe failed: " + errors)
+                print("two-NAT encrypted peer probe passed")
+                return
             first = [wait_line(peer, "authenticated UDP path: ", 20) for peer in peers]
             print("initial paths:", first)
             if ":44002" not in first[0] or ":44001" not in first[1]:
@@ -156,7 +175,8 @@ def main():
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-            errors = process.stderr.read() if process.stderr else ""
+            errors = (process.stderr.read() if process.stderr and
+                      not process.stderr.closed else "")
             if errors:
                 print(errors, file=sys.stderr, end="")
         for name in reversed(namespaces):

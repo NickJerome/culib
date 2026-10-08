@@ -15,7 +15,7 @@ import tempfile
 import time
 
 
-MESH = pathlib.Path(__file__).resolve().parents[1] / "build/linux/x86_64/debug/mesh"
+MESH = pathlib.Path(__file__).resolve().parents[3] / "build/linux/x86_64/debug/mesh"
 
 
 def run(*command):
