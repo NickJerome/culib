@@ -331,6 +331,22 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
     `wavvix::mutex`——多个 vCPU 会同时写同一个 sink，而协程锁只在一个 vCPU 内部
     有效。那一小段会真的挡住 vCPU，但它只是「格式化好的一行交给系统调用」。
 
+## [`net.h`](../include/culib/net.h)
+
+完整范围和后续 TCP/UDP 分期见 [网络设计](superpowers/specs/2026-10-08-net-design.md)。当前已实现的是地址层：
+
+    wavvix::result<wavvix::net::endpoint> local =
+        wavvix::net::endpoint::parse("127.0.0.1", 8080);
+    wavvix::result<std::vector<wavvix::net::endpoint>> candidates =
+        wavvix::net::resolve("localhost", 8080);
+
+`parse` 只接受数字 IPv4/IPv6；输入主机名请用 `resolve`。后者调用系统 DNS 解析器，
+**会阻塞当前线程并分配内存**，所以服务器宜在运行 vCPU 前解析，别在热路径里悄悄调用。
+`resolve` 保留系统返回的地址顺序，不替调用方猜该连哪一个。`endpoint::to_string()`
+把端口一起写出，IPv6 用 `[::1]:8080` 形状。详情见 `examples/net_address.cpp`。
+
+这还不是可收发的 `net`：TCP/UDP 公共套接字正在后续分期实现。
+
 ## [`optional.h`](../include/culib/optional.h)
 
 完整背景见 [设计文档](superpowers/specs/2026-10-04-optional-design.md)。

@@ -46,6 +46,7 @@ target("culib")
     -- 同一套。只给 culib 自己的编译单元：公共头文件不含平台头，使用方不受影响。
     if is_plat("windows", "mingw") then
         add_defines("_WIN32_WINNT=0x0A00", "WINVER=0x0A00")
+        add_syslinks("ws2_32", {public = true})
     end
 
     -- 协程的换栈汇编：每个 (ABI, 架构, 汇编器) 一个文件，按目标挑一个。
