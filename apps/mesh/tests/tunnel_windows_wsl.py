@@ -148,8 +148,11 @@ def main():
         run(shell, "-NoProfile", "-Command", configure)
         wait_line(windows_lines, "authenticated UDP path: ", 30)
         wait_line(linux_lines, "authenticated UDP path: ", 30)
-        print(run("ping.exe", "-n", "2", "-w", "5000", "10.250.1.2"))
-        print("Windows Wintun -> WSL Linux TUN encrypted ping passed")
+        for _ in range(2):
+            print(run("ping.exe", "-n", "1", "-w", "5000", "10.250.1.2"))
+            print(run("wsl", "-u", "root", "-e", "ping", "-c", "1", "-W", "5",
+                      "10.250.1.1"))
+        print("Windows Wintun <-> WSL Linux TUN encrypted pings passed")
     finally:
         if windows is not None and windows.poll() is None:
             try:
