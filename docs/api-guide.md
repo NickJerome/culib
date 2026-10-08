@@ -237,7 +237,8 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
   和普通字符串混用时编译器发现不了，好处是每个接口少一层转换。
 - 文件系统操作拒绝含内嵌 NUL 的路径：返回 `invalid_argument`；`exists` / `is_file` /
   `is_directory` 等布尔查询返回 `false`。不会把 NUL 前的路径误当成目标文件。
-- 输入接受 '/' 和 '\\' 两种分隔符。**join 只为自己插入的那一个分隔符用平台原生字符，
+- Windows 接受 '/' 和 '\\' 两种分隔符；POSIX 上 '\\' 是普通文件名字符。
+  **join 只为自己插入的那一个分隔符用平台原生字符，
   不改写输入里已有的**：Windows 上 join("/a", "b") 是 "/a\\b" 而不是 "\\a\\b"。混用在
   Windows 上是合法的（"C:/foo\\bar" 能用）；要全部统一成原生分隔符就用 normalize，
   它是按段重建路径的。这条是 CI 第一次在 Windows 上跑时，被一个写错的测试暴露出来的。
@@ -251,6 +252,27 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 - 目标存储包含 HDD 和网络挂载。一次 stat 在本地缓存热时 ~475 ns，在冷的 HDD 上
   5–10 ms，在 NFS 上 0.2–1 ms。**所以这里每个函数都只做它名字说的那件事**，
   不替调用方多问一次磁盘，见 CLAUDE.md「性能与占用」。
+
+路径拆分函数返回输入的视图，不复制字符：`parent("/a/b/c")` 为 `"/a/b"`，
+`filename("/a/b/")` 为空，`stem("a.tar.gz")` 为 `"a.tar"`，`extension(".bashrc")`
+为空。`join(a, b)` 只在两段之间按需插入分隔符；若 `b` 按当前平台规则是绝对路径，
+则直接返回 `b`。POSIX 上 `/b` 是绝对路径，Windows 上它只是当前盘的根，完整的绝对
+路径须带盘符或 UNC 前缀。`normalize()` 只消去 `.`、`..` 和重复分隔符，不访问磁盘。
+`absolute()` 把相对路径接到当前目录后再做同样的词法整理；两者都不解析符号链接。
+
+`exists`、`is_file`、`is_directory` 各自查询一次；需要知道类型时直接选类型查询，
+不用先问 `exists`。`last_write_time` 只保证秒精度。`read_file`、`write_file` 和
+`append_file` 按二进制处理内容；带 `std::string&` 出参的 `read_file` 可以复用缓冲区。
+`output_file` 持有常开的追加写句柄，`open()` 会先关掉旧句柄，析构时自动关闭；
+`write()` 无用户态缓冲，每次直接写给操作系统。它的 `size()` 是打开时的大小加上
+此句柄后续写入的字节数，不会每次重新查询磁盘，因此不计入其他进程同时写入的内容。
+
+`create_directory` 在目标已经是目录时成功；`recursive::yes` 会逐级创建。
+`remove_directory(recursive::yes)` 会删除目录下全部内容，但不会进入符号链接指向的
+目录。`copy_file` 默认不覆盖已有目标，不保证保留权限以外的元数据。`rename` 在同一
+文件系统内是原子操作；POSIX 跨文件系统会返回错误。回调版 `list_directory` 在回调
+返回 `false` 时停止；条目顺序不保证，`entry::name` 视图只在本次回调内有效。
+返回 `std::vector<std::string>` 的重载一次取全并按名字排序。
 
 ## [`fs_watcher.h`](../include/culib/fs_watcher.h)
 
