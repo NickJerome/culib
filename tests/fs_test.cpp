@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace {
 
 using wavvix::error_kind;
@@ -257,6 +261,25 @@ TEST(fs, removes_files_and_directories) {
     EXPECT(fs::create_directory(empty).is_ok(), ==, true);
     EXPECT(fs::remove_directory(empty).is_ok(), ==, true);
 }
+
+#ifndef _WIN32
+TEST(fs, recursive_remove_does_not_follow_a_directory_symlink) {
+    const scratch area("symlink_remove");
+    if (!EXPECT(area.ok(), ==, true)) return;
+
+    const std::string outside = area.at("outside");
+    const std::string tree = area.at("tree");
+    if (!EXPECT(fs::create_directory(outside).is_ok(), ==, true)) return;
+    if (!EXPECT(fs::create_directory(tree).is_ok(), ==, true)) return;
+    const std::string marker = fs::join(outside, "keep.txt");
+    if (!EXPECT(fs::write_file(marker, "preserved").is_ok(), ==, true)) return;
+
+    const std::string link = fs::join(tree, "outside_link");
+    if (!EXPECT(::symlink("../outside", link.c_str()), ==, 0)) return;
+    EXPECT(fs::remove_directory(tree, fs::recursive::yes).is_ok(), ==, true);
+    EXPECT(fs::read_file(marker).value_or(""), ==, "preserved");
+}
+#endif
 
 TEST(fs, copies_and_renames) {
     const scratch area("copy");
