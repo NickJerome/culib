@@ -96,7 +96,7 @@ struct date_time {
 
 本地时区只能问系统（不自带 tzdata），但**取偏移量这一步有个坑**：`tm_gmtoff` 是 glibc / BSD 扩展，**MSVC 的 `std::tm` 没有这个字段**。
 
-不用它，改成**把同一个 `time_t` 分别用 `localtime` 和 `gmtime` 拆开，两个日历时间相减**，减法用我们自己的 `days_from_civil`。这样三个平台一套代码，只依赖标准里有的字段。
+不用它，改成**把同一 Unix 秒数按本地时间和 UTC 分别拆开，两个日历时间相减**，减法用我们自己的 `days_from_civil`。这样三个平台一套偏移算法，只依赖标准里有的 `tm` 字段。
 
 实测对得上（和 `tm_gmtoff` 逐个比，六个时区 × 五个时刻，全部一致）：
 
@@ -109,7 +109,7 @@ struct date_time {
 | `Asia/Kathmandu` | **+05:45 这种非整小时**，且 1986 年前是 +05:30 | 一致 |
 | `UTC` | 退化情形 | 一致 |
 
-Windows 侧还要确认一件事：`localtime_s` 的**参数顺序和 POSIX 的 `localtime_r` 相反**（`(tm*, time_t*)` 对 `(time_t*, tm*)`），写错了编译器不一定拦得住。
+Windows 侧的 `_localtime64_s` **参数顺序和 POSIX 的 `localtime_r` 相反**（`(tm*, __time64_t*)` 对 `(time_t*, tm*)`）。显式使用 64 位入口还避免 MinGW i686 默认的 32 位 `time_t` 截断 2038 年后的时刻。
 
 ### 3.3 只有一个 now()
 
@@ -208,7 +208,7 @@ spdlog 的做法是在 `pattern_formatter` 里缓存 `std::tm`，**只在整秒�
 
 ### 3.10 本地时间的范围三个平台一样
 
-MSVC 的 `localtime_s` 只接受 `[0, 32535215999]`（1970-01-01 .. 3000-12-31），`localtime_r` 本来能走得更远。**第一版把范围判断写在各自的平台文件里，于是同一个调用在 Linux 上成功、在 Windows 上失败**——那正是 README 承诺过的「三平台行为一致」被破掉。
+Windows CRT 的本地时间接口只保证 `[0, 32535215999]`（1970-01-01 .. 3000-12-31），`localtime_r` 本来能走得更远。**第一版把范围判断写在各自的平台文件里，于是同一个调用在 Linux 上成功、在 Windows 上失败**——那正是 README 承诺过的「三平台行为一致」被破掉。
 
 改成把范围判断统一放在 `local_parts` 里，对三个平台一视同仁，取 Windows 那个更窄的界。代价是 Linux 上损失了本来能用的区间，换来的是「同一个调用在哪儿都一样」。
 
@@ -309,7 +309,8 @@ Asia/Kathmandu / Pacific/Chatham / America/St_Johns / Pacific/Kiritimati
 
 ### 4.6 没覆盖
 
-- ~~MSVC 和 macOS 要等 CI。~~ **CI 10/10 一次过**，所以 `time_win.cpp` 的 `localtime_s`（参数顺序和 POSIX 相反那个）在真 MSVC 上成立，macOS 的 BSD `localtime_r` 也成立。CI runner 的时区是 UTC，所以**带偏移的那条路径在 CI 上走的是退化情形**（偏移为 0，输出 `Z`）；非零偏移只在本机的八个时区下验证过。
+- ~~MSVC 和 macOS 要等 CI。~~ **CI 10/10 一次过**，macOS 的 BSD `localtime_r` 在真机上成立。Windows 现使用 `_localtime64_s`，已在本机 MSVC x64/x86 和 MinGW i686 测试；这次改动仍待 CI。CI runner 的时区是 UTC，所以**带偏移的那条路径在 CI 上走的是退化情形**（偏移为 0，输出 `Z`）；非零偏移只在本机的八个时区下验证过。
+- MinGW i686 默认 `sizeof(time_t) == 4`：此前 `format_local_time()` 在上界 `32535215999` 失败，libc 参照测试也无法覆盖 2038 年后。改用 Windows CRT 的 64 位本地/UTC 接口后，2026-10-09 在 Windows 上直接运行的 MinGW i686 测试 343/343 通过。
 - **32 位 time_t 的那条分支没触发过**。`time_posix.cpp` 里有一个 `sizeof(std::time_t) < sizeof(std::int64_t)` 的判断，本机是 64 位，那一行从来没真的执行。
 - **闰秒附近的行为没测**，因为 Unix 时间戳本身不表示闰秒——`23:59:60` 这种输入直接被拒（有测试），但「系统时钟正在跨闰秒」这个状态没法构造。
 - **`now_coarse()` 的分辨率没量**。只验证了它和 `now()` 相差不超过 2 秒，没测它实际多久跳一次（那取决于内核的 `CONFIG_HZ`）。
