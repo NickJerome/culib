@@ -39,6 +39,8 @@ int main() {
 
 不使用作用域也能直接 `spawn(...)` 后调用 `run()`；第一次提交协程会按需建立 vCPU，线程退出时自动清理。`scheduler_scope` 让生命周期在调用点清楚可见：构造时建立当前线程的 vCPU，析构时调用 `run()` 跑完全部协程，再释放 vCPU 和事件引擎。可嵌套，只有最外层析构时执行收尾；必须在创建它的线程上析构。显式调用 `run()` 后，作用域析构仍会清理资源。
 
+如果用单轮 `yield()`、限时 `sleep_for()` 或只 `join()` 一根协程推进调度器，其他协程可能仍在等待 I/O、定时器或同步原语。退出当前系统线程前必须让这些挂起协程完成；可以调用 `run()`，或在创建协程前建立 `scheduler_scope`。线程退出时若仍有挂起任务，库会打印诊断并终止进程，避免内核继续访问已释放的协程栈。
+
 析构会等待所有提交的协程结束；有无限等待或持续接受连接的协程时，应先用应用自己的停止信号让它们退出。`scheduler_scope` 只管理调度器生命周期，不取消协程。要并行使用多核，就让每根工作线程各建自己的作用域；当前版本不跨 vCPU 迁移协程或套接字。
 
 PhotonLibOS 的原生 [`thread_create11()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/thread11.h) / [`go()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/go.h) 创建后只把协程放进运行队列，默认不要求等待；需要等待时才启用 join。[`photon_std::thread`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/std-compat.h) 则是 `std::thread` 风格的持有型句柄，构造即入队，随后 `join()` 或 `detach()`；仍可 `join` 时析构会 `terminate`。culib 的 `spawn()` 和 `coroutine` 分别对应这两种用法。Photon 的 [`init()` / `fini()`](https://github.com/alibaba/PhotonLibOS/blob/main/photon.h) 对应这里的 `coroutine::init()` / `shutdown()`，也可以用 `scheduler_scope` 管理生命周期。Photon 的线程句柄只有在另行初始化 WorkPool 后才会把新协程迁移到其他 vCPU；culib 目前没有跨 vCPU 迁移。

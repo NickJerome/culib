@@ -25,18 +25,14 @@ namespace {
 typedef park_clock clock_type;
 typedef park_instant instant;
 
-// 一个 vCPU 的全部状态。每根线程一份，所以运行队列不需要加锁——
-// 协程不跨 vCPU 迁移（fiber 那边有运行期检查钉着），所以不会有别人来动它。
-//
-// 队列里直接是 fiber*，不是「任务」结构体：**可运行的协程没有任何附加状态**。
-// 时限和唤醒结果都在挂起凭据里，而凭据只在挂着的时候才存在。
+// 只由所属线程访问；协程不跨 vCPU 迁移。
 struct vcpu {
     std::vector<fiber*> ready;      // 本轮或下一轮要跑的
     std::vector<fiber*> incoming;   // 正在跑的协程 spawn 出来的，下一轮入队
     std::vector<park_token*> parked;    // 挂起的：等定时器 / 等 I/O / 等同步原语，一视同仁
     std::vector<park_token*> roused;    // 本轮被叫醒的，**按叫醒次序**（公平性靠它）
     std::vector<park_token*> completed; // 引擎每轮交回的凭据，复用缓冲不每轮分配
-    io_engine* engine;                  // **比 vCPU 更懒一层**：第一次真做 I/O 才建
+    io_engine* engine;                  // 首次 I/O 时创建
     fiber* current;                 // 正在跑的那根，park 要知道挂起的是谁
     park_token* park_of_current;        // 当前协程挂起了，让出之后由调度器读
     bool running;                       // run() 是否正在这根线程上跑
@@ -61,28 +57,19 @@ void reap(std::vector<fiber*>& queue) {
 
 void reap_detached(vcpu& self) noexcept;
 
-// 线程退出时把这根线程的 vCPU 收掉。
-//
-// 第一期这里是**故意泄漏**的，理由是「vCPU 的生命周期就是线程的生命周期，而精确回收
-// 要 pthread_key / FlsAlloc，为一个指针不值当」。第三期之后那个算盘不成立了：vCPU
-// 身上挂着事件引擎，而引擎持有一个**内核句柄**（epoll fd / kqueue fd / IOCP port）。
-// 每起一根会 spawn 的工作线程就漏一个句柄，那不是 152 字节的事。
-//
-// 收法是一个只有析构函数的 thread_local 哨兵，**只在建 vCPU 时碰一次**：所以
-// C++11 thread_local 那个「每次访问插一个 guard」的代价一根线程只付一次，而访问
-// 路径仍然是下面那个裸 __thread 指针，热路径上一个检查都没多。
+// 线程退出时释放 vCPU 和事件引擎；只在首次创建 vCPU 时注册。
 struct vcpu_reaper {
     ~vcpu_reaper() {
         vcpu* const self = current_vcpu;
         if (!self) return;
+        if (!self->parked.empty() || !self->roused.empty() ||
+            io_engine_pending(self->engine) != 0) {
+            std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
+            std::abort();
+        }
         current_vcpu = 0;    // 先摘掉，免得析构过程里又有人 here() 把它救活
 
-        // 没跑完的协程在这儿一并销毁（线程不调 run() 就退出时会有）。它们栈上的局部
-        // 对象不会析构，那是 fiber 的既有语义，见 culib/detail/fiber.h。
-        //
-        // **挂起的不可能有**：挂上去必须先在 run() 里跑过，而 run() 不在还有协程挂着
-        // 时返回。所以线程退出时 parked 一定是空的，这里也就没有「谁来销毁它们」的
-        // 问题——那条不变量同时也是 IOCP 的 OVERLAPPED 不会被提前释放的依据。
+        // 可以销毁尚未执行或仅处于 ready/incoming 的协程；挂起协程不能直接释放。
         reap(self->ready);
         reap(self->incoming);
         reap_detached(*self);
@@ -92,9 +79,7 @@ struct vcpu_reaper {
     }
 };
 
-// 「用到才起」：第一次 spawn 时才建，所以不用协程的程序一分钱不付。
-// 访问路径用裸 __thread 指针而不是 thread_local 对象：后者在 C++11 里要动态
-// 初始化，而那会在每次访问时插一个 guard 检查。
+// 热路径使用 current_vcpu；thread_local 哨兵只在此处首次触发。
 vcpu& here() {
     if (!current_vcpu) {
         current_vcpu = new vcpu();
@@ -104,7 +89,6 @@ vcpu& here() {
         current_vcpu->running = false;
         current_vcpu->scope_depth = 0;
         current_vcpu->detached = 0;
-        // 碰一下哨兵，让它登记「这根线程退出时收掉上面那个 vcpu」。一根线程一次。
         static thread_local vcpu_reaper reaper;
         (void)reaper;
     }
@@ -117,11 +101,7 @@ void die(const char* what) {
     std::abort();
 }
 
-// 把一个挂起的协程标成「被叫醒的」并排进本轮的叫醒队列。
-//
-// settled 那一位是必须的：一个刚因为超时被排回 ready、但还没来得及把自己从等待队列里
-// 摘掉的协程，会被同一轮里的 wake 再排一次，于是同一根协程在 ready 里出现两次、
-// 被 resume 两次。见 src/park.h。
+// settled 阻止超时与通知在同一轮重复入队。
 bool rouse(vcpu& self, park_token& token) {
     if (token.settled) return false;
     token.settled = true;
@@ -130,14 +110,13 @@ bool rouse(vcpu& self, park_token& token) {
     return true;
 }
 
-// 「不用 I/O 的程序不建引擎」：引擎比 vCPU 更懒一层，第一次真要用才建。
-// 建不起来返回 0，由调用方决定怎么降级。
+// 创建失败返回空指针，交由调用方处理。
 io_engine* engine_here(vcpu& self) {
     if (!self.engine) self.engine = io_engine_create();
     return self.engine;
 }
 
-// 没人可跑的时候等什么：**等到最早的时限，或者等一个 I/O 回来，哪个先到算哪个**。
+// 等到最早的时限或 I/O 完成。
 void idle(vcpu& self, bool have_deadline, instant nearest) {
     std::chrono::nanoseconds timeout(-1);   // 负数 = 无限等
     if (have_deadline) {
@@ -148,16 +127,13 @@ void idle(vcpu& self, bool have_deadline, instant nearest) {
     }
 
     if (!self.engine) {
-        // 整个程序没做过 I/O，连引擎都没建过。真睡这根线程。
-        // **这是「不用的功能不产生任何代价」的具体形态**——一个只算东西的 CLI
-        // 不该因为库里有事件引擎就多一个 epoll 句柄和一次 epoll_create。
         if (timeout.count() > 0) std::this_thread::sleep_for(timeout);
         return;
     }
 
     self.completed.clear();
     io_engine_wait(self.engine, timeout, self.completed);
-    // 引擎只把凭据原样交回来，怎么排队是这边的事。
+    // 引擎只返回凭据，入队由调度器处理。
     for (std::size_t i = 0; i < self.completed.size(); ++i) {
         rouse(self, *self.completed[i]);
     }
@@ -399,29 +375,21 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
 
     for (;;) {
         if (target && target->done) break;
-        // 即使系统等待超过 deadline，也先让已经到期的协程获得一轮运行机会。
+        // 已到期的协程仍须获得一轮运行机会。
         const bool time_elapsed = timed && clock_type::now() >= deadline;
-        // 1. 上一轮 spawn 进来的入队
+        // 上一轮 spawn 进来的入队。
         if (!self.incoming.empty()) {
             self.ready.insert(self.ready.end(), self.incoming.begin(), self.incoming.end());
             self.incoming.clear();
         }
 
-        // 2. 本轮被叫醒的入队，**按叫醒次序**。公平性就在这个次序里：notify_all 之后
-        //    谁先被 notify 谁先跑，而那个次序是等待队列（FIFO）定的。
+        // 保持唤醒顺序，供同步原语维持 FIFO。
         for (std::size_t i = 0; i < self.roused.size(); ++i) {
             self.ready.push_back(self.roused[i]->owner);
         }
         self.roused.clear();
 
-        // 3. **一遍扫挂起集**，同时做三件事：把已经交还的摘掉、把到点的收走、
-        //    记下剩下那些里最早的时限（给空闲路径当超时用）。
-        //
-        //    到点的那一批要**按时限排序再入队**，不能按它们在容器里的次序。一轮里只
-        //    到期一个时两者没区别；多个一起到期时按容器次序会误用 spawn 次序。
-        //
-        //    用 stable_sort 而不是 sort：时限相同时按挂起次序醒，那是能预期也能测的
-        //    行为，unstable 排序会让它变成「不保证」。
+        // 摘掉已唤醒项，收集到期项，并找出下一次到期时限。
         bool have_deadline = false;
         instant nearest = instant();
         if (!self.parked.empty()) {
@@ -445,6 +413,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             }
             self.parked.resize(kept);
 
+            // 按时限唤醒；相同时限保留挂起顺序。
             if (expired.size() > 1) {
                 std::stable_sort(expired.begin(), expired.end(), earlier_deadline);
             }
@@ -459,18 +428,13 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         }
         if (self.ready.empty()) {
             if (once || time_elapsed) break;
-            // 没人可跑、没人挂着，才算活干完了。
-            //
-            // 引擎那一问是**第二道锁**：挂起集为空本来就意味着没有未完成的 I/O（每个
-            // 挂上去的操作都对应一根挂着的协程）。留着它是因为它守的是最难查的一类
-            // bug——IOCP 的 OVERLAPPED 随栈帧消失，见 docs/implementation-notes.md。
+            // 完成队列也必须清空，才能安全释放协程栈上的 I/O 请求。
             if (!timed && self.parked.empty() && io_engine_pending(self.engine) == 0) break;
             idle(self, have_deadline, nearest);
             continue;
         }
 
-        // 4. 跑一轮。**整个队列 swap 到局部变量**，这样协程里 spawn / 挂起改动成员
-        //    容器都不会让我们脚下的迭代失效。
+        // 使用局部队列，避免本轮 spawn 修改正在遍历的容器。
         round.clear();
         round.swap(self.ready);
         for (std::size_t i = 0; i < round.size(); ++i) {
