@@ -4,6 +4,7 @@ import os
 import pathlib
 import queue
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -93,6 +94,23 @@ def configure(name, local, remote):
         raise RuntimeError("test route does not use " + name)
 
 
+def wait_capture_ready(process, interface):
+    output = bytearray()
+    ready = ("listening on " + interface).encode()
+    deadline = time.monotonic() + 5
+    while ready not in output:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([process.stderr], [], [], remaining)[0]:
+            raise RuntimeError("tcpdump did not become ready on " + interface +
+                               ": " + output.decode(errors="replace"))
+        chunk = os.read(process.stderr.fileno(), 4096)
+        if not chunk:
+            raise RuntimeError("tcpdump exited before listening on " + interface +
+                               ": " + output.decode(errors="replace"))
+        output.extend(chunk)
+    return output.decode(errors="replace")
+
+
 def check_forward(source, destination, interface):
     capture = subprocess.Popen(
         ["sudo", "-n", "tcpdump", "-n", "-U", "-l", "-i", interface,
@@ -100,7 +118,7 @@ def check_forward(source, destination, interface):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         start_new_session=True)
     try:
-        time.sleep(0.3)
+        startup_output = wait_capture_ready(capture, interface)
         ping = subprocess.run(["ping", "-c", "1", "-W", "1000", destination],
                               text=True, capture_output=True, timeout=5)
         print(ping.stdout, end="", flush=True)
@@ -109,8 +127,8 @@ def check_forward(source, destination, interface):
         except subprocess.TimeoutExpired:
             captured, errors = finish(capture)
         print(captured, end="", flush=True)
-        if errors:
-            print(errors, end="", file=sys.stderr)
+        if startup_output or errors:
+            print(startup_output + errors, end="", file=sys.stderr)
         if capture.returncode != 0 or source + " > " + destination not in captured or \
                 "ICMP echo request" not in captured:
             raise RuntimeError("encrypted packet did not reach " + interface)
