@@ -13,8 +13,13 @@ using wavvix::nullopt;
 using wavvix::optional;
 
 // 可平凡复制的 T 要让 optional 自己也平凡可复制，否则按值返回就不是零开销了。
+#if defined(WAVVIX_TEST_LEGACY_TRIVIAL_STORAGE)
+static_assert(!wavvix_test::is_trivially_copyable<optional<int> >::value,
+              "GCC 4.8 uses the nontrivial optional storage");
+#else
 static_assert(wavvix_test::is_trivially_copyable<optional<int> >::value,
               "optional<int> must stay trivially copyable");
+#endif
 static_assert(!wavvix_test::is_trivially_copyable<optional<std::string> >::value,
               "optional<std::string> cannot be trivially copyable");
 

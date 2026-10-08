@@ -4,7 +4,8 @@
 
 namespace wavvix_test {
 
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
+#if defined(__GLIBCXX__) && defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
+#define WAVVIX_TEST_LEGACY_TRIVIAL_STORAGE 1
 template <typename T>
 struct is_trivially_copyable : std::integral_constant<bool,
     __has_trivial_copy(T) && __has_trivial_assign(T) &&
