@@ -49,7 +49,7 @@ wavvix::result<void> exchange(
         std::memcmp(plain, expected, decoded.value()) != 0)
         return wavvix::make_error(wavvix::error_kind::invalid_argument,
                                   "mesh plaintext mismatch");
-    return wavvix::result<void>();
+    return mesh::probe_peer(connection.value(), socket, seconds(5));
 }
 
 }  // namespace

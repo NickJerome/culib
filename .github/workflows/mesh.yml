@@ -43,6 +43,14 @@ jobs:
       - name: build mesh command
         shell: bash
         run: bash .github/report-failure.sh xmake build -P apps/mesh mesh
+      - name: exercise encrypted peer command
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = Windows ]; then
+            bash .github/report-failure.sh python apps/mesh/tests/peer_probe.py ${{ matrix.mode }}
+          else
+            bash .github/report-failure.sh python3 apps/mesh/tests/peer_probe.py ${{ matrix.mode }}
+          fi
       - name: exercise macOS utun mesh forwarding
         if: matrix.target.plat == 'macosx'
         shell: bash

@@ -31,6 +31,11 @@ wavvix::result<peer_connection> connect_peer(
     const wavvix::net::endpoint& relay,
     std::chrono::nanoseconds timeout);
 
+// Confirm that authenticated data packets can travel in both directions.
+wavvix::result<void> probe_peer(peer_connection& connection,
+                                wavvix::net::udp_socket& socket,
+                                std::chrono::nanoseconds timeout);
+
 // Forward IP packets until the process requests stop or the authenticated path
 // stays silent for too long. The caller can reconnect with a new session.
 wavvix::result<void> run_tunnel(peer_connection& connection,

@@ -194,8 +194,15 @@ int run_peer(const std::vector<std::string>& args, bool tunnel) {
                 std::printf("authenticated UDP path: %s\n",
                             connection.value().peer.to_string().c_str());
                 std::fflush(stdout);
+                if (!tunnel) {
+                    wavvix::result<void> probed = mesh::probe_peer(
+                        connection.value(), socket, seconds(10));
+                    if (probed.is_err()) { print_error(probed.error()); return; }
+                    std::puts("encrypted UDP probe: ok");
+                    succeeded = true;
+                    return;
+                }
                 succeeded = true;
-                if (!tunnel) return;
                 wavvix::result<void> forwarded =
                     mesh::run_tunnel(connection.value(), socket, device);
                 if (forwarded.is_err()) print_error(forwarded.error());

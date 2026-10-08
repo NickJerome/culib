@@ -80,6 +80,86 @@ wavvix::result<peer_connection> connect_peer(
                            std::move(traffic).value());
 }
 
+wavvix::result<void> probe_peer(peer_connection& connection,
+                                wavvix::net::udp_socket& socket,
+                                std::chrono::nanoseconds timeout) {
+    if (timeout <= std::chrono::nanoseconds::zero())
+        return wavvix::make_error(wavvix::error_kind::invalid_argument,
+                                  "mesh probe timeout must be positive");
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + timeout;
+    const std::chrono::milliseconds pulse(200);
+    bool confirmed = false;
+    std::chrono::steady_clock::time_point grace_end;
+    while (true) {
+        const std::chrono::steady_clock::time_point now =
+            std::chrono::steady_clock::now();
+        if (confirmed && now >= grace_end) return wavvix::result<void>();
+        if (!confirmed && now >= deadline)
+            return wavvix::make_error(wavvix::error_kind::timeout,
+                                      "encrypted mesh probe timed out");
+
+        if (!confirmed) {
+            const unsigned char request = 1;
+            unsigned char packet[traffic_packet_overhead + 1] = {};
+            wavvix::result<std::size_t> sealed = connection.traffic.seal(
+                &request, 1, packet, sizeof packet);
+            if (sealed.is_err()) return std::move(sealed).error();
+            wavvix::result<std::size_t> sent = socket.send_to(
+                packet, sealed.value(), connection.peer, pulse);
+            if (sent.is_err()) return std::move(sent).error();
+            if (sent.value() != sealed.value())
+                return wavvix::make_error(wavvix::error_kind::io,
+                                          "short encrypted mesh probe send");
+        }
+
+        const std::chrono::steady_clock::time_point end =
+            confirmed ? grace_end : deadline;
+        const std::chrono::nanoseconds remaining =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                end - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::nanoseconds::zero()) continue;
+        const std::chrono::nanoseconds wait = remaining < pulse ? remaining : pulse;
+        unsigned char packet[128] = {};
+        wavvix::result<wavvix::net::udp_datagram> received =
+            socket.recv_from(packet, sizeof packet, wait);
+        if (received.is_err()) {
+            if (received.error().kind() == wavvix::error_kind::timeout ||
+                received.error().kind() == wavvix::error_kind::out_of_range)
+                continue;
+            return std::move(received).error();
+        }
+        unsigned char plain = 0;
+        wavvix::result<std::size_t> opened = connection.traffic.open(
+            packet, received.value().size, &plain, 1);
+        if (opened.is_err()) {
+            if (opened.error().kind() == wavvix::error_kind::permission_denied ||
+                opened.error().kind() == wavvix::error_kind::invalid_argument ||
+                opened.error().kind() == wavvix::error_kind::out_of_range)
+                continue;
+            return std::move(opened).error();
+        }
+        if (opened.value() != 1) continue;
+        connection.peer = received.value().from;
+        if (plain == 1) {
+            const unsigned char response = 2;
+            unsigned char reply[traffic_packet_overhead + 1] = {};
+            wavvix::result<std::size_t> sealed = connection.traffic.seal(
+                &response, 1, reply, sizeof reply);
+            if (sealed.is_err()) return std::move(sealed).error();
+            wavvix::result<std::size_t> sent = socket.send_to(
+                reply, sealed.value(), connection.peer, pulse);
+            if (sent.is_err()) return std::move(sent).error();
+            if (sent.value() != sealed.value())
+                return wavvix::make_error(wavvix::error_kind::io,
+                                          "short encrypted mesh probe reply");
+        } else if (plain == 2 && !confirmed) {
+            confirmed = true;
+            grace_end = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
+    }
+}
+
 wavvix::result<void> run_tunnel(peer_connection& connection,
                                 wavvix::net::udp_socket& socket,
                                 wavvix::net::virtual_interface& device) {
