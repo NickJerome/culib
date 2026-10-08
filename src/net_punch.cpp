@@ -75,7 +75,7 @@ result<endpoint> udp_punch(udp_socket& socket,
     std::vector<endpoint> probed;
     std::vector<endpoint> confirmed;
 
-    detail::punch_message probe = {};
+    detail::punch_message probe;
     probe.type = detail::punch_probe;
     std::memcpy(probe.session, session.data(), session.size());
     result<void> random = detail::stun_random_bytes(
@@ -119,7 +119,7 @@ result<endpoint> udp_punch(udp_socket& socket,
                 received.error().kind() == error_kind::out_of_range) continue;
             return std::move(received).error();
         }
-        detail::punch_message message = {};
+        detail::punch_message message;
         if (!detail::punch_decode(incoming, received.value().size, message) ||
             std::memcmp(message.session, session.data(), session.size()) != 0) continue;
         const endpoint& source = received.value().from;

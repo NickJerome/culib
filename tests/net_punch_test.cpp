@@ -105,7 +105,7 @@ TEST(net_punch, accepts_confirmed_peer_at_a_changed_mapping) {
         wavvix::result<net::udp_datagram> probe =
             candidate.recv_from(wire, sizeof wire, ms(500));
         if (!EXPECT(probe.is_ok(), ==, true)) return;
-        net::detail::punch_message message = {};
+        net::detail::punch_message message;
         if (!EXPECT(net::detail::punch_decode(wire, probe.value().size, message), ==, true))
             return;
         message.type = net::detail::punch_ack;
@@ -157,7 +157,7 @@ TEST(net_punch, does_not_finish_after_only_one_side_is_confirmed) {
         wavvix::result<net::udp_datagram> received =
             passive.recv_from(wire, sizeof wire, ms(30));
         if (!EXPECT(received.is_ok(), ==, true)) return;
-        net::detail::punch_message message = {};
+        net::detail::punch_message message;
         if (!EXPECT(net::detail::punch_decode(wire, received.value().size, message), ==, true))
             return;
         message.type = net::detail::punch_ack;
