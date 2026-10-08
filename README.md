@@ -223,7 +223,7 @@ int main(int argc, char* argv[]) {             // 整个测试程序只需要一
 - 有符号与无符号整数按数学值比较，`EXPECT(v.size(), ==, 3)` 不会产生警告；两边都是 C 字符串时比较内容。
 - 失败时打印位置、表达式和两边的值，测试继续执行。`EXPECT` 返回 `bool`，需要失败就停时写 `if (!EXPECT(p, !=, nullptr)) { return; }`。
 - 运行参数：`--filter=模式`（如 `defer.*`，`-` 之后的模式表示排除）、`--list`、`--help`。退出码：全部通过为 0，有失败为 1，参数错误或测试重名为 2。
-- 测试函数抛出未捕获的异常时记为失败，并继续运行后面的测试。
+- 启用异常时，测试函数抛出未捕获的异常会记为失败，并继续运行后面的测试。
 - 汇总头文件 `culib.h` 不包含测试框架，需要单独包含 `<culib/test.h>`。
 
 在自己的 xmake 工程里加一个测试程序：
@@ -310,7 +310,7 @@ wavvix::result<config> load(const std::string& path) {
 
 ## 对使用方的保证
 
-- **不抛异常、不依赖 RTTI**：公共头文件里没有 `throw`、`try`、`dynamic_cast`、`typeid`，可以用在 `-fno-exceptions` / `-fno-rtti` 的工程里。
+- **不抛异常、不依赖 RTTI**：公共头文件里没有 `throw`、`try`、`dynamic_cast`、`typeid`，可以用在 `-fno-exceptions` / `-fno-rtti` 的工程里。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 会在这两个选项下构建库和示例，并运行测试。
 - **无启动开销**：`main` 之前不执行任何代码，没有需要动态初始化的全局对象。唯一的例外是测试程序里 `TEST` 的自动注册，正式程序不受影响。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **字符串一律 UTF-8**：包括文件路径；Windows 下由库内部转成 UTF-16 调用 `W` 系列 API。

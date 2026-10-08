@@ -184,7 +184,7 @@
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
-| 关异常 / RTTI 可用 | 人工（`-fno-exceptions -fno-rtti` 跑测试） | 人工，无自动检查 |
+| 关异常 / RTTI 可用 | `.github/workflows/build.yml` 的 `no-exceptions-rtti` job | [Linux GCC/Clang release CI](https://github.com/NickJerome/culib/actions/runs/37845192319)：库、测试和全部示例均在 `-fno-exceptions -fno-rtti` 下构建，测试通过 |
 | Windows 代码能编译并通过测试 | 本机交叉编译 + wine，见下 | MinGW-w64 x86_64 和 i686。**不覆盖 MSVC**（头文件和警告集都不同），那一侧只有 CI |
 | macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
 
@@ -288,6 +288,6 @@ g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc \
 - **示例要在三个平台上编过，所以别为了印一个数字去碰平台专有的 libc。** 基准测试的参照物天然是平台专有的（libc 的做法），所以**基准测试不属于 `examples/`**，属于设计文档的「实现验证」节。
 - 在 Windows 上会被编译的文件里用标准 C 之前，先确认两件事：它存在（`_r` 后缀的那些多半不存在），以及它不在 MSVC 的弃用名单里（`printf` / `fprintf` / `fflush` / `snprintf` 不在）。culib 自己的接口能干的事就用自己的。
 
-「性能主张有依据」和「关异常 / RTTI 可用」是剩下的两处缺口：有约定、有人工流程、没有自动机制。前者大概也只能人工（汇编对比要人读）；后者容易自动化，加一格 `-fno-exceptions -fno-rtti` 的编译即可。
+「性能主张有依据」仍由人工检查设计文档里的测量和汇编对比；关闭异常 / RTTI 的验证已加入上面的 CI 门禁。
 
 **C4819 这一条 CI 抓不到真正的现场**：GitHub 的 windows runner 代码页是 UTF-8（65001），正是不会报 C4819 的那种。所以 `headers` job 拦的是「BOM 在不在」这个代理指标，而不是「MSVC 会不会报警」。真实验证要一台中文代码页的 Windows，目前没有。
