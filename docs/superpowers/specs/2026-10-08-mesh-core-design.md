@@ -1,7 +1,7 @@
 # 第四程：精简 mesh 核心
 
 - 日期：2026-10-08
-- 状态：开发路线初稿；前三程已落地，第四程尚未实现。
+- 状态：第 2 项 STUN Binding 地址发现已通过 [12 格 CI](https://github.com/NickJerome/culib/actions/runs/37773133078)，包括 IPv4/IPv6 本地假服务器、无应答超时、来源校验和畸形报文解析；虚拟网卡、打洞及节点协议仍待完成。
 - 前置：[路线图](2026-10-03-roadmap.md)、[网络接口](2026-10-08-net-design.md)、[调度器](2026-10-04-scheduler-design.md)。
 
 ## 目标与边界
