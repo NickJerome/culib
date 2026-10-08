@@ -116,7 +116,7 @@ result<tcp_listener> tcp_listener::listen(const endpoint& local, int backlog) {
     if (::bind(socket, reinterpret_cast<const sockaddr*>(&address), length) < 0)
         return detail::tcp_error("bind", errno);
     if (::listen(socket, backlog) < 0) return detail::tcp_error("listen", errno);
-    return listener;
+    return result<tcp_listener>(std::move(listener));
 }
 
 result<endpoint> tcp_listener::local_endpoint() const {
@@ -153,7 +153,7 @@ result<tcp_stream> tcp_listener::accept(std::chrono::nanoseconds timeout) {
     if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(stream.native_)))
         return make_error(error_kind::io, "cannot adopt accepted TCP stream");
     stream.adopted_ = true;
-    return stream;
+    return result<tcp_stream>(std::move(stream));
 }
 
 result<tcp_stream> tcp_stream::connect(const endpoint& peer,
@@ -174,7 +174,7 @@ result<tcp_stream> tcp_stream::connect(const endpoint& peer,
     request.address_length = static_cast<int>(length);
     wavvix::detail::scheduler_io(request, timeout);
     if (request.transferred < 0) return detail::tcp_error("connect", request.failure);
-    return stream;
+    return result<tcp_stream>(std::move(stream));
 }
 
 }  // namespace net
