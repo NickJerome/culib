@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -148,6 +149,21 @@ TEST(scheduler, main_thread_sleep_drives_initialized_vcpu) {
     worker.join();
     wavvix::coroutine::shutdown();
     EXPECT(scheduled(), ==, 0u);
+}
+
+TEST(scheduler, main_thread_sleep_runs_tasks_due_before_overshoot) {
+    wavvix::coroutine::init();
+    int ran = 0;
+    wavvix::coroutine worker([&] {
+        sleep_for(ms(1));
+        ++ran;
+    });
+    wavvix::coroutine blocker([] { std::this_thread::sleep_for(ms(20)); });
+    sleep_for(ms(5));
+    EXPECT(ran, ==, 1);
+    worker.join();
+    blocker.join();
+    wavvix::coroutine::shutdown();
 }
 
 TEST(scheduler, main_thread_yield_runs_another_coroutine) {

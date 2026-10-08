@@ -399,7 +399,8 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
 
     for (;;) {
         if (target && target->done) break;
-        if (timed && clock_type::now() >= deadline) break;
+        // 即使系统等待超过 deadline，也先让已经到期的协程获得一轮运行机会。
+        const bool time_elapsed = timed && clock_type::now() >= deadline;
         // 1. 上一轮 spawn 进来的入队
         if (!self.incoming.empty()) {
             self.ready.insert(self.ready.end(), self.incoming.begin(), self.incoming.end());
@@ -460,7 +461,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             have_deadline = true;
         }
         if (self.ready.empty()) {
-            if (once) break;
+            if (once || time_elapsed) break;
             // 没人可跑、没人挂着，才算活干完了。
             //
             // 引擎那一问是**第二道锁**：挂起集为空本来就意味着没有未完成的 I/O（每个
@@ -491,7 +492,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
                 self.ready.push_back(body);        // 让出了，下一轮继续
             }
         }
-        if (once) break;
+        if (once || time_elapsed) break;
     }
 
     self.current = 0;
