@@ -72,7 +72,9 @@ jobs:
         target:
           - { name: linux-gcc, os: ubuntu-latest, toolchain: gcc }
           - { name: linux-clang, os: ubuntu-latest, toolchain: clang }
+          - { name: linux-gcc-arm64, os: ubuntu-24.04-arm, toolchain: gcc }
           - { name: macos-clang, os: macos-latest, toolchain: clang }
+          - { name: macos-clang-x86_64, os: macos-15-intel, toolchain: clang }
           - { name: windows-msvc, os: windows-latest, toolchain: msvc }
           - { name: windows-msvc-x86, os: windows-latest, toolchain: msvc, arch_arg: '-a x86' }
 
