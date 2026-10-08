@@ -290,13 +290,23 @@ result<void> copy_file(string_view from, string_view to, overwrite mode) {
     const c_path native_from(from);
     const c_path native_to(to);
     if (!native_from.valid() || !native_to.valid()) return invalid_path();
-    if (mode == overwrite::no && exists(to)) {
-        return make_error(error_kind::already_exists, to.to_string() + " 已存在");
-    }
     std::FILE* source = std::fopen(native_from.get(), "rb");
     if (!source) return from_errno("打开", from, errno);
 
-    std::FILE* target = std::fopen(native_to.get(), "wb");
+    std::FILE* target = 0;
+    if (mode == overwrite::yes) {
+        target = std::fopen(native_to.get(), "wb");
+    } else {
+        const int fd = ::open(native_to.get(), O_WRONLY | O_CREAT | O_EXCL, 0666);
+        if (fd >= 0) {
+            target = ::fdopen(fd, "wb");
+            if (!target) {
+                const int code = errno;
+                ::close(fd);
+                errno = code;
+            }
+        }
+    }
     if (!target) {
         const int code = errno;
         std::fclose(source);

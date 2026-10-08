@@ -419,6 +419,22 @@ TEST(fs, handles_extended_length_windows_paths) {
 #endif
 
 #ifndef _WIN32
+TEST(fs, copy_without_overwrite_rejects_a_dangling_symlink) {
+    const scratch area("copy_symlink");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string source = area.at("source.txt");
+    const std::string link = area.at("link.txt");
+    const std::string target = area.at("missing.txt");
+    if (!EXPECT(fs::write_file(source, "payload").is_ok(), ==, true)) return;
+    if (!EXPECT(::symlink("missing.txt", link.c_str()), ==, 0)) return;
+
+    const result<void> copied = fs::copy_file(source, link);
+    if (EXPECT(copied.is_err(), ==, true))
+        EXPECT(copied.error().kind(), ==, error_kind::already_exists);
+    EXPECT(fs::exists(target), ==, false);
+    EXPECT(fs::read_file(source).value_or(""), ==, "payload");
+}
+
 TEST(fs, recursive_remove_does_not_follow_a_directory_symlink) {
     const scratch area("symlink_remove");
     if (!EXPECT(area.ok(), ==, true)) return;
