@@ -379,7 +379,7 @@ std::string usage() {
         const entry& which = self.entries[i];
         std::string head = "  ";
         for (std::size_t j = 0; j < which.aliases.size(); ++j) {
-            head += "-";
+            head += which.aliases[j][1] == '\0' ? "-" : "--";
             head += which.aliases[j];
             head += ", ";
         }

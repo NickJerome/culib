@@ -12,7 +12,7 @@ using wavvix::string_view;
 
 // 测试用的选项。全局对象在 main 之前登记，这是这个模块的用法前提。
 flag::int64 port(8080, "监听端口", {"port", "p"});
-flag::string host("0.0.0.0", "监听地址", {"host"});
+flag::string host("0.0.0.0", "监听地址", {"host", "addr"});
 flag::boolean verbose(false, "打印详细日志", {"verbose", "v"});
 flag::number timeout(2.5, "超时秒数", {"timeout", "t"});
 flag::uint64 retries(3, "重试次数", {"retries"});
@@ -60,6 +60,9 @@ TEST(flag, accepts_the_documented_spellings) {
     EXPECT(timeout.value(), ==, 0.5);
     EXPECT(retries.value(), ==, 7u);
     EXPECT(verbose.value(), ==, true);
+
+    EXPECT(run({"app", "--addr=localhost"}).is_ok(), ==, true);
+    EXPECT(host.value(), ==, "localhost");
 }
 
 TEST(flag, keeps_parsing_options_after_positional_arguments) {
@@ -215,6 +218,7 @@ TEST(flag, generates_usage_text) {
 
     EXPECT(text.find("--port") != std::string::npos, ==, true);
     EXPECT(text.find("-p,") != std::string::npos, ==, true);          // 别名也列出来
+    EXPECT(text.find("--addr, --host") != std::string::npos, ==, true);
     EXPECT(text.find("监听端口") != std::string::npos, ==, true);     // 帮助文字
     EXPECT(text.find("默认 8080") != std::string::npos, ==, true);    // 默认值
     EXPECT(text.find("--help") != std::string::npos, ==, true);

@@ -196,7 +196,9 @@ defer：在当前作用域结束时执行一段代码，类似 Go 的 defer。
 
 ### 接受的写法
 
-  --port=8080   --port 8080   -p 8080   --verbose   --verbose=true   --   -
+  --port=8080   --port 8080   -p 8080   --addr=localhost   --verbose   --verbose=true   --   -
+
+帮助文本把单字符别名显示为 `-p`，多字符别名显示为 `--addr`。
 
 不支持粘连短选项 -p8080（和 -p -8080 容易混），也不支持合并 -abc。
 

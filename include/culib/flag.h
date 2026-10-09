@@ -49,6 +49,7 @@ public:
                   "flag::option supports only bool, int64, uint64, double and string");
 
     // names 至少有一个；第一个是主名字，其余是别名，都不带前导 '-'。
+    // 单字符别名显示为 -p，多字符别名显示为 --addr。
     // 名字和 help 须比选项对象活得久；对象销毁时自动注销。
     option(T default_value, const char* help, std::initializer_list<const char*> names)
         : stored_(std::move(default_value)) {
