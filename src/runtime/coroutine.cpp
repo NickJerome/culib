@@ -132,10 +132,9 @@ struct pooled_stack {
 
 struct runtime_thread_state {
     runtime_thread_state() noexcept
-        : buckets(), bytes(0), storage(), exit_owner(0), exit_cleanup(0) {}
+        : buckets(), bytes(0), exit_owner(0), exit_cleanup(0) {}
     pooled_stack* buckets[pool_bucket_count];
     std::size_t bytes;
-    stack_memory storage;
     void* exit_owner;
     void (*exit_cleanup)(void*);
 };
@@ -144,12 +143,12 @@ runtime_thread_state* current_pool() noexcept {
     void* const value = runtime_thread_state_current();
     if (value == &runtime_thread_exit_marker) return 0;
     if (value) return static_cast<runtime_thread_state*>(value);
-    const stack_memory storage = allocate_stack(sizeof(runtime_thread_state));
-    if (!storage.base) return 0;
-    runtime_thread_state* const state = new (storage.base + storage.guard) runtime_thread_state();
-    state->storage = storage;
+    void* const storage = std::malloc(sizeof(runtime_thread_state));
+    if (!storage) return 0;
+    runtime_thread_state* const state = new (storage) runtime_thread_state();
     if (!runtime_thread_state_set(state)) {
-        release_stack(storage);
+        state->~runtime_thread_state();
+        std::free(storage);
         return 0;
     }
     return state;
@@ -261,9 +260,8 @@ void runtime_thread_exit(void* value) noexcept {
     if (!state) return;
     if (state->exit_cleanup) state->exit_cleanup(state->exit_owner);
     drain_stack_pool(*state);
-    const stack_memory storage = state->storage;
     state->~runtime_thread_state();
-    release_stack(storage);
+    std::free(state);
 }
 
 void release_thread_stack_pool() noexcept {
