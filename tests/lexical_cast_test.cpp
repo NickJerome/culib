@@ -319,6 +319,17 @@ TEST(lexical_cast, writes_into_a_caller_buffer) {
     EXPECT(to_chars((std::numeric_limits<long long>::min)(), buffer, sizeof buffer), ==, 20u);
 }
 
+TEST(lexical_cast, floating_to_chars_keeps_a_too_small_buffer_untouched) {
+    char short_buffer[2] = {'#', '#'};
+    EXPECT(to_chars(1.5, short_buffer, sizeof short_buffer), ==, 0u);
+    EXPECT(short_buffer[0], ==, '#');
+    EXPECT(short_buffer[1], ==, '#');
+
+    char exact_buffer[3];
+    EXPECT(to_chars(1.5f, exact_buffer, sizeof exact_buffer), ==, 3u);
+    EXPECT(std::string(exact_buffer, sizeof exact_buffer), ==, "1.5");
+}
+
 TEST(lexical_cast, feeds_its_own_output_back_in) {
     // 两个方向必须对得上，否则配置文件写出去再读回来就变了
     const long long integers[] = {0, 1, -1, 42, -42, 9223372036854775807ll,

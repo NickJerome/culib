@@ -312,19 +312,10 @@ std::size_t normalize_decimal_point(char* buffer, std::size_t length) {
     return length;
 }
 
-bool parses_as(float value, string_view text) {
-    const result<float> again = detail::parse_float(text);
-    return again.is_ok() && again.value() == value;
-}
-
-bool parses_as(double value, string_view text) {
-    const result<double> again = detail::parse_double(text);
-    return again.is_ok() && again.value() == value;
-}
-
 // 从目标类型的十进制精度开始试，取第一个能按同一类型原样读回的表示。
 template <typename T>
-std::size_t format_floating(T value, char* buffer, std::size_t capacity) {
+std::size_t format_floating(T value, char* buffer, std::size_t capacity,
+                            T (*parse)(const char*, char**)) {
     if (value != value) {
         if (capacity < 3) return 0;
         std::memcpy(buffer, "nan", 3);
@@ -346,17 +337,18 @@ std::size_t format_floating(T value, char* buffer, std::size_t capacity) {
         const int written = std::snprintf(scratch, sizeof scratch, "%.*g", precision,
                                           static_cast<double>(value));
         if (written <= 0 || static_cast<std::size_t>(written) >= sizeof scratch) continue;
+        if (precision != std::numeric_limits<T>::max_digits10) {
+            // snprintf 和 strtof/strtod 使用同一 locale；只对选中的结果规范化小数点。
+            char* end = scratch;
+            const int saved_errno = errno;
+            const T parsed = parse(scratch, &end);
+            errno = saved_errno;
+            if (end != scratch + written || parsed != value) continue;
+        }
         const std::size_t length = normalize_decimal_point(scratch, static_cast<std::size_t>(written));
-        if (precision == std::numeric_limits<T>::max_digits10) {
-            if (length > capacity) return 0;
-            std::memcpy(buffer, scratch, length);
-            return length;
-        }
-        if (parses_as(value, string_view(scratch, length))) {
-            if (length > capacity) return 0;
-            std::memcpy(buffer, scratch, length);
-            return length;
-        }
+        if (length > capacity) return 0;
+        std::memcpy(buffer, scratch, length);
+        return length;
     }
     return 0;
 }
@@ -407,11 +399,11 @@ std::size_t to_chars(unsigned long long value, char* buffer, std::size_t capacit
 }
 
 std::size_t to_chars(float value, char* buffer, std::size_t capacity) noexcept {
-    return format_floating(value, buffer, capacity);
+    return format_floating(value, buffer, capacity, &std::strtof);
 }
 
 std::size_t to_chars(double value, char* buffer, std::size_t capacity) noexcept {
-    return format_floating(value, buffer, capacity);
+    return format_floating(value, buffer, capacity, &std::strtod);
 }
 
 }  // namespace wavvix

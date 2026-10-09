@@ -168,7 +168,7 @@ std::string to_string(T value) {
 
 `to_string(double)` 依次试 15 / 16 / 17 位有效数字，取第一个能被自己解析回来的，所以 `0.1` 输出 `"0.1"` 而不是 `"0.10000000000000001"`。测试里钉住了 10 个值的往返，包括手算版本曾经错掉的那两个：
 
-`float` 也必须按自己的精度格式化：直接提升到 `double` 会把 `to_string(0.1f)` 写成 `"0.10000000149011612"`。`to_string(float)` 和 `to_chars(float)` 复用同一格式化流程，但尝试 6 至 9 位并用 `strtof` 校验往返；现在该值输出 `"0.1"`。
+`float` 也必须按自己的精度格式化：直接提升到 `double` 会把 `to_string(0.1f)` 写成 `"0.10000000149011612"`。`to_string(float)` 和 `to_chars(float)` 复用同一格式化流程，但尝试 6 至 9 位并用 `strtof` 校验往返；现在该值输出 `"0.1"`。格式化器产生的候选值直接用当前 locale 的 `strtof` / `strtod` 校验，只对选中的表示把小数点规范化为 `.`；候选值不再反复进入面向外部输入的严格解析流程。
 
 ```
 0.1  1/3  π  1e-300  1e300  123456789.123456789  2.2250738585072014e-308  DBL_MAX  1e22  1e23
@@ -204,4 +204,4 @@ std::string to_string(T value) {
 
 - 2026-10-09 补测：Linux GCC 和 Windows MSVC 的常规测试通过。本机 Linux 生成 `ps_AF.UTF-8` locale（小数点为多字节的 `٫`），显式 `setlocale(LC_NUMERIC, "ps_AF.UTF-8")` 后，`float` / `double` 解析 `"1.5"` 与 `to_string(1.5)` 均通过。`float` 的最大值往返、溢出、特殊值与下溢已纳入单元测试。
 - `long double` 没有对应的解析和格式化实现，现会给出编译期错误，不再悄悄经 `double` 损失精度。
-- `to_chars(double)` 的容量不足分支只测了整数那一侧。
+- `to_chars(double)` 容量不足时不写入，以及 `to_chars(float)` 刚好放得下的边界，已加入单元测试。
