@@ -315,7 +315,7 @@ wavvix::result<config> load(const std::string& path) {
 ## 对使用方的保证
 
 - **不抛异常、不依赖 RTTI**：公共头文件里没有 `throw`、`try`、`dynamic_cast`、`typeid`，可以用在 `-fno-exceptions` / `-fno-rtti` 的工程里。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 会在这两个选项下构建库和示例，并运行测试。
-- **无启动开销**：`main` 之前不执行任何代码，没有需要动态初始化的全局对象。唯一的例外是测试程序里 `TEST` 的自动注册，正式程序不受影响。
+- **全局登记成本可见**：定义全局 `flag` 选项或使用 `TEST` 会在 `main` 前登记；不使用这两个功能时不会产生这两笔登记成本。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **字符串一律 UTF-8**：包括文件路径；Windows 下由库内部转成 UTF-16 调用 `W` 系列 API。
 - **不污染你的构建**：公共头文件不包含 `<windows.h>`、`<unistd.h>`、`<iostream>`；被 `includes` 引入时不会把 `-Werror` 强加给你。

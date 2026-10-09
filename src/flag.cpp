@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wavvix {
@@ -199,9 +200,9 @@ void register_flag(kind which, void* storage, const char* name, const char* help
     added.help = help;
     added.aliases.assign(aliases.begin(), aliases.end());
     added.is_required = is_required;
-    added.default_text = default_text;
+    added.default_text = std::move(default_text);
     added.on_command_line = false;
-    self.entries.push_back(added);
+    self.entries.push_back(std::move(added));
 }
 
 void read_before_parse(const char* name) noexcept {

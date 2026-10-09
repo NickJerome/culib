@@ -8,6 +8,7 @@
 
 #include <initializer_list>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wavvix {
@@ -43,9 +44,9 @@ public:
     // name 不带前导 '-'；aliases 是短名字或别名，也不带 '-'。
     value(const char* name, T default_value, const char* help,
           std::initializer_list<const char*> aliases = std::initializer_list<const char*>())
-        : stored_(default_value), name_(name) {
+        : stored_(std::move(default_value)), name_(name) {
         detail::register_flag(tag(), &stored_, name, help, aliases, false,
-                              default_text(default_value));
+                              default_text(stored_));
     }
 
     value(const char* name, required_t, const char* help,
