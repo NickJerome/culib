@@ -131,9 +131,6 @@ struct vcpu {
     ready_queue ready;
     ready_queue round;
     std::vector<park_token*> timers;
-    park_token* roused_head;
-    park_token* roused_tail;
-    std::size_t roused_count;
     std::vector<park_token*> completed;
     std::size_t parked_count;
     std::uint64_t timer_order;
@@ -174,7 +171,7 @@ void reap_vcpu(void* owner) noexcept {
         std::fputs("wavvix::scheduler: 工作 vCPU 仍在运行；请先关闭作用域\n", stderr);
         std::abort();
     }
-    if (self->parked_count != 0 || !self->timers.empty() || self->roused_head ||
+    if (self->parked_count != 0 || !self->timers.empty() ||
         io_engine_pending(self->engine) != 0) {
         std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
         std::abort();
@@ -213,9 +210,6 @@ vcpu* try_here() noexcept {
         self->pool = 0;
         self->worker_stop = 0;
         self->parked_count = 0;
-        self->roused_head = 0;
-        self->roused_tail = 0;
-        self->roused_count = 0;
         self->timer_order = 0;
         if (!register_runtime_thread_exit(self, &reap_vcpu)) {
             delete self;
@@ -308,11 +302,7 @@ bool rouse(vcpu& self, park_token& token) {
     token.settled = true;
     token.roused = true;
     unpark(self, token);
-    token.next_roused = 0;
-    if (self.roused_tail) self.roused_tail->next_roused = &token;
-    else self.roused_head = &token;
-    self.roused_tail = &token;
-    ++self.roused_count;
+    self.ready.push(token.owner);
     return true;
 }
 
@@ -683,7 +673,6 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
     token.roused = false;
     token.settled = false;
     token.parked = false;
-    token.next_roused = 0;
     token.timed = timeout.count() >= 0;
     if (token.timed) token.deadline = clock_type::now() + timeout;
     // **不动 token.next**：那是把它串进等待队列的那一方的字段，而那一方是先串好
@@ -797,7 +786,7 @@ std::size_t scheduled() noexcept {
     detail::vcpu* const current_vcpu = detail::active_vcpu();
     if (!current_vcpu) return 0;
     return current_vcpu->ready.size() + current_vcpu->round.size() +
-           current_vcpu->parked_count + current_vcpu->roused_count;
+           current_vcpu->parked_count;
 }
 
 std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
@@ -817,16 +806,6 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         accept_remote(self);
         // 已到期的协程仍须获得一轮运行机会。
         const bool time_elapsed = timed && clock_type::now() >= deadline;
-        // 保持唤醒顺序，供同步原语维持 FIFO。
-        while (self.roused_head) {
-            park_token* const token = self.roused_head;
-            self.roused_head = token->next_roused;
-            if (!self.roused_head) self.roused_tail = 0;
-            token->next_roused = 0;
-            --self.roused_count;
-            self.ready.push(token->owner);
-        }
-
         // 只有带时限的凭据进入堆；普通让出无需扫描所有挂起协程。
         bool have_deadline = false;
         instant nearest = instant();
