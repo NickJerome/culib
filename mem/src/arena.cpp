@@ -238,26 +238,33 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
  * 成功返回 arena 内 slice 下标并设置 *out_arena / *out_zeroed；失败 (size_t)-1。 */
 size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
                                  mem_arena_t** out_arena, bool* out_zeroed) {
-  int count = mem_arena_count();
-  int start = t->arena_idx;
-  if (start < 0 || start >= count) start = 0;
-  for (int k = 0; k < count; k++) {
-    int idx = (start + k) % count;
-    mem_arena_t* a = g_arenas[idx];
-    size_t s = mem_arena_alloc_slices(a, n, align_slices, out_zeroed);
-    if (s != (size_t)-1) {
-      const size_t end = a->first_slice + s + n;
-      if (end > mem_desc_constructed_slices.load(std::memory_order_acquire)) {
-        std::lock_guard<std::mutex> lock(g_subproc_lock);
-        mem_desc_construct_upto(end, a->first_slice + a->slice_count);
+  std::unique_lock<std::mutex> growth_lock(g_subproc_lock, std::defer_lock);
+  for (int pass = 0; pass < 2; ++pass) {
+    if (pass != 0) growth_lock.lock();
+    int count = mem_arena_count();
+    int start = t->arena_idx;
+    if (start < 0 || start >= count) start = 0;
+    for (int k = 0; k < count; k++) {
+      int idx = (start + k) % count;
+      mem_arena_t* a = g_arenas[idx];
+      size_t s = mem_arena_alloc_slices(a, n, align_slices, out_zeroed);
+      if (s != (size_t)-1) {
+        const size_t end = a->first_slice + s + n;
+        if (end > mem_desc_constructed_slices.load(std::memory_order_acquire)) {
+          if (growth_lock.owns_lock()) {
+            mem_desc_construct_upto(end, a->first_slice + a->slice_count);
+          } else {
+            std::lock_guard<std::mutex> lock(g_subproc_lock);
+            mem_desc_construct_upto(end, a->first_slice + a->slice_count);
+          }
+        }
+        t->arena_idx = idx;
+        *out_arena = a;
+        return s;
       }
-      t->arena_idx = idx;
-      *out_arena = a;
-      return s;
     }
   }
-  /* 全部满了：开新 arena（×4 增长，≤1GiB；需求更大时按需求走） */
-  std::lock_guard<std::mutex> lock(g_subproc_lock);
+  /* 持锁重查后仍无空位，才开新 arena。 */
   size_t need_slices = n + (align_slices > 1 ? align_slices : 0);
   size_t need = mem_round_up(need_slices << WAVVIX_MEM_SLICE_SHIFT, WAVVIX_MEM_ARENA_MIN);
   size_t size = g_arena_next_size * 4;

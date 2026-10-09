@@ -8,6 +8,8 @@
 
 构造水位线以 release store 发布；查页时的 acquire load 保证看到已构造的原子字段。新 slice 从 arena 位图取出后、页初始化前，分配路径先把水位线推进到覆盖该 slice。批量构造只发生在这个慢路径，已覆盖的 slice 不再取全局锁。
 
+分配路径先无锁扫描现有 arena；全部满了才获取全局锁，并在锁内重新扫描。多个线程可能同时看到旧 arena 已满，若排队拿锁后直接创建，每个线程都会多建一个 arena。锁内重查让后来的线程使用先前线程建好的 arena；全局锁到 arena 锁的顺序也与 fork 准备阶段一致。
+
 跳回首页前先检查 `cont_first < idx`，避免损坏的下标越界读。跳转后必须同时确认首页的 `magic` 仍有效、`kind` 不是 `CONT`、原 slice 落在首页的 `slice_count` 范围内。单凭 `magic` 和范围不够：旧首页被重新用作另一页的 `CONT` 时，它的旧 `slice_count` 仍可能留下，使悬垂指针被误认为活页。
 
 发布顺序与查找相配：`mem_page_init` 清 `magic` 并填好字段，大页先登记全部 `CONT`，最后由 `mem_page_publish` 以 release store 点亮首页。任何在发布后才写的字段都可能被并发查找看到半成品。
