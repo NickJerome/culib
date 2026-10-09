@@ -14,14 +14,14 @@ while IFS= read -r source; do
         *_win.cpp|*_macos.cpp) continue ;;
     esac
     g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
-        -Iinclude -Isrc -c "$source" \
+        -Iinclude -Isrc -Isrc/testing -Isrc/cli -c "$source" \
         -o "$build_dir/${source//\//_}.o"
 done < <(find src mem/src -type f -name '*.cpp' | sort)
 g++ -c src/runtime/asm/context_x86_64_sysv.S -o "$build_dir/context.o"
 ar rcs "$build_dir/libculib.a" "$build_dir"/*.o
 
 g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
-    -Iinclude -Isrc tests/*.cpp "$build_dir/libculib.a" \
+    -Iinclude -Isrc -Isrc/testing -Isrc/cli tests/*.cpp "$build_dir/libculib.a" \
     -ldl -lrt -o "$build_dir/culib_test"
 "$build_dir/culib_test"
 

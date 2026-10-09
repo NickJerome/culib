@@ -22,7 +22,7 @@ output="build/mingw-$arch-standalone"
 mkdir -p "$output"
 
 flags=(-std=c++11 -Wall -Wextra -Wpedantic -Werror
-       -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -Iinclude -Isrc)
+       -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -Iinclude -Isrc -Isrc/testing -Isrc/cli)
 
 library_objects=()
 while IFS= read -r source; do
