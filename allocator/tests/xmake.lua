@@ -1,0 +1,25 @@
+if is_plat("linux", "windows") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
+    for _, file in ipairs(os.files(path.join(os.scriptdir(), "*.cpp"))) do
+        local name = path.basename(file)
+        if name ~= "test_malloc_override" or is_plat("linux") then
+            target("allocator_" .. name)
+                set_kind("binary")
+                set_default(false)
+                if not is_plat("windows") then set_languages("c++11") end
+                set_warnings("all", "extra")
+                set_encodings("utf-8")
+                add_files(file)
+                if name == "test_malloc_override" then
+                    add_deps("culib_malloc_override")
+                else
+                    add_deps("culib_allocator")
+                end
+                if name == "test_new_override" then
+                    add_deps("culib_new_override")
+                end
+                if is_plat("windows") then add_defines("_CRT_SECURE_NO_WARNINGS") end
+                add_tests("default")
+            target_end()
+        end
+    end
+end
