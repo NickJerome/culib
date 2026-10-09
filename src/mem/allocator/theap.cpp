@@ -10,7 +10,7 @@ static void mem_tcache_flush_all(mem_theap_t* t);
 namespace {
 
 /* OS 回调直接传入 theap；MinGW 的 TLS 对象析构阶段不能安全读取 TLS。
- * 历史问题与实测记录见 mem/docs/decisions.md。 */
+ * 历史问题与实测记录见 docs/archive/edumalloc/docs/decisions.md。 */
 static void mem_thread_exit_cb(void* value) {
   mem_theap_t* t = (mem_theap_t*)value;
   if (t == NULL) return;
@@ -86,7 +86,7 @@ void mem_theap_page_to_full(mem_theap_t* t, mem_page_t* page) {
   if (bin < WAVVIX_MEM_DIRECT_MAX && t->pages_free_direct[bin] == page)
     t->pages_free_direct[bin] = NULL;
   /* 满页留在本地；腾出空间后由 unfull 回流，空页由 retire 回收。
-   * abandon/reclaim 风暴的实测见 mem/docs/design.md §5.2.2。 */
+   * abandon/reclaim 风暴的实测见 docs/archive/edumalloc/docs/design.md §5.2.2。 */
   page->flags |= WAVVIX_MEM_PAGE_FLAG_IN_FULL;
   t->full_count[bin]++;
   mem_page_queue_push(&t->pages[WAVVIX_MEM_BIN_FULL], page);

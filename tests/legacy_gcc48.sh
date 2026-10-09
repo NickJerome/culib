@@ -11,12 +11,12 @@ trap 'rm -rf -- "$build_dir"' EXIT
 
 while IFS= read -r source; do
     case "$source" in
-        *_win.cpp|*_macos.cpp) continue ;;
+        *_win.cpp|*_macos.cpp|src/mem/override/*) continue ;;
     esac
     g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
         -Iinclude -Isrc -Isrc/testing -Isrc/cli -c "$source" \
         -o "$build_dir/${source//\//_}.o"
-done < <(find src mem/src -type f -name '*.cpp' | sort)
+done < <(find src -type f -name '*.cpp' | sort)
 g++ -c src/runtime/asm/context_x86_64_sysv.S -o "$build_dir/context.o"
 ar rcs "$build_dir/libculib.a" "$build_dir"/*.o
 

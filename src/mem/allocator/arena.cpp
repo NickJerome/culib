@@ -419,7 +419,7 @@ void mem_desc_mark_cont(size_t first_idx, size_t n) {
 }
 
 /* 只清首项；续页项可陈旧，mem_ptr_page 的三条复核必须保留。
- * 不变式见 internal.h，逐项清零的成本见 mem/docs/decisions.md D3。 */
+ * 不变式见 internal.h，逐项清零的成本见 docs/archive/edumalloc/docs/decisions.md D3。 */
 void mem_desc_clear(size_t first_idx) {
   mem_desc_at(first_idx)->magic.store(0, std::memory_order_release);
 }

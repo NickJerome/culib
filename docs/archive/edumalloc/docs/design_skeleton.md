@@ -1,6 +1,6 @@
 # EduMalloc 设计骨架（公理、架构选择与概念索引）
 
-> **历史存档**：本文的命名和数字只适用于导入 culib 前的 EduMalloc。当前公共接口见 [culib 分配器文档](../../docs/mem.md)。
+> **历史存档**：本文的命名和数字只适用于导入 culib 前的 EduMalloc。当前公共接口见 [culib 分配器文档](../../../mem.md)。
 
 > **定位：命名 SSOT。数字见 `SPEC.md`。**
 >

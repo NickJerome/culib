@@ -27,20 +27,13 @@ flags=(-std=c++11 -Wall -Wextra -Wpedantic -Werror
 library_objects=()
 while IFS= read -r source; do
     case "$source" in
-        *_posix.cpp|*_linux.cpp|*_macos.cpp) continue ;;
+        *_posix.cpp|*_linux.cpp|*_macos.cpp|src/mem/override/*) continue ;;
+        src/mem/allocator/*) [[ "$arch" == x86_64 ]] || continue ;;
     esac
     object="$output/${source//\//_}.o"
     "$compiler" "${flags[@]}" -c "$source" -o "$object"
     library_objects+=("$object")
 done < <(find src -type f -name '*.cpp' | sort)
-
-if [[ "$arch" == x86_64 ]]; then
-    while IFS= read -r source; do
-        object="$output/${source//\//_}.o"
-        "$compiler" "${flags[@]}" -c "$source" -o "$object"
-        library_objects+=("$object")
-    done < <(find mem/src -type f -name '*.cpp' | sort)
-fi
 
 context_object="$output/context.S.o"
 "$compiler" -c "$context" -o "$context_object"

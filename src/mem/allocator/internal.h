@@ -262,7 +262,7 @@ static inline void mem_secure_check_free(const mem_page_t* page, const void* p) 
 
 /* ============================ tcache 快路径 ============================ */
 /* 按字节预算限制每个 bin 的滞留量，再夹到最小/最大条数。
- * 容量与占用数据见 mem/docs/decisions.md D1。 */
+ * 容量与占用数据见 docs/archive/edumalloc/docs/decisions.md D1。 */
 #define WAVVIX_MEM_TCACHE_BIN_BUDGET ((size_t)16 * 1024)
 #define WAVVIX_MEM_TCACHE_MIN 4
 #define WAVVIX_MEM_TCACHE_MAX 64

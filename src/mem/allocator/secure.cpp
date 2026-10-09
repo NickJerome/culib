@@ -69,7 +69,7 @@ void* mem_l2_unwrap(void* user) {
     mem_fatal_ptr("head canary corrupted (underflow / double free / wild free)",
                  user);
   /* 先校验只依赖用户指针的头 canary，再找块首；否则内部指针可能被
-   * mem_user_block_start 归整为合法块首。消融验证见 mem/docs/decisions.md 教训 B。 */
+   * mem_user_block_start 归整为合法块首。消融验证见 docs/archive/edumalloc/docs/decisions.md 教训 B。 */
   uint8_t* b = mem_user_block_start(page, u);
   uint8_t* tail = b + mem_page_usable_size(page) - WAVVIX_MEM_L2_TAIL;
   if (*(uint64_t*)tail != mem_canary(WAVVIX_MEM_CANARY_TAIL, tail))

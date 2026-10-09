@@ -25,10 +25,12 @@ target("culib")
     add_includedirs("src")
     add_headerfiles("include/(culib/**.h)")
     add_files("src/**.cpp")
+    remove_files("src/mem/override/*.cpp")
     if is_plat("linux", "macosx", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
-        add_files("mem/src/*.cpp")
         if is_plat("windows") then add_defines("_CRT_SECURE_NO_WARNINGS") end
         if is_plat("linux") then add_syslinks("pthread", {public = true}) end
+    else
+        remove_files("src/mem/allocator/*.cpp")
     end
     -- 平台相关实现按文件名后缀区分：Windows / MinGW 用 *_win.cpp，其他平台用 *_posix.cpp
     if is_plat("windows", "mingw") then
@@ -68,9 +70,9 @@ target("culib")
         end
     elseif is_arch("arm64", "arm64-v8a") then
         add_files("src/runtime/asm/context_arm64_aapcs.S")
-    elseif is_arch("x86", "i386") and is_plat("windows") then
+    elseif is_arch("x86", "i386", "i686") and is_plat("windows") then
         add_files("src/runtime/asm/context_i386_pe.asm")
-    elseif is_arch("x86", "i386") and is_plat("mingw") then
+    elseif is_arch("x86", "i386", "i686") and is_plat("mingw") then
         add_files("src/runtime/asm/context_i386_pe.S")
     end
     -- 没匹配上的组合（32 位非 Windows）这里什么都不加，由
@@ -89,11 +91,11 @@ target_end()
 
 -- 全局符号覆盖由独立目标显式启用；普通 culib 已包含分配器实现。
 -- 分配器只在 64 位目标编译；Windows x86 照常构建 culib。
-includes("mem")
+includes("src/mem")
 
 -- 测试和示例只在 culib 作为主工程时构建；被其他工程 includes 时跳过
 if is_main_project then
     includes("tests")
     includes("examples")
-    includes("mem/tests")
+    includes("tests/mem")
 end

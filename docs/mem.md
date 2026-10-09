@@ -1,6 +1,6 @@
 # mem：通用分配器
 
-`wavvix::mem` 是 culib 自带的通用分配器，源码位于 `mem/`，随 `culib` 静态库一起编译，不依赖外部 EduMalloc 库。实现基于本地 EduMalloc v2；[原规格](../mem/SPEC.md)、[设计](../mem/docs/design.md)、[决策记录](../mem/docs/decisions.md)和[基准记录](../mem/docs/benchmark_results_2026-09-17.md)是导入时的历史记录，提到的守护页抽样已从当前实现移除。
+`wavvix::mem` 是 culib 自带的通用分配器，源码位于 `src/mem/allocator/`，随 `culib` 静态库一起编译，不依赖外部 EduMalloc 库。实现基于本地 EduMalloc v2；[原规格](archive/edumalloc/SPEC.md)、[设计](archive/edumalloc/docs/design.md)、[决策记录](archive/edumalloc/docs/decisions.md)和[基准记录](archive/edumalloc/docs/benchmark_results_2026-09-17.md)是导入时的历史记录，提到的守护页抽样已从当前实现移除。
 
 协程栈也由 `wavvix::mem` 内部管理：`src/mem/stack_pool.*` 缓存每线程的栈，`stack_posix.cpp` / `stack_win.cpp` 向系统申请虚拟内存，并把最低一页设为不可访问。普通 `mem::alloc()` 不提供保护页；直接拿堆块当栈还会让协程首次使用时初始化整个通用分配器。因此栈池是 `mem` 内部的专用分配路径，不是公开的第二套分配器 API。最外层调度器作用域关闭或线程退出时清空缓存。
 
@@ -20,7 +20,7 @@ void example() {
 }
 ```
 
-还提供 `calloc`、`realloc`、`aligned_alloc`、`usable_size` 和 `collect`。分配与释放必须使用同一家族；系统 `malloc` 得到的指针不能交给 `mem::free`。分配器实现与内部测试共用的声明位于 `mem/src/mem_core.h`，不作为公共头文件安装。
+还提供 `calloc`、`realloc`、`aligned_alloc`、`usable_size` 和 `collect`。分配与释放必须使用同一家族；系统 `malloc` 得到的指针不能交给 `mem::free`。分配器实现与内部测试共用的声明位于 `src/mem/allocator/mem_core.h`，不作为公共头文件安装。
 
 ## 替换 `malloc/new`
 
