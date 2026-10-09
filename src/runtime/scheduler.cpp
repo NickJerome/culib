@@ -807,6 +807,9 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
                 !self.worker_stop->load(std::memory_order_acquire);
             if (!timed && self.parked_count == 0 && io_engine_pending(self.engine) == 0 &&
                 !remote_tasks && !worker_alive) break;
+            // 没有引擎、定时器和就绪任务时，同一 vCPU 上已没有代码能发出唤醒。
+            if (!self.engine && !have_deadline && self.parked_count != 0)
+                die("wavvix::scheduler: 无时限等待的协程已无唤醒来源");
             idle(self, have_deadline, nearest);
             continue;
         }
