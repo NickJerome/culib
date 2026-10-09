@@ -36,6 +36,15 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout);
 // 这次交棒没成、要换下一个。
 bool scheduler_wake(park_token& token);
 
+struct remote_waker;
+
+// 在所属 vCPU 上启用跨线程唤醒；失败返回空指针。返回值活到 vCPU 关闭。
+remote_waker* scheduler_remote_prepare();
+
+// 从工作线程交还一个无超时的挂起凭据。调用方须保证凭据活到协程被唤醒。
+// 返回 false 表示内核通知失败；此时不能让等待协程继续无限挂起。
+bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept;
+
 // 提交一次 I/O 并挂起当前协程，**返回时结果已经在 request 里**（transferred 和
 // failure）。这就是「完成形状」在调用点上的样子：没有「等可读」那一步。
 //

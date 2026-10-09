@@ -7,11 +7,13 @@
 #include "scheduler_detail.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -19,6 +21,16 @@ namespace wavvix {
 namespace detail {
 
 struct task_state;
+
+struct remote_waker {
+    explicit remote_waker(io_engine* target) noexcept
+        : engine(target), head(0), tail(0), has_pending(false) {}
+    io_engine* engine;
+    std::mutex mutex;
+    park_token* head;
+    park_token* tail;
+    std::atomic<bool> has_pending;
+};
 
 namespace {
 
@@ -38,6 +50,7 @@ struct vcpu {
     bool running;                       // run() 是否正在这根线程上跑
     std::size_t scope_depth;            // 显式 RAII 作用域的嵌套层数
     task_state* detached;               // 放弃句柄但还没结束的任务
+    remote_waker* remote;                // 用到跨线程任务时才创建
 };
 
 #if defined(_MSC_VER)
@@ -74,6 +87,8 @@ struct vcpu_reaper {
         reap(self->incoming);
         reap_detached(*self);
 
+        delete self->remote;
+
         if (self->engine) io_engine_destroy(self->engine);
         delete self;
     }
@@ -89,6 +104,7 @@ vcpu& here() {
         current_vcpu->running = false;
         current_vcpu->scope_depth = 0;
         current_vcpu->detached = 0;
+        current_vcpu->remote = 0;
         static thread_local vcpu_reaper reaper;
         (void)reaper;
     }
@@ -114,6 +130,25 @@ bool rouse(vcpu& self, park_token& token) {
 io_engine* engine_here(vcpu& self) {
     if (!self.engine) self.engine = io_engine_create();
     return self.engine;
+}
+
+void accept_remote(vcpu& self) {
+    remote_waker* const remote = self.remote;
+    if (!remote || !remote->has_pending.load(std::memory_order_acquire)) return;
+    park_token* pending = 0;
+    {
+        std::lock_guard<std::mutex> lock(remote->mutex);
+        pending = remote->head;
+        remote->head = 0;
+        remote->tail = 0;
+        remote->has_pending.store(false, std::memory_order_release);
+    }
+    while (pending) {
+        park_token* const next = pending->next;
+        pending->next = 0;
+        rouse(self, *pending);
+        pending = next;
+    }
 }
 
 // 等到最早的时限或 I/O 完成。
@@ -209,6 +244,7 @@ void scheduler_scope_leave(void* owner) noexcept {
     if (--self->scope_depth != 0) return;
     wavvix::run();
     current_vcpu = 0;
+    delete self->remote;
     if (self->engine) io_engine_destroy(self->engine);
     delete self;
 }
@@ -285,6 +321,28 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
 
 bool scheduler_wake(park_token& token) {
     return rouse(here(), token);
+}
+
+remote_waker* scheduler_remote_prepare() {
+    vcpu& self = here();
+    if (self.remote) return self.remote;
+    io_engine* const engine = engine_here(self);
+    if (!engine || !io_engine_enable_notify(engine)) return 0;
+    self.remote = new remote_waker(engine);
+    return self.remote;
+}
+
+bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept {
+    if (!waker) return false;
+    {
+        std::lock_guard<std::mutex> lock(waker->mutex);
+        token.next = 0;
+        if (waker->tail) waker->tail->next = &token;
+        else waker->head = &token;
+        waker->tail = &token;
+        waker->has_pending.store(true, std::memory_order_release);
+    }
+    return io_engine_notify(waker->engine);
 }
 
 void scheduler_sleep_for(std::chrono::nanoseconds duration) {
@@ -378,6 +436,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
 
     for (;;) {
         if (target && target->done) break;
+        accept_remote(self);
         // 已到期的协程仍须获得一轮运行机会。
         const bool time_elapsed = timed && clock_type::now() >= deadline;
         // 上一轮 spawn 进来的入队。

@@ -36,7 +36,7 @@ io_engine_linux.cpp 选择 io_uring 或 epoll，具体环在独立实现文件�
 
 给后续的多 vCPU 任务提交和阻塞任务池，事件引擎现在有内部的 `io_engine_enable_notify()` / `io_engine_notify()`。启用只在需要跨线程提交任务的 vCPU 上发生；普通 I/O 引擎不创建唤醒源。通知只打断 `io_engine_wait()`，不增加 I/O 完成数，也不进入协程的 `park_token` 队列。
 
-Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径验证；macOS 交给 CI。任务队列与生命周期管理仍需在调度器层实现。
+Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径验证；macOS 交给 CI。调度器现在能接收工作线程完成通知；多 vCPU 任务队列与工作线程生命周期管理仍需实现。
 
 ## [`io_engine_posix.h`](../src/io_engine_posix.h)
 
@@ -177,6 +177,10 @@ API），见 superpowers/specs/2026-10-05-event-engine-design.md 第 2 节。
 这带来一条跨文件的不变量：**run() 在还有协程挂着时不返回**，而 IOCP 后端的
 OVERLAPPED 生命周期正是靠这条兜住的（它住在挂起协程的栈上，必须活到完成包取回来
 为止）。改结束条件前先看本页 `io_engine_win.cpp` 一节和事件引擎设计。
+
+### 从其他系统线程唤醒协程
+
+同一 vCPU 内的 `scheduler_wake()` 可以直接修改运行队列，工作线程则不能碰这些线程独占的状态。第一次需要跨线程完成通知时，调度器给该 vCPU 的事件引擎启用唤醒源，并创建 `remote_waker`。工作线程把仍活在挂起协程栈上的 `park_token` 串入受锁保护的队列，再通知事件引擎；vCPU 从 `io_engine_wait()` 返回后摘出队列，按原有 `rouse()` 路径调度协程。队列使用凭据自身的 `next` 指针，没有逐次分配；只有启用过的 vCPU 才检查这条队列。锁同时保证工作线程写出的任务结果在协程恢复后可见。跨线程凭据只允许无超时等待，避免超时先释放栈上凭据、工作线程随后写入的悬空指针问题。
 
 ## [`sync.cpp`](../src/sync.cpp)
 

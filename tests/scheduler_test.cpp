@@ -3,6 +3,8 @@
 #include <culib/stopwatch.h>
 #include <culib/test.h>
 
+#include "scheduler_detail.h"
+
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -64,6 +66,28 @@ TEST(scheduler, nested_scopes_finish_at_the_outer_boundary) {
     }
     EXPECT(finished, ==, 1);
     EXPECT(scheduled(), ==, 0u);
+}
+
+TEST(scheduler, wakes_a_parked_coroutine_from_another_thread) {
+    bool resumed = false;
+    bool notified = false;
+    spawn([&] {
+        wavvix::detail::remote_waker* const waker =
+            wavvix::detail::scheduler_remote_prepare();
+        EXPECT(waker != 0, ==, true);
+        if (!waker) return;
+        wavvix::detail::park_token token;
+        std::thread worker([&] {
+            std::this_thread::sleep_for(ms(20));
+            notified = wavvix::detail::scheduler_remote_wake(waker, token);
+        });
+        resumed = wavvix::detail::scheduler_park(
+            token, std::chrono::nanoseconds(-1));
+        worker.join();
+    });
+    EXPECT(run(), ==, 1u);
+    EXPECT(notified, ==, true);
+    EXPECT(resumed, ==, true);
 }
 
 TEST(scheduler, spawn_moves_arguments_and_accepts_explicit_references) {
