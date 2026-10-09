@@ -126,6 +126,8 @@ wavvix::flag: 在 init() / parse() 之前读取了 --port；选项的值要等�
 
 `version` 为空时不提供 `--version`，那时 `--version` 是未知选项（测试里钉住了）。
 
+内置的 `--help`、`-h` 和 `--version` 都不接收值；带 `=值` 是参数错误，不能静默忽略该值。
+
 ## 5. 实现验证
 
 环境 Linux / GCC 14.2，`-Wall -Wextra -Wpedantic -Werror`，全程零警告。

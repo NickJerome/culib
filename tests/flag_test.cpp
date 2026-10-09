@@ -194,6 +194,12 @@ TEST(flag, handles_help_and_version_without_exiting_in_parse) {
     EXPECT(flag::version_requested(), ==, true);
     EXPECT(flag::help_requested(), ==, false);
 
+    EXPECT(run({"app", "--help=ignored"}).is_err(), ==, true);
+    EXPECT(flag::help_requested(), ==, false);
+    EXPECT(run({"app", "-h=ignored"}).is_err(), ==, true);
+    EXPECT(run({"app", "--version=ignored"}).is_err(), ==, true);
+    EXPECT(flag::version_requested(), ==, false);
+
     // version 为空时不提供 --version，所以它是未知选项
     EXPECT(run({"app", "--version"}, string_view()).is_err(), ==, true);
 

@@ -282,12 +282,13 @@ result<void> parse(int argc, char* argv[], string_view version) {
             has_inline = true;
         }
 
-        if (body == "help" || body == "h") {
-            self.help_requested = true;
-            continue;
-        }
-        if (body == "version" && !self.version.empty()) {
-            self.version_requested = true;
+        if (body == "help" || body == "h" ||
+            (body == "version" && !self.version.empty())) {
+            if (has_inline)
+                return make_error(error_kind::invalid_argument,
+                                  token.to_string() + " 不接受值");
+            if (body == "version") self.version_requested = true;
+            else self.help_requested = true;
             continue;
         }
 
