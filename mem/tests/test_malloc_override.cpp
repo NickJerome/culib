@@ -3,6 +3,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
+#include <cstdint>
+#include <cstring>
+#include <unistd.h>
+
+extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept;
+extern "C" void* memalign(std::size_t alignment, std::size_t size) noexcept;
+extern "C" void* valloc(std::size_t size) noexcept;
 
 namespace {
 struct early_allocation {
@@ -57,5 +64,37 @@ int main() {
         std::fprintf(stderr, "malloc failure did not set ENOMEM\n");
         return 1;
     }
+
+    errno = 0;
+    rejected = ::aligned_alloc(64, 100);
+    if (rejected || errno != EINVAL) {
+        std::fprintf(stderr, "C11 aligned_alloc accepted a non-multiple size\n");
+        return 1;
+    }
+    void* aligned = ::aligned_alloc(64, 128);
+    if (!aligned || (reinterpret_cast<std::uintptr_t>(aligned) & 63) != 0) {
+        std::fprintf(stderr, "C11 aligned_alloc rejected a valid request\n");
+        return 1;
+    }
+    std::memset(aligned, 0x31, 128);
+    std::free(aligned);
+
+    aligned = ::memalign(64, 100);
+    if (!aligned || (reinterpret_cast<std::uintptr_t>(aligned) & 63) != 0) {
+        std::fprintf(stderr, "memalign rejected an arbitrary size\n");
+        return 1;
+    }
+    std::memset(aligned, 0x32, 100);
+    std::free(aligned);
+
+    aligned = ::valloc(100);
+    const long page = ::sysconf(_SC_PAGESIZE);
+    if (!aligned || page <= 0 ||
+        reinterpret_cast<std::uintptr_t>(aligned) % static_cast<std::size_t>(page) != 0) {
+        std::fprintf(stderr, "valloc rejected an arbitrary size\n");
+        return 1;
+    }
+    std::memset(aligned, 0x33, 100);
+    std::free(aligned);
     return 0;
 }

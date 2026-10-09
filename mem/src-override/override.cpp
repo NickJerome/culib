@@ -16,6 +16,10 @@ void* result_or_enomem(void* p) {
   if (!p) errno = ENOMEM;
   return p;
 }
+
+bool valid_alignment(size_t alignment) {
+  return alignment != 0 && (alignment & (alignment - 1)) == 0;
+}
 }
 
 extern "C" {
@@ -30,7 +34,7 @@ void* realloc(void* p, size_t size) {
 }
 
 void* aligned_alloc(size_t alignment, size_t size) {
-  if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+  if (!valid_alignment(alignment) || size % alignment != 0) {
     errno = EINVAL;
     return NULL;
   }
@@ -40,9 +44,13 @@ int posix_memalign(void** memptr, size_t alignment, size_t size) {
   return mem_posix_memalign(memptr, alignment, size);
 }
 void* memalign(size_t alignment, size_t size) {
-  return aligned_alloc(alignment, size);
+  if (!valid_alignment(alignment)) {
+    errno = EINVAL;
+    return NULL;
+  }
+  return result_or_enomem(wavvix::mem::aligned_alloc(alignment, size));
 }
-void* valloc(size_t size) { return aligned_alloc(page_size(), size); }
+void* valloc(size_t size) { return memalign(page_size(), size); }
 void* pvalloc(size_t size) {
   const size_t page = page_size();
   if (size > (size_t)-1 - (page - 1)) {

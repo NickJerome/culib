@@ -29,6 +29,8 @@ void example() {
 
 普通 `culib` 依赖会提供分配器 API，但不会悄悄覆盖进程全局符号，也不会在默认构建中编译两个覆盖目标。全局替换由上述目标显式启用，避免与其他库的分配/释放族混用。
 
+`wavvix::mem::aligned_alloc(alignment, size)` 接受任意大小。Linux 符号覆盖中的 C11 `aligned_alloc` 则要求 `size` 是 `alignment` 的整数倍；`memalign` 和 `valloc` 仍接受任意大小。
+
 覆盖后的 `new` / `new[]` 遵循 `std::new_handler`：分配失败时先调用已安装的处理器；没有处理器时抛出 `std::bad_alloc`（关闭异常的构建会终止）。`std::nothrow` 形式同样调用处理器，最终失败时返回空指针；处理器抛出的异常不会越过 `noexcept` 入口。
 
 ## 平台与验证
