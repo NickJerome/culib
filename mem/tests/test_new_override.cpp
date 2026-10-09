@@ -1,10 +1,10 @@
-#include <culib/detail/allocator_c.h>
+#include <mem_core.h>
 
 #include <cstdio>
 
 int main() {
-    ed_stats_t before = {};
-    ed_stats_get(&before);
+    mem_stats_t before = {};
+    mem_stats_get(&before);
 
     unsigned char* p = new unsigned char[37];
     p[0] = 0x31;
@@ -13,8 +13,8 @@ int main() {
                 static_cast<unsigned>(p[0]), static_cast<unsigned>(p[36]));
     delete[] p;
 
-    ed_stats_t after = {};
-    ed_stats_get(&after);
+    mem_stats_t after = {};
+    mem_stats_get(&after);
     if (after.thread_alloc_count <= before.thread_alloc_count ||
         after.thread_free_count <= before.thread_free_count) {
         std::fprintf(stderr, "global new/delete did not use culib allocator\n");

@@ -3,22 +3,22 @@
  *
  * 主用例：读进程常驻集基线
  *   → 以 64 KiB 粒度分配并逐页 touch 共 256 MiB（记录峰值）
- *   → 全部 free → ed_collect() → sleep 1200ms（> 默认 purge 延迟 1000ms）
+ *   → 全部 free → wavvix::mem::collect() → sleep 1200ms（> 默认 purge 延迟 1000ms）
  *   → 再读常驻集，断言终值 < 峰值的 55%
- * 子用例（!ED_DEBUG）：ed_calloc(1, 64 MiB) 前后常驻集增量 < 8 MiB——
+ * 子用例（!WAVVIX_MEM_DEBUG）：wavvix::mem::calloc(1, 64 MiB) 前后常驻集增量 < 8 MiB——
  *   大块 calloc 不得为了"清零"把整块拖进常驻集。
  *
  * 常驻集口径：Linux 读 /proc/self/status 的 VmRSS，Windows 取
  * PROCESS_MEMORY_COUNTERS::WorkingSetSize；两者都是"当前实际占用的物理页"，
  * 判定逻辑两平台共用。
  *
- * 这里有意不调用 os 层的 ed_os_process_rss()：本测试要判定的正是"分配器有没有
+ * 这里有意不调用 os 层的 mem_os_process_rss()：本测试要判定的正是"分配器有没有
  * 把内存还给操作系统"，度量值必须来自被测库之外，否则 os.cpp 的一次回归就能
  * 悄悄改掉这个测试的含义。代价是两平台各 ~10 行。
  * ------------------------------------------------------------------------- */
 #include "test_util.h"
 
-#include <culib/detail/allocator_c.h>
+#include <mem_core.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -62,7 +62,7 @@ long read_rss_kb() {
 #endif
 }
 
-#if !defined(ED_DEBUG)
+#if !defined(WAVVIX_MEM_DEBUG)
 /* 大块 calloc 不得触碰内存：从 arena 新切出的 slice 内容已由内核/OS 保证全零，
  * 再 memset 一遍就是凭空多出 64 MiB 常驻集。
  *
@@ -70,8 +70,8 @@ long read_rss_kb() {
  * 是一条在缺陷代码上也会绿的假测试。这里读都不读那块内存（只抽查首尾两字节，
  * 两页的代价远在阈值之下），不触碰就是本用例的全部内容。
  *
- * ED_DEBUG 下不跑：L2 层按设计会给块包 canary 并把用户区填 0xD0，"已经是零"
- * 这个前提不成立，api.cpp 的 ed_calloc 快路径也正是用 !ED_DEBUG 圈起来的。 */
+ * WAVVIX_MEM_DEBUG 下不跑：L2 层按设计会给块包 canary 并把用户区填 0xD0，"已经是零"
+ * 这个前提不成立，api.cpp 的 wavvix::mem::calloc 快路径也正是用 !WAVVIX_MEM_DEBUG 圈起来的。 */
 void test_calloc_large_untouched() {
     const size_t BIG = 64u << 20;            /* 64 MiB */
     const long   LIMIT_KB = 8L << 10;        /* 允许 8 MiB 增量（实测 Windows
@@ -80,8 +80,8 @@ void test_calloc_large_untouched() {
     long before = read_rss_kb();
     CHECK_MSG(before >= 0, "cannot read RSS (calloc sub-case, before)");
 
-    void* p = ed_calloc(1, BIG);
-    CHECK_MSG(p != NULL, "ed_calloc(1, 64 MiB) failed");
+    void* p = wavvix::mem::calloc(1, BIG);
+    CHECK_MSG(p != NULL, "wavvix::mem::calloc(1, 64 MiB) failed");
 
     long after = read_rss_kb();
     CHECK_MSG(after >= 0, "cannot read RSS (calloc sub-case, after)");
@@ -90,33 +90,33 @@ void test_calloc_large_untouched() {
     std::printf("  calloc(1, 64 MiB): RSS %ld -> %ld kB  (delta %+ld kB, limit %ld kB)\n",
                 before, after, delta, LIMIT_KB);
     CHECK_MSG(delta < LIMIT_KB,
-              "ed_calloc of a large block touched the whole range (RSS jumped)");
+              "wavvix::mem::calloc of a large block touched the whole range (RSS jumped)");
 
     /* 抽查首尾各一字节确认确实是零。这不是主判定，只是防止"没触碰"是因为
      * 分配器压根没给出可用内存。 */
     CHECK(((unsigned char*)p)[0] == 0);
     CHECK(((unsigned char*)p)[BIG - 1] == 0);
 
-    ed_free(p);
-    ed_collect();
+    wavvix::mem::free(p);
+    wavvix::mem::collect();
 }
-#endif /* !ED_DEBUG */
+#endif /* !WAVVIX_MEM_DEBUG */
 
 } /* namespace */
 
 int main() {
     std::printf("== test_rss ==\n");
 
-    /* 预热：让 ed_init_once / 首个 arena 的保留与提交发生在任何基线读数之前，
+    /* 预热：让 mem_init_once / 首个 arena 的保留与提交发生在任何基线读数之前，
      * 否则初始化开销会被算进子用例的增量里。 */
-    void* warm = ed_malloc(64);
+    void* warm = wavvix::mem::alloc(64);
     CHECK_MSG(warm != NULL, "warmup malloc failed");
-    ed_free(warm);
+    wavvix::mem::free(warm);
 
-#if !defined(ED_DEBUG)
+#if !defined(WAVVIX_MEM_DEBUG)
     test_calloc_large_untouched();
 #else
-    std::printf("  [SKIP] calloc(1, 64 MiB) untouched: ED_DEBUG fills the user area "
+    std::printf("  [SKIP] calloc(1, 64 MiB) untouched: WAVVIX_MEM_DEBUG fills the user area "
                 "with 0xD0 by design\n");
 #endif
 
@@ -131,7 +131,7 @@ int main() {
     std::vector<uint8_t*> blocks;
     blocks.reserve(NBLOCKS);
     for (size_t i = 0; i < NBLOCKS; ++i) {
-        uint8_t* p = (uint8_t*)ed_malloc(BLOCK);
+        uint8_t* p = (uint8_t*)wavvix::mem::alloc(BLOCK);
         CHECK_MSG(p != NULL, "rss-test malloc failed");
         for (size_t off = 0; off < BLOCK; off += 4096) p[off] = (uint8_t)i;
         p[BLOCK - 1] = (uint8_t)i;
@@ -145,11 +145,11 @@ int main() {
               "peak RSS did not grow as expected; test invalid");
 
     /* 全部释放 → 强制收集 → 等待超过 purge 延迟 */
-    for (size_t i = 0; i < blocks.size(); ++i) ed_free(blocks[i]);
+    for (size_t i = 0; i < blocks.size(); ++i) wavvix::mem::free(blocks[i]);
     blocks.clear();
-    ed_collect();
+    wavvix::mem::collect();
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-    ed_collect(); /* 再收一次，覆盖"到期 purge 摊销在下一次操作"的实现 */
+    wavvix::mem::collect(); /* 再收一次，覆盖"到期 purge 摊销在下一次操作"的实现 */
 
     long final_kb = read_rss_kb();
     CHECK_MSG(final_kb >= 0, "cannot read process RSS (final)");

@@ -1,4 +1,4 @@
-#include <culib/detail/allocator_c.h>
+#include <culib/mem.h>
 
 #include <cstdlib>
 #include <new>
@@ -6,7 +6,7 @@
 namespace {
 void* allocate_or_fail(std::size_t size) {
     for (;;) {
-        void* p = ed_malloc(size);
+        void* p = wavvix::mem::alloc(size);
         if (p) return p;
         std::new_handler handler = std::get_new_handler();
         if (handler) {
@@ -24,11 +24,11 @@ void* allocate_or_fail(std::size_t size) {
 
 void* operator new(std::size_t size) { return allocate_or_fail(size); }
 void* operator new[](std::size_t size) { return allocate_or_fail(size); }
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept { return ed_malloc(size); }
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept { return ed_malloc(size); }
-void operator delete(void* p) noexcept { ed_free(p); }
-void operator delete[](void* p) noexcept { ed_free(p); }
-void operator delete(void* p, std::size_t) noexcept { ed_free(p); }
-void operator delete[](void* p, std::size_t) noexcept { ed_free(p); }
-void operator delete(void* p, const std::nothrow_t&) noexcept { ed_free(p); }
-void operator delete[](void* p, const std::nothrow_t&) noexcept { ed_free(p); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept { return wavvix::mem::alloc(size); }
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept { return wavvix::mem::alloc(size); }
+void operator delete(void* p) noexcept { wavvix::mem::free(p); }
+void operator delete[](void* p) noexcept { wavvix::mem::free(p); }
+void operator delete(void* p, std::size_t) noexcept { wavvix::mem::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { wavvix::mem::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { wavvix::mem::free(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { wavvix::mem::free(p); }

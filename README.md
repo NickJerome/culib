@@ -4,7 +4,7 @@
 
 culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程，以及命令行、文件、日志和网络等常用开发工具，统一封装平台差异。
 
-> **状态**：早期开发阶段。CLI 常用模块已可用；服务器基础设施仍在建设，API 尚未稳定。
+> **状态**：早期开发阶段，目前没有下游消费者。CLI 常用模块已可用；服务器基础设施仍在建设，API 会直接调整。
 
 ## 设计目标
 
@@ -34,7 +34,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 
 | 模块 | 内容 | 状态 |
 | --- | --- | --- |
-| base | `defer`（作用域结束时执行，类似 Go）、版本信息、`result` 错误处理、平台 / 编译器检测宏；C++14/17 常用设施的 C++11 实现（`string_view`、`optional`、`make_unique` 等） | 进行中：`defer`、版本信息、`result`、`string_view`、`optional` 已完成；`make_unique` 按需再加 |
+| base | `defer`、版本信息、`result` 错误处理、`string_view` 和 `optional` | **已完成** |
 | test | 单元测试框架：`TEST` / `EXPECT`、按组运行、耗时、过滤和彩色报告 | **可用**；持续在三平台 CI 运行 |
 | lexical_cast | 字符串 ⇄ 数值 / 布尔。`lexical_cast<T>` 严格解析（整个输入必须被消费）、`to_string` / `to_chars` 反向 | **已完成** |
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version`；位置参数、GNU 风格重排、`set()` 和按名字问的 `was_given()` 给配置文件用 | **已完成**（`was_given(string_view)` 是 `config` 逼出来的） |

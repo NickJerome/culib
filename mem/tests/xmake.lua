@@ -8,6 +8,7 @@ if is_plat("linux", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "a
                 if not is_plat("windows") then set_languages("c++11") end
                 set_warnings("all", "extra")
                 set_encodings("utf-8")
+                add_includedirs("../src")
                 add_files(file)
                 if name == "test_malloc_override" then
                     add_deps("culib_malloc_override")

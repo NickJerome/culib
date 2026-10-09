@@ -130,7 +130,9 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: bash .github/report-failure.sh xmake test -v
+        # ASan 自己接管 malloc/new；全局覆盖计数测试在此配置下无法观察 culib 的入口。
+        # 该覆盖测试仍在普通 Linux debug/release 作业中执行。
+        run: bash .github/report-failure.sh xmake test -v culib_test/default mem_test_guarded/default mem_test_new_override/default mem_test_rss/default mem_test_security/default mem_test_stress/default mem_test_unit/default
 
   build:
     name: ${{ matrix.target.name }} / ${{ matrix.mode }}

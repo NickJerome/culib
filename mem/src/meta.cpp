@@ -13,35 +13,35 @@
 
 namespace {
 
-struct ed_meta_chunk_t {
-  ed_meta_chunk_t* next;
+struct mem_meta_chunk_t {
+  mem_meta_chunk_t* next;
   size_t           size;      /* 本 chunk 总字节数 */
   size_t           used;      /* 已 bump 字节数 */
 };
 
 std::mutex        g_meta_lock;
-ed_meta_chunk_t*  g_meta_head = NULL;   /* 元数据 chunk 链（最新在前） */
+mem_meta_chunk_t*  g_meta_head = NULL;   /* 元数据 chunk 链（最新在前） */
 
 } /* anonymous namespace */
 
-void* ed_meta_alloc(size_t size) {
+void* mem_meta_alloc(size_t size) {
   size = (size + 15) & ~(size_t)15;
   std::lock_guard<std::mutex> lock(g_meta_lock);
-  ed_meta_chunk_t* c = g_meta_head;
+  mem_meta_chunk_t* c = g_meta_head;
   if (c == NULL || c->used + size > c->size) {
-    size_t cap = ED_META_CHUNK;
-    if (size + sizeof(ed_meta_chunk_t) > cap) cap = size + sizeof(ed_meta_chunk_t);
+    size_t cap = WAVVIX_MEM_META_CHUNK;
+    if (size + sizeof(mem_meta_chunk_t) > cap) cap = size + sizeof(mem_meta_chunk_t);
     void* mem = NULL;
-    if (!ed_os_reserve(cap, &mem)) mem = NULL;
+    if (!mem_os_reserve(cap, &mem)) mem = NULL;
     if (mem == NULL) return NULL;
-    if (!ed_os_commit(mem, cap)) {
-      ed_os_release(mem, cap);
+    if (!mem_os_commit(mem, cap)) {
+      mem_os_release(mem, cap);
       return NULL;
     }
-    c = (ed_meta_chunk_t*)mem;
+    c = (mem_meta_chunk_t*)mem;
     c->next = g_meta_head;
     c->size = cap;
-    c->used = (sizeof(ed_meta_chunk_t) + 15) & ~(size_t)15;
+    c->used = (sizeof(mem_meta_chunk_t) + 15) & ~(size_t)15;
     g_meta_head = c;
   }
   void* p = (uint8_t*)c + c->used;
@@ -51,9 +51,9 @@ void* ed_meta_alloc(size_t size) {
 }
 
 /* fork 钩子：prepare 时按固定顺序上锁，child 里重建（持锁线程已不存在） */
-void ed_meta_lock(void)   { g_meta_lock.lock(); }
-void ed_meta_unlock(void) { g_meta_lock.unlock(); }
+void mem_meta_lock(void)   { g_meta_lock.lock(); }
+void mem_meta_unlock(void) { g_meta_lock.unlock(); }
 
-void ed_meta_reinit_locks_child(void) {
+void mem_meta_reinit_locks_child(void) {
   new (&g_meta_lock) std::mutex();
 }

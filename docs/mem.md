@@ -20,7 +20,7 @@ void example() {
 }
 ```
 
-还提供 `calloc`、`realloc`、`aligned_alloc`、`usable_size` 和 `collect`。分配与释放必须使用同一家族；系统 `malloc` 得到的指针不能交给 `mem::free`。内部 C ABI 位于 `<culib/detail/allocator_c.h>`，不是公开接口。
+还提供 `calloc`、`realloc`、`aligned_alloc`、`usable_size` 和 `collect`。分配与释放必须使用同一家族；系统 `malloc` 得到的指针不能交给 `mem::free`。分配器实现与内部测试共用的声明位于 `mem/src/mem_core.h`，不作为公共头文件安装。
 
 ## 替换 `malloc/new`
 
@@ -31,6 +31,6 @@ void example() {
 
 ## 平台与验证
 
-当前实现限 64 位 Linux 和 Windows；macOS、Windows x86 暂无该模块。它预留默认 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于启动时消耗 1 TiB 物理内存。环境变量、占用与安全边界见 [`SPEC.md`](../mem/SPEC.md)。
+当前实现限 64 位 Linux 和 Windows；macOS、Windows x86 暂无该模块。它预留默认 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于启动时消耗 1 TiB 物理内存。首次分配时读取 `WAVVIX_MEM_WINDOW_SIZE`（默认 `1T`）、`WAVVIX_MEM_ARENA_RESERVE`（`64M`）、`WAVVIX_MEM_PURGE_DELAY`（`1000` 毫秒）、`WAVVIX_MEM_SECURE`（`1`）、`WAVVIX_MEM_GUARDED_SAMPLE_RATE`（`0`）和 `WAVVIX_MEM_EAGER_COMMIT`（`0`）。旧文档中的 `EDUMALLOC_*` 是导入前的历史名称，当前实现不读取。
 
 导入后，Windows MSVC x64 与 WSL2 Linux x86_64 的分配器单元、压力、安全和 RSS 测试通过；全局 `new/delete` 在两平台通过计数测试，Linux `malloc/new` 共享库覆盖通过计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论；性能和占用还需在当前源码与目标平台上重新配对测量。

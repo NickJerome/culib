@@ -1,12 +1,12 @@
-#include <culib/detail/allocator_c.h>
+#include <mem_core.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
 
 int main() {
-    ed_stats_t before = {};
-    ed_stats_get(&before);
+    mem_stats_t before = {};
+    mem_stats_get(&before);
 
     unsigned char* p = static_cast<unsigned char*>(std::malloc(37));
     if (!p) return 1;
@@ -23,8 +23,8 @@ int main() {
                 static_cast<unsigned>(q[0]), static_cast<unsigned>(q[36]));
     delete[] q;
 
-    ed_stats_t after = {};
-    ed_stats_get(&after);
+    mem_stats_t after = {};
+    mem_stats_get(&after);
     if (after.thread_alloc_count < before.thread_alloc_count + 2 ||
         after.thread_free_count < before.thread_free_count + 2) {
         std::fprintf(stderr, "malloc/new did not use culib allocator\n");
@@ -32,8 +32,9 @@ int main() {
     }
 
     volatile std::size_t impossible = static_cast<std::size_t>(-1);
+    void* (*volatile allocate)(std::size_t) = &std::malloc;
     errno = 0;
-    void* rejected = std::malloc(impossible);
+    void* rejected = allocate(impossible);
     if (rejected || errno != ENOMEM) {
         std::fprintf(stderr, "malloc failure did not set ENOMEM\n");
         return 1;

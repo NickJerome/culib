@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
- * test_util.h — EduMalloc 测试用极简工具框架（header-only, C++11）
+ * test_util.h — culib mem 测试用极简工具框架（header-only, C++11）
  *
  * 只依赖标准头文件，不依赖分配器内部头文件。
  * 提供：
@@ -8,8 +8,8 @@
  *   - edtest::now_ms()    ：steady_clock 毫秒计时
  *   - edtest::summary()   ：main 末尾打印 PASS 汇总
  * ------------------------------------------------------------------------- */
-#ifndef EDUMALLOC_TEST_UTIL_H
-#define EDUMALLOC_TEST_UTIL_H
+#ifndef WAVVIX_MEM_TEST_UTIL_H
+#define WAVVIX_MEM_TEST_UTIL_H
 
 #include <cstdio>
 #include <cstdlib>
@@ -90,4 +90,4 @@ struct splitmix64 {
         else { ::edtest::check_pass(); }                                      \
     } while (0)
 
-#endif /* EDUMALLOC_TEST_UTIL_H */
+#endif /* WAVVIX_MEM_TEST_UTIL_H */
