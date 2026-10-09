@@ -54,7 +54,7 @@ result<blocking_pool> blocking_pool::create(unsigned workers) {
                           std::string("cannot start blocking pool: ") + failure.what());
     }
 #endif
-    return pool;
+    return result<blocking_pool>(std::move(pool));
 }
 
 blocking_pool::~blocking_pool() noexcept { close(); }
