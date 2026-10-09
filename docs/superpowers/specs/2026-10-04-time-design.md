@@ -309,7 +309,7 @@ Asia/Kathmandu / Pacific/Chatham / America/St_Johns / Pacific/Kiritimati
 
 ### 4.6 没覆盖
 
-- ~~MSVC 和 macOS 要等 CI。~~ **CI 10/10 一次过**，macOS 的 BSD `localtime_r` 在真机上成立。Windows 现使用 `_localtime64_s`，已在本机 MSVC x64/x86 和 MinGW i686 测试；这次改动仍待 CI。CI runner 的时区是 UTC，所以**带偏移的那条路径在 CI 上走的是退化情形**（偏移为 0，输出 `Z`）；非零偏移只在本机的八个时区下验证过。
+- ~~MSVC 和 macOS 要等 CI。~~ **CI 10/10 一次过**，macOS 的 BSD `localtime_r` 在真机上成立。Windows 现使用 `_localtime64_s`，已在本机 MSVC x64/x86、MinGW i686 测试，并通过[首次 MinGW i686 CI 任务](https://github.com/NickJerome/culib/actions/runs/37862416133/job/113601030587)。CI runner 的时区是 UTC，所以**带偏移的那条路径在 CI 上走的是退化情形**（偏移为 0，输出 `Z`）；非零偏移只在本机的八个时区下验证过。
 - MinGW i686 默认 `sizeof(time_t) == 4`：此前 `format_local_time()` 在上界 `32535215999` 失败，libc 参照测试也无法覆盖 2038 年后。改用 Windows CRT 的 64 位本地/UTC 接口后，2026-10-09 在 Windows 上直接运行的 MinGW i686 测试 343/343 通过。
 - **32 位 time_t 的那条分支没触发过**。`time_posix.cpp` 里有一个 `sizeof(std::time_t) < sizeof(std::int64_t)` 的判断，本机是 64 位，那一行从来没真的执行。
 - **闰秒附近的行为没测**，因为 Unix 时间戳本身不表示闰秒——`23:59:60` 这种输入直接被拒（有测试），但「系统时钟正在跨闰秒」这个状态没法构造。
