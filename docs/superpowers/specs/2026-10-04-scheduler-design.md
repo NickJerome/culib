@@ -144,9 +144,7 @@ io_uring 本身是三个系统调用（`io_uring_setup` / `io_uring_enter` / `io
 
 ### 7.1 调度器只有一个要紧的结构
 
-**跑一轮时把整个 ready 队列 `swap` 到局部变量再遍历。** 因为协程在跑的过程中会 `spawn`、会 `sleep`，那些都改动成员容器——直接遍历成员容器的话，一次 `push_back` 扩容就让迭代失效，而那种崩溃只在「刚好扩容」时出现，是最难复现的一类。
-
-三个队列：`ready`（本轮/下一轮跑）、`sleeping`（等定时器）、`incoming`（正在跑的协程 spawn 出来的）。`incoming` 分开是同一个理由。
+现行实现用 `coroutine_control::next_ready` 串起 `ready` 和 `round` 两个侵入式 FIFO。每轮交换队列头尾并逐个弹出 `round`；协程在运行中 `spawn` 或让出时只修改 `ready`，不会干扰当前轮。相较第一期的 `vector`，批量提交不再需要为就绪队列扩容；挂起任务另由凭据和定时器堆管理。
 
 ### 7.2 睡眠用单调时钟
 

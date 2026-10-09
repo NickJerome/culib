@@ -92,9 +92,44 @@ struct scheduler_pool {
     std::size_t next;
 };
 
+struct ready_queue {
+    ready_queue() noexcept : head(0), tail(0), count(0) {}
+
+    void push(coroutine_control* body) noexcept {
+        body->next_ready = 0;
+        if (tail) tail->next_ready = body;
+        else head = body;
+        tail = body;
+        ++count;
+    }
+
+    coroutine_control* pop() noexcept {
+        coroutine_control* const body = head;
+        if (!body) return 0;
+        head = body->next_ready;
+        if (!head) tail = 0;
+        body->next_ready = 0;
+        --count;
+        return body;
+    }
+
+    bool empty() const noexcept { return head == 0; }
+    std::size_t size() const noexcept { return count; }
+
+    void swap(ready_queue& other) noexcept {
+        std::swap(head, other.head);
+        std::swap(tail, other.tail);
+        std::swap(count, other.count);
+    }
+
+    coroutine_control* head;
+    coroutine_control* tail;
+    std::size_t count;
+};
+
 struct vcpu {
-    std::vector<coroutine_control*> ready;
-    std::vector<coroutine_control*> round;
+    ready_queue ready;
+    ready_queue round;
     std::vector<park_token*> timers;
     std::vector<park_token*> roused;
     std::vector<park_token*> completed;
@@ -124,9 +159,8 @@ __declspec(thread) vcpu* current_vcpu = 0;
 __thread vcpu* current_vcpu = 0;
 #endif
 
-void reap(std::vector<coroutine_control*>& queue) {
-    for (std::size_t i = 0; i < queue.size(); ++i) coroutine_destroy(queue[i]);
-    queue.clear();
+void reap(ready_queue& queue) {
+    while (coroutine_control* const body = queue.pop()) coroutine_destroy(body);
 }
 
 void reap_detached(vcpu& self) noexcept;
@@ -303,7 +337,7 @@ void accept_remote(vcpu& self) {
     while (submitted) {
         task_state* const next = submitted->next_remote;
         submitted->next_remote = 0;
-        self.ready.push_back(submitted->body);
+        self.ready.push(submitted->body);
         submitted = next;
     }
 }
@@ -463,14 +497,13 @@ result<void> start_pool(vcpu& self, unsigned workers) {
 }  // namespace
 
 fiber_failure scheduler_spawn(coroutine_control* taken) {
-    std::unique_ptr<coroutine_control, void (*)(coroutine_control*)> owned(
-        taken, &coroutine_destroy);
-
     vcpu* const self = try_here();
-    if (!self) return fiber_failure::resource_exhausted;
+    if (!self) {
+        coroutine_destroy(taken);
+        return fiber_failure::resource_exhausted;
+    }
     // 当前轮次使用独立的 round 队列，嵌套 spawn 可以直接进入下一轮的 ready。
-    self->ready.push_back(taken);
-    owned.release();
+    self->ready.push(taken);
     return fiber_failure::none;
 }
 
@@ -542,8 +575,7 @@ void scheduler_task_schedule(task_state* task, coroutine_control* body) {
     vcpu& self = *task->owner;
     task->body = body;
     if (!self.pool) {
-        if (scheduler_spawn(owned.release()) != fiber_failure::none)
-            die("wavvix::coroutine: 已验证的协程无法入队");
+        self.ready.push(owned.release());
         return;
     }
 
@@ -754,19 +786,8 @@ void sleep_for(std::chrono::nanoseconds duration) {
 std::size_t scheduled() noexcept {
     detail::vcpu* const current_vcpu = detail::active_vcpu();
     if (!current_vcpu) return 0;
-    std::size_t waiting_in_round = 0;
-    if (current_vcpu->running && current_vcpu->current) {
-        const std::vector<detail::coroutine_control*>& round = current_vcpu->round;
-        // 从尾部查，先遇到当前协程，不比较已完成任务留下的旧指针。
-        for (std::size_t i = round.size(); i != 0; --i) {
-            if (round[i - 1] == current_vcpu->current) {
-                waiting_in_round = round.size() - i;
-                break;
-            }
-        }
-    }
-    return current_vcpu->ready.size() + current_vcpu->parked_count +
-           current_vcpu->roused.size() + waiting_in_round;
+    return current_vcpu->ready.size() + current_vcpu->round.size() +
+           current_vcpu->parked_count + current_vcpu->roused.size();
 }
 
 std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
@@ -780,7 +801,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
 
     self.running = true;
     std::size_t completed = 0;
-    std::vector<coroutine_control*>& round = self.round;
+    ready_queue& round = self.round;
     for (;;) {
         if (target && task_finished(target)) break;
         accept_remote(self);
@@ -788,7 +809,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         const bool time_elapsed = timed && clock_type::now() >= deadline;
         // 保持唤醒顺序，供同步原语维持 FIFO。
         for (std::size_t i = 0; i < self.roused.size(); ++i) {
-            self.ready.push_back(self.roused[i]->owner);
+            self.ready.push(self.roused[i]->owner);
         }
         self.roused.clear();
 
@@ -802,7 +823,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
                 unpark(self, *token);
                 token->settled = true;
                 token->roused = false;
-                self.ready.push_back(token->owner);
+                self.ready.push(token->owner);
             }
             if (!self.timers.empty()) {
                 nearest = self.timers.front()->deadline;
@@ -832,11 +853,9 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             continue;
         }
 
-        // 使用局部队列，避免本轮 spawn 修改正在遍历的容器。
-        round.clear();
+        // 独立的本轮队列让嵌套 spawn 进入下一轮。
         round.swap(self.ready);
-        for (std::size_t i = 0; i < round.size(); ++i) {
-            coroutine_control* const body = round[i];
+        while (coroutine_control* const body = round.pop()) {
             self.park_of_current = 0;
             self.completed_task = 0;
             self.current = body;          // park 要知道挂起的是哪根
@@ -850,14 +869,12 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             } else if (self.park_of_current) {
                 park(self, *self.park_of_current);
             } else {
-                self.ready.push_back(body);        // 让出了，下一轮继续
+                self.ready.push(body);        // 让出了，下一轮继续
             }
         }
         if (once || time_elapsed) break;
     }
 
-    round.clear();
-    if (self.ready.empty()) self.ready.swap(round);
     self.current = 0;
     self.running = false;
     return completed;

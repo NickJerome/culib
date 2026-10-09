@@ -44,21 +44,6 @@ void __sanitizer_finish_switch_fiber(void* fake_stack_save, const void** bottom_
 namespace wavvix {
 namespace detail {
 
-// 控制块住在协程自己的栈顶，所以创建一根协程只有一次 mmap，没有堆分配。
-struct coroutine_control {
-    void* context;              // 下次切进去用的句柄；跑起来之后是它上次让出的位置
-    void* resumer;              // 把我们切进来的那一侧
-    void (*invoke)(void*);      // 类型擦除：调用 body
-    void (*destroy)(void*);     // 类型擦除：析构 body
-    void* body;                 // 可调用对象，也在这个栈上
-    stack_memory memory;
-    std::size_t usable;         // 可用栈字节数，不含保护页也不含控制块和 body
-    unsigned long long owner;   // 第一次 resume 时绑定的线程序号，0 表示还没绑
-    bool started;
-    bool finished;
-    void* fake_stack;           // ASan 的簿记，见上面那段
-};
-
 namespace {
 
 // 当前协程按线程存储；yield() 和 inside() 共用这份状态。
@@ -258,6 +243,7 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
     control->started = false;
     control->finished = false;
     control->fake_stack = 0;
+    control->next_ready = 0;
     return control;
 }
 

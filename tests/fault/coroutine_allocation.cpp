@@ -122,6 +122,12 @@ int main() {
     }
     if (allocations.load(std::memory_order_relaxed) != before) return 11;
 
+    const std::size_t before_burst = allocations.load(std::memory_order_relaxed);
+    for (int i = 0; i < 64; ++i) wavvix::spawn([] {}).value();
+    if (allocations.load(std::memory_order_relaxed) != before_burst) return 22;
+    if (wavvix::run() != 64 ||
+        allocations.load(std::memory_order_relaxed) != before_burst) return 23;
+
     wavvix::result<wavvix::scheduler_scope> started =
         wavvix::scheduler_scope::with_workers(1);
     if (started.is_err()) return 2;
