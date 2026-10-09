@@ -1,5 +1,5 @@
 // coroutine 的平台无关部分：控制块、trampoline、每线程状态、ASan 注解。
-// 换栈的汇编在 src/runtime/asm/ 下，栈的分配在 coroutine_posix.cpp / coroutine_win.cpp。
+// 换栈的汇编在 src/runtime/asm/ 下，栈的分配与复用在 src/mem/ 下。
 
 #include <culib/detail/fiber.h>
 
@@ -118,23 +118,9 @@ unsigned long long current_thread_serial() noexcept {
     return thread_serial;
 }
 
-// --- 每线程栈池；取舍与测量见调度器设计 8.2–8.4 -----------------------------
-// 桶区间：4–64 KiB、128–512 KiB、1–16 MiB（32 位到 4 MiB）。
-const int pool_bucket_count = sizeof(void*) >= 8 ? 17 : 15;
-
-// 按字节限制缓存，避免大栈占满地址空间。
-const std::size_t pool_budget = sizeof(void*) >= 8 ? 32u * 1024 * 1024 : 8u * 1024 * 1024;
-
-struct pooled_stack {
-    stack_memory memory;
-    pooled_stack* next;
-};
-
 struct runtime_thread_state {
-    runtime_thread_state() noexcept
-        : buckets(), bytes(0), exit_owner(0), exit_cleanup(0) {}
-    pooled_stack* buckets[pool_bucket_count];
-    std::size_t bytes;
+    runtime_thread_state() noexcept : exit_owner(0), exit_cleanup(0) {}
+    mem::detail::stack_pool stacks;
     void* exit_owner;
     void (*exit_cleanup)(void*);
 };
@@ -154,36 +140,9 @@ runtime_thread_state* current_pool() noexcept {
     return state;
 }
 
-std::size_t pool_bucket_size(int bucket) noexcept {
-    if (bucket < 5) return static_cast<std::size_t>(4096) << bucket;
-    if (bucket < 12) return static_cast<std::size_t>(64 * 1024) * (bucket - 3);
-    return static_cast<std::size_t>(1024 * 1024) << (bucket - 12);
-}
-
-// 返回能容纳 want 的最小桶；超出池支持范围返回 -1。
-int pool_bucket_of(std::size_t want) noexcept {
-    for (int i = 0; i < pool_bucket_count; ++i) {
-        if (pool_bucket_size(i) >= want) return i;
-    }
-    return -1;
-}
-
 stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
     runtime_thread_state* const state = current_pool();
-    if (!state) return allocate_stack(usable);
-    const int bucket = pool_bucket_of(usable);
-    if (bucket >= 0 && state->buckets[bucket]) {
-        pooled_stack* const node = state->buckets[bucket];
-        state->buckets[bucket] = node->next;
-        const stack_memory memory = node->memory;   // 先拷出来，下面那块内存要被覆盖
-        state->bytes -= memory.total;
-        return memory;
-    }
-    // 按桶大小分配，确保同桶请求可复用。
-    const std::size_t rounded = bucket >= 0 ? pool_bucket_size(bucket) : usable;
-    stack_memory memory = allocate_stack(rounded);
-    memory.bucket = bucket;
-    return memory;
+    return state ? state->stacks.allocate(usable) : mem::detail::allocate_stack(usable);
 }
 
 void pooled_release_stack(const stack_memory& memory) noexcept {
@@ -191,32 +150,8 @@ void pooled_release_stack(const stack_memory& memory) noexcept {
     void* const value = runtime_thread_state_current();
     runtime_thread_state* const state = value == &runtime_thread_exit_marker
         ? 0 : static_cast<runtime_thread_state*>(value);
-    if (!state) { release_stack(memory); return; }
-    const int bucket = memory.bucket;
-    if (bucket < 0 || memory.total > pool_budget - state->bytes) {
-        release_stack(memory);                      // 超预算就真还给系统
-        return;
-    }
-    // 链表节点放在保护页上方；取出栈时先读走节点。
-    pooled_stack* const node = reinterpret_cast<pooled_stack*>(memory.base + memory.guard);
-    node->memory = memory;
-    node->next = state->buckets[bucket];
-    state->buckets[bucket] = node;
-    state->bytes += memory.total;
-}
-
-void drain_stack_pool(runtime_thread_state& state) noexcept {
-    for (int bucket = 0; bucket < pool_bucket_count; ++bucket) {
-        pooled_stack* node = state.buckets[bucket];
-        state.buckets[bucket] = 0;
-        while (node) {
-            pooled_stack* const next = node->next;
-            const stack_memory memory = node->memory;
-            release_stack(memory);
-            node = next;
-        }
-    }
-    state.bytes = 0;
+    if (state) state->stacks.release(memory);
+    else mem::detail::release_stack(memory);
 }
 
 void die(const char* what) {
@@ -259,7 +194,6 @@ void runtime_thread_exit(void* value) noexcept {
     runtime_thread_state* const state = static_cast<runtime_thread_state*>(value);
     if (!state) return;
     if (state->exit_cleanup) state->exit_cleanup(state->exit_owner);
-    drain_stack_pool(*state);
     state->~runtime_thread_state();
     std::free(state);
 }
@@ -267,7 +201,7 @@ void runtime_thread_exit(void* value) noexcept {
 void release_thread_stack_pool() noexcept {
     void* const value = runtime_thread_state_current();
     if (value && value != &runtime_thread_exit_marker)
-        drain_stack_pool(*static_cast<runtime_thread_state*>(value));
+        static_cast<runtime_thread_state*>(value)->stacks.drain();
 }
 
 bool register_runtime_thread_exit(void* owner, void (*cleanup)(void*)) noexcept {

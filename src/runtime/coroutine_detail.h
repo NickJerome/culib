@@ -4,6 +4,8 @@
 
 #include <cstddef>
 
+#include "../mem/stack_pool.h"
+
 namespace wavvix {
 namespace detail {
 
@@ -28,20 +30,7 @@ context_transfer wavvix_jump_context(void* to, void* data) noexcept;
 
 }  // extern "C"
 
-// --- 平台提供的栈分配 ---------------------------------------------------------
-//
-// 最低一页做保护页，让栈溢出变成 SIGSEGV 而不是静默踩内存。
-
-struct stack_memory {
-    char* base;        // 整块的低地址（保护页就在这儿）
-    std::size_t total; // 含保护页
-    std::size_t guard; // 保护页大小
-    int bucket;        // 创建时选择的池桶；-1 表示不池化
-};
-
-// 至少给 usable 字节可用空间。失败时 base 为 0。
-stack_memory allocate_stack(std::size_t usable) noexcept;
-void release_stack(const stack_memory& memory) noexcept;
+using mem::detail::stack_memory;
 
 // OS 线程槽保存栈池和可选的调度器清理回调。
 extern char runtime_thread_exit_marker;

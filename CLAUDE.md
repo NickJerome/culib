@@ -164,7 +164,7 @@
 
    **这条不限于新模块**：任何时候跟作者讨论接口、行为或取舍，都按这个来。
 5. 在 `include/culib/` 下添加公共头文件（附接口注释），并加入 `culib.h`
-6. 如需编译实现，按职责放进 `src/base`、`src/cli`、`src/platform`、`src/runtime`、`src/fs`、`src/net` 或 `src/testing`；平台相关代码按后缀拆分
+6. 如需编译实现，按职责放进 `src/base`、`src/cli`、`src/platform`、`src/runtime`、`src/mem`、`src/fs`、`src/net` 或 `src/testing`；平台相关代码按后缀拆分
 7. 在 `tests/` 下添加 `<功能>_test.cpp`
 8. 在 `examples/` 下添加用法示例（会被构建，接口改了不跟着改会编译失败）
 9. 在设计文档末尾补「实现验证」一节：跑过哪些配置、哪些误用验证过、性能主张的对比、**没覆盖什么**
