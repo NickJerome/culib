@@ -58,10 +58,16 @@ public:
     }
 
     // ---- 写 ----
+    // 可以复制本缓冲区中尚未消费的字节；此时源区间须完整落在有效数据内。
     void write(const void* from, std::size_t length) {
         if (!length) return;
-        std::memcpy(prepare(length), from, length);
-        commit(length);
+        if (store_.size() - write_at_ < length) {
+            write_slow(from, length);
+            return;
+        }
+        std::memcpy(store_.data() + write_at_, from, length);
+        write_at_ += length;
+        prepared_ = 0;
     }
     void write(string_view text) { write(text.data(), text.size()); }
 
@@ -182,6 +188,7 @@ public:
 private:
     // 读游标跑太靠前时，把剩下的挪回开头。prepare 里按需调用。
     void compact();
+    void write_slow(const void* from, std::size_t length);
 
     std::vector<unsigned char> store_;   // store_.size() 就是容量
     std::size_t read_at_;

@@ -30,6 +30,27 @@ void buffer::compact() {
     write_at_ = left;
 }
 
+void buffer::write_slow(const void* from, std::size_t length) {
+    std::size_t offset = 0;
+    bool self_copy = false;
+    if (!store_.empty()) {
+        const std::uintptr_t begin = reinterpret_cast<std::uintptr_t>(store_.data());
+        const std::uintptr_t source = reinterpret_cast<std::uintptr_t>(from);
+        if (source >= begin && source - begin < store_.size()) {
+            const std::size_t index = static_cast<std::size_t>(source - begin);
+            if (index < read_at_ || index >= write_at_ || length > write_at_ - index) {
+                std::fputs("wavvix::buffer::write: 源区间超出了缓冲区的有效数据\n", stderr);
+                std::abort();
+            }
+            offset = index - read_at_;
+            self_copy = true;
+        }
+    }
+    unsigned char* const destination = prepare(length);
+    std::memcpy(destination, self_copy ? data() + offset : from, length);
+    commit(length);
+}
+
 unsigned char* buffer::prepare(std::size_t length) {
     prepared_ = 0;
     if (length == 0) return store_.empty() ? 0 : store_.data() + write_at_;
