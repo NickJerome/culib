@@ -1,16 +1,5 @@
 -- 所有测试编译成一个程序 culib_test：默认不参与构建，执行 xmake test 时自动编译并运行。
 -- 在终端里查看完整报告：xmake run culib_test
-if is_plat("windows") and is_arch("x86_64", "x64") then
-    target("culib_fake_wintun")
-        set_kind("shared")
-        set_basename("wintun")
-        set_default(false)
-        set_warnings("allextra", "pedantic", "error")
-        set_targetdir("$(builddir)/$(plat)/$(arch)/$(mode)/fixtures")
-        add_files("fixtures/fake_wintun.cpp")
-    target_end()
-end
-
 target("culib_test")
     set_kind("binary")
     set_default(false)
@@ -33,8 +22,5 @@ target("culib_test")
         add_syslinks("ws2_32")
     end
     add_deps("culib")
-    if is_plat("windows") and is_arch("x86_64", "x64") then
-        add_deps("culib_fake_wintun")
-    end
     add_tests("default")
 target_end()

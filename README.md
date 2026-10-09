@@ -2,7 +2,7 @@
 
 基于 **C++11** 与 **xmake** 的跨平台（Windows / Linux / macOS）便携开发库，以静态库形式提供。基调是**简单好用、高性能低占用、尽可能零开销**。
 
-culib 从个人实际需求出发，把各个项目里反复编写的基础代码沉淀下来、统一封装平台差异，让新程序可以直接在它之上快速搭建，而不必每次从零开始。
+culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程，以及命令行、文件、日志和网络等常用开发工具，统一封装平台差异。
 
 > **状态**：早期开发阶段。CLI 常用模块已可用；服务器基础设施仍在建设，API 尚未稳定。
 
@@ -49,11 +49,10 @@ culib 从个人实际需求出发，把各个项目里反复编写的基础代�
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | 公开接口为构造即提交、`join()` / `detach()` 的线程式句柄；底层换栈原语已覆盖 x86_64、arm64 与 Windows x86。Windows x86 已在 MSVC 本机和 CI 运行验证 |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
-| net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发、STUN Binding 地址发现、候选枚举和 UDP 双向探测已落地。应用层 `apps/mesh` 已实现加密信令、保活和失联重连，并通过可控 NAT 测试；真实公网 NAT 仍待现场验收。见[网络用法](docs/net.md)、[mesh 应用](apps/mesh/README.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
-| net::virtual_interface | 临时三层虚拟网卡，协程中按整包读写 IPv4/IPv6；不替应用配置地址和路由 | **基础接口可用**。Linux TUN 已做真实收发；[macOS arm64/x86_64 debug/release CI](https://github.com/NickJerome/culib/actions/runs/37841586928) 均完成同机双 utun 双向 ICMP 包转发，但没有收到 Echo Reply；Windows 真实 Wintun 已通过本机 ICMP IP 往返测试。独立 macOS 主机间的往返仍待验证。见[用法](docs/net.md)和[第四程设计](docs/superpowers/specs/2026-10-08-mesh-core-design.md) |
+| net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发已落地。见[网络用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
 | fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 用内核通知监听本机目录；`poller` 用目录快照轮询，也适用于网络挂载 | **可用**；见[用法](docs/fs-watcher.md)和[设计](docs/superpowers/specs/2026-10-08-fs-watcher-design.md) |
 
-顺序与理由见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)，它按三个目标使用场景（小工具 CLI、多平台服务器、easytier 式精简核心）推导而来。`table` 已从计划中移除，`variant` 评估后不做。
+顺序与理由见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)。`table` 已从计划中移除，`variant` 评估后不做。
 
 ## 快速开始
 
@@ -249,7 +248,6 @@ culib/
 ├── src/                        # 静态库实现、平台后端及 asm/ 换栈代码
 ├── tests/                      # culib 单元与平台集成测试
 ├── examples/                   # 每个 .cpp 对应一个可运行示例
-├── apps/mesh/                  # 独立的加密 mesh 应用与测试
 ├── docs/                       # 使用文档、设计记录和实现计划
 ├── CLAUDE.md                   # 开发约定
 └── .github/workflows/          # Linux、macOS、Windows 的构建与测试 CI

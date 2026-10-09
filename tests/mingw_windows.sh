@@ -47,7 +47,7 @@ done
 
 "$compiler" -static -o "$output/culib_test.exe" \
     "${library_objects[@]}" "${test_objects[@]}" \
-    -lws2_32 -lbcrypt -liphlpapi
+    -lws2_32
 
 "$output/culib_test.exe"
 
@@ -55,5 +55,5 @@ for source in examples/*.cpp; do
     example="$output/example_$(basename "$source" .cpp).exe"
     "$compiler" "${flags[@]}" -static -o "$example" \
         "$source" "${library_objects[@]}" \
-        -lws2_32 -lbcrypt -liphlpapi
+        -lws2_32
 done

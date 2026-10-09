@@ -3,7 +3,6 @@
 #include "io_engine.h"
 
 #include <cstddef>
-#include <new>
 #include <vector>
 
 // GetQueuedCompletionStatusEx 和 OVERLAPPED_ENTRY 要 Vista 以上；下限由 xmake.lua
@@ -42,28 +41,6 @@ static_assert(sizeof(io_request::accept_addresses) >=
 
 OVERLAPPED* overlapped_of(io_request& request) {
     return reinterpret_cast<OVERLAPPED*>(&request.overlapped[0]);
-}
-
-struct event_wait_data {
-    HANDLE registration;
-    HANDLE port;
-    io_request* request;
-    volatile LONG state;  // 0: armed, 1: completion posted, 2: cancelled
-};
-
-static_assert(sizeof(event_wait_data) <= sizeof(io_request::accept_addresses),
-              "io_request::accept_addresses is too small for event waiting");
-static_assert(offsetof(io_request, accept_addresses) % alignof(event_wait_data) == 0,
-              "io_request::accept_addresses is not aligned for event waiting");
-
-event_wait_data* event_data_of(io_request& request) {
-    return reinterpret_cast<event_wait_data*>(request.accept_addresses);
-}
-
-void CALLBACK event_ready(void* context, BOOLEAN) {
-    event_wait_data* const data = static_cast<event_wait_data*>(context);
-    if (::InterlockedCompareExchange(&data->state, 1, 0) != 0) return;
-    ::PostQueuedCompletionStatus(data->port, 0, 0, overlapped_of(*data->request));
 }
 
 // 完成项只带回 OVERLAPPED 的地址，所以要从它反推回请求。OVERLAPPED 就住在请求里，
@@ -137,21 +114,6 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     ::ZeroMemory(overlapped, sizeof *overlapped);
 
     const HANDLE handle = static_cast<HANDLE>(request.handle);
-    if (request.operation == io_event_wait) {
-        event_wait_data* const data = new (request.accept_addresses) event_wait_data();
-        data->registration = 0;
-        data->port = engine->port;
-        data->request = &request;
-        data->state = 0;
-        if (!::RegisterWaitForSingleObject(&data->registration, handle, &event_ready, data,
-                                           INFINITE, WT_EXECUTEONLYONCE)) {
-            request.transferred = -1;
-            request.failure = static_cast<int>(::GetLastError());
-            return false;
-        }
-        ++engine->pending;
-        return true;
-    }
     DWORD moved = 0;
     // 普通收发仍共用 ReadFile / WriteFile；连接与接受连接需要 Winsock 扩展函数。
     BOOL finished = FALSE;
@@ -250,19 +212,6 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         if (!overlapped) continue;    // 不是我们投的（比如 PostQueuedCompletionStatus）
         io_request* const request = request_of(overlapped);
 
-        if (request->operation == io_event_wait) {
-            event_wait_data* const data = event_data_of(*request);
-            ::UnregisterWaitEx(data->registration, INVALID_HANDLE_VALUE);
-            data->registration = 0;
-            request->transferred = 0;
-            request->failure = 0;
-            request->next = 0;
-            completed.push_back(request->waiter);
-            if (engine->pending) --engine->pending;
-            ++fired;
-            continue;
-        }
-
         // 结果已经在完成项里，**不需要再做一次系统调用**。用 GetOverlappedResult 取
         // 而不是读 OVERLAPPED::Internal：后者是文档上写着 Reserved 的字段，而这个
         // 后端的卖点恰恰是不碰未公开的东西（第 2 节那张账单）。操作已经完成时
@@ -307,18 +256,6 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
 
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
     if (!engine || unusable(request.handle)) return true;
-
-    if (request.operation == io_event_wait) {
-        event_wait_data* const data = event_data_of(request);
-        const LONG previous = ::InterlockedCompareExchange(&data->state, 2, 0);
-        ::UnregisterWaitEx(data->registration, INVALID_HANDLE_VALUE);
-        data->registration = 0;
-        if (previous == 0) {
-            if (engine->pending) --engine->pending;
-            return true;
-        }
-        return false;
-    }
 
     // **CancelIoEx 只是「请求」撤销。** 不管它成功还是失败，这次操作的完成包都还会
     // 回来（撤销成功时带 ERROR_OPERATION_ABORTED），而 OVERLAPPED 必须活到那时候——

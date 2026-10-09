@@ -40,6 +40,4 @@
 
 2026-10-08 推送 `14abc22` 后，[GitHub Actions build](https://github.com/NickJerome/culib/actions/runs/37739733870) 的 Linux GCC/Clang、macOS Clang、Windows MSVC debug/release、公共头文件检查和作为依赖消费检查均通过。CI 的 Linux 容器可能拒绝创建环，默认测试在那里只证明自动退回；真实 io_uring 路径由上面的本机强制测试与 `strace` 验证。
 
-2026-10-09 的双节点 TUN 测试发现，`io_vectored_transfer` 曾误入单缓冲区操作的 `recv()` 快路径。向量请求只设置 `vectors`，不设置普通 `buffer`；这使 WSL2 偶发 `EFAULT`，直接中断隧道。现在只有 `io_transfer`、`io_socket_transfer` 和 `io_datagram_transfer` 进入该快路径，向量请求提交 `READV` / `WRITEV`。回归测试用有效 iovec 和空普通 buffer，在修复前强制 uring 稳定报 `EFAULT`，修复后 uring 与 epoll 均通过。修复后本机强制 uring 的 347 项测试全过，双节点基础隧道连续 5 次通过，底层地址变化与 NAT 端口变化后的加密隧道 ping 也通过。
-
 **尚未覆盖**：Linux 旧内核及缺少 `linux/io_uring.h` 的编译环境；超出本机 300 请求规模的长期压力测试与吞吐对比。尚无与手写等价循环的同场性能比较，所以不声称加速倍数。

@@ -53,4 +53,4 @@ int main() {
 
 ## 实现验证
 
-Windows MSVC x64 与 WSL2 GCC 的完整测试通过；测试覆盖双 vCPU 真并行、主栈与协程内 `join()`、`detach()` 后作用域等待、工作线程本地子协程、零工作线程错误及 `blocking_pool` 在工作 vCPU 上唤醒协程。Windows 调度器测试连续运行 30 次通过。Linux GCC ASan/UBSan 全套测试、关闭异常/RTTI 的 release 全套测试与示例构建通过。可运行示例 [`coroutine_workers.cpp`](../../../examples/coroutine_workers.cpp) 输出 `sum: 3`。[主库 CI](https://github.com/NickJerome/culib/actions/runs/37874443895) 的 21 项全部通过，包括 GCC 4.8、MinGW i686、macOS 两种架构、Windows x86、Linux ARM64 与无异常/RTTI 构建；[mesh CI](https://github.com/NickJerome/culib/actions/runs/37874443858) 的 12 项回归也全部通过。系统线程创建失败与事件引擎创建失败只经代码路径审核，尚未注入故障复现。
+Windows MSVC x64 与 WSL2 GCC 的完整测试通过；测试覆盖双 vCPU 真并行、主栈与协程内 `join()`、`detach()` 后作用域等待、工作线程本地子协程、零工作线程错误及 `blocking_pool` 在工作 vCPU 上唤醒协程。Windows 调度器测试连续运行 30 次通过。Linux GCC ASan/UBSan 全套测试、关闭异常/RTTI 的 release 全套测试与示例构建通过。可运行示例 [`coroutine_workers.cpp`](../../../examples/coroutine_workers.cpp) 输出 `sum: 3`。[主库 CI](https://github.com/NickJerome/culib/actions/runs/37874443895) 的 21 项全部通过，包括 GCC 4.8、MinGW i686、macOS 两种架构、Windows x86、Linux ARM64 与无异常/RTTI 构建。系统线程创建失败与事件引擎创建失败只经代码路径审核，尚未注入故障复现。

@@ -183,11 +183,6 @@ int submit_request(uring_engine& engine, io_request& request) {
         operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(&request.message));
         operation.len = 1;
         operation.rw_flags = request.direction == io_write ? MSG_NOSIGNAL : 0;
-    } else if (request.operation == io_vectored_transfer) {
-        operation.opcode = request.direction == io_read ? IORING_OP_READV : IORING_OP_WRITEV;
-        operation.off = static_cast<__u64>(-1);
-        operation.addr = static_cast<__u64>(reinterpret_cast<std::uintptr_t>(request.vectors));
-        operation.len = static_cast<__u32>(request.vector_count);
     } else {
         request.iov.iov_base = request.buffer;
         request.iov.iov_len = request.length;

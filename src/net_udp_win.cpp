@@ -78,8 +78,8 @@ result<std::uintptr_t> udp_bind_socket(const endpoint& local) {
     const SOCKET socket = ::WSASocketW(family, SOCK_DGRAM, IPPROTO_UDP, 0, 0,
                                        WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET) return udp_error("socket", ::WSAGetLastError());
-    // A probe sent to an unreachable candidate must not turn the next receive
-    // into WSAECONNRESET; UDP callers need to keep listening for other peers.
+    // An ICMP port-unreachable response must not turn the next receive into
+    // WSAECONNRESET; send_to still reports actual send failures.
     BOOL report_unreachable = FALSE;
     DWORD returned = 0;
     if (::WSAIoctl(socket, SIO_UDP_CONNRESET, &report_unreachable,

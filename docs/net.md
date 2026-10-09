@@ -44,33 +44,7 @@ endpoint local = listener.local_endpoint().value(); // 端口 0 已换成实际�
 
 UDP 没有 EOF：零字节报文是真报文，`send_to(nullptr, 0, ...)` 会发送，`recv_from(nullptr, 0, ...)` 会消费。接收缓冲区太小时，报文已被消费并返回 `out_of_range`；调用方可继续接收下一包。`send_to` 若不能完整发送一包则报错，不会把剩余字节当第二包重试。与 TCP 一样，超时必填，负数表示一直等待；非零长度配空缓冲区是 `invalid_argument`。`bind` 和查询可在协程外调用，收发需要调度器协程。同一句柄不能跨 vCPU 使用，关闭时不得仍有其他协程等待。
 
-Windows 会把此前发向不可达 UDP 端口的 ICMP 错误作为下一次 `recv_from` 的 `WSAECONNRESET` 返回。socket 创建时关闭这一 Winsock 行为，使打洞时一个坏候选不会中断对其他候选的接收；真正的发送失败仍由 `send_to` 报告。
-
-`local_candidates(socket)` 取得可交给对端的本机候选地址。socket 绑定具体 IP 时只返回该地址和实际端口；绑定 `0.0.0.0` 或 `::` 时，枚举启用中的同地址族接口，把每个地址配上 socket 的端口，去掉通配、多播和重复地址。结果含回环地址，调用方按通信场景筛选；顺序不保证。此调用在连接建立阶段执行，可能分配内存或阻塞当前线程。不包含 STUN 反射地址，后者要在同一 socket 上单独查询并加入候选集。可运行示例见 [`examples/net_candidates.cpp`](../examples/net_candidates.cpp)。
-
-`punch_offer` 把双方需要交换的会话 ID 和候选地址放在一起。会话 ID 应用 `random_punch_session_id()` 生成；全零 ID 会被拒绝。`encode_punch_offer(offer)` 产生最多 757 字节的二进制消息，`decode_punch_offer(data, size)` 严格检查版本、数量（1–32）、长度、地址族、非零端口、单播地址和尾部数据。消息可以交给应用已有的信令通道传输；通道须自行确定消息边界并完成身份认证。格式不加密，也不证明地址确实属于声称的节点。
-
-[`examples/net_punch_pair.cpp`](../examples/net_punch_pair.cpp) 有两种本机试验：两个终端分别运行 `xmake run example_net_punch_pair listen 39001` 和 `xmake run example_net_punch_pair connect 127.0.0.1 39001`，让两端直接交换候选；或在三个终端运行 `xmake run example_net_punch_pair relay 39001`，再各运行一次 `xmake run example_net_punch_pair peer 127.0.0.1 39001`，让两端经中继交换候选。`peer` 后还可加 `STUN_IP STUN_PORT`，在**同一 UDP socket** 上取反射地址并放进候选；再加 `LOCAL_UDP_PORT` 可固定该 socket 的本地端口，便于 NAT 试验。打洞后两端经信令屏障同步，再沿选中的 UDP 地址交换两轮测试数据，示例输出 `UDP data exchanged with: ...` 才表示数据路径也已验证。中继只服务一对节点后退出，不认证双方；这些明文 TCP 和测试报文流程用于连通性验证，不能作为最终节点协议。
-
-## STUN 地址发现
-
-`stun_public_endpoint(socket, server, timeout)` 在给定 UDP socket 上发送一次 STUN Binding 请求，返回服务器看到的公网 `endpoint`。它使用系统随机源生成事务 ID，校验应答来源、事务 ID、长度和 `XOR-MAPPED-ADDRESS`；无应答返回 `timeout`。这个结果只对应**这一个 socket 当前的 NAT 映射**，因此后续打洞和数据传输必须复用它。查询期间由调用方独占该 socket 的接收端；函数会消费并跳过来自其他地址或旧事务的报文。不自动重试。完整用法见 [`examples/net_stun.cpp`](../examples/net_stun.cpp)，运行时传入数字 IP 的 STUN 服务器地址和可选端口。实现和本地假服务器测试已通过 [Linux/macOS/Windows CI](https://github.com/NickJerome/culib/actions/runs/37772593308)。
-
-## UDP 双向探测
-
-双方先用带外信令交换同一个 `punch_session_id` 和各自的候选地址。会话 ID 可由一方调用 `random_punch_session_id()` 生成；候选地址可包含局域网地址及同一 UDP socket 的 STUN 反射地址。随后双方**并发**在各自的协程中、原 socket 上调用 `udp_punch(socket, peer_candidates, session, timeout)`。它每 100 ms 向候选地址发探测包，接收匹配会话 ID 的探测并回确认；必须同时收到回显自己随机事务 ID 的确认、收到并回应**同一来源**的探测，才返回该地址。探测期间调用方必须独占该 socket 的接收端；没有匹配候选、所有发送都失败或到期时返回对应错误。[`examples/net_punch.cpp`](../examples/net_punch.cpp) 演示了两个本地端点的并发调用。
-
-返回成功只证明当时的一次双向 UDP 探测。此接口不负责信令、连接保活、NAT 映射变化检测或节点身份认证；拿到的地址也不能直接视为可信节点。`tests/net_punch_nat.py` 可在 Linux root 环境下创建两个隔离的 peer、两个端口保持且有状态过滤的 NAT 命名空间，以及独立 STUN 和 TCP 中继进程；先构建 `example_net_punch_pair`，再以 root 运行脚本，可复现跨 NAT 的双向探测和随后两个普通 UDP 报文的交换。测试夹具明确保持 UDP 端口，通用 `MASQUERADE` 在不同目的地址上可能重映射端口；端点相关映射的 NAT 和真实公网环境仍待验证。
-
-## 虚拟网卡
-
-`<culib/net_virtual.h>` 的 `virtual_interface::open()` 创建临时三层接口，返回可移动的 RAII 句柄；`name()` 返回系统分配的接口名。库不替应用配置 IP 地址和路由。`read(buffer, capacity, timeout)` 读取一个完整 IP 包，`write(packet, size, timeout)` 发送一个包；两者在调度器协程中使用，负超时表示一直等待。可运行示例见 [`examples/net_virtual.cpp`](../examples/net_virtual.cpp)。
-
-缓冲区可按实际 MTU 分配，例如 2048 字节；最大支持 65535 字节。包比缓冲区大时，该包会被消费并返回 `out_of_range`，不会返回截断数据。最小接收容量为 20 字节；关闭后读写返回 `invalid_argument`。同一接口不能跨 vCPU 使用，也不要在有协程等待读取时关闭它。
-
-Linux 使用 TUN，创建接口通常需要 `CAP_NET_ADMIN`；macOS 使用 utun；Windows 运行时加载 `wintun.dll` 并创建临时适配器，缺少 DLL 时 `open()` 返回 `not_found`。Windows 的 Wintun 驱动必须事先可用，库不分发驱动。Linux 已做实际 IP 包往返测试。Windows 上用 [Wintun 0.14.1 官方签名 DLL](https://www.wintun.net/) 实测创建了临时适配器、读到 Windows 发出的 IPv6 包，并通过 `example_net_virtual --probe-write` 向驱动提交了 20 字节 IPv4 测试包。`tests/wintun_roundtrip.ps1` 进一步给临时适配器配置 `198.51.100.1/30`，让系统 `ping 198.51.100.2`，由 `example_net_virtual --icmp-echo` 读取请求并写回响应；真实 Windows 网络栈的 IP 往返已连续两次成功，退出后适配器和测试地址均被移除。运行脚本需管理员权限、Windows x64 debug 构建及官方签名 DLL，调用形式为 `tests/wintun_roundtrip.ps1 -WintunDll <绝对路径>`。这仍是本机驱动验收，不是两节点 mesh 转发。
-
-macOS 的 `tests/utun_roundtrip.py` 用 `sudo` 打开 utun，让系统 ping 经真实接口发出请求，示例读包并写回响应；[debug/release 各通过一次](https://github.com/NickJerome/culib/actions/runs/37811835157/attempts/2)。此前 release 曾丢失一次响应，稳定性仍待复验。这也是本机 IP 往返验收，不代表两节点 mesh 转发。
+Windows 默认会把发向不可达 UDP 端口的 ICMP 错误作为下一次接收的 `WSAECONNRESET` 返回；本库关闭这一 Winsock 行为，发送失败仍由 `send_to` 报告。
 
 ## 平台路径
 

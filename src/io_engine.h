@@ -8,11 +8,9 @@
 #include <cstddef>
 #include <vector>
 
-#if !defined(_WIN32)
-#include <sys/uio.h>
-#endif
 #if defined(__linux__)
 #include <sys/socket.h>
+#include <sys/uio.h>
 #endif
 
 namespace wavvix {
@@ -28,11 +26,7 @@ typedef int io_handle;
 
 enum io_direction { io_read, io_write };
 enum io_operation {
-    io_transfer, io_vectored_transfer, io_socket_transfer, io_datagram_transfer,
-    io_accept, io_connect
-#if defined(_WIN32)
-    , io_event_wait
-#endif
+    io_transfer, io_socket_transfer, io_datagram_transfer, io_accept, io_connect
 };
 
 // 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
@@ -56,19 +50,12 @@ struct io_request {
     io_direction direction;
     io_operation operation;  // 套接字写入需要禁止 SIGPIPE；普通句柄保持原有路径
     io_handle handle;
-    // 读方向往这里写，写方向从这里读。**写方向上调用方要去掉一次 const**，而这是
-    // 故意的：struct iovec 的 iov_base 也是一个 void*（writev 和 readv 共用同一个
-    // 结构），所以不为写方向另开一个 const void* 字段。
+    // 读方向往这里写，写方向从这里读；写入时调用方需去掉一次 const。
     void* buffer;
     std::size_t length;
-#if !defined(_WIN32)
-    union { void* address; struct iovec* vectors; };
-    union { int address_length; int vector_count; };
-#else
     void* address;
     int address_length;
-#endif
-    // address 用于 connect / datagram，vectors 用于 readv / writev；两者不同时使用。
+    // address 用于 connect / datagram。
     // 接收报文时由后端更新 address_length。所有指针须活到完成通知回来。
     bool truncated;                // 接收缓冲区不足，报文已被消费
     io_handle accepted;            // accept 的结果；Windows 由调用方预建套接字
@@ -92,7 +79,7 @@ struct io_request {
     // OVERLAPPED 的位置。真正的类型在 io_engine_win.cpp 里 reinterpret 回去——
     // 为的是这个头文件不包含 <windows.h>。大小按 OVERLAPPED 的最大情形留足。
     void* overlapped[8];
-    alignas(void*) char accept_addresses[288];  // AcceptEx 地址或等待事件的登记状态
+    alignas(void*) char accept_addresses[288];  // AcceptEx 的两个地址
 #endif
 };
 

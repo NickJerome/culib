@@ -24,22 +24,6 @@ struct endpoint_access {
     }
 };
 
-inline bool endpoint_is_unspecified(const endpoint& value) noexcept {
-    const unsigned char* const bytes = endpoint_access::bytes(value);
-    const std::size_t count = value.family() == address_family::ipv4 ? 4 : 16;
-    for (std::size_t i = 0; i < count; ++i)
-        if (bytes[i] != 0) return false;
-    return true;
-}
-
-inline bool valid_unicast_candidate(const endpoint& value) noexcept {
-    if (value.port() == 0 || endpoint_is_unspecified(value)) return false;
-    const unsigned char* const bytes = endpoint_access::bytes(value);
-    if (value.family() == address_family::ipv4)
-        return bytes[0] != 0 && bytes[0] < 224;
-    return bytes[0] != 0xff;
-}
-
 }  // namespace detail
 }  // namespace net
 }  // namespace wavvix

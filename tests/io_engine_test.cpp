@@ -348,37 +348,6 @@ TEST(io_engine, socket_transfer_uses_the_same_completion_contract) {
 }
 
 #if defined(__linux__)
-TEST(io_engine, vectored_read_uses_its_iovecs) {
-    linked_pair pair;
-    if (!EXPECT(pair.ok(), ==, true)) return;
-    const char payload[] = "hello";
-    if (!EXPECT(::send(pair.left, payload, 5, MSG_DONTWAIT), ==, 5)) return;
-
-    char first[2] = {};
-    char second[3] = {};
-    struct iovec vectors[2] = {{first, sizeof first}, {second, sizeof second}};
-    std::ptrdiff_t received = -1;
-    int failure = 0;
-    spawn([&] {
-        io_request request;
-        request.direction = io_read;
-        request.operation = wavvix::detail::io_vectored_transfer;
-        request.handle = pair.right;
-        request.buffer = 0;
-        request.length = 5;
-        request.vectors = vectors;
-        request.vector_count = 2;
-        scheduler_io(request, ms(500));
-        received = request.transferred;
-        failure = request.failure;
-    });
-    EXPECT(run(), ==, 1u);
-    EXPECT(received, ==, 5);
-    EXPECT(failure, ==, 0);
-    EXPECT(std::string(first, sizeof first) + std::string(second, sizeof second), ==,
-           "hello");
-}
-
 TEST(io_engine, socket_write_after_peer_close_does_not_raise_sigpipe) {
     linked_pair pair;
     if (!EXPECT(pair.ok(), ==, true)) return;
@@ -619,50 +588,6 @@ TEST(io_engine, carries_many_concurrent_readers) {
     EXPECT(run(), ==, static_cast<std::size_t>(count) * 2);
     EXPECT(received, ==, count);
 }
-
-#if defined(_WIN32)
-TEST(io_engine, waits_for_an_event_without_blocking_the_vcpu) {
-    HANDLE const event = ::CreateEventW(0, FALSE, FALSE, 0);
-    if (!EXPECT(event != 0, ==, true)) return;
-    bool signaled = false;
-    bool woke = false;
-    spawn([&] {
-        io_request request;
-        request.operation = wavvix::detail::io_event_wait;
-        request.direction = io_read;
-        request.handle = event;
-        scheduler_io(request, ms(1000));
-        woke = request.transferred == 0 && request.failure == 0 && signaled;
-    });
-    spawn([&] {
-        sleep_for(ms(10));
-        signaled = ::SetEvent(event) != 0;
-    });
-    EXPECT(run(), ==, 2u);
-    EXPECT(signaled, ==, true);
-    EXPECT(woke, ==, true);
-    ::CloseHandle(event);
-}
-
-TEST(io_engine, cancels_an_event_wait_after_timeout) {
-    HANDLE const event = ::CreateEventW(0, FALSE, FALSE, 0);
-    if (!EXPECT(event != 0, ==, true)) return;
-    int failure = 0;
-    spawn([&] {
-        io_request request;
-        request.operation = wavvix::detail::io_event_wait;
-        request.direction = io_read;
-        request.handle = event;
-        scheduler_io(request, ms(10));
-        failure = request.failure;
-        EXPECT(request.transferred, ==, -1);
-    });
-    EXPECT(run(), ==, 1u);
-    EXPECT(failure, ==, ETIMEDOUT);
-    ::SetEvent(event);  // 撤销后不能再触碰上一根协程的栈。
-    ::CloseHandle(event);
-}
-#endif
 
 #if defined(__linux__)
 TEST(io_engine, uring_reads_and_writes_a_regular_file) {
