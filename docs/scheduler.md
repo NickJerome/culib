@@ -13,7 +13,6 @@ int main() {
         // 可以调用协程感知的 I/O、sleep_for 和同步原语。
         (void)count;
     }, 3);
-    if (!worker.joinable()) return 1;
     worker.join();
 }
 ```
@@ -21,7 +20,7 @@ int main() {
 协程是协作式调度：没有工作 vCPU 时，构造后进入当前 vCPU 的队列；显式启动工作 vCPU 后，新的 `coroutine` 轮流提交给它们。遇到 `join()`、协程 I/O、`sleep_for()` 或 `yield()` 时切换。`join()` 只等这一根协程；其他协程可以继续运行。主线程在已初始化的 vCPU 上调用 `wavvix::sleep_for()` 时也会调度本地任务。`detach()` 放弃句柄所有权；外层运行时收尾仍会等远端任务结束。
 
 `join()` 和 `detach()` 必须在创建协程的 vCPU（同一系统线程）上调用，并且要早于该 vCPU 的 `shutdown()` 或 `scheduler_scope` 析构。`join()` 在协程内只挂起调用者；在 vCPU 主栈上会继续调度本地任务并等待远端完成。`shutdown()` 会运行当前及远端 vCPU 剩余的任务；若任务持续等待，须先由应用发出停止信号。
-协程栈分配失败时构造不会提交任务，刚构造的句柄 `joinable()` 为 `false`；需要确认任务已提交时检查它。
+`coroutine` 构造成功就表示任务已提交。非法栈大小抛出 `std::invalid_argument`，协程对象或栈分配失败抛出 `std::bad_alloc`，都不会提交任务；禁用异常的构建在这两种失败时终止进程。默认构造、移动后及 `join()` / `detach()` 后的句柄不可 `join`。
 和 Photon 的 `photon_std::thread` 一样，构造时可以直接传函数参数；参数按值保存，启动时移动到目标函数。传引用请显式用 `std::ref`。默认请求 256 KiB 可用栈；当前按 2 的幂分桶，普通小回调实际分配约 512 KiB 栈加一页保护页。Windows 会提交这整段内存，创建大量并发协程时要把它计入进程提交预算。需要更深的栈时用 `coroutine::with_stack(bytes, function, args...)`，避免整数函数参数和栈大小混淆。
 
 `<culib/scheduler.h>` 提供 `spawn()` 供不持有句柄的场合使用，也提供 `yield()`、`sleep_for()` 和 `scheduler_scope`。`spawn(function, args...)` 与 `coroutine` 构造函数一样，按值保存参数，传引用请用 `std::ref`；需要指定栈大小时用 `spawn_with_stack(bytes, function, args...)`。两个提交函数都返回 `result<void>`：成功表示已入队，非法栈大小返回 `out_of_range`，协程对象或栈分配失败返回 `resource_exhausted`；失败时任务不会运行。`scheduler_scope` 是 `init()` / `shutdown()` 的 RAII 形式，一个作用域可以统一跑完其间提交的任务：
