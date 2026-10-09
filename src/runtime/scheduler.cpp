@@ -28,8 +28,18 @@ namespace detail {
 
 struct vcpu;
 struct remote_waker;
-struct remote_task_state;
+struct task_state;
 struct scheduler_pool;
+
+struct remote_task_state {
+    explicit remote_task_state(remote_waker* source) noexcept
+        : waker(source), done(false), waiter(0), refs(2) {}
+    remote_waker* waker;
+    std::mutex mutex;
+    std::atomic<bool> done;
+    park_token* waiter;
+    std::atomic<unsigned> refs;
+};
 
 struct task_state {
     explicit task_state(vcpu* parent) noexcept
@@ -47,6 +57,12 @@ struct task_state {
     task_state* next_remote;
 };
 
+struct remote_task : task_state {
+    remote_task(vcpu* parent, remote_waker* source) noexcept
+        : task_state(parent), state(source) { remote = &state; }
+    remote_task_state state;
+};
+
 struct remote_waker {
     explicit remote_waker(io_engine* target) noexcept
         : engine(target), head(0), tail(0), tasks_head(0), tasks_tail(0),
@@ -59,16 +75,6 @@ struct remote_waker {
     task_state* tasks_tail;
     std::atomic<bool> has_pending;
     std::atomic<unsigned> pending_tasks;
-};
-
-struct remote_task_state {
-    explicit remote_task_state(remote_waker* source) noexcept
-        : waker(source), done(false), waiter(0), refs(2) {}
-    remote_waker* waker;
-    std::mutex mutex;
-    std::atomic<bool> done;
-    park_token* waiter;
-    std::atomic<unsigned> refs;
 };
 
 struct worker_entry {
@@ -284,8 +290,7 @@ void unlink_detached(task_state* task) noexcept {
 void release_remote(task_state* task) noexcept {
     remote_task_state* const remote = task->remote;
     if (remote->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        delete remote;
-        delete task;
+        delete static_cast<remote_task*>(task);
     }
 }
 
@@ -470,27 +475,28 @@ void scheduler_shutdown() noexcept { scheduler_scope_leave(active_vcpu()); }
 
 task_state* scheduler_task_create() noexcept {
     vcpu* const self = try_here();
-    return self ? new (std::nothrow) task_state(self) : 0;
+    if (!self) return 0;
+    return self->pool ? static_cast<task_state*>(new (std::nothrow) remote_task(self, self->remote))
+                      : new (std::nothrow) task_state(self);
 }
 
-void scheduler_task_discard(task_state* task) noexcept { delete task; }
+void scheduler_task_discard(task_state* task) noexcept {
+    if (task->remote) delete static_cast<remote_task*>(task);
+    else delete task;
+}
 
-bool scheduler_task_schedule(task_state* task, fiber* body) {
+void scheduler_task_schedule(task_state* task, fiber* body) {
     std::unique_ptr<fiber> owned(body);
     vcpu& self = *task->owner;
     task->body = body;
     if (!self.pool) {
         if (scheduler_spawn(owned.release(), fiber_failure::none) != fiber_failure::none)
             die("wavvix::coroutine: 已验证的协程无法入队");
-        return true;
+        return;
     }
 
-    std::unique_ptr<remote_task_state> remote(
-        new (std::nothrow) remote_task_state(self.remote));
-    if (!remote) return false;
     scheduler_pool& pool = *self.pool;
     worker_entry& worker = *pool.workers[pool.next++ % pool.workers.size()];
-    task->remote = remote.get();
     self.remote->pending_tasks.fetch_add(1, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(worker.waker->mutex);
@@ -500,11 +506,9 @@ bool scheduler_task_schedule(task_state* task, fiber* body) {
         worker.waker->tasks_tail = task;
         worker.waker->has_pending.store(true, std::memory_order_release);
     }
-    remote.release();
     owned.release();
     if (!io_engine_notify(worker.waker->engine))
         die("wavvix::coroutine: 不能唤醒工作 vCPU");
-    return true;
 }
 
 void scheduler_task_complete(task_state* task) noexcept {

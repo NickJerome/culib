@@ -32,7 +32,7 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
     std::unique_ptr<fiber> worker(new (std::nothrow) fiber(
         coroutine_body<function_type>(std::forward<F>(body), task.get()), stack_size));
     if (!worker || !worker->ok()) return 0;
-    if (!scheduler_task_schedule(task.get(), worker.release())) return 0;
+    scheduler_task_schedule(task.get(), worker.release());
     return task.release();
 }
 

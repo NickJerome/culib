@@ -26,8 +26,8 @@ void scheduler_shutdown() noexcept;
 struct task_state;
 task_state* scheduler_task_create() noexcept;
 void scheduler_task_discard(task_state* task) noexcept;
-// 接管 body；返回 false 表示提交前分配失败，body 已销毁。
-bool scheduler_task_schedule(task_state* task, fiber* body);
+// 接管 body 并提交任务。
+void scheduler_task_schedule(task_state* task, fiber* body);
 void scheduler_task_complete(task_state* task) noexcept;
 void scheduler_task_join(task_state* task);
 void scheduler_task_detach(task_state* task) noexcept;

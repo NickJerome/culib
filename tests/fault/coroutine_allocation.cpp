@@ -27,13 +27,17 @@ int main() {
     if (started.is_err()) return 2;
     wavvix::scheduler_scope workers = std::move(started).value();
 
-    fail_after = 3;
-    wavvix::coroutine rejected([] {});
-    fail_after = 0;
-    if (rejected.joinable() || wavvix::scheduled() != 0) return 3;
+    for (unsigned allocation = 1; allocation <= 2; ++allocation) {
+        fail_after = allocation;
+        wavvix::coroutine rejected([] {});
+        fail_after = 0;
+        if (rejected.joinable() || wavvix::scheduled() != 0) return 3;
+    }
 
     int ran = 0;
+    fail_after = 3;
     wavvix::coroutine accepted([&] { ++ran; });
+    fail_after = 0;
     if (!accepted.joinable()) return 4;
     accepted.join();
     if (ran != 1) return 5;
