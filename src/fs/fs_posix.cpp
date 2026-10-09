@@ -156,6 +156,11 @@ result<void> read_file(string_view path, std::string& out) {
     struct stat info;
     out.clear();
     if (::fstat(::fileno(file), &info) == 0 && S_ISREG(info.st_mode) && info.st_size > 0) {
+        if (static_cast<unsigned long long>(info.st_size) > out.max_size()) {
+            std::fclose(file);
+            return make_error(error_kind::out_of_range,
+                              path.to_string() + " 文件过大，无法一次读入内存");
+        }
         out.resize(static_cast<std::size_t>(info.st_size));
         const std::size_t got = std::fread(&out[0], 1, out.size(), file);
         out.resize(got);          // 读的过程中文件变短了也不算错，只是短一些

@@ -222,6 +222,32 @@ TEST(fs, reads_and_writes_whole_files) {
     EXPECT(buffer, ==, "fresh");
 }
 
+#if defined(_WIN32) && !defined(_WIN64)
+TEST(fs, rejects_files_larger_than_the_32_bit_address_space) {
+    const scratch area("huge_read");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string path = area.at("sparse.bin");
+    const result<std::wstring> wide = wavvix::utf8_to_wide(path);
+    if (!EXPECT(wide.is_ok(), ==, true)) return;
+    const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_WRITE, 0, 0,
+                                      CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    if (!EXPECT(file != INVALID_HANDLE_VALUE, ==, true)) return;
+    DWORD ignored = 0;
+    const bool sparse = ::DeviceIoControl(file, FSCTL_SET_SPARSE, 0, 0, 0, 0, &ignored, 0) != 0;
+    LARGE_INTEGER end;
+    end.QuadPart = 1ll << 32;
+    const bool extended = sparse && ::SetFilePointerEx(file, end, 0, FILE_BEGIN) != 0 &&
+                          ::SetEndOfFile(file) != 0;
+    ::CloseHandle(file);
+    if (!EXPECT(extended, ==, true)) return;
+
+    EXPECT(fs::file_size(path).value_or(0), ==, 1ull << 32);
+    const result<std::string> content = fs::read_file(path);
+    EXPECT(content.is_err(), ==, true);
+    if (content.is_err()) EXPECT(content.error().kind(), ==, error_kind::out_of_range);
+}
+#endif
+
 TEST(fs, distinguishes_why_it_failed) {
     const scratch area("errors");
     EXPECT(area.ok(), ==, true);

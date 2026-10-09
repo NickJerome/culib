@@ -270,6 +270,7 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 不用先问 `exists`。`last_write_time` 只保证秒精度；Windows 上纪元前的修改时间也返回
 负 Unix 秒，向过去取整。`read_file`、`write_file` 和
 `append_file` 按二进制处理内容；带 `std::string&` 出参的 `read_file` 可以复用缓冲区。
+可查询到的文件大小若超过 `std::string::max_size()`，读取前返回 `out_of_range`，不会截断。
 `output_file` 持有常开的追加写句柄，`open()` 会先关掉旧句柄，析构时自动关闭；
 `write()` 无用户态缓冲，每次直接写给操作系统。它的 `size()` 是打开时的大小加上
 此句柄后续写入的字节数，不会每次重新查询磁盘，因此不计入其他进程同时写入的内容。

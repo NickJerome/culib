@@ -219,6 +219,11 @@ result<void> read_file(string_view path, std::string& out) {
     out.clear();
     LARGE_INTEGER size;
     if (::GetFileSizeEx(file, &size) && size.QuadPart > 0) {
+        if (static_cast<unsigned long long>(size.QuadPart) > out.max_size()) {
+            ::CloseHandle(file);
+            return make_error(error_kind::out_of_range,
+                              path.to_string() + " 文件过大，无法一次读入内存");
+        }
         out.resize(static_cast<std::size_t>(size.QuadPart));
         std::size_t offset = 0;
         while (offset < out.size()) {
