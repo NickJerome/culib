@@ -13,9 +13,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <stdexcept>
 #include <string>
-#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -371,24 +369,12 @@ TEST(scheduler, coroutine_object_accepts_size_t_argument_and_explicit_stack) {
     EXPECT(value, ==, std::size_t(42));
 }
 
-TEST(scheduler, coroutine_object_rejects_invalid_stack_without_scheduling) {
-#if WAVVIX_DETAIL_HAS_EXCEPTIONS
-    bool ran = false;
-    int errors = 0;
-    try {
-        wavvix::coroutine::with_stack(0, [&] { ran = true; });
-    } catch (const std::invalid_argument&) {
-        ++errors;
-    }
-    try {
-        wavvix::coroutine::with_stack(
-            (std::numeric_limits<std::size_t>::max)(), [&] { ran = true; });
-    } catch (const std::invalid_argument&) {
-        ++errors;
-    }
-    EXPECT(errors, ==, 2);
-    EXPECT(ran, ==, false);
-#endif
+TEST(scheduler, coroutine_object_reports_unavailable_stack) {
+    wavvix::coroutine too_small = wavvix::coroutine::with_stack(0, [] {});
+    wavvix::coroutine too_large = wavvix::coroutine::with_stack(
+        (std::numeric_limits<std::size_t>::max)(), [] {});
+    EXPECT(too_small.joinable(), ==, false);
+    EXPECT(too_large.joinable(), ==, false);
     EXPECT(scheduled(), ==, 0u);
 }
 
@@ -400,24 +386,6 @@ TEST(scheduler, coroutine_object_transfers_join_ownership) {
     EXPECT(moved.joinable(), ==, true);
     moved.join();
     EXPECT(ran, ==, 1);
-}
-
-TEST(scheduler, coroutine_object_rejects_join_and_detach_without_a_task) {
-#if WAVVIX_DETAIL_HAS_EXCEPTIONS
-    wavvix::coroutine empty;
-    int errors = 0;
-    try {
-        empty.join();
-    } catch (const std::system_error& failure) {
-        if (failure.code() == std::make_error_code(std::errc::invalid_argument)) ++errors;
-    }
-    try {
-        empty.detach();
-    } catch (const std::system_error& failure) {
-        if (failure.code() == std::make_error_code(std::errc::invalid_argument)) ++errors;
-    }
-    EXPECT(errors, ==, 2);
-#endif
 }
 
 TEST(scheduler, coroutine_object_joins_from_another_coroutine) {

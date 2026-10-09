@@ -5,9 +5,6 @@
 #include <cstddef>
 #include <exception>
 #include <memory>
-#include <new>
-#include <stdexcept>
-#include <system_error>
 #include <type_traits>
 #include <utility>
 
@@ -31,29 +28,11 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
     std::unique_ptr<task_state, void (*)(task_state*)> task(
         scheduler_task_create(), &scheduler_task_discard);
     typedef typename std::decay<F>::type function_type;
-    fiber_failure failure = fiber_failure::resource_exhausted;
     std::unique_ptr<fiber> worker(new fiber(
-        coroutine_body<function_type>(std::forward<F>(body), task.get()), stack_size, &failure));
-    if (!worker->ok()) {
-#if WAVVIX_DETAIL_HAS_EXCEPTIONS
-        if (failure == fiber_failure::invalid_size)
-            throw std::invalid_argument("wavvix::coroutine: invalid stack size");
-        throw std::bad_alloc();
-#else
-        std::terminate();
-#endif
-    }
+        coroutine_body<function_type>(std::forward<F>(body), task.get()), stack_size));
+    if (!worker->ok()) return 0;
     scheduler_task_schedule(task.get(), worker.release());
     return task.release();
-}
-
-[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD inline void coroutine_not_joinable() {
-#if WAVVIX_DETAIL_HAS_EXCEPTIONS
-    throw std::system_error(std::make_error_code(std::errc::invalid_argument),
-                            "wavvix::coroutine is not joinable");
-#else
-    std::terminate();
-#endif
 }
 
 }  // namespace detail
@@ -102,12 +81,12 @@ public:
 
     bool joinable() const noexcept { return task_ != 0; }
     void join() {
-        if (!task_) detail::coroutine_not_joinable();
+        if (!task_) return;
         detail::scheduler_task_join(task_);
         task_ = 0;
     }
-    void detach() {
-        if (!task_) detail::coroutine_not_joinable();
+    void detach() noexcept {
+        if (!task_) return;
         detail::scheduler_task_detach(task_);
         task_ = 0;
     }
