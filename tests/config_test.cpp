@@ -226,10 +226,6 @@ namespace {
 
 wavvix::flag::int64 config_port("config_port", 1111, "测试用：端口");
 wavvix::flag::string config_host("config_host", "default", "测试用：地址");
-// 单独给「值不对」那条用。不能复用上面两个：命令行优先那条测试会把它们标成
-// 「已经给过」，之后 apply_to_flags 就再也不碰它们了——那正是我们要的行为，
-// 但也意味着那两个没法再用来测「值不对」。
-wavvix::flag::int64 config_strict("config_strict", 0, "测试用：只给值不对那条用");
 
 }  // namespace
 
@@ -251,13 +247,17 @@ TEST(config, feeds_its_values_into_flag) {
     if (!EXPECT(one.apply_to_flags().is_ok(), ==, true)) return;
     EXPECT(config_port.get(), ==, 2222);
     EXPECT(config_host.get(), ==, "from_file");
+    EXPECT(config_port.was_given(), ==, false);
+
+    const config updated = parsed("config_port = 4444\n");
+    if (!EXPECT(updated.apply_to_flags().is_ok(), ==, true)) return;
+    EXPECT(config_port.get(), ==, 4444);
 }
 
 TEST(config, leaves_alone_what_the_command_line_already_set) {
     // **命令行优先。** 配置文件不该盖掉用户在命令行上明确给过的值。
-    parse_empty_command_line();
-    const wavvix::result<void> given = wavvix::flag::set("config_port", "3333");
-    if (!EXPECT(given.is_ok(), ==, true)) return;
+    const char* argv[] = {"culib_test", "--config_port=3333"};
+    if (!EXPECT(wavvix::flag::parse(2, const_cast<char**>(argv)).is_ok(), ==, true)) return;
     EXPECT(wavvix::flag::was_given("config_port"), ==, true);
 
     const config one = parsed("config_port = 4444\n");
@@ -274,8 +274,8 @@ TEST(config, skips_keys_that_no_flag_defines) {
 TEST(config, reports_a_value_that_the_flag_cannot_take) {
     // 「flag 里没有这个键」不算错，但「有这个键、值却不对」一定要报。
     parse_empty_command_line();
-    EXPECT(wavvix::flag::was_given("config_strict"), ==, false);
-    const config one = parsed("config_strict = not_a_number\n");
+    EXPECT(wavvix::flag::was_given("config_port"), ==, false);
+    const config one = parsed("config_port = not_a_number\n");
     const wavvix::result<void> applied = one.apply_to_flags();
     EXPECT(applied.is_ok(), ==, false);
 }

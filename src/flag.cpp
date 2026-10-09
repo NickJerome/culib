@@ -23,7 +23,7 @@ struct entry {
     std::vector<const char*> aliases;
     bool is_required;
     std::string default_text;
-    bool given;
+    bool on_command_line;
 };
 
 // 登记表。用函数内静态变量而不是文件级全局：全局选项对象在 main 之前构造，
@@ -45,6 +45,27 @@ registry& table() {
     static registry instance;
     return instance;
 }
+
+struct parse_attempt {
+    explicit parse_attempt(registry& value) : state(value), complete(false) {
+        state.parsed = false;
+        state.positional.clear();
+        state.help_requested = false;
+        state.version_requested = false;
+    }
+
+    ~parse_attempt() {
+        if (complete) return;
+        state.positional.clear();
+        state.help_requested = false;
+        state.version_requested = false;
+        for (std::size_t i = 0; i < state.entries.size(); ++i)
+            state.entries[i].on_command_line = false;
+    }
+
+    registry& state;
+    bool complete;
+};
 
 entry* find_by_name(registry& self, string_view name) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
@@ -104,7 +125,7 @@ const char* type_label(detail::kind which) {
 // 必填项没有默认值（铺的是空文本），跳过。
 result<void> apply_defaults(registry& self) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        self.entries[i].given = false;
+        self.entries[i].on_command_line = false;
         if (self.entries[i].is_required) continue;
         const result<void> applied = assign(self.entries[i], self.entries[i].default_text);
         if (applied.is_err()) return applied;   // 默认值自己都转换不了，是编程错误
@@ -116,7 +137,7 @@ result<void> apply_defaults(registry& self) {
 result<void> check_required(const registry& self) {
     if (self.help_requested || self.version_requested) return result<void>();
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        if (self.entries[i].is_required && !self.entries[i].given) {
+        if (self.entries[i].is_required && !self.entries[i].on_command_line) {
             return make_error(error_kind::invalid_argument,
                               std::string("缺少必填选项 --") + self.entries[i].name);
         }
@@ -179,7 +200,7 @@ void register_flag(kind which, void* storage, const char* name, const char* help
     added.aliases.assign(aliases.begin(), aliases.end());
     added.is_required = is_required;
     added.default_text = default_text;
-    added.given = false;
+    added.on_command_line = false;
     self.entries.push_back(added);
 }
 
@@ -195,7 +216,7 @@ void read_before_parse(const char* name) noexcept {
 bool was_given(const void* storage) noexcept {
     registry& self = table();
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        if (self.entries[i].storage == storage) return self.entries[i].given;
+        if (self.entries[i].storage == storage) return self.entries[i].on_command_line;
     }
     return false;
 }
@@ -206,9 +227,7 @@ bool parsed() noexcept { return table().parsed; }
 
 result<void> parse(int argc, char* argv[], string_view version) {
     registry& self = table();
-    self.positional.clear();
-    self.help_requested = false;
-    self.version_requested = false;
+    parse_attempt attempt(self);
     self.version = version.to_string();
     self.program = (argc > 0 && argv[0]) ? fs::filename(argv[0]).to_string()
                                         : std::string("program");
@@ -266,7 +285,7 @@ result<void> parse(int argc, char* argv[], string_view version) {
         if (which->which == detail::kind::boolean && !has_inline) {
             // 规则 2：布尔选项不吃下一个 token
             *static_cast<bool*>(which->storage) = true;
-            which->given = true;
+            which->on_command_line = true;
             continue;
         }
 
@@ -280,12 +299,13 @@ result<void> parse(int argc, char* argv[], string_view version) {
         }
         const result<void> assigned = assign(*which, text);
         if (assigned.is_err()) return assigned;
-        which->given = true;
+        which->on_command_line = true;
     }
 
     const result<void> missing = check_required(self);
     if (missing.is_err()) return missing;
     self.parsed = true;
+    attempt.complete = true;
     return result<void>();
 }
 
@@ -369,18 +389,21 @@ std::string usage() {
 bool was_given(string_view name) noexcept {
     registry& self = table();
     const entry* const which = find_by_name(self, name);
-    return which != 0 && which->given;
+    return which != 0 && which->on_command_line;
 }
 
 result<void> set(string_view name, string_view text) {
     registry& self = table();
+    if (!self.parsed) {
+        return make_error(error_kind::invalid_argument,
+                          "flag::set() 需要先成功调用 flag::parse() 或 flag::init()");
+    }
     entry* which = find_by_name(self, name);
     if (!which) {
         return make_error(error_kind::not_found, "没有这个选项：" + name.to_string());
     }
     const result<void> assigned = assign(*which, text);
     if (assigned.is_err()) return assigned;
-    which->given = true;
     return result<void>();
 }
 

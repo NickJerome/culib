@@ -158,6 +158,21 @@ TEST(flag, restores_defaults_on_every_parse) {
     EXPECT(positional(), ==, "");
 }
 
+TEST(flag, failed_parse_clears_the_previous_command_line_state) {
+    EXPECT(run({"app", "--port=9000", "first"}).is_ok(), ==, true);
+    EXPECT(port.was_given(), ==, true);
+    EXPECT(positional(), ==, "[first]");
+
+    EXPECT(run({"app", "second", "--port=9001", "--unknown"}).is_err(), ==, true);
+    EXPECT(port.was_given(), ==, false);
+    EXPECT(positional(), ==, "");
+    EXPECT(flag::help_requested(), ==, false);
+    EXPECT(flag::set("port", "7000").is_err(), ==, true);
+
+    EXPECT(run({"app", "--port=8000"}).is_ok(), ==, true);
+    EXPECT(port.get(), ==, 8000);
+}
+
 TEST(flag, tracks_whether_an_option_was_actually_given) {
     EXPECT(run({"app", "--host=1.2.3.4"}).is_ok(), ==, true);
     EXPECT(host.was_given(), ==, true);
@@ -216,7 +231,7 @@ TEST(flag, sets_values_by_name_for_config_files) {
 
     EXPECT(flag::set("port", "7000").is_ok(), ==, true);
     EXPECT(port.get(), ==, 7000);
-    EXPECT(port.was_given(), ==, true);          // set 也算「给了」
+    EXPECT(port.was_given(), ==, false);         // 仅命令行算「给过」
 
     // 别名也能用
     EXPECT(flag::set("p", "7001").is_ok(), ==, true);
