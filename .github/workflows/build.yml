@@ -298,6 +298,8 @@ jobs:
               wavvix::string_view ours = standard;
               static_assert(!std::is_same<wavvix::string_view, std::string_view>::value,
                             "wavvix::string_view must stay a distinct type from std::string_view");
+              wavvix::string_view empty = std::string_view();
+              if (!empty.data() || empty.begin() != empty.end()) return 1;
           #else
               wavvix::string_view ours = "from C++11";
           #endif

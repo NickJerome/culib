@@ -46,7 +46,9 @@ public:
     string_view(const std::string& text) noexcept : data_(text.data()), size_(text.size()) {}
 
 #if defined(WAVVIX_DETAIL_HAS_STD_STRING_VIEW)
-    string_view(std::string_view text) noexcept : data_(text.data()), size_(text.size()) {}
+    // 默认构造的标准视图可持有 nullptr；本类的空视图始终持有非空指针。
+    string_view(std::string_view text) noexcept
+        : data_(text.empty() ? "" : text.data()), size_(text.size()) {}
 #endif
 
     const char* data() const noexcept { return data_; }
