@@ -1,12 +1,3 @@
-/* ----------------------------------------------------------------------------
- * theap.cpp — 线程本地堆、分配/释放路径、并发模型
- *
- * 核心不变式：
- *   - 每 page 恰一 owner 线程；owner 操作 free/local_free/used 零锁零原子；
- *   - 跨线程 free 恰好一次 CAS 压 xthread_free；
- *   - 线程退出 = abandon（摘链 + 置标志 + 登记 arena 桶）；
- *   - reclaim 分配驱动兜底（mem_page_fresh 先查 abandoned 桶）。
- * ------------------------------------------------------------------------- */
 #include "internal.h"
 
 #include <cstring>
@@ -44,7 +35,7 @@ namespace {
 std::mutex   g_theap_recycle_lock;
 mem_theap_t*  g_theap_recycle = NULL;
 
-/* ------------------------- 页退休（SPEC §5.3/§6.3） --------------------- */
+/* 页退休 */
 
 void mem_theap_retire_page(mem_theap_t* t, mem_page_t* page) {
   g_dbg_retire++;
@@ -137,7 +128,7 @@ mem_page_t* mem_theap_unfull_scan(mem_theap_t* t, int bin) {
   return NULL;
 }
 
-/* ------------------------- mem_page_fresh（SPEC §5.2.3） ----------------- */
+/* abandoned 页接管 */
 
 mem_page_t* mem_page_fresh(mem_theap_t* t, int bin) {
   /* 1) reclaim 优先：本 arena 的 abandoned 桶 */
@@ -211,7 +202,7 @@ mem_theap_t* mem_theap_current(void) {
   return t;
 }
 
-/* 线程退出 = abandon（SPEC §7.2）：O(页数) 摘链、置标志、登记桶，无锁 */
+/* 线程退出时摘出所持小页并登记 abandoned 桶。 */
 void mem_theap_abandon(mem_theap_t* t) {
   for (int bin = 1; bin < WAVVIX_MEM_DIRECT_MAX; bin++)
     t->pages_free_direct[bin] = NULL;
@@ -237,7 +228,7 @@ void mem_theap_abandon(mem_theap_t* t) {
       g_dbg_abandon.fetch_add(1, std::memory_order_relaxed);
     }
   }
-  /* large 页不在队列中：free 路径按 kind 直接处理，无需 abandon（SPEC §4.6） */
+  /* large 页不在队列中，free 路径直接处理。 */
   /* 回收 theap 结构本身（线程 churn 不泄漏元数据） */
   std::lock_guard<std::mutex> lock(g_theap_recycle_lock);
   t->next_free = g_theap_recycle;
@@ -280,7 +271,7 @@ void mem_theap_reinit_locks_child(void) {
   new (&g_theap_recycle_lock) std::mutex();
 }
 
-/* ------------------------- 分配慢路径（SPEC §5.2） --------------------- */
+/* 分配慢路径 */
 
 void* mem_malloc_generic(mem_theap_t* t, int bin) {
   t->heartbeat++;
@@ -357,13 +348,9 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
   return mem_page_malloc(best);
 }
 
-/* ------------------------- large / huge（SPEC §5.3） ------------------- */
+/* large / huge */
 
-/* large 总入口：8KiB < size，含 huge 与 L3 guarded。
- * 全部从 arena 切连续 slice——窗口建立后再无独立映射，因此 mem_ptr_page 对
- * huge/guarded 同样是纯算术。
- *   guarded：多要一个 slice 置 PROT_NONE，对象贴其前边界放置（越界写即 SIGSEGV）；
- *   huge（> WAVVIX_MEM_HUGE_THRESHOLD）与 guarded：打 HUGE 标志，free 即 decommit。 */
+/* guarded 多取一个 slice 作为保护页；huge/guarded 在 free 时 decommit。 */
 void* mem_malloc_large_ex(mem_theap_t* t, size_t size, bool guarded,
                          bool* out_zeroed) {
   if (size == 0) size = 1;
@@ -380,16 +367,7 @@ void* mem_malloc_large_ex(mem_theap_t* t, size_t size, bool guarded,
   uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = a->index;   /* slice 的固有属性，mem_page_init 不碰 */
   mem_page_init(page, t, 0, 0, WAVVIX_MEM_PAGE_LARGE, start, (uint32_t)total_slices, zeroed);
-  /* guarded 时对象贴守护页右对齐放置，起点 = guard_start - size。这个起点必须
-   * 向下取整到 16 的倍数，否则 size % 16 != 0 的请求返回的指针就不是 16 字节
-   * 对齐的——"wavvix::mem::alloc 返回值恒 16 字节对齐"是一条无条件保证，不能退化成
-   * "取决于 L3 采样没开"。等价地说：按 round_up(size,16) 放置。
-   *   - start + data 本身 64KiB 对齐 ⇒ 减去 16 的倍数仍是 16 的倍数；
-   *   - data 是 64KiB 的倍数、size <= data ⇒ gsize <= data，不会退出本页。
-   * large_size 必须同步取整值：usable_size 与 mem_page_free_large 的等值比较都
-   * 读它，少记这 0..15 字节就会分别表现为少报可用空间、和把合法释放判成内部
-   * 指针。代价是对象末尾与守护页之间多出 0..15 字节空隙，这一小段的越界写不
-   * 再立即 SIGSEGV（WAVVIX_MEM_DEBUG 下尾 canary 仍能在 free 时抓到）。 */
+  /* 对象大小按 16 字节取整，起点才满足 alloc 的对齐保证。 */
   const size_t gsize = (size + 15) & ~(size_t)15;
   page->large_size = guarded ? gsize : n * WAVVIX_MEM_SLICE_SIZE;
   if (size > WAVVIX_MEM_HUGE_THRESHOLD || guarded) page->flags |= WAVVIX_MEM_PAGE_FLAG_HUGE;
@@ -444,14 +422,8 @@ void* mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size) {
   return start;
 }
 
-/* large/huge/guarded 的释放：整块归还，无需 owner（capacity=1） */
+/* large/huge/guarded 只有一个合法块首，无需 owner。 */
 static void mem_page_free_large(mem_page_t* page, void* p) {
-  /* 内部指针拒收，用等值比较而非"落在本页内就放行"：GUARDED 的对象贴守护页
-   * 右对齐放置、不等于 slice_start，但它的地址是可精确算出来的（见
-   * mem_large_block_start）。整页放行的话，guarded——安全采样模式，本该最严——
-   * 反倒成了全页任意地址都收的口子。
-   * 对齐族不需要例外：release 的 large 对齐分配返回的就是 slice_start，
-   * WAVVIX_MEM_DEBUG 下 mem_l2_unwrap 已经把用户指针还原成块首才走到这里。 */
   const uint8_t* expect = mem_large_block_start(page);
   if (WAVVIX_MEM_UNLIKELY((const uint8_t*)p != expect))
     mem_fatal_page("free of interior pointer (large block)", p, page);
@@ -460,7 +432,7 @@ static void mem_page_free_large(mem_page_t* page, void* p) {
   /* 记账在 mem::free（large_size 在那里于归还之前已取出） */
 }
 
-/* ------------------------- 释放路径（SPEC §4.6） ----------------------- */
+/* 释放路径 */
 
 /* 页归还路径（tcache 未命中/未启用时的完整语义路径）。
  * 不记统计：本函数还会被 mem_tcache_flush_all 调用，而那些块在进 tcache 时
