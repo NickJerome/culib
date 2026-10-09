@@ -27,13 +27,14 @@ size_t                g_arena_next_size = 0;            /* 下一个 arena 的�
 size_t g_window_slices  = 0;    /* 窗口总 slice 数 */
 size_t g_desc_reserve   = 0;    /* 描述符数组保留字节数 */
 size_t g_desc_committed = 0;    /* 描述符数组已提交字节数（单调递增） */
+size_t g_desc_constructed = 0;  /* 已构造描述符数 */
 
 inline size_t mem_round_up(size_t v, size_t granule) {
   return (v + granule - 1) / granule * granule;
 }
 
 /* 描述符按 arena 提交：窗口 slice 是顺序切分的，故只需一个单调水位线。
- * 提交后内容保证全零——mem_arena_create 依赖它（magic 为 0 = 无活页）。
+ * 新描述符的 magic 为 0，表示无活页。
  * 调用方持 g_subproc_lock。 */
 bool mem_desc_commit_upto(size_t end_slice) {
   size_t need = mem_round_up(end_slice * sizeof(mem_page_t), mem_os_page_size());
@@ -42,11 +43,16 @@ bool mem_desc_commit_upto(size_t end_slice) {
    * 描述符区间悄悄少提交一段，之后写进去就是越界——宁可当场死。 */
   if (WAVVIX_MEM_UNLIKELY(need > g_desc_reserve))
     mem_os_fatal("descriptor commit beyond reserved range (bad end_slice)");
-  if (need <= g_desc_committed) return true;
-  if (!mem_os_commit((uint8_t*)mem_desc_base + g_desc_committed,
-                    need - g_desc_committed))
-    return false;
-  g_desc_committed = need;
+  if (need > g_desc_committed) {
+    if (!mem_os_commit((uint8_t*)mem_desc_base + g_desc_committed,
+                       need - g_desc_committed))
+      return false;
+    g_desc_committed = need;
+  }
+  for (; g_desc_constructed < end_slice; ++g_desc_constructed) {
+    mem_page_t* d = new (mem_desc_base + g_desc_constructed) mem_page_t;
+    d->magic.store(0, std::memory_order_relaxed);
+  }
   return true;
 }
 
@@ -75,6 +81,7 @@ mem_arena_t* mem_arena_create(size_t size) {
       bm_dirty == NULL || bm_purge == NULL || st_free == NULL ||
       st_committed == NULL || st_dirty == NULL || st_purge == NULL)
     return NULL;
+  new (arena) mem_arena_t;
 
   arena->base        = mem_window_base + (start << WAVVIX_MEM_SLICE_SHIFT);
   arena->slice_count = n;
@@ -89,8 +96,6 @@ mem_arena_t* mem_arena_create(size_t size) {
   mem_bitmap_init(bm_dirty, st_dirty, n, false);
   mem_bitmap_init(bm_purge, st_purge, n, false);
   arena->purge_expire.store(0, std::memory_order_relaxed);
-  /* std::mutex 是 meta 池里的 POD 初始化——placement new 显式构造 */
-  new (&arena->mutex) std::mutex();
   for (int i = 0; i < WAVVIX_MEM_BIN_COUNT; i++) arena->abandoned[i] = NULL;
   arena->abandoned_nonempty.store(0, std::memory_order_relaxed);
 
@@ -128,6 +133,7 @@ bool mem_window_init(size_t want) {
         mem_desc_base    = (mem_page_t*)d;
         g_desc_reserve  = dres;
         g_desc_committed = 0;
+        g_desc_constructed = 0;
         return true;
       }
       mem_os_release(base, size);

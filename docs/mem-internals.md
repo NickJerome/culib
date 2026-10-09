@@ -4,7 +4,7 @@
 
 ## 页描述符定位
 
-每个 64 KiB slice 在旁路数组里有固定的 `mem_page_t` 描述符。`mem_ptr_page(p)` 先按地址窗口定界，再由 slice 下标定位描述符。多 slice 页的后续描述符是 `CONT`，存着首页下标 `cont_first`。归还一页时只熄灭首页的 `magic`，不清理所有后续项，因此 `CONT` 可能过时。
+每个 64 KiB slice 在旁路数组里有固定的 `mem_page_t` 描述符。建立 arena 时按水位线提交并构造新描述符，原子字段从此有明确的对象生命周期；已提交但尚未划给 arena 的页尾描述符要等水位线推进时构造。`mem_ptr_page(p)` 先按地址窗口定界，再由 slice 下标定位描述符。多 slice 页的后续描述符是 `CONT`，存着首页下标 `cont_first`。归还一页时只熄灭首页的 `magic`，不清理所有后续项，因此 `CONT` 可能过时。
 
 跳回首页前先检查 `cont_first < idx`，避免损坏的下标越界读。跳转后必须同时确认首页的 `magic` 仍有效、`kind` 不是 `CONT`、原 slice 落在首页的 `slice_count` 范围内。单凭 `magic` 和范围不够：旧首页被重新用作另一页的 `CONT` 时，它的旧 `slice_count` 仍可能留下，使悬垂指针被误认为活页。
 
