@@ -1,5 +1,6 @@
 #include <culib/blocking_pool.h>
 #include <culib/coroutine.h>
+#include <culib/sync.h>
 #include "runtime/scheduler_detail.h"
 #if !defined(_WIN32)
 #  include "runtime/io_engine.h"
@@ -127,6 +128,15 @@ int main() {
     if (allocations.load(std::memory_order_relaxed) != before_burst) return 22;
     if (wavvix::run() != 64 ||
         allocations.load(std::memory_order_relaxed) != before_burst) return 23;
+
+    wavvix::semaphore gate(0);
+    for (int i = 0; i < 64; ++i) wavvix::spawn([&] { gate.acquire(); }).value();
+    wavvix::yield();
+    if (wavvix::scheduled() != 64) return 24;
+    const std::size_t before_wake = allocations.load(std::memory_order_relaxed);
+    gate.release(64);
+    if (allocations.load(std::memory_order_relaxed) != before_wake) return 25;
+    if (wavvix::run() != 64 || wavvix::scheduled() != 0) return 26;
 
     wavvix::result<wavvix::scheduler_scope> started =
         wavvix::scheduler_scope::with_workers(1);

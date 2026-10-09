@@ -30,6 +30,7 @@ struct park_token {
     std::uint64_t order;     // 相同截止时间按挂起顺序唤醒
     park_token* next;        // 给各自的等待队列串用（mutex / semaphore 的 FIFO）
     park_token* prev;        // 等待队列中超时退出时常数时间摘链
+    park_token* next_roused; // 调度器的待恢复 FIFO，与等待队列独立
     bool queued;
 };
 
