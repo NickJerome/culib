@@ -219,7 +219,7 @@ OVERLAPPED 生命周期正是靠这条兜住的（它住在挂起协程的栈上
 被排回 ready 了，不会再回来拿这把锁。所以 scheduler_wake 要能报告「这次没叫醒」，
 下面每处交棒都靠它来换下一个。
 
-## [`term_win.cpp`](../src/term_win.cpp)
+## [`term_win.cpp`](../src/cli/term_win.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-01-test-term-table-design.md)。
 
@@ -240,7 +240,7 @@ SetConsoleTextAttribute、写内容、再恢复。这里**故意不做**，两�
 定成 Windows 10 之后（路线图第 6 节）这个条件不会再成立；Win10 上开不起来 VT 只剩
 1507 这一版和勾了「使用旧版控制台」两种情况，降级成纯文字就够了。
 
-## [`log.cpp`](../src/log.cpp)
+## [`log.cpp`](../src/cli/log.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-log-design.md)。
 
@@ -253,7 +253,7 @@ SetConsoleTextAttribute、写内容、再恢复。这里**故意不做**，两�
   2. **sink 是进程全局的，所以用 std::mutex 不用 wavvix::mutex。** 多个 vCPU 会写
      同一个 sink，而协程锁只在一个 vCPU 内部有效（见 [sync.h 用法](api-guide.md)）。
 
-## [`term.cpp`](../src/term.cpp)
+## [`term.cpp`](../src/cli/term.cpp)
 
 term 里和平台无关的那部分：颜色模式、「该不该上色」的判断、ANSI 颜色码。
 
@@ -262,7 +262,7 @@ term 里和平台无关的那部分：颜色模式、「该不该上色」的判
 代价是 GCC 13 以前的 libstdc++ 会因此多一个 main 之前的静态对象——但用到
 std::cout 的程序本来就有它。
 
-## [`os_win.cpp`](../src/os_win.cpp)
+## [`os_win.cpp`](../src/platform/os_win.cpp)
 
 os 的 Windows 实现。
 

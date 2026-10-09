@@ -284,12 +284,6 @@ POSIX 复制会保留权限位；若设置权限失败则返回错误，此时�
 返回 `false` 时停止；条目顺序不保证，`entry::name` 视图只在本次回调内有效。
 返回 `std::vector<std::string>` 的重载一次取全并按名字排序。
 
-## [`fs_watcher.h`](../include/culib/fs_watcher.h)
-
-`fs::poller` 已可用：注册目录时拍一次快照，以后按给定间隔遍历并比较文件身份、大小和修改时间。它适合 NFS / SMB 等网络挂载。`wait(timeout, out)` 在协程里等待扫描间隔时让出；返回的事件包含被监视根目录、相对路径和变化类型。视图在下一次 `wait()` 前有效。完整用法见 [`fs_poller.cpp`](../examples/fs_poller.cpp)。
-
-扫描本身是同步文件系统调用；在慢磁盘或网络挂载上，大目录的扫描会阻塞当前 vCPU。选较长的间隔、缩小监视范围，或把这个 poller 放到独立的工作线程。两次扫描之间创建又删除的文件可能看不到。内核通知版 `fs::watcher` 已可用，适合本机目录；其用法与两种方案的取舍见[文件监听](fs-watcher.md)。
-
 ## [`lexical_cast.h`](../include/culib/lexical_cast.h)
 
 完整背景见 [设计文档](superpowers/specs/2026-10-04-lexical_cast-design.md)。
@@ -440,7 +434,7 @@ POSIX 只允许调 signal-safety(7) 里那张很短的白名单。
 ### 平台差异
 
   - POSIX：SIGINT 和 SIGTERM。**SIGHUP 保持默认行为**，因为按惯例它是「重载配置」
-    而不是「停止」（nginx、apache 都这样），而热加载要等第三程的 fs::watcher。
+    而不是「停止」（nginx、apache 都这样）。
   - Windows：SetConsoleCtrlHandler，它能收到 Ctrl-C、Ctrl-Break、关窗口、注销、
     关机五种事件。注意**回调在一根独立线程里跑**，不是信号上下文，但接口形状不变。
 

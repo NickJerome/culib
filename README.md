@@ -51,7 +51,6 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | mem | 自带通用分配器 `wavvix::mem`，支持显式分配；可显式覆盖全局 `new/delete`，Linux 可覆盖 `malloc/free` | 64 位 Linux、macOS、Windows 已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)；平台边界与覆盖方式见[分配器用法](docs/mem.md) |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发已落地。见[网络用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
-| fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 用内核通知监听本机目录；`poller` 用目录快照轮询，也适用于网络挂载 | **可用**；见[用法](docs/fs-watcher.md)和[设计](docs/superpowers/specs/2026-10-08-fs-watcher-design.md) |
 
 顺序与理由见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)。`table` 已从计划中移除，`variant` 评估后不做。
 

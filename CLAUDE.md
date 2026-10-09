@@ -21,6 +21,8 @@
 
 目前没有下游消费者。接口需要调整时，直接修改调用点、示例和文档；不为旧名字或旧行为保留兼容层。
 
+文件监听曾实现过 `fs::watcher` 和 `fs::poller`，但三个目标场景都没有实际调用方，且它们需要三平台后端和一套扫描语义，已从当前源码移除。出现具体应用、明确所需事件与延迟后再重新设计；历史设计保留在 `docs/superpowers/specs/2026-10-08-fs-watcher-design.md`。
+
 两条边界：
 
 - **culib 只做脚手架，不碰需要第三方库的领域。** 加密、图像解码、压缩、TLS 都不在库里。这些**先不做，真用到了再决定是自己写还是引入**——不预先为它们设计接口，也不因为它们去改「零第三方依赖」这条约定。
@@ -81,7 +83,7 @@
   | NFS / SMB | 一次 `GETATTR` 网络往返 ≈ **0.2–1 ms**（LAN）；属性缓存意味着要么拿过期数据、要么付这次往返 |
 
   所以「这点开销无所谓」这句话在本地成立、在目标存储上可能差两万倍。**涉及文件系统的接口，设计时按 HDD 和网络盘算，不按本地 SSD 算。**
-- **不替调用方做只有它才知道代价的决定。** 这是「零开销：不用的功能不产生任何代价」的一个具体形态：库不清楚调用方的存储、数据规模和调用频率，所以**宁可多一个枚举值表达「我不确定」，也不要悄悄多做一次 I/O**。实例：`fs::watcher` 曾设计成在 macOS 上自己 `stat` 一下推断 `created` / `removed`，去掉了，改成多一个 `change::changed` 值，要判断的调用方自己调 `fs::exists`（见预期接口 5.1）。
+- **不替调用方做只有它才知道代价的决定。** 这是「零开销：不用的功能不产生任何代价」的一个具体形态：库不清楚调用方的存储、数据规模和调用频率，所以不要悄悄多做一次 I/O。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，使用方链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **性能主张必须有对比**：在该模块的设计文档「实现验证」一节里给出汇编或测量对比，和手写的等价代码比。**没有对比就不要在文档里写性能承诺。**
 
@@ -151,9 +153,6 @@
 1. **先查 `docs/superpowers/specs/` 下有没有已经设计过这个模块。** 已有设计优先，要改也得先读完再说明为什么改。曾经在没查的情况下给 `term` 另造了一套接口，而已有设计在四个点上都更好（最关键的是「`style` 不能直接 `<<`，漏掉括号就编译报错，所以不可能忘记恢复颜色」）。
 2. **去读两三个做过同一件事的成熟项目的源码**，不是读文档、不是凭印象——拉下它们的头文件和实现看。这一步的产出率远高于凭设计推导：
    - coost 的 `string.h` / `flag.h` 定了 `lexical_cast` 的形式和位置参数的给法；
-   - libuv 的 `uv.h` 揭穿了 `fs::watcher` 的协程依赖（把它从第二程挪到第三程）、说明了为什么只敢给两种事件类型、以及「别在接口里放实现不了的东西」（它有两个 flag 挂着「not implemented yet on any backend」十几年）；
-   - watchdog 的 `fsevents.py` 示范了 stat 要比对 inode、启动要拍快照，`observers/__init__.py` 则暴露了它**不做运行时兜底**；
-   - `inotify(7)` 一句话定性了「网络挂载上内核通知根本不工作」，直接催生了 `fs::poller`。
 
    **记下对照表和「我们哪里不一样、为什么」**，别只记结论。
 3. 在 `docs/superpowers/specs/` 下写设计文档（`YYYY-MM-DD-<名字>-design.md`），先定范围和「不做什么」；接口数量按「先有消费者」过一遍，但**只砍实现成本和设计自由度都高的**，别砍语义显然的小函数（见上节判据）
@@ -165,7 +164,7 @@
 
    **这条不限于新模块**：任何时候跟作者讨论接口、行为或取舍，都按这个来。
 5. 在 `include/culib/` 下添加公共头文件（附接口注释），并加入 `culib.h`
-6. 如需编译实现，在 `src/` 下添加源文件，平台相关代码按后缀拆分
+6. 如需编译实现，按职责放进 `src/base`、`src/cli`、`src/platform`、`src/runtime`、`src/fs`、`src/net` 或 `src/testing`；平台相关代码按后缀拆分
 7. 在 `tests/` 下添加 `<功能>_test.cpp`
 8. 在 `examples/` 下添加用法示例（会被构建，接口改了不跟着改会编译失败）
 9. 在设计文档末尾补「实现验证」一节：跑过哪些配置、哪些误用验证过、性能主张的对比、**没覆盖什么**
@@ -271,7 +270,7 @@ g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc \
 | --- | --- | --- | --- |
 | `examples/os.cpp` | `std::fopen` 攥一个 `FILE*` 写记录 | MSVC 的 CRT 把 `fopen` / `sprintf` / `strcpy` / `getenv` / `strtok` / `localtime` 一族标成弃用（C4996），警告即错误就编不过 | 改用 `fs::append_file`，不越过库的边界 |
 | `examples/time.cpp` | `gmtime_r` 做基准测试的参照物 | **`gmtime_r` 在 Windows 上根本不存在**（只有 `gmtime_s`），而 `gmtime` 又在上面那张弃用名单里 | **把基准测试从示例里删掉**，测量放设计文档 |
-| `src/term.cpp` | `std::getenv` 读 `NO_COLOR` / `TERM` | 同第一行的弃用名单。而且 CRT 的 `getenv` 读的是启动时拷下的那份环境，看不到 `os::setenv`（`SetEnvironmentVariableW`）后来改的值 | 读环境变量挪进平台文件，Windows 侧用 `GetEnvironmentVariableW` |
+| `src/cli/term.cpp` | `std::getenv` 读 `NO_COLOR` / `TERM` | 同第一行的弃用名单。而且 CRT 的 `getenv` 读的是启动时拷下的那份环境，看不到 `os::setenv`（`SetEnvironmentVariableW`）后来改的值 | 读环境变量挪进平台文件，Windows 侧用 `GetEnvironmentVariableW` |
 
 两条推论：
 

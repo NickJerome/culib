@@ -3,7 +3,7 @@
 // 颜色码**逐字节比对**，不是「看起来有颜色就行」——那样写反了恢复码也发现不了。
 // 判断规则（NO_COLOR / TERM）拆成了纯函数，所以不需要真有个终端就能测。
 //
-// Windows 的 VT 模式那条路本机测不了，见 src/term_win.cpp 开头。
+// Windows 的 VT 模式那条路本机测不了，见 src/cli/term_win.cpp 开头。
 
 #include <culib/os.h>
 #include <culib/term.h>
