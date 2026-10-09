@@ -3,14 +3,25 @@
 #include <cerrno>
 #include <cstdint>
 
-#include <sys/eventfd.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 namespace wavvix {
 namespace detail {
 
 inline int io_eventfd_open() noexcept {
-    return ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+#if defined(SYS_eventfd2)
+    const long number = SYS_eventfd2;
+#elif defined(__x86_64__)
+    const long number = 290;
+#elif defined(__aarch64__)
+    const long number = 19;
+#else
+    const long number = -1;
+#endif
+    if (number < 0) { errno = ENOSYS; return -1; }
+    // Linux UAPI: EFD_CLOEXEC and EFD_NONBLOCK share the O_* flag values.
+    return static_cast<int>(::syscall(number, 0u, 02000000 | 04000));
 }
 
 inline bool io_eventfd_notify(int fd) noexcept {

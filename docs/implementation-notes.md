@@ -36,7 +36,7 @@ io_engine_linux.cpp 选择 io_uring 或 epoll，具体环在独立实现文件�
 
 给后续的多 vCPU 任务提交和阻塞任务池，事件引擎现在有内部的 `io_engine_enable_notify()` / `io_engine_notify()`。启用只在需要跨线程提交任务的 vCPU 上发生；普通 I/O 引擎不创建唤醒源。通知只打断 `io_engine_wait()`，不增加 I/O 完成数，也不进入协程的 `park_token` 队列。
 
-Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径验证；macOS 交给 CI。调度器现在能接收工作线程完成通知；多 vCPU 的协程分发仍需实现。
+Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。旧版 glibc 缺少 `<sys/eventfd.h>`，Linux 实现直接调用 `eventfd2`；当旧系统头文件也缺少系统调用号时，使用项目支持的 x86_64 / arm64 Linux 调用号。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径验证；macOS 交给 CI。调度器现在能接收工作线程完成通知；多 vCPU 的协程分发仍需实现。
 
 ## [`io_engine_posix.h`](../src/io_engine_posix.h)
 
