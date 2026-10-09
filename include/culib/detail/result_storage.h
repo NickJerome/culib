@@ -13,45 +13,9 @@ struct result_value_tag {};
 struct result_error_tag {};
 struct result_unit {};
 
-#if defined(__GLIBCXX__) && defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
-// GCC 5 以前的 libstdc++ 没有 is_trivially_copyable，这些编译器上一律走非平凡存储。
-// 只是少一个「按寄存器返回」的优化，行为完全相同。
-template <typename T>
-struct result_trivial : std::false_type {};
-#else
-template <typename T>
-struct result_trivial : std::is_trivially_copyable<T> {};
-#endif
-
-template <typename T, typename E, bool Trivial =
-    result_trivial<T>::value && result_trivial<E>::value &&
-    std::is_copy_assignable<T>::value && std::is_copy_assignable<E>::value &&
-    std::is_move_assignable<T>::value && std::is_move_assignable<E>::value>
-class result_storage;
-
-// 平凡类型保留编译器生成的特殊成员，result 自身也保持平凡可复制，函数返回可以走寄存器。
+// union 只构造当前有效的成员；不存在第三种「空」状态。
 template <typename T, typename E>
-class result_storage<T, E, true> {
-protected:
-    union { T value_; E error_; };
-    bool ok_;
-
-    template <typename U>
-    result_storage(result_value_tag, U&& value)
-        noexcept(std::is_nothrow_constructible<T, U&&>::value)
-        : value_(std::forward<U>(value)), ok_(true) {}
-    template <typename G>
-    result_storage(result_error_tag, G&& error)
-        noexcept(std::is_nothrow_constructible<E, G&&>::value)
-        : error_(std::forward<G>(error)), ok_(false) {}
-};
-
-// 非平凡类型只构造当前有效的成员；不存在第三种「空」状态。
-// 特殊成员一律声明，用不了的组合在函数体里用 static_assert 挡住：函数体只在真的用到时才实例化，
-// 所以误用仍然是编译错误，报错信息比「调用已删除的函数」更直接。代价是 std::is_copy_constructible
-// 这类类型特征只看声明，对 result 会乐观地回答「可以」。
-template <typename T, typename E>
-class result_storage<T, E, false> {
+class result_storage {
 protected:
     union { T value_; E error_; };
     bool ok_;

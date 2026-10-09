@@ -1,7 +1,7 @@
 # result 设计
 
 - 日期：2026-10-01
-- 状态：已实现（2026-10-03）
+- 状态：已实现；2026-10-10 收敛为固定 `error`，第 11 节保留早期测量与决策记录
 
 ## 1. 背景与目标
 
@@ -15,10 +15,10 @@ README 约定：可能失败的操作通过 `result` 返回结果或错误，库
 
 **做：**
 
-- `result<T, E = error>` 和只关心成败的 `result<void, E>`。
-- 构造：成功时直接从值构造，失败时直接从错误构造；默认错误类型的对象用 `make_error(...)` 创建。
+- `result<T>` 和只关心成败的 `result<void>`；错误类型固定为 `error`。
+- 构造：成功时直接从值构造，失败时直接从 `make_error(...)` 构造。
 - 查询与取值：`is_ok()`、`is_err()`、`value()`、`error()`、`value_or()`。
-- 默认错误类型 `error` 和错误种类 `error_kind`。
+- 错误类型 `error` 和错误种类 `error_kind`。
 - 错误传递：调用方手写 `if (x.is_err()) return std::move(x).error();`。**不提供宏**，理由见 11.10。
 
 **不做：**
@@ -79,10 +79,10 @@ result<config> load(const std::string& path) {
 ```cpp
 namespace wavvix {
 
-template <typename T, typename E = error>
+template <typename T>
 class result {
 public:
-    // 成功：从能转换成 T 的值构造；失败：从能转换成 E 的值构造（都可以隐式转换）
+    // 成功：从能转换成 T 的值构造；失败：从 error 构造
     template <typename U> result(U&& value);
     template <typename G> result(G&& err);
 
@@ -93,9 +93,9 @@ public:
     T& value() &;
     const T& value() const&;
     T&& value() &&;
-    E& error() &;
-    const E& error() const&;
-    E&& error() &&;
+    wavvix::error& error() &;
+    const wavvix::error& error() const&;
+    wavvix::error&& error() &&;
 
     // 失败时返回 fallback
     template <typename U>
@@ -104,18 +104,18 @@ public:
     T value_or(U&& fallback) &&;
 };
 
-template <typename E>
-class result<void, E>;  // 默认构造即为成功，写作 return {};
+template <>
+class result<void>;  // 默认构造即为成功，写作 return {};
 
 }  // namespace wavvix
 ```
 
-- 两个构造函数通过模板约束区分：参数只能转换成 `T` 的走成功，只能转换成 `E` 的走失败。第三种输入类型如果同时能转换成 `T` 和 `E`，拒绝构造，不隐式选择分支。复制与移动 result 自身使用特殊成员，不走这两个构造函数。
-- 为了让编译器分得清，`T` 和 `E` 不能互相转换，例如 `result<int, int>`，或者错误类型是可以隐式转成整数的普通枚举。遇到这种情况用 `static_assert` 报错并说明原因；错误类型请用 `enum class` 或类。
-- 值与错误必须是非数组、非 cv 限定的对象类型，析构不能抛异常；`void` 值由专门版本支持。禁止 `const` / `volatile` 既因为 `result<const int>` 本身没有意义，也让内部的 placement new 不必为 cv 类型绕一圈转换。
-- 值类型的 `result<T, E>` 没有默认构造，不存在「空」的状态；`result<void, E>` 默认构造表示成功。
-- 复制、移动随 `T` 和 `E`：两者都能复制时 result 能复制，有一个只能移动时 result 只能移动（例如装 `std::unique_ptr`）。
-- 赋值（复制和移动）：只有 `T` 和 `E` 的移动构造都不抛异常时才支持，复制赋值还要求两者都能复制；否则禁止赋值，避免赋值到一半失败后处于无效状态。
+- 两个构造函数通过模板约束区分：参数只能转换成 `T` 的走成功，只能转换成 `error` 的走失败。若同时可转换成两者，则拒绝构造。复制与移动 result 自身使用特殊成员。
+- `T` 不能与 `error` 互相隐式转换；违反时用 `static_assert` 报错。
+- 值必须是非数组、非 cv 限定的对象类型，析构不能抛异常；`void` 值由专门版本支持。
+- 值类型的 `result<T>` 没有默认构造，不存在「空」的状态；`result<void>` 默认构造表示成功。
+- 复制、移动随 `T`：只能移动的值（例如 `std::unique_ptr`）使 result 只能移动。
+- 赋值（复制和移动）：只有 `T` 和 `error` 的移动构造都不抛异常时才支持，复制赋值还要求 `T` 能复制；否则禁止赋值，避免赋值到一半失败后处于无效状态。
 - 上面两条的「不支持」通过特殊成员函数体里的 `static_assert` 实现：函数体只在真的用到时才实例化，所以误用仍然是编译错误，报错信息是一句英文说明。代价是 `std::is_copy_constructible` 等类型特征只看声明，对 `result` 会乐观地回答「可以」。按类型能力删除特殊成员可以让类型特征准确，但需要四个空基类按位组合继承（约 50 行只为编译器服务的代码），对一个小团队自用的库不值得。
 
 ### 4.2 error 和 error_kind
@@ -169,9 +169,7 @@ result<config> load(const std::string& path) {
 }
 ```
 
-- **`std::move` 不能省，而且漏写不一定报错。** `error()` 有左值 / const / 右值三个重载，`x.error()` 在左值上拿到 `E&`，返回的 result 会复制构造错误。实测（长于 SSO 的消息、全局 `operator new` 计数）：`return x.error()` 两次分配，`return std::move(x).error()` 一次。这里没有 RVO 可用——错误是 `x` 的子对象而不是返回值本身。
-  - 错误类型只能移动（`std::unique_ptr`）时漏写是编译错误：`could not convert 'r.error()' from 'std::unique_ptr<int>' to ...`。
-  - 错误类型可复制（默认的 `error`）时漏写**编译通过、`-Wall -Wextra -Wpedantic` 零警告**，只是静默多复制一次说明字符串。这是「同一个写法在一半类型上报错、在另一半上静默变慢」，所以全库统一写 `std::move(x).error()`，不留第二种写法。
+- **`std::move` 不能省。** `error()` 有左值 / const / 右值三个重载，`x.error()` 在左值上拿到 `error&`，返回的 result 会复制构造错误。实测（长于 SSO 的消息、全局 `operator new` 计数）：`return x.error()` 两次分配，`return std::move(x).error()` 一次。这里没有 RVO 可用——错误是 `x` 的子对象而不是返回值本身。漏写能编译且零警告，所以全库统一写 `std::move(x).error()`。
   - `std::move(x.error())` 的分配次数相同、功能等价，仍然用 `std::move(x).error()`：和标准库一个形状（`std::move(opt).value()`），而且它表达的是「整个 result 被消费掉了」——移走之后 `x` 的消息就是空的，`return` 必须紧跟其后。
 - **本节曾经描述一个 `WAVVIX_TRY` 宏，它被实现过又被删除了**，完整理由见 11.10。一句话：它展开后藏着一个 `return`，写出来却像变量声明。
 
@@ -184,22 +182,21 @@ result<config> load(const std::string& path) {
   wavvix::result::error() called on a success value
   ```
 
-  错误类型是 `error` 时打印与 `to_string()` 一致的内容；其他类型（枚举、字符串等）只打印前半句，说明访问了错误分支。早先的版本会打印枚举的数值并保留有符号性，但那个数字既不说明是哪个枚举、也不比用调试器看更有用，为此多出的两个函数和一组 SFINAE 分发不划算，已去掉。诊断直接写 stderr，不临时创建字符串。
+  诊断打印 `error` 的种类和说明；直接写 stderr，不临时创建字符串。
 - **忽略返回值的警告**：类上标注 `WAVVIX_NODISCARD`，在 C++17 编译器上展开为 `[[nodiscard]]`，在 Clang 的 C++11 模式下展开为 `warn_unused_result` 属性，其他情况为空。因此 GCC 在 C++11 模式下没有这个警告。Clang 能否把该属性用在类上，实现时先验证，不支持则同样为空。
 - **右值版本**：`value()`、`error()`、`value_or()` 对右值 result 都有移动版本，例如 `auto text = read_file(path).value();` 不会复制字符串。
 
 ## 6. 性能
 
 - 值和错误放在同一块内存（union）里，只多一个标志位；不分配内存。
-- `T` 和 `E` 都可平凡复制且支持复制与移动赋值时（例如 `result<int, parse_error>`），result 本身也可平凡复制；体积较小时，函数返回可以走寄存器，和手写的错误码结构体一样快。
-- 默认的 `error` 带一个 `std::string`，`result<int>` 因此是 48 字节，并且不可平凡复制；说明文字超过短字符串优化的长度时，出错会分配一次内存。**成功路径不分配**——union 只构造活着的那个成员。
+- `error` 带一个 `std::string`，`result<int>` 因此是 48 字节，并且不可平凡复制；说明文字超过短字符串优化的长度时，出错会分配一次内存。**成功路径不分配**——union 只构造活着的那个成员。
 - 本节原先据此规定「一般接口用 `error`、性能敏感的接口用 `enum class`」。**那条规定已撤销**：量过之后发现枚举的优势在本库的场景里兑现不了，全库统一用 `error`，数据和理由见 11.7。
 - 先判断 `is_err()` 再调用 `value()` 时，`value()` 里的重复检查在开启优化后会被编译器去掉。
 
 ## 7. 实现要点
 
-- 「可平凡复制则 result 也可平凡复制」通过按条件选择存储基类实现，这是整个实现里唯一有实测回报的复杂度（见第 6 节与 11.2）。存储位于内部头文件 `detail/result_storage.h`：平凡的那个特化完全不声明特殊成员，交给编译器生成；非平凡的那个只构造当前有效的成员，用不了的特殊成员靠函数体里的 `static_assert` 挡住（见 4.1 最后一条）。不可赋值但可以构造的值通过销毁重建实现 result 的赋值；这种情况下不承诺 result 可平凡复制。判断条件用 `std::is_trivially_copyable`；GCC 5 以前的 libstdc++ 没有这个特性，那些编译器上一律走非平凡存储，只是少一个按寄存器返回的优化，行为相同。
-- 两个构造函数用 SFINAE 区分；`T` 与 `E` 能互相转换时用 `static_assert` 给出说明。
+- 存储位于内部头文件 `detail/result_storage.h`：只构造当前有效的成员，用不了的特殊成员靠函数体里的 `static_assert` 挡住（见 4.1 最后一条）。不可赋值但可以构造的值通过销毁重建实现 result 的赋值。
+- 两个构造函数用 SFINAE 区分；`T` 与 `error` 能互相转换时用 `static_assert` 给出说明。
 - `WAVVIX_NODISCARD` 放在 `include/culib/detail/macros.h`，与单测框架设计中的 `WAVVIX_DETAIL_CONCAT` 等宏放在一起。
 - 打印信息并终止程序的逻辑放在 `result.cpp` 的一个不内联函数里，避免在每个调用点展开。
 - 编译期提示信息一律用英文，避免 MSVC 在非 UTF-8 代码页下乱码。
@@ -215,8 +212,8 @@ result<config> load(const std::string& path) {
 - 构造：从值构造（包括需要转换的情况，如 `"abc"` 构造 `result<std::string>`）、从错误构造、`result<void>` 的成功和失败。
 - 查询与取值：`is_ok`、`is_err`、`value`、`error`、`value_or`，左值、const 和右值三种情况。
 - 只能移动的值类型（`std::unique_ptr`）。
-- 复制、移动、赋值，以及可平凡复制的传递（用 `static_assert` 检查）。被禁止的组合（复制只能移动的 result、移动构造会抛异常时的赋值）不能用 `static_assert` 检查，因为类型特征只看声明；这些改为手工编译失败验证，见 11.3。
-- 手写传播：取值成功后继续、失败时向上传播，值分支与 `void` 分支各一处；自定义枚举错误类型；只能移动的错误类型（这组函数能编译即证明错误是移动而非复制传出）。
+- 复制、移动、赋值。被禁止的组合（复制只能移动的 result、移动构造会抛异常时的赋值）不能用 `static_assert` 检查，因为类型特征只看声明；这些改为手工编译失败验证，见 11.3。
+- 手写传播：取值成功后继续、失败时向上传播，值分支与 `void` 分支各一处。
 - `error`：`make_error()`、`to_string()`、`error_kind_name()`、`operator<<`；作用域里有名为 `error` 的局部变量时，`make_error(...)` 仍能正常使用。
 - 误用访问的诊断与实际终止：用独立子进程验证退出信号和 stderr，避免中断单测进程；不为测试额外暴露诊断接口。
 - `T` 与 `E` 能互相转换时的编译报错，以及取错类型时的终止程序，单测无法覆盖，实现时手动验证。
@@ -311,6 +308,8 @@ result:                              手写 union{int,enum}+bool:
 
 ### 11.7 错误类型统一成 error（2026-10-04）
 
+本节保留当时的测量和取舍记录。文中「仍保留 `E`」是当时的状态；当前接口见 11.11。
+
 原来的约定是「一般接口用 `error`，失败很常见且对性能敏感的接口用 `enum class`」。撤掉，**全库只用 `error`**。
 
 实测（GCC 14.2 `-O2`，跨 TU 不可内联，100 万次/轮 × 5 轮取最小，分配次数用全局 `operator new` 计数）：
@@ -333,9 +332,9 @@ result:                              手写 union{int,enum}+bool:
 2. **消掉一处「每次都要先想一下」。** 原判据是「算不算性能敏感」——用性能标准回答语义问题。
 3. 丢掉的是「按失败种类分支」。可接受，理由见预期接口第 2 节。
 
-**`E` 仍然是模板参数**，约束只有「非数组对象类型、非 cv、析构不抛、和 `T` 不可互转」——并不要求是枚举，传小而平凡可复制的结构体也成立（实测 `struct { parse_error kind; uint32_t position; }` 下 `result` 为 12 字节、仍可平凡复制、`rax:rdx` 返回）。留着当逃生口，但 culib 自己的 API 不用。
+当时 **`E` 仍然是模板参数**，传小而平凡可复制的结构体也成立（实测 `struct { parse_error kind; uint32_t position; }` 下 `result` 为 12 字节、仍可平凡复制、`rax:rdx` 返回）。它只被当作未来的逃生口，culib 自己的 API 没有用。
 
-后果：**`result_storage<T, E, true>`（平凡存储特化）在库内不再有消费者。** 按开发约定该删，但它已经写完测完、设计自由度为零，现在删是纯折腾。等 `fs` 和 `net` 做完再看——那时如果仍然只有测试在用，删掉它和 11.2 的大半篇讨论。
+后果：**`result_storage<T, E, true>`（平凡存储特化）在库内不再有消费者。** 当时决定等 `fs` 和 `net` 做完再看；后续确认只有测试在用，按 11.11 删除。
 
 ### 11.8 评估过但没做的错误接口
 
@@ -393,3 +392,9 @@ if (port.is_err()) {
 - **这正是不该省的地方。** 上下文的价值全在它具体——哪个文件、哪个字段、什么值。一个吃字符串前缀的宏会鼓励随手写个笼统的 `"load failed"`，那和不补没区别；手写反而逼着把信息写全。
 
 **重开条件**：写完 `fs` + `os` + 配置文件之后，如果那段拼接在很多处长得一模一样，加一个**普通函数** `error with_context(const error&, std::string)`——它不藏控制流，所以不受 11.9 那条判据的约束。宏仍然不加。
+
+### 11.11 删除未使用的错误类型参数（2026-10-10）
+
+`fs`、`net` 和其他模块完成后，源码里所有 `result` 都使用 `error`；自定义错误类型只出现在 `result_test.cpp`。目前也没有下游消费者。把公开接口收敛为 `result<T>` / `result<void>`，删去 `E` 参数、平凡存储特化及只验证这些未使用用法的测试。
+
+这不会改变现有库调用点的成功路径：它们本来就使用含 `std::string` 的 `error`，走非平凡存储。11.2 中 `result<int, 枚举>` 与手写错误码结构逐条相同的汇编仍是有效的历史测量，但已不描述当前可调用接口。若将来真的出现热失败路径，应先量该调用点，再决定是否需要另一种错误表示。

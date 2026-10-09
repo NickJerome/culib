@@ -45,9 +45,6 @@ namespace {
 [[noreturn]] void result_bad_error() noexcept {
     die("wavvix::result::error() called on a success value\n");
 }
-[[noreturn]] void result_bad_value() noexcept {
-    die("wavvix::result::value() called on an error\n");
-}
 [[noreturn]] void result_bad_value(const wavvix::error& value) noexcept {
     // 一次 fprintf 写完；说明为空时连中间的 ": " 一起省掉，和 to_string() 的格式一致。
     std::fprintf(stderr, "wavvix::result::value() called on an error: %s%s%.*s\n",
