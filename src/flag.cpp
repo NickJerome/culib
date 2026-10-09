@@ -184,32 +184,47 @@ void reject_bad_name(registry& self, const char* name, const char* owner) {
     }
 }
 
-void register_flag(kind which, void* storage, const char* name, const char* help,
-                   std::initializer_list<const char*> aliases, bool is_required,
+void register_flag(kind which, void* storage, const char* help,
+                   std::initializer_list<const char*> names, bool is_required,
                    std::string default_text) {
     registry& self = table();
-    reject_bad_name(self, name, name ? name : "?");
-    for (std::initializer_list<const char*>::const_iterator it = aliases.begin();
-         it != aliases.end(); ++it) {
+    if (names.size() == 0) reject("选项至少需要一个名字");
+    const char* const name = *names.begin();
+    reject_bad_name(self, name, name);
+    for (std::initializer_list<const char*>::const_iterator it = names.begin() + 1;
+         it != names.end(); ++it) {
         reject_bad_name(self, *it, name);
+        for (std::initializer_list<const char*>::const_iterator previous = names.begin();
+             previous != it; ++previous) {
+            if (string_view(*previous) == *it)
+                reject(std::string("\"") + *it + "\" 在同一个选项中重复");
+        }
     }
     entry added;
     added.which = which;
     added.storage = storage;
     added.name = name;
     added.help = help;
-    added.aliases.assign(aliases.begin(), aliases.end());
+    added.aliases.assign(names.begin() + 1, names.end());
     added.is_required = is_required;
     added.default_text = std::move(default_text);
     added.on_command_line = false;
     self.entries.push_back(std::move(added));
 }
 
-void read_before_parse(const char* name) noexcept {
+void read_before_parse(const void* storage) noexcept {
+    const char* name = "?";
+    registry& self = table();
+    for (std::size_t i = 0; i < self.entries.size(); ++i) {
+        if (self.entries[i].storage == storage) {
+            name = self.entries[i].name;
+            break;
+        }
+    }
     std::fprintf(stderr,
                  "wavvix::flag: 在 init() / parse() 之前读取了 --%s；"
                  "选项的值要等命令行解析完才有意义\n",
-                 name ? name : "?");
+                 name);
     std::fflush(stderr);
     std::abort();
 }

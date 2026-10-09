@@ -14,8 +14,8 @@ namespace {
 
 // 和命令行**共用一套定义**。配置文件通过 apply_to_flags() 喂进来，
 // 所以不用把每个设置写两遍。
-wavvix::flag::int64 port("port", 8080, "监听端口");
-wavvix::flag::string host("host", "127.0.0.1", "监听地址");
+wavvix::flag::int64 port(8080, "监听端口", {"port"});
+wavvix::flag::string host("127.0.0.1", "监听地址", {"host"});
 
 template <typename T>
 void ignore(const wavvix::result<T>&) {}
@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
 
         std::printf("   配置文件里写的是 port = 9999\n");
         std::printf("   命令行上给过 --port 吗：%s\n", port_from_command_line ? "给过" : "没给");
-        std::printf("   最终 port = %lld，host = %s\n", port.get(), host.get().c_str());
+        std::printf("   最终 port = %lld，host = %s\n", port.value(), host.value().c_str());
         std::printf("   （给过的话配置文件不会盖掉它——试试 --port=7777）\n");
     }
 

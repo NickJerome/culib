@@ -7,8 +7,8 @@
 ## 1. 前提：选项是全局对象
 
 ```cpp
-flag::int64  port("port", 8080, "监听端口", {"p"});
-flag::string input("input", flag::required, "输入文件", {"i"});
+flag::int64  port(8080, "监听端口", {"port", "p"});
+flag::string input(flag::required, "输入文件", {"input", "i"});
 
 int main(int argc, char* argv[]) {
     flag::init(argc, argv, "1.2.3");
@@ -23,14 +23,15 @@ int main(int argc, char* argv[]) {
 
 `flag` 是**命名空间不是类模板**：类模板不带模板参数就没法写 `wavvix::flag::init`。
 
-## 2. 和预期接口的三处不同
+## 2. 接口与实现
 
-### 2.1 构造函数把主名字单列出来
+### 2.1 主名字是名字列表的第一个元素
 
-计划：`value(T default_value, string_view help, std::initializer_list<const char*> names)`，主名字混在列表里。
-改成：`value(const char* name, T default_value, const char* help, aliases = {})`。
+接口为 `option(T default_value, const char* help, std::initializer_list<const char*> names)`；必填项用 `required` 代替默认值。名字列表不能为空，第一个元素是主名字，其余是别名。
 
-三个理由：主名字是必须有的，混在列表里会让「空列表」变成运行时错误；`{"port", "p"}` 看不出哪个是主名（用法文本和错误消息要用主名）；`("port", 8080, "监听端口", {"p"})` 读起来就是「名字、默认值、说明、别名」。
+这样调用点直接写成 `flag::int64 port(8080, "监听端口", {"port", "p"})`，与最初约定一致。空列表或非法名字会在全局选项登记时打印诊断并终止；名字列表中的重复项也会被拒绝。
+
+选项对象只保存底层的 `T`；名字留在登记表里。读取发生在解析之前的错误路径才按存储地址找名字，因此常驻选项对象不必再为诊断多放一个指针。
 
 ### 2.2 补上 help_requested() / version_requested()
 
@@ -38,7 +39,7 @@ int main(int argc, char* argv[]) {
 
 ### 2.3 默认值存成文本
 
-登记时把默认值转成文本存起来（`value<T>::default_text` 走 `to_string`）。两个收益：
+登记时把默认值转成文本存起来（`option<T>::default_text` 走 `to_string`）。两个收益：
 
 - **`parse` 可以重复调用而结果确定**：每次先把默认值铺一遍，再处理这次的 argv。不这样做的话第二次 `parse` 会留着上次的值，而测试需要确定性（测试里有一条专门钉这个）。
 - `usage()` 直接有默认值可以显示，不需要另存一份。
@@ -107,7 +108,7 @@ registry& table() {
 
 ### 4.5 init 之前读取是终止，不是返回默认值
 
-`get()` 在 `parse` 之前被调用时打印诊断并 `std::abort()`。那是编程错误（读一个还不存在的值），返回默认值会让它变成一个安静的逻辑 bug。
+`value()` 在 `parse` 之前被调用时打印诊断并 `std::abort()`。那是编程错误（读一个还不存在的值），返回默认值会让它变成一个安静的逻辑 bug。
 
 ```
 wavvix::flag: 在 init() / parse() 之前读取了 --port；选项的值要等命令行解析完才有意义
@@ -115,9 +116,9 @@ wavvix::flag: 在 init() / parse() 之前读取了 --port；选项的值要等�
 
 ### 4.6 保留隐式转换，但选项不可拷贝
 
-`operator const T&` 是 6.1 的需求（「像普通变量一样读取和输出」）。已知陷阱：`auto v = port;` 拷的是 `value<T>` 而不是 `T`。
+`operator const T&` 是 6.1 的需求（「像普通变量一样读取和输出」）。已知陷阱：`auto v = port;` 拷的是 `option<T>` 而不是 `T`。
 
-**把拷贝构造删掉，所以这个陷阱是编译错误而不是静默的怪行为。** 头文件注释里写明要写 `auto v = port.get()`。coost 的宏方案没有这个陷阱（它定义出的 `FLG_name` 就是个真变量），这是用全局对象换来的代价。
+**把拷贝构造删掉，所以这个陷阱是编译错误而不是静默的怪行为。** 需要自动推导出底层值时写 `auto v = port.value()`。coost 的宏方案没有这个陷阱（它定义出的 `FLG_name` 就是个真变量），这是用全局对象换来的代价。
 
 ### 4.7 没有 set_version / set_usage
 
@@ -145,9 +146,11 @@ wavvix::flag: 在 init() / parse() 之前读取了 --port；选项的值要等�
 
 示例里的「不带参数就打印用法」因此要先跑一次 `parse` 再调 `usage()`，并带注释说明。**没有改接口**：让 `usage()` 自己去摸 `/proc/self/exe` 之类是平台相关的额外依赖，而把版本号搬进设置器又会撞上 4.7 那个时序问题。
 
-### 5.4 没覆盖
+### 5.4 初次实现时没覆盖的范围
+
+以下是 2026-10-04 初次实现时的验证边界；跨平台构建和测试现在由仓库 CI 覆盖。
 
 - **Clang、MSVC、macOS 都没跑过。** 本模块没有平台相关代码（唯一的间接依赖是 `fs::filename` 取程序名），所以风险比 `fs` 小得多。
 - **`init` 的进程退出路径没有自动测试。** `init` 调 `std::exit`，测试里不能直接调；错误分支是手工在示例上验证的（退出码 2，用法打到 stderr）。`parse` 那条路径有完整测试。
-- **多线程下 `set()` 和 `get()` 没有任何同步。** 登记表是全局可变状态，`set()` 在运行期被多个线程调用是数据竞争。目前的用法是「`main` 开头解析一次，之后只读」，这种用法下没问题；要支持运行期热加载配置就得加锁，到那时再说（第二程的配置文件模块会撞上这件事）。
+- **多线程下 `set()` 和 `value()` 没有任何同步。** 登记表是全局可变状态，`set()` 在运行期被多个线程调用是数据竞争。目前的用法是「`main` 开头解析一次，之后只读」，这种用法下没问题；要支持运行期热加载配置就得加锁，到那时再说（第二程的配置文件模块会撞上这件事）。
 - 选项数量很多时 `find_by_name` 是线性扫描。几十个选项无所谓，上百个再说。

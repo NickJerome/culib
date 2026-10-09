@@ -11,7 +11,7 @@
 **不做**：
 
 - **boost 的泛型类型对**（任何有流操作符的类型都能互转）。culib 只做数值和 bool：消费者只有 `flag` 和配置文件解析，两者要的都是这个。
-- **具名函数** `to_int` / `to_double`。那会变成「同一件事两种写法」，违背「全库一致」。`flag::value<T>` 是泛型的，直接调 `lexical_cast<T>` 正好对得上，不需要 coost 那套 `char` 类型标签的运行时分发。
+- **具名函数** `to_int` / `to_double`。那会变成「同一件事两种写法」，违背「全库一致」。`flag::option<T>` 的五种类型通过 `lexical_cast<T>` 解析，不需要 coost 那套 `char` 类型标签的运行时分发。
 - `lexical_cast<std::string>`（恒等转换）：`static_assert` 拒绝，要字符串就直接用。
 - 千分位、前后空白容忍、locale 相关的数字格式：要空白自己先 `trim`。
 - 最短往返算法（Ryu / Grisu）：用「依次试 15 / 16 / 17 位」代替，见 4.4。

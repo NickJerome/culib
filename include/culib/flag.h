@@ -8,13 +8,14 @@
 
 #include <initializer_list>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace wavvix {
 namespace flag {
 
-// 标记必填项：flag::string input("input", flag::required, "输入文件");
+// 标记必填项：flag::string input(flag::required, "输入文件", {"input"});
 struct required_t {};
 extern const required_t required;
 
@@ -23,15 +24,13 @@ namespace detail {
 // 选项的类型标签。解析时按它决定「要不要吃下一个 token」和怎么转换字符串。
 enum class kind { boolean, signed_integer, unsigned_integer, number, text };
 
-// 登记一个选项。storage 指向 value<T> 里的那个 T，解析时直接写进去。
-// default_text 是默认值的文本形式：parse 先把它应用一遍再处理命令行，所以
-// parse 可以重复调用而结果确定；usage() 也直接用它显示默认值。
-void register_flag(kind which, void* storage, const char* name, const char* help,
-                   std::initializer_list<const char*> aliases, bool is_required,
+// storage 指向 option<T> 保存的值；default_text 用于恢复默认值和生成用法。
+void register_flag(kind which, void* storage, const char* help,
+                   std::initializer_list<const char*> names, bool is_required,
                    std::string default_text);
 
 // init / parse 之前读取是编程错误，打印诊断并终止。
-[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void read_before_parse(const char* name) noexcept;
+[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void read_before_parse(const void* storage) noexcept;
 
 bool was_given(const void* storage) noexcept;
 bool parsed() noexcept;
@@ -39,76 +38,78 @@ bool parsed() noexcept;
 }  // namespace detail
 
 template <typename T>
-class value {
+class option {
 public:
-    // name 不带前导 '-'；aliases 是短名字或别名，也不带 '-'。
-    value(const char* name, T default_value, const char* help,
-          std::initializer_list<const char*> aliases = std::initializer_list<const char*>())
-        : stored_(std::move(default_value)), name_(name) {
-        detail::register_flag(tag(), &stored_, name, help, aliases, false,
-                              default_text(stored_));
+    static_assert(std::is_same<T, bool>::value ||
+                  std::is_same<T, long long>::value ||
+                  std::is_same<T, unsigned long long>::value ||
+                  std::is_same<T, double>::value ||
+                  std::is_same<T, std::string>::value,
+                  "flag::option supports only bool, int64, uint64, double and string");
+
+    // names 至少有一个；第一个是主名字，其余是别名，都不带前导 '-'。
+    option(T default_value, const char* help, std::initializer_list<const char*> names)
+        : stored_(std::move(default_value)) {
+        detail::register_flag(tag(), &stored_, help, names, false, default_text(stored_));
     }
 
-    value(const char* name, required_t, const char* help,
-          std::initializer_list<const char*> aliases = std::initializer_list<const char*>())
-        : stored_(), name_(name) {
-        detail::register_flag(tag(), &stored_, name, help, aliases, true, std::string());
+    option(required_t, const char* help, std::initializer_list<const char*> names)
+        : stored_() {
+        detail::register_flag(tag(), &stored_, help, names, true, std::string());
     }
 
-    const T& get() const noexcept {
-        if (!detail::parsed()) detail::read_before_parse(name_);
+    const T& value() const noexcept {
+        if (!detail::parsed()) detail::read_before_parse(&stored_);
         return stored_;
     }
 
-    // 像普通变量一样用。注意上面那条 auto 陷阱。
-    operator const T&() const noexcept { return get(); }
+    // 像普通变量一样用。
+    operator const T&() const noexcept { return value(); }
 
     // 命令行里是否真的给了（而不是用了默认值）。配置文件要据此决定谁覆盖谁。
     bool was_given() const noexcept { return detail::was_given(&stored_); }
 
-    value(const value&) = delete;
-    value& operator=(const value&) = delete;
+    option(const option&) = delete;
+    option& operator=(const option&) = delete;
 
 private:
     static detail::kind tag() noexcept;
     static std::string default_text(const T& value);
 
     T stored_;
-    const char* name_;
 };
 
-// 五个具体类型。tag() 和 default_text() 在这里特化，所以 value<其他类型> 会链接失败
-// 而不是静默跑出奇怪的行为。
-template <> inline detail::kind value<bool>::tag() noexcept { return detail::kind::boolean; }
-template <> inline detail::kind value<long long>::tag() noexcept {
+// 五个具体类型对应各自的解析方式和默认值文本。
+template <> inline detail::kind option<bool>::tag() noexcept { return detail::kind::boolean; }
+template <> inline detail::kind option<long long>::tag() noexcept {
     return detail::kind::signed_integer;
 }
-template <> inline detail::kind value<unsigned long long>::tag() noexcept {
+template <> inline detail::kind option<unsigned long long>::tag() noexcept {
     return detail::kind::unsigned_integer;
 }
-template <> inline detail::kind value<double>::tag() noexcept { return detail::kind::number; }
-template <> inline detail::kind value<std::string>::tag() noexcept { return detail::kind::text; }
+template <> inline detail::kind option<double>::tag() noexcept { return detail::kind::number; }
+template <> inline detail::kind option<std::string>::tag() noexcept { return detail::kind::text; }
 
-template <> inline std::string value<bool>::default_text(const bool& v) { return to_string(v); }
-template <> inline std::string value<long long>::default_text(const long long& v) {
+template <> inline std::string option<bool>::default_text(const bool& v) { return to_string(v); }
+template <> inline std::string option<long long>::default_text(const long long& v) {
     return to_string(v);
 }
-template <> inline std::string value<unsigned long long>::default_text(
+template <> inline std::string option<unsigned long long>::default_text(
     const unsigned long long& v) {
     return to_string(v);
 }
-template <> inline std::string value<double>::default_text(const double& v) {
+template <> inline std::string option<double>::default_text(const double& v) {
     return to_string(v);
 }
-template <> inline std::string value<std::string>::default_text(const std::string& v) {
+template <> inline std::string option<std::string>::default_text(const std::string& v) {
     return v;
 }
 
-using boolean = value<bool>;
-using int64 = value<long long>;
-using uint64 = value<unsigned long long>;
-using number = value<double>;
-using string = value<std::string>;
+using boolean = option<bool>;
+using int64 = option<long long>;
+using uint64 = option<unsigned long long>;
+using number = option<double>;
+using string = option<std::string>;
 
 // 解析命令行。**失败时打印用法到 stderr 并退出进程**（退出码 2，和测试框架一致），
 // 这是 CLI 想要的行为。--help 打印用法后退出 0；version 非空时额外提供 --version。
@@ -134,10 +135,6 @@ result<void> set(string_view name, string_view text);
 
 // 这个选项在最近一次成功解析的命令行上被给过吗（别名也算）。
 // 没有这个选项或最近一次解析失败时返回 false。
-//
-// 消费者是 `config::apply_to_flags()`：**命令行要优先于配置文件**，所以它得先问一句
-// 「这个已经在命令行上给过了吗」，给过就跳过。按存储地址问的那个重载在那里用不了，
-// 因为配置文件手里只有名字。
 bool was_given(string_view name) noexcept;
 
 }  // namespace flag

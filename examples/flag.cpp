@@ -15,22 +15,22 @@
 namespace flag = wavvix::flag;
 
 // 选项在 main 之前登记。注意这些是全局对象，底下的函数直接读，不用传参数。
-flag::int64 width("width", 1024, "输出宽度，像素", {"w"});
-flag::int64 height("height", 768, "输出高度，像素");
-flag::string format("format", "png", "输出格式：png / jpg", {"f"});
-flag::int64 quality("quality", 85, "jpg 质量 1-100", {"q"});
-flag::boolean dry_run("dry-run", false, "只打印要做什么，不真的写文件", {"n"});
-flag::string output("output", flag::required, "输出目录", {"o"});
+flag::int64 width(1024, "输出宽度，像素", {"width", "w"});
+flag::int64 height(768, "输出高度，像素", {"height"});
+flag::string format("png", "输出格式：png / jpg", {"format", "f"});
+flag::int64 quality(85, "jpg 质量 1-100", {"quality", "q"});
+flag::boolean dry_run(false, "只打印要做什么，不真的写文件", {"dry-run", "n"});
+flag::string output(flag::required, "输出目录", {"output", "o"});
 
 namespace {
 
 // 示范「选项是全局的」这个前提：这个函数一个参数都不要，照样读得到配置
 void process(wavvix::string_view input) {
     const std::string name = wavvix::fs::stem(input).to_string();
-    const std::string target = wavvix::fs::join(output.get(), name + "." + format.get());
+    const std::string target = wavvix::fs::join(output.value(), name + "." + format.value());
     std::printf("  %-14s -> %-28s %lldx%lld", input.to_string().c_str(), target.c_str(),
-                width.get(), height.get());
-    if (format.get() == "jpg") std::printf(" q=%lld", quality.get());
+                width.value(), height.value());
+    if (format.value() == "jpg") std::printf(" q=%lld", quality.value());
     if (dry_run) std::printf("   （dry-run，没有真的写）");
     std::printf("\n");
 }
@@ -59,8 +59,8 @@ int main(int argc, char* argv[]) {
 
     std::printf("解析结果：\n");
     std::printf("  width=%lld height=%lld format=%s quality=%lld dry-run=%s output=%s\n",
-                width.get(), height.get(), format.get().c_str(), quality.get(),
-                wavvix::to_string(dry_run.get()).c_str(), output.get().c_str());
+                width.value(), height.value(), format.value().c_str(), quality.value(),
+                wavvix::to_string(dry_run.value()).c_str(), output.value().c_str());
 
     // was_given 区分「用户显式给了」和「用的默认值」，配置文件要据此决定谁覆盖谁
     std::printf("  显式给了的选项：");
@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
     std::printf("\n配置文件走 flag::set(名字, 文本)：\n");
     const wavvix::result<void> applied = flag::set("width", "1920");
     std::printf("  set(\"width\", \"1920\") -> %s，现在 width=%lld\n",
-                applied.is_ok() ? "成功" : "失败", width.get());
+                applied.is_ok() ? "成功" : "失败", width.value());
     const wavvix::result<void> rejected = flag::set("width", "很宽");
     std::printf("  set(\"width\", \"很宽\") -> %s\n", rejected.error().message().c_str());
     return 0;

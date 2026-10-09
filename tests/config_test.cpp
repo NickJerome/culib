@@ -224,8 +224,8 @@ TEST(config, reports_a_file_that_is_not_there) {
 
 namespace {
 
-wavvix::flag::int64 config_port("config_port", 1111, "测试用：端口");
-wavvix::flag::string config_host("config_host", "default", "测试用：地址");
+wavvix::flag::int64 config_port(1111, "测试用：端口", {"config_port"});
+wavvix::flag::string config_host("default", "测试用：地址", {"config_host"});
 
 }  // namespace
 
@@ -245,13 +245,13 @@ TEST(config, feeds_its_values_into_flag) {
     parse_empty_command_line();
     const config one = parsed("config_port = 2222\nconfig_host = from_file\n");
     if (!EXPECT(one.apply_to_flags().is_ok(), ==, true)) return;
-    EXPECT(config_port.get(), ==, 2222);
-    EXPECT(config_host.get(), ==, "from_file");
+    EXPECT(config_port.value(), ==, 2222);
+    EXPECT(config_host.value(), ==, "from_file");
     EXPECT(config_port.was_given(), ==, false);
 
     const config updated = parsed("config_port = 4444\n");
     if (!EXPECT(updated.apply_to_flags().is_ok(), ==, true)) return;
-    EXPECT(config_port.get(), ==, 4444);
+    EXPECT(config_port.value(), ==, 4444);
 }
 
 TEST(config, leaves_alone_what_the_command_line_already_set) {
@@ -262,7 +262,7 @@ TEST(config, leaves_alone_what_the_command_line_already_set) {
 
     const config one = parsed("config_port = 4444\n");
     if (!EXPECT(one.apply_to_flags().is_ok(), ==, true)) return;
-    EXPECT(config_port.get(), ==, 3333);     // 配置文件没盖掉它
+    EXPECT(config_port.value(), ==, 3333);     // 配置文件没盖掉它
 }
 
 TEST(config, skips_keys_that_no_flag_defines) {

@@ -172,23 +172,24 @@ defer：在当前作用域结束时执行一段代码，类似 Go 的 defer。
 
 命令行参数。选项是全局对象，定义在哪里就能在哪里读，不用从 main 一路传下去。
 
-    namespace flag = wavvix::flag;
+    #include <culib/flag.h>
+    #include <iostream>
 
-    flag::int64  port("port", 8080, "监听端口", {"p"});
-    flag::string host("host", "0.0.0.0", "监听地址");
-    flag::boolean verbose("verbose", false, "打印详细日志", {"v"});
-    flag::string input("input", flag::required, "输入文件");
+    wavvix::flag::string address("localhost", "server listen address", {"address", "addr"});
+    wavvix::flag::int64 port(wavvix::flag::required, "server listen port", {"port", "p"});
+    wavvix::flag::boolean verbose(false, "print details", {"verbose", "v"});
 
     int main(int argc, char* argv[]) {
-        flag::init(argc, argv, "1.2.3");          // 失败时打印用法并退出进程
-        listen(host, port);                        // 像普通变量一样用
-        for (wavvix::string_view path : flag::args()) { ... }   // 位置参数
+        wavvix::flag::init(argc, argv); // 失败时打印用法并退出进程
+        std::cout << address.value() << ':' << port.value() << '\n';
     }
+
+例如传入 `--port=9000` 会输出 `localhost:9000`；不传 `--port` 会报告缺少必填选项并以退出码 2 结束。
 
 ### 陷阱：别用 auto 拷贝
 
     auto v = verbose;          // 拷的是 flag::boolean（而且编译失败，不可拷贝）
-    auto v = verbose.get();    // 这才是 bool
+    auto v = verbose.value();  // 这才是 bool
 
 隐式转换是为了「像普通变量一样读取和输出」而保留的，代价就是这一条。选项不可拷贝，
 所以第一种写法是编译错误而不是静默的怪行为。
@@ -222,7 +223,7 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 指定的选项。`set()` 在解析成功前会报错。一次解析失败会清空位置参数和来源标记，
 先前成功解析出的值也不可再读取；修正参数后重新解析即可。
 
-选项的 name / help / 别名字符串必须是静态存续的（字面量就行），库不拷贝它们。
+选项的名字和说明字符串必须是静态存续的（字面量就行），库不拷贝它们；名字列表的第一个元素是主名字。
 
 全局选项对象在 main 之前登记，这是「无启动开销」的第二个例外（第一个是 TEST）。
 

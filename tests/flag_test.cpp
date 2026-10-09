@@ -11,11 +11,11 @@ using wavvix::result;
 using wavvix::string_view;
 
 // 测试用的选项。全局对象在 main 之前登记，这是这个模块的用法前提。
-flag::int64 port("port", 8080, "监听端口", {"p"});
-flag::string host("host", "0.0.0.0", "监听地址");
-flag::boolean verbose("verbose", false, "打印详细日志", {"v"});
-flag::number timeout("timeout", 2.5, "超时秒数", {"t"});
-flag::uint64 retries("retries", 3, "重试次数");
+flag::int64 port(8080, "监听端口", {"port", "p"});
+flag::string host("0.0.0.0", "监听地址", {"host"});
+flag::boolean verbose(false, "打印详细日志", {"verbose", "v"});
+flag::number timeout(2.5, "超时秒数", {"timeout", "t"});
+flag::uint64 retries(3, "重试次数", {"retries"});
 
 // parse 每次先铺默认值，所以每个测试都从干净状态开始，不互相影响。
 result<void> run(const std::vector<const char*>& words, string_view version = "1.2.3") {
@@ -42,66 +42,66 @@ std::string positional() {
 
 TEST(flag, accepts_the_documented_spellings) {
     EXPECT(run({"app", "--port=9000"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 9000);
+    EXPECT(port.value(), ==, 9000);
 
     EXPECT(run({"app", "--port", "9001"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 9001);
+    EXPECT(port.value(), ==, 9001);
 
     EXPECT(run({"app", "-p", "9002"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 9002);
+    EXPECT(port.value(), ==, 9002);
 
     EXPECT(run({"app", "-p=9003"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 9003);
+    EXPECT(port.value(), ==, 9003);
 
     // 五种类型都走一遍
     EXPECT(run({"app", "--host=1.2.3.4", "--timeout=0.5", "--retries=7", "--verbose"}).is_ok(),
            ==, true);
-    EXPECT(host.get(), ==, "1.2.3.4");
-    EXPECT(timeout.get(), ==, 0.5);
-    EXPECT(retries.get(), ==, 7u);
-    EXPECT(verbose.get(), ==, true);
+    EXPECT(host.value(), ==, "1.2.3.4");
+    EXPECT(timeout.value(), ==, 0.5);
+    EXPECT(retries.value(), ==, 7u);
+    EXPECT(verbose.value(), ==, true);
 }
 
 TEST(flag, keeps_parsing_options_after_positional_arguments) {
     // 规则 1（GNU 风格重排）。不这样做的话 `crop *.png --width=1024` 会静默失效，
     // 那是 Go flag 包最常被抱怨的一点。
     EXPECT(run({"app", "a.png", "--port=9000", "b.png"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 9000);
+    EXPECT(port.value(), ==, 9000);
     EXPECT(positional(), ==, "[a.png][b.png]");
 
     EXPECT(run({"app", "x", "-p", "1", "y", "--verbose", "z"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 1);
-    EXPECT(verbose.get(), ==, true);
+    EXPECT(port.value(), ==, 1);
+    EXPECT(verbose.value(), ==, true);
     EXPECT(positional(), ==, "[x][y][z]");
 }
 
 TEST(flag, boolean_options_do_not_eat_the_next_token) {
     // 规则 2。否则 `crop --verbose a.png` 里的 a.png 会被当成 --verbose 的值。
     EXPECT(run({"app", "--verbose", "a.png"}).is_ok(), ==, true);
-    EXPECT(verbose.get(), ==, true);
+    EXPECT(verbose.value(), ==, true);
     EXPECT(positional(), ==, "[a.png]");
 
     EXPECT(run({"app", "-v", "a.png"}).is_ok(), ==, true);
-    EXPECT(verbose.get(), ==, true);
+    EXPECT(verbose.value(), ==, true);
     EXPECT(positional(), ==, "[a.png]");
 
     // 要显式给值就用 = 形式
     EXPECT(run({"app", "--verbose=false", "a.png"}).is_ok(), ==, true);
-    EXPECT(verbose.get(), ==, false);
+    EXPECT(verbose.value(), ==, false);
     EXPECT(positional(), ==, "[a.png]");
 
     EXPECT(run({"app", "--verbose=yes"}).is_ok(), ==, true);
-    EXPECT(verbose.get(), ==, true);
+    EXPECT(verbose.value(), ==, true);
 }
 
 TEST(flag, treats_everything_after_a_double_dash_as_positional) {
     // 规则 3。处理以 '-' 开头的文件名要靠它。
     EXPECT(run({"app", "--", "--weird.png", "-x", "--port=1"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 8080);                       // --port=1 在 -- 之后，没生效
+    EXPECT(port.value(), ==, 8080);                       // --port=1 在 -- 之后，没生效
     EXPECT(positional(), ==, "[--weird.png][-x][--port=1]");
 
     EXPECT(run({"app", "--port=2", "--", "-y"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 2);                          // -- 之前的照常解析
+    EXPECT(port.value(), ==, 2);                          // -- 之前的照常解析
     EXPECT(positional(), ==, "[-y]");
 
     EXPECT(run({"app", "--"}).is_ok(), ==, true);
@@ -146,15 +146,15 @@ TEST(flag, reports_missing_values_and_bad_conversions) {
 
 TEST(flag, restores_defaults_on_every_parse) {
     EXPECT(run({"app", "--port=1", "--host=x", "--verbose"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 1);
+    EXPECT(port.value(), ==, 1);
 
     // 第二次不给，必须回到默认值而不是留着上次的
     EXPECT(run({"app"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 8080);
-    EXPECT(host.get(), ==, "0.0.0.0");
-    EXPECT(verbose.get(), ==, false);
-    EXPECT(timeout.get(), ==, 2.5);
-    EXPECT(retries.get(), ==, 3u);
+    EXPECT(port.value(), ==, 8080);
+    EXPECT(host.value(), ==, "0.0.0.0");
+    EXPECT(verbose.value(), ==, false);
+    EXPECT(timeout.value(), ==, 2.5);
+    EXPECT(retries.value(), ==, 3u);
     EXPECT(positional(), ==, "");
 }
 
@@ -170,7 +170,7 @@ TEST(flag, failed_parse_clears_the_previous_command_line_state) {
     EXPECT(flag::set("port", "7000").is_err(), ==, true);
 
     EXPECT(run({"app", "--port=8000"}).is_ok(), ==, true);
-    EXPECT(port.get(), ==, 8000);
+    EXPECT(port.value(), ==, 8000);
 }
 
 TEST(flag, tracks_whether_an_option_was_actually_given) {
@@ -230,12 +230,12 @@ TEST(flag, sets_values_by_name_for_config_files) {
     EXPECT(run({"app"}).is_ok(), ==, true);
 
     EXPECT(flag::set("port", "7000").is_ok(), ==, true);
-    EXPECT(port.get(), ==, 7000);
+    EXPECT(port.value(), ==, 7000);
     EXPECT(port.was_given(), ==, false);         // 仅命令行算「给过」
 
     // 别名也能用
     EXPECT(flag::set("p", "7001").is_ok(), ==, true);
-    EXPECT(port.get(), ==, 7001);
+    EXPECT(port.value(), ==, 7001);
 
     const result<void> missing = flag::set("nope", "x");
     EXPECT(missing.is_err(), ==, true);
@@ -244,13 +244,13 @@ TEST(flag, sets_values_by_name_for_config_files) {
     const result<void> bad = flag::set("port", "zzz");
     EXPECT(bad.is_err(), ==, true);
     EXPECT(bad.error().message().find("--port") != std::string::npos, ==, true);
-    EXPECT(port.get(), ==, 7001);                // 失败时不改动原值
+    EXPECT(port.value(), ==, 7001);                // 失败时不改动原值
 }
 
 TEST(flag, converts_implicitly_at_the_call_site) {
     EXPECT(run({"app", "--port=9000", "--host=h", "--verbose", "--timeout=1.5"}).is_ok(), ==, true);
 
-    // 像普通变量一样用，不写 .get()
+    // 像普通变量一样用，不写 .value()
     struct helper {
         static long long doubled(long long value) { return value * 2; }
         static std::size_t length(const std::string& text) { return text.size(); }
@@ -276,7 +276,7 @@ TEST(flag, args_point_into_argv_without_copying) {
 TEST(flag, parses_an_empty_command_line) {
     EXPECT(run({"app"}).is_ok(), ==, true);
     EXPECT(positional(), ==, "");
-    EXPECT(port.get(), ==, 8080);
+    EXPECT(port.value(), ==, 8080);
 
     // argc 为 0（没有 argv[0]）也不能崩
     EXPECT(flag::parse(0, 0, "1.0").is_ok(), ==, true);
