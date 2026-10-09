@@ -25,3 +25,7 @@ wavvix::blocking_pool pool = std::move(created).value();
 `create(0)` 返回错误；默认创建一根工作线程。池没有每次调用的任务堆分配：可调用对象和队列节点活在等待协程自己的栈上，工作线程只持有指针。参数按值保存，传引用用 `std::ref`。`run()` 只接受从 culib 协程发起的调用，返回时函数已经完成；在 vCPU 主线程调用会返回 `invalid_argument`。若函数有结果，可捕获一个局部变量供它写入，等 `run()` 成功返回后读取。调用方负责让被捕获的对象活到函数结束。
 
 工作线程上的函数若抛出未捕获异常，行为与 `std::thread` 一样，会终止进程；函数应自行处理异常。`run()` 没有超时或取消：函数不返回，等待它的协程也不会完成。池析构会等已提交的函数结束；建议先创建池，再创建 `scheduler_scope`，让作用域中的协程全部返回后才销毁池。这个池只用于少量真正阻塞的操作；协程感知的 socket、虚拟网卡和同步原语仍直接在 vCPU 上调用。
+
+## 实现验证
+
+Windows MSVC x64 和 WSL2 GCC 的完整测试通过；Linux 分别强制 epoll、io_uring 跑过测试。[`eed3929` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/37870009886) 21/21 通过，包含 macOS arm64/x86_64、GCC 4.8、MinGW i686、ASan/UBSan 和关闭异常/RTTI 的构建。测试覆盖等待期间其他协程继续运行、两根系统工作线程并发执行、移动参数，以及一个池服务两个 vCPU。
