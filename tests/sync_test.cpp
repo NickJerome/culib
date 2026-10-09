@@ -159,6 +159,21 @@ TEST(semaphore, try_acquire_for_gives_up_when_the_time_is_up) {
     EXPECT(permits.count(), ==, 0);
 }
 
+TEST(semaphore, maximum_timeout_still_waits_for_a_release) {
+    semaphore permits(0);
+    bool acquired = false;
+    spawn([&] {
+        acquired = permits.try_acquire_for((std::chrono::nanoseconds::max)());
+    }).value();
+    spawn([&] {
+        wavvix::yield();
+        permits.release();
+    }).value();
+
+    EXPECT(run(), ==, 2u);
+    EXPECT(acquired, ==, true);
+}
+
 TEST(semaphore, early_wakes_remove_timers_without_losing_later_timeouts) {
     semaphore permits(0);
     int acquired = 0;

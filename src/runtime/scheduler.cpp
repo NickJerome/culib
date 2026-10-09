@@ -151,6 +151,14 @@ namespace {
 typedef park_clock clock_type;
 typedef park_instant instant;
 
+instant deadline_after(std::chrono::nanoseconds duration) {
+    const instant now = clock_type::now();
+    // The largest timeout can exceed the remaining range of steady_clock.
+    if (now >= instant() && duration >= (instant::max)() - now)
+        return (instant::max)();
+    return now + duration;
+}
+
 #if defined(_MSC_VER)
 __declspec(thread) vcpu* current_vcpu = 0;
 #else
@@ -671,7 +679,7 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
     token.settled = false;
     token.parked = false;
     token.timed = timeout.count() >= 0;
-    if (token.timed) token.deadline = clock_type::now() + timeout;
+    if (token.timed) token.deadline = deadline_after(timeout);
     // **不动 token.next**：那是把它串进等待队列的那一方的字段，而那一方是先串好
     // 再调这里的。动了就会把别人的队列拆开。
 
@@ -876,7 +884,7 @@ std::size_t detail::scheduler_run_until(detail::task_state* target) {
 
 void detail::scheduler_run_for(std::chrono::nanoseconds duration) {
     if (duration.count() <= 0) return;
-    scheduler_drive(0, true, std::chrono::steady_clock::now() + duration, false);
+    scheduler_drive(0, true, deadline_after(duration), false);
 }
 
 void detail::scheduler_yield_main() {
