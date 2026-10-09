@@ -177,15 +177,15 @@
 | --- | --- | --- |
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 七个目标 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [扩展矩阵](https://github.com/NickJerome/culib/actions/runs/37841586928) **17/17 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64/x86 × debug/release，加 GCC 4.8、公共头文件及源码依赖检查；MinGW 由本机交叉编译覆盖（见上）。VS2015 尚未覆盖 |
-| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 同上，**外加本机 MinGW 交叉编译全部示例**（见下） |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/37877826017) **22/22 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64/x86 × debug/release，加 GCC 4.8、MinGW x64/i686、公共头文件及源码依赖检查。VS2015 尚未覆盖 |
+| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与两种 MinGW 架构都编译全部 29 个示例 |
 | CI 失败能诊断 | `.github/report-failure.sh`，把失败命令的输出发成 `::error::` annotation | 编译 / 测试 / 示例四个步骤全经过它，**编译器诊断和测试失败两种式样都认**。**不这么做的话从公开 API 看只有「exit code 1」**——job 日志要仓库 admin 权限，而 `run:` 步骤里编译器的原始诊断不会自动变成 annotation。**测试失败那一半原先是漏的**，代价是 macOS 红了五个提交没人知道原因，见下 |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
 | 关异常 / RTTI 可用 | `.github/workflows/build.yml` 的 `no-exceptions-rtti` job | [Linux GCC/Clang release CI](https://github.com/NickJerome/culib/actions/runs/37845192319)：库、测试和全部示例均在 `-fno-exceptions -fno-rtti` 下构建，测试通过 |
-| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，见下 | MinGW-w64 x86_64 和 i686。**不覆盖 MSVC**（头文件和警告集都不同），那一侧只有 CI |
+| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，以及 Windows CI | MinGW-w64 x86_64 和 i686 各运行 362 项测试并编译 29 个示例。**MinGW 不能代替 MSVC**（头文件和警告集都不同），后者由独立 CI 任务覆盖 |
 | macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
 
 **CI 的结果只在看过那次运行之后才写进文档，并写上是哪个提交。** 推上去不等于绿：README 里「272 个测试在三平台 CI 上全绿」是在 `8bee9ac` 里写下的，而那时前两个提交的 CI 都已经跑完、都是红的（原因见下面 C4996 那张表）。没看过就写的「全绿」比不写更坏——它让下一个人不再去看。查法不用登录：GitHub 公开 API 的 `actions/runs` → 那次运行的 `jobs` → 失败 job 的 check-run `annotations`，`report-failure.sh` 发出来的编译器和测试输出就在那里。

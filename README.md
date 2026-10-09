@@ -337,7 +337,7 @@ xmake build -g examples     # 编译全部示例
 xmake run example_result    # 运行一个示例
 ```
 
-三个平台都是警告即错误（MSVC 上是 `/W4` 加 `/WX`）；CI 覆盖 Linux GCC、Linux Clang、macOS Clang、Windows MSVC 各 debug / release 两种模式，并单独验证 culib 被当作源码依赖引入的场景。
+三个平台都是警告即错误（MSVC 上是 `/W4` 加 `/WX`）；[CI](https://github.com/NickJerome/culib/actions/runs/37877826017) 覆盖 Linux GCC、Linux Clang、macOS Clang、Windows MSVC 各 debug / release 两种模式，以及 MinGW-w64 x86_64/i686、GCC 4.8、公共头文件和源码依赖引入场景。MinGW 两种架构均运行测试并编译全部示例。
 
 ## 待定事项
 
