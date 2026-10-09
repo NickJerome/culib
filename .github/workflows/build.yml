@@ -99,23 +99,24 @@ jobs:
         shell: bash
         run: bash .github/report-failure.sh xmake build -w -y -g examples
 
-  address-sanitizer:
-    name: Linux GCC AddressSanitizer
+  sanitizers:
+    name: Linux GCC ASan + UBSan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
-      - name: configure with AddressSanitizer
-        run: xmake f -m debug --toolchain=gcc --cxxflags="-fsanitize=address -fno-omit-frame-pointer" --ldflags="-fsanitize=address" --ccache=n -y
+      - name: configure with sanitizers
+        run: xmake f -m debug --toolchain=gcc --cxxflags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" --ldflags="-fsanitize=address,undefined" --ccache=n -y
       - name: build library and tests
         shell: bash
         run: bash .github/report-failure.sh xmake build -w -y culib_test
-      - name: run tests under AddressSanitizer
+      - name: run tests under ASan and UBSan
         shell: bash
         env:
           ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: bash .github/report-failure.sh xmake test -v
 
   build:
