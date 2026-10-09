@@ -24,3 +24,15 @@ target("culib_test")
     add_deps("culib")
     add_tests("default")
 target_end()
+
+-- 独立进程替换 nothrow new，验证提交前分配失败不会留下半个协程。
+target("coroutine_allocation_test")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests")
+    if not is_plat("windows") then set_languages("c++11") end
+    set_warnings("allextra", "pedantic", "error")
+    add_files("fault/coroutine_allocation.cpp")
+    add_deps("culib")
+    add_tests("default")
+target_end()

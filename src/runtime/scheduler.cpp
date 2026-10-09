@@ -17,6 +17,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
 #include <utility>
@@ -156,11 +157,12 @@ vcpu* active_vcpu() noexcept {
 
 void die(const char* what);
 
-vcpu& here() {
+vcpu* try_here() noexcept {
     if (runtime_thread_state_current() == &runtime_thread_exit_marker)
         die("wavvix::scheduler: 线程正在退出，不能再创建协程");
     if (!current_vcpu) {
-        vcpu* const self = new vcpu();
+        vcpu* const self = new (std::nothrow) vcpu();
+        if (!self) return 0;
         self->engine = 0;
         self->current = 0;
         self->park_of_current = 0;
@@ -172,11 +174,19 @@ vcpu& here() {
         self->remote = 0;
         self->pool = 0;
         self->worker_stop = 0;
-        if (!register_runtime_thread_exit(self, &reap_vcpu))
-            die("wavvix::scheduler: 无法注册线程退出清理");
+        if (!register_runtime_thread_exit(self, &reap_vcpu)) {
+            delete self;
+            return 0;
+        }
         current_vcpu = self;
     }
-    return *current_vcpu;
+    return current_vcpu;
+}
+
+vcpu& here() {
+    vcpu* const self = try_here();
+    if (!self) die("wavvix::scheduler: 无法创建当前 vCPU");
+    return *self;
 }
 
 void die(const char* what) {
@@ -391,13 +401,14 @@ fiber_failure scheduler_spawn(fiber* taken, fiber_failure failure) {
         return failure == fiber_failure::none ? fiber_failure::resource_exhausted : failure;
     }
 
-    vcpu& self = here();
+    vcpu* const self = try_here();
+    if (!self) return fiber_failure::resource_exhausted;
     // 正在跑一轮时进来的（嵌套 spawn）放 incoming，下一轮入队；
     // 否则直接进 ready。两条路分开，是为了让「跑一轮」能安全地遍历局部副本。
-    if (self.running) {
-        self.incoming.push_back(taken);
+    if (self->running) {
+        self->incoming.push_back(taken);
     } else {
-        self.ready.push_back(taken);
+        self->ready.push_back(taken);
     }
     owned.release();
     return fiber_failure::none;
@@ -456,21 +467,26 @@ void scheduler_init() { scheduler_scope_enter(); }
 
 void scheduler_shutdown() noexcept { scheduler_scope_leave(active_vcpu()); }
 
-task_state* scheduler_task_create() { return new task_state(&here()); }
+task_state* scheduler_task_create() noexcept {
+    vcpu* const self = try_here();
+    return self ? new (std::nothrow) task_state(self) : 0;
+}
 
 void scheduler_task_discard(task_state* task) noexcept { delete task; }
 
-void scheduler_task_schedule(task_state* task, fiber* body) {
+bool scheduler_task_schedule(task_state* task, fiber* body) {
     std::unique_ptr<fiber> owned(body);
     vcpu& self = *task->owner;
     task->body = body;
     if (!self.pool) {
         if (scheduler_spawn(owned.release(), fiber_failure::none) != fiber_failure::none)
             die("wavvix::coroutine: 已验证的协程无法入队");
-        return;
+        return true;
     }
 
-    std::unique_ptr<remote_task_state> remote(new remote_task_state(self.remote));
+    std::unique_ptr<remote_task_state> remote(
+        new (std::nothrow) remote_task_state(self.remote));
+    if (!remote) return false;
     scheduler_pool& pool = *self.pool;
     worker_entry& worker = *pool.workers[pool.next++ % pool.workers.size()];
     task->remote = remote.get();
@@ -487,6 +503,7 @@ void scheduler_task_schedule(task_state* task, fiber* body) {
     owned.release();
     if (!io_engine_notify(worker.waker->engine))
         die("wavvix::coroutine: 不能唤醒工作 vCPU");
+    return true;
 }
 
 void scheduler_task_complete(task_state* task) noexcept {

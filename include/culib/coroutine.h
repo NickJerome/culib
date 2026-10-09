@@ -27,11 +27,12 @@ template <typename F>
 task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
     std::unique_ptr<task_state, void (*)(task_state*)> task(
         scheduler_task_create(), &scheduler_task_discard);
+    if (!task) return 0;
     typedef typename std::decay<F>::type function_type;
-    std::unique_ptr<fiber> worker(new fiber(
+    std::unique_ptr<fiber> worker(new (std::nothrow) fiber(
         coroutine_body<function_type>(std::forward<F>(body), task.get()), stack_size));
-    if (!worker->ok()) return 0;
-    scheduler_task_schedule(task.get(), worker.release());
+    if (!worker || !worker->ok()) return 0;
+    if (!scheduler_task_schedule(task.get(), worker.release())) return 0;
     return task.release();
 }
 
