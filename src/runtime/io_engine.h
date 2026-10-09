@@ -66,8 +66,12 @@ struct io_request {
     io_request* next;             // 等待链；完成后复用为完成队列的链指针
 #if defined(_WIN32)
     unsigned long datagram_flags;  // WSARecvFrom 的标志位，完成前不能离开栈帧
-    // OVERLAPPED 的存储。后端在这里就地构造，避免公共实现头包含 <windows.h>。
-    alignas(void*) unsigned char overlapped[8 * sizeof(void*)];
+    // OVERLAPPED 的字节存储；指针成员提供对齐，无须包含 <windows.h>。
+    struct overlapped_storage {
+        unsigned char bytes[8 * sizeof(void*)];
+        void* alignment;
+        overlapped_storage() noexcept {}
+    } overlapped;
     alignas(void*) char accept_addresses[288];  // AcceptEx 的两个地址
 #endif
 };

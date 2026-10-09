@@ -29,18 +29,20 @@ public:
 namespace {
 
 // io_request 里给 OVERLAPPED 留的那块地方必须装得下、对得齐。
-// Win64 是 64 字节对 32，Win32 是 32 对 20，都够；但这件事值得让编译器盯着，
+// 字节区域在 Win64 是 64 字节对 32，Win32 是 32 对 20，都够；让编译器盯着，
 // 因为 io_engine.h 是平台中立的，改那个数组长度的人看不到这边。
 static_assert(sizeof(io_request::overlapped) >= sizeof(OVERLAPPED),
               "io_request::overlapped is too small to hold an OVERLAPPED");
-static_assert(alignof(void*) >= alignof(OVERLAPPED),
+static_assert(alignof(io_request::overlapped_storage) >= alignof(OVERLAPPED),
               "io_request::overlapped is not aligned well enough for an OVERLAPPED");
+static_assert(offsetof(io_request::overlapped_storage, bytes) == 0,
+              "OVERLAPPED bytes must start at the storage address");
 static_assert(sizeof(io_request::accept_addresses) >=
                   2 * (sizeof(sockaddr_storage) + 16),
               "io_request::accept_addresses is too small for AcceptEx");
 
 OVERLAPPED* overlapped_of(io_request& request) {
-    return reinterpret_cast<OVERLAPPED*>(&request.overlapped[0]);
+    return reinterpret_cast<OVERLAPPED*>(request.overlapped.bytes);
 }
 
 // 完成项只带回 OVERLAPPED 的地址，所以要从它反推回请求。OVERLAPPED 就住在请求里，
@@ -114,7 +116,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     }
 
     // 同一请求可能再次提交；每次构造一个全零的 OVERLAPPED。
-    OVERLAPPED* const overlapped = new (request.overlapped) OVERLAPPED();
+    OVERLAPPED* const overlapped = new (request.overlapped.bytes) OVERLAPPED();
 
     const HANDLE handle = static_cast<HANDLE>(request.handle);
     DWORD moved = 0;
