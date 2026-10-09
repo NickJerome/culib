@@ -59,6 +59,8 @@
     const ssize_t sent = write(fd, out.data(), out.size());
     if (sent > 0) out.consume(sent);            // 发出去多少就丢掉多少
 
+`commit()` 可分次调用，但累计字节数不能超过最近一次 `prepare(n)` 的 `n`；超出时即使底层还留有容量也会终止进程。再次调用 `prepare()`、`reserve()`、`consume()` 或 `clear()` 会使前一次取得的可写空间失效。`prepare(0)` 不分配内存，空缓冲区返回空指针。
+
 ## [`config.h`](../include/culib/config.h)
 
 完整背景见 [设计文档](superpowers/specs/2026-10-05-config-design.md)。

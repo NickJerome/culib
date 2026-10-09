@@ -153,6 +153,28 @@ TEST(bytes, prepare_and_commit_only_count_what_was_really_written) {
     EXPECT(shown(one), ==, "abc");
 }
 
+TEST(bytes, zero_length_prepare_does_not_allocate_or_form_an_invalid_pointer) {
+    buffer empty;
+    EXPECT(empty.prepare(0), ==, static_cast<unsigned char*>(0));
+    empty.commit(0);
+    EXPECT(empty.capacity(), ==, 0u);
+
+    buffer full(4);
+    full.write("abcd", 4);
+    EXPECT(full.prepare(0), ==, full.data() + full.size());
+    full.commit(0);
+    EXPECT(shown(full), ==, "abcd");
+}
+
+TEST(bytes, commit_can_account_for_one_preparation_in_parts) {
+    buffer one(64);
+    unsigned char* const room = one.prepare(4);
+    std::memcpy(room, "abcd", 4);
+    one.commit(2);
+    one.commit(2);
+    EXPECT(shown(one), ==, "abcd");
+}
+
 TEST(bytes, consume_drops_the_front_and_never_runs_past_the_end) {
     buffer one;
     one.write("abcdef", 6);

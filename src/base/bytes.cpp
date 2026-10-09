@@ -16,6 +16,11 @@ void bytes_overcommit() {
     std::abort();
 }
 
+void bytes_capacity_overflow() {
+    std::fputs("wavvix::buffer: 请求的缓冲空间过大\n", stderr);
+    std::abort();
+}
+
 }  // namespace detail
 
 void buffer::compact() {
@@ -26,25 +31,42 @@ void buffer::compact() {
 }
 
 unsigned char* buffer::prepare(std::size_t length) {
-    if (store_.size() - write_at_ >= length) return &store_[write_at_];
+    prepared_ = 0;
+    if (length == 0) return store_.empty() ? 0 : store_.data() + write_at_;
+    if (store_.size() - write_at_ >= length) {
+        prepared_ = length;
+        return store_.data() + write_at_;
+    }
 
     // 先想办法不分配：把已经读掉的那段地方腾出来。一个「读一点、写一点」的连接上，
     // 稳态下这一步就够了，不会一直长。
     if (read_at_ && store_.size() - size() >= length) {
         compact();
-        return &store_[write_at_];
+        prepared_ = length;
+        return store_.data() + write_at_;
     }
 
     compact();   // 搬到开头再长，省得把已经读过的字节也跟着拷一遍
+    if (length > store_.max_size() - write_at_) detail::bytes_capacity_overflow();
+    const std::size_t needed = write_at_ + length;
     std::size_t room = store_.empty() ? 256 : store_.size();
-    while (room - write_at_ < length) room *= 2;    // 翻倍，别一次一次地挪
+    while (room < needed) {
+        if (room > store_.max_size() / 2) {
+            room = needed;
+            break;
+        }
+        room *= 2;
+    }
     store_.resize(room);
-    return &store_[write_at_];
+    prepared_ = length;
+    return store_.data() + write_at_;
 }
 
 void buffer::reserve(std::size_t room) {
+    prepared_ = 0;
     if (store_.size() - write_at_ >= room) return;
     compact();
+    if (room > store_.max_size() - write_at_) detail::bytes_capacity_overflow();
     if (store_.size() - write_at_ < room) store_.resize(write_at_ + room);
 }
 

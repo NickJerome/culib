@@ -13,16 +13,15 @@
 namespace wavvix {
 
 namespace detail {
-// commit 认账超过 prepare 要来的空间时打一行诊断后 abort。
-// 那是**会直接写坏堆**的误用，而且是「现在不崩、以后在别处崩」的那类，所以 release
-// 下也检查——代价是一次比较，和它前面那个系统调用比不值一提。
+// commit 超过最近一次 prepare 的额度时，打印诊断并终止进程。
 void bytes_overcommit();
+void bytes_capacity_overflow();
 }  // namespace detail
 
 class buffer {
 public:
-    buffer() : read_at_(0), write_at_(0) {}
-    explicit buffer(std::size_t room) : read_at_(0), write_at_(0) { reserve(room); }
+    buffer() : read_at_(0), write_at_(0), prepared_(0) {}
+    explicit buffer(std::size_t room) : read_at_(0), write_at_(0), prepared_(0) { reserve(room); }
 
     // ---- 状态 ----
     // 还没被读走的那些字节。data() 指向它们的开头。
@@ -35,6 +34,7 @@ public:
     void clear() {
         read_at_ = 0;
         write_at_ = 0;
+        prepared_ = 0;
     }
 
     // 至少留出这么多可写空间。
@@ -42,14 +42,17 @@ public:
 
     // ---- 直接读写底下那块内存，省一次拷贝 ----
     // 要至少 length 字节的可写空间，返回它的起点。**真写进去多少要用 commit 认账。**
+    // 最多认账 length 字节；再次 prepare、reserve、consume 或 clear 后须重新取得。
     unsigned char* prepare(std::size_t length);
     void commit(std::size_t length) {
-        if (length > store_.size() - write_at_) detail::bytes_overcommit();
+        if (length > prepared_) detail::bytes_overcommit();
         write_at_ += length;
+        prepared_ -= length;
     }
 
     // 丢掉开头 length 个字节（已经处理完了）。多给也不会越界，最多丢光。
     void consume(std::size_t length) {
+        prepared_ = 0;
         read_at_ += (length < size()) ? length : size();
         if (read_at_ == write_at_) clear();    // 空了就归零，省得越积越靠后
     }
@@ -183,6 +186,7 @@ private:
     std::vector<unsigned char> store_;   // store_.size() 就是容量
     std::size_t read_at_;
     std::size_t write_at_;
+    std::size_t prepared_;
 };
 
 }  // namespace wavvix
