@@ -9,9 +9,6 @@
 #if defined(_WIN32)
 /* ---------------------------------------------------------------- Windows */
 #  define WIN32_LEAN_AND_MEAN
-#  if !defined(_WIN32_WINNT)
-#    define _WIN32_WINNT 0x0600   /* FlsAlloc 及其回调需要 Vista+ */
-#  endif
 #  define NOMINMAX
 #  include <windows.h>
 #  define PSAPI_VERSION 2
@@ -29,7 +26,7 @@
 #    include <mach/mach.h>
 #  endif
 #else
-#  error "culib mem: unsupported platform (add a branch in src/os.cpp)"
+#  error "culib mem: unsupported platform (add a branch in src/mem/allocator/os.cpp)"
 #endif
 
 #include "os.h"
