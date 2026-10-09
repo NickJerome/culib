@@ -53,7 +53,6 @@
 #define WAVVIX_MEM_PAGE_FLAG_HUGE    0x02   /* free 即 decommit 归还物理页       */
 #define WAVVIX_MEM_PAGE_FLAG_GUARDED 0x04   /* L3 守护页分配                     */
 #define WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED 0x08 /* 页内曾切出过对齐块：free 需按块网格找回块首 */
-#define WAVVIX_MEM_PAGE_FLAG_PRIVATE 0x10   /* 私有堆页：不进 tcache（保 heap_destroy 语义） */
 
 /* xthread_id 低位标志 */
 #define WAVVIX_MEM_PAGE_XTHREAD_ABANDONED ((uintptr_t)0x1)
@@ -177,11 +176,9 @@ struct mem_theap_s {
   uint64_t        heartbeat;
   uint64_t        random_state;                     /* splitmix64 */
   uintptr_t       thread_id;                        /* 唯一 id（非 0，低3位为 0） */
-  mem_heap_t*      heap;                             /* 所属一等堆 */
   int             arena_idx;                        /* 当前偏好 arena */
   uint32_t        full_count[WAVVIX_MEM_BIN_COUNT];         /* 每 bin 在 FULL 队列中的页数 */
   uint64_t        guarded_countdown;                /* L3：按字节倒数采样 */
-  mem_page_t*      large_list;                       /* 私有堆的 large 页链表 */
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
   mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
   uintptr_t       tcache_key;
@@ -197,14 +194,6 @@ struct mem_theap_s {
   uint64_t        stat_free_count;
   uint64_t        stat_free_bytes;
   struct mem_theap_s* next_free;                     /* theap 回收链 */
-};
-
-/* 一等堆：内嵌一份"伪 theap"承载页队列；私有堆分配路径整体串行化（堆级锁），
- * 默认堆快路径走 thread_local theap、完全无锁（SPEC §3 允许的最小实现）。 */
-struct mem_heap_s {
-  mem_theap_t  theap;      /* 页队列 + 伪 owner id */
-  std::mutex  mutex;      /* 私有堆分配串行化 */
-  bool        is_default;
 };
 
 /* arena：窗口内的一段连续 slice，用位图管理（SPEC §3） */
@@ -508,7 +497,7 @@ static inline void mem_page_publish(mem_page_t* page) {
   page->magic.store(WAVVIX_MEM_PAGE_MAGIC, std::memory_order_release);
 }
 bool mem_page_free_collect(mem_page_t* page);         /* 返回是否腾出空间 */
-void mem_page_set_owner(mem_page_t* page, mem_theap_t* t);  /* 设 owner 并重算 PRIVATE */
+void mem_page_set_owner(mem_page_t* page, mem_theap_t* t);
 void mem_page_release_slices(mem_page_t* page);       /* magic 清零 + 归还 slice */
 void mem_page_queue_push(mem_page_queue_t* q, mem_page_t* page);
 void mem_page_queue_remove(mem_page_queue_t* q, mem_page_t* page);
@@ -531,7 +520,6 @@ void*       mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t si
 void        mem_free_internal(void* p);
 void        mem_theap_abandon(mem_theap_t* t);
 void        mem_theap_collect(mem_theap_t* t);               /* wavvix::mem::collect 用 */
-void        mem_theap_destroy_all_pages(mem_theap_t* t);     /* heap_destroy 用 */
 void        mem_theap_recycle_lock(void);                   /* fork 钩子用 */
 void        mem_theap_recycle_unlock(void);
 void        mem_theap_reinit_locks_child(void);
@@ -574,12 +562,10 @@ void        mem_arena_lock_all(void);
 void        mem_arena_unlock_all(void);
 void        mem_arena_reinit_locks_child(void);
 
-/* --- heap.cpp --- */
-uint64_t mem_global_seed(void);   /* heap.cpp：init 时取自 OS 熵源 */
-void        mem_init_once(void);                     /* 选项解析/窗口/默认堆/atfork */
-mem_heap_t*  mem_default_heap(void);
+/* --- runtime.cpp --- */
+uint64_t mem_global_seed(void);
+void        mem_init_once(void);
 uintptr_t   mem_next_thread_id(void);                /* 全局自增，左移3位唯一 */
-void*       mem_heap_malloc_internal(mem_heap_t* heap, size_t size);
 
 /* --- secure.cpp --- */
 void   mem_secure_page_keys(mem_page_t* page, uint64_t* random_state);
@@ -615,8 +601,7 @@ static inline void mem_stat_free(mem_theap_t* t, size_t usable) {
 }
 
 /* ============================ 分配总入口 ============================== */
-/* api.cpp 的 wavvix::mem::alloc 经此内联展开快路径。
- * 约定：t 恒为**调用线程**的 theap（私有堆走 heap.cpp 的独立路径）。 */
+/* api.cpp 的 wavvix::mem::alloc 经此内联展开快路径；t 属于调用线程。 */
 
 /* 小块的三条快路径 + 慢路径兜底。单独拆出来，是为了让记账在调用方只出现
  * 一次——本函数的每一个 return 都是"一次成功分配"，谁也漏不掉。 */

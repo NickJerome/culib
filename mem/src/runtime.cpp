@@ -1,19 +1,10 @@
 /* ----------------------------------------------------------------------------
- * heap.cpp — 一等堆、运行时选项、init/fini（SPEC §3/§6）
- *
- * 简化决策（SPEC §3 允许的最小实现）：私有堆分配路径整体串行化（堆级锁），
- * 默认堆快路径走 thread_local theap、完全无锁。私有堆的页 owner 是堆内嵌的
- * "伪 theap"（thread_id 为堆专属 id），任何线程 free 都走 xthread_free CAS，
- * 由 heap_malloc 的 collect 兜底回收。
- *
- * 统计打印与泄漏报告见 diag.cpp。
+ * runtime.cpp — 分配器运行时选项、初始化与主动回收
  * ------------------------------------------------------------------------- */
 #include "internal.h"
 
 #include <cstdlib>
-#include <cstring>
 #include <mutex>
-#include <new>
 
 /* 进程级 tcache guard 与全局随机种子：mem_init_impl 用 OS 熵源初始化一次。
  * guard 必须进程级——跨线程 double-free 要靠它检出（见 internal.h）。 */
@@ -78,17 +69,6 @@ void mem_options_parse(void) {
     mem_options.arena_reserve = WAVVIX_MEM_ARENA_MIN;
 }
 
-void mem_heap_theap_init(mem_theap_t* t, mem_heap_t* h) {
-  std::memset(t, 0, sizeof(*t));
-  for (int bin = 1; bin <= WAVVIX_MEM_BIN_FULL; bin++)
-    t->pages[bin - 1].block_size = mem_bin_size(bin);
-  t->thread_id = mem_next_thread_id();
-  t->heap = h;
-  t->random_state = mem_random_seed(g_global_seed ^ t->thread_id ^ (uintptr_t)h);
-  t->guarded_countdown = (uint64_t)mem_options.guarded_sample_rate;
-  t->arena_idx = 0;
-}
-
 /* fork 钩子（Linux）：prepare 按固定顺序上锁（arena → meta → theap 回收链），
  * parent 逆序解锁，child 重建这四类锁（持锁的线程在子进程里已不存在）。 */
 void mem_fork_prepare(void) {
@@ -124,9 +104,6 @@ void mem_init_impl(void) {
   if (!mem_window_init(mem_options.window_size))
     mem_os_fatal("cannot reserve address window "
                 "(need >= 4 GiB of virtual address space)");
-  mem_heap_t* h = mem_default_heap();
-  h->is_default = true;
-  mem_heap_theap_init(&h->theap, h);
   /* 线程退出回调必须早于任何 theap 创建：mem_theap_create 末尾会 set 值。 */
   mem_theap_exit_hook_init();
   mem_os_atfork_register(mem_fork_prepare, mem_fork_parent, mem_fork_child);
@@ -144,58 +121,6 @@ void mem_init_once(void) {
 uintptr_t mem_next_thread_id(void) {
   /* 全局自增计数器（绝不复用，左移 3 位腾标志位，保证非 0） */
   return g_thread_counter.fetch_add(1, std::memory_order_relaxed) << 3;
-}
-
-mem_heap_t* mem_default_heap(void) {
-  static mem_heap_t h;   /* 函数内静态：构造（含 mutex）线程安全且只跑一次 */
-  return &h;
-}
-
-/* ------------------------------ heap 族 API ---------------------------- */
-
-mem_heap_t* mem_heap_new(void) {
-  mem_init_once();
-  mem_heap_t* h = (mem_heap_t*)mem_meta_alloc(sizeof(mem_heap_t));
-  if (h == NULL) return NULL;
-  new (&h->mutex) std::mutex();
-  h->is_default = false;
-  mem_heap_theap_init(&h->theap, h);
-  return h;
-}
-
-/* destroy 整体归还：无需逐块释放（用户契约：堆内块不再使用） */
-void mem_heap_destroy(mem_heap_t* heap) {
-  if (heap == NULL || heap->is_default) return;
-  heap->mutex.lock();
-  mem_theap_destroy_all_pages(&heap->theap);
-  heap->mutex.unlock();
-  heap->mutex.~mutex();
-  /* heap 结构留在 meta 池中（bump 分配器永不 free），页与 slice 已全部归还 */
-}
-
-/* 私有堆分配：整体串行化（堆级锁），算法与线程堆完全一致 */
-void* mem_heap_malloc_internal(mem_heap_t* heap, size_t size) {
-  if (heap == NULL || heap->is_default) return mem_malloc_internal(size);
-  std::lock_guard<std::mutex> lock(heap->mutex);
-  mem_theap_t* t = &heap->theap;
-  if (size <= WAVVIX_MEM_SMALL_MAX) {
-    if (size == 0) size = 1;
-    int bin = mem_bin(size);
-    void* p = NULL;
-    if (bin < WAVVIX_MEM_DIRECT_MAX && t->pages_free_direct[bin] != NULL)
-      p = mem_page_malloc(t->pages_free_direct[bin]);
-    if (p == NULL) p = mem_malloc_generic(t, bin);
-    /* 统计记在**调用线程**上，不是堆内嵌的伪 theap t：wavvix::mem::free 只认调用线程，
-     * 记在 t 上分配与释放就分属两个计数器，永远对不上。
-     * 已知偏差：mem_heap_destroy 整堆归还、不逐块记账，销毁后调用线程的
-     * thread_current_bytes 会偏高——这一条写在公共头文件里了。 */
-    if (p != NULL) {
-      mem_theap_t* st = mem_theap_current();
-      if (st != NULL) mem_stat_alloc(st, mem_bin_size(bin));
-    }
-    return p;
-  }
-  return mem_malloc_large(t, size);   /* large 路径自行记账（见 theap.cpp） */
 }
 
 /* ------------------------------ 诊断族 --------------------------------- */

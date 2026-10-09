@@ -192,8 +192,7 @@ mem_page_t* mem_page_fresh(mem_theap_t* t, int bin) {
       if (page == NULL) break;
       /* 接管所有权 */
       g_dbg_reclaim++;
-      /* 只清 IN_FULL：HUGE/GUARDED/HAS_ALIGNED 是页本身的属性，PRIVATE 由
-       * mem_page_set_owner 按新 owner 重算，一律清零会丢失这些语义。 */
+      /* 只清 IN_FULL；其余标志属于页本身。 */
       page->flags &= (uint8_t)~WAVVIX_MEM_PAGE_FLAG_IN_FULL;
       mem_page_set_owner(page, t);
       page->retire_expire = 0;
@@ -239,7 +238,6 @@ mem_theap_t* mem_theap_create(void) {
     t->pages[bin - 1].block_size = mem_bin_size(bin);
   t->pages[WAVVIX_MEM_BIN_FULL].block_size = 0;
   t->thread_id = mem_next_thread_id();
-  t->heap = mem_default_heap();
   t->random_state = mem_random_seed(mem_global_seed() ^ t->thread_id ^ (uintptr_t)t);
   t->tcache_key   = mem_random_next(&t->random_state);
   t->guarded_countdown = (uint64_t)mem_options.guarded_sample_rate;
@@ -315,24 +313,6 @@ void mem_theap_collect(mem_theap_t* t) {
       }
       page = next;
     }
-  }
-}
-
-/* 私有堆销毁：归还全部页（含 large_list）。用户契约：堆内块不再使用。 */
-void mem_theap_destroy_all_pages(mem_theap_t* t) {
-  for (int qi = 0; qi < WAVVIX_MEM_BIN_COUNT; qi++) {
-    mem_page_queue_t* q = &t->pages[qi];
-    while (q->first != NULL) {
-      mem_page_t* page = q->first;
-      mem_theap_retire_page(t, page);   /* 摘链 + 归还 slice + 回收描述符 */
-    }
-  }
-  for (int bin = 1; bin < WAVVIX_MEM_DIRECT_MAX; bin++) t->pages_free_direct[bin] = NULL;
-  while (t->large_list != NULL) {
-    mem_page_t* page = t->large_list;
-    t->large_list = page->next;
-    page->next = page->prev = NULL;
-    mem_page_release_slices(page);
   }
 }
 
@@ -421,25 +401,11 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
   if (best == NULL || best->free == NULL) return NULL;
 
   if (bin < WAVVIX_MEM_DIRECT_MAX) t->pages_free_direct[bin] = best;
-  /* 不在这里记账：本函数是小块的慢路径，与三条快路径同属一次 malloc，
-   * 统计统一由汇合点 mem_malloc_internal_with / mem_heap_malloc_internal 记。 */
+  /* 小块统计在 mem_malloc_internal_with 统一记账。 */
   return mem_page_malloc(best);
 }
 
 /* ------------------------- large / huge（SPEC §5.3） ------------------- */
-
-/* large 侧的统计汇合点。三件事值得说明：
- *   - 记在 mem_t_theap（调用线程）而非入参 t：私有堆的 t 是堆内嵌的伪 theap，
- *     而释放侧只认调用线程，记在 t 上两边永远对不上。
- *   - 口径用 page->large_size，不用请求的 size：非 guarded 的 large 会向上
- *     取整到整数个 slice，而 mem_free_internal 抵扣的正是 large_size。用 size
- *     记、用 large_size 减，每块就少记一截——这是 stat_current 下溢的第二个源。
- *   - t 为 NULL（线程尚无 theap，只可能经私有堆进来）时跳过：释放侧同样跳过，
- *     不记比记半边强。 */
-static void mem_stat_large_alloc(const mem_page_t* page) {
-  mem_theap_t* st = mem_t_theap;
-  if (st != NULL) mem_stat_alloc(st, page->large_size);
-}
 
 /* large 总入口：8KiB < size，含 huge 与 L3 guarded。
  * 全部从 arena 切连续 slice——窗口建立后再无独立映射，因此 mem_ptr_page 对
@@ -483,14 +449,7 @@ void* mem_malloc_large_ex(mem_theap_t* t, size_t size, bool guarded,
   page->used = 1;
   mem_page_publish(page);   /* 续页项先于首项发布：野指针只会解析到 magic==0 */
 
-  /* 私有堆的 large 页挂堆链表，供 heap_destroy 整体归还（持堆锁操作） */
-  if ((page->flags & WAVVIX_MEM_PAGE_FLAG_PRIVATE) != 0) {
-    page->next = t->large_list;
-    page->prev = NULL;
-    if (t->large_list != NULL) t->large_list->prev = page;
-    t->large_list = page;
-  }
-  mem_stat_large_alloc(page);
+  mem_stat_alloc(t, page->large_size);
   if (out_zeroed != NULL) *out_zeroed = zeroed;
   /* guarded：对象右对齐贴住守护页（按取整后的 gsize，见上） */
   return guarded ? start + data - gsize : start;
@@ -529,13 +488,7 @@ void* mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size) {
   mem_desc_mark_cont(mem_page_slice_index(page), n);
   page->used = 1;
   mem_page_publish(page);
-  if ((page->flags & WAVVIX_MEM_PAGE_FLAG_PRIVATE) != 0) {
-    page->next = t->large_list;
-    page->prev = NULL;
-    if (t->large_list != NULL) t->large_list->prev = page;
-    t->large_list = page;
-  }
-  mem_stat_large_alloc(page);
+  mem_stat_alloc(t, page->large_size);
   return start;
 }
 
@@ -551,19 +504,6 @@ static void mem_page_free_large(mem_page_t* page, void* p) {
   if (WAVVIX_MEM_UNLIKELY((const uint8_t*)p != expect))
     mem_fatal_page("free of interior pointer (large block)", p, page);
 
-  /* 私有堆 large 页：从堆链表摘除（free 方持堆锁） */
-  if ((page->flags & WAVVIX_MEM_PAGE_FLAG_PRIVATE) != 0) {
-    mem_theap_t* owner = page->theap;
-    if (owner != NULL && owner->heap != NULL) {
-      mem_heap_t* h = owner->heap;
-      h->mutex.lock();
-      if (page->prev != NULL) page->prev->next = page->next;
-      else if (owner->large_list == page) owner->large_list = page->next;
-      if (page->next != NULL) page->next->prev = page->prev;
-      page->next = page->prev = NULL;
-      h->mutex.unlock();
-    }
-  }
   mem_page_release_slices(page);
   /* 记账在 mem_free_internal（large_size 在那里于归还之前已取出） */
 }
@@ -703,15 +643,13 @@ void mem_free_internal(void* p) {
   /* 小块释放的统计汇合点：无论块进 tcache 还是直接还页，都只记这一次。
    * block_size 在页可能被退休之前读出（本行之后 mem_free_to_page 可能归还它）。 */
   mem_stat_free(t, page->block_size);
-  /* tcache 快路径（release 与 WAVVIX_MEM_DEBUG 均启用）：L0 魔数校验已过；
-   * 私有堆页绕过——heap_destroy 无条件归还页，滞留块会成 UAF 源。
+  /* tcache 快路径（release 与 WAVVIX_MEM_DEBUG 均启用）。
    * 块在 tcache 期间页视角仍为已分配（used 不变），退休/统计语义不变。 */
   {
     int bin = page->bin;
     /* 最小块已是 16B（mem_bin 线性区取偶），tcache 元数据（编码链 + guard）
      * 恒能放下，无需再按 block_size 设门槛。 */
-    if ((unsigned)(bin - 1) < (unsigned)WAVVIX_MEM_BIN_FULL &&
-        (page->flags & WAVVIX_MEM_PAGE_FLAG_PRIVATE) == 0) {
+    if ((unsigned)(bin - 1) < (unsigned)WAVVIX_MEM_BIN_FULL) {
       mem_tcache_bin_t* tc = &t->tcache[bin - 1];
       if (tc->count < mem_tcache_cap(page->block_size)) {
         uintptr_t* w = (uintptr_t*)p;

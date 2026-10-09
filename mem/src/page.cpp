@@ -88,9 +88,7 @@ void mem_page_check_invariants(const mem_page_t* page) {
 }
 #endif /* WAVVIX_MEM_DEBUG */
 
-/* 设置页的所有者线程堆，并据此重算 PRIVATE 标记。初始化与 reclaim 接管两条
- * 路径共用：漏掉 PRIVATE 会让私有堆的块进入其他线程的 tcache，而 heap_destroy
- * 无条件归还全部页，滞留在 tcache 里的块之后被弹出发放即是 UAF。 */
+/* 初始化与 abandoned 页接管共用的 owner 更新。 */
 void mem_page_set_owner(mem_page_t* page, mem_theap_t* t) {
   page->theap = t;
   /* 用 release 而非 relaxed：不弱于原实现，且与 reclaim 路径统一。
@@ -99,9 +97,6 @@ void mem_page_set_owner(mem_page_t* page, mem_theap_t* t) {
    * 只可能在本线程自己写过时成立，靠同线程程序顺序自洽。页字段的真正发布
    * 由 mem_page_publish 的 magic release-store 承担。 */
   page->xthread_id.store(t != NULL ? t->thread_id : 0, std::memory_order_release);
-  page->flags &= (uint8_t)~WAVVIX_MEM_PAGE_FLAG_PRIVATE;
-  if (t != NULL && t->heap != NULL && !t->heap->is_default)
-    page->flags |= WAVVIX_MEM_PAGE_FLAG_PRIVATE;
 }
 
 /* 归还页占据的全部 slice：清 magic（此后该地址段上的 free 必被 L0 抓获）

@@ -246,62 +246,6 @@ void test_posix_memalign() {
     }
 }
 
-/* ---- 6. heap 族：整体销毁 ---- */
-void test_heap() {
-    mem_heap_t* h = mem_heap_new();
-    CHECK_MSG(h != NULL, "mem_heap_new returned NULL");
-
-    /* 堆内分配若干块并写读（不逐个 free） */
-    memtest::splitmix64 rng(12345);
-    void* keep[64];
-    for (int i = 0; i < 64; ++i) {
-        size_t size = (size_t)rng.range(8, 8192);
-        uint8_t* p = (uint8_t*)mem_heap_malloc(h, size);
-        CHECK_MSG(p != NULL, "mem_heap_malloc returned NULL");
-        fill_pattern(p, size, (uint8_t)i);
-        keep[i] = p;
-    }
-    /* 抽样读回，确认私有堆内存可用 */
-    for (int i = 0; i < 64; i += 7)
-        CHECK(check_pattern((const uint8_t*)keep[i], 8, (uint8_t)i));
-
-    /* 整体销毁，不逐块 free；进程不崩溃即过 */
-    mem_heap_destroy(h);
-
-    /* 销毁后分配器本体仍健康 */
-    void* p = wavvix::mem::alloc(1024);
-    CHECK(p != NULL);
-    memset(p, 0x5C, 1024);
-    wavvix::mem::free(p);
-}
-
-/* ---- 6b. 私有堆 large 块：释放、与默认堆交错、destroy，不得复用同一地址 ----
- * 回归 WAVVIX_MEM_PAGE_FLAG_PRIVATE 与 WAVVIX_MEM_PAGE_FLAG_HUGE 同占一位的缺陷：私有堆页被
- * 误判为 HUGE 后，free 直接把 slice 还给 OS，同一地址会被再次发放。 */
-void test_heap_large_interleave() {
-    mem_heap_t* h = mem_heap_new();
-    CHECK(h != NULL);
-    void* p = mem_heap_malloc(h, 100000);
-    CHECK(p != NULL);
-    memset(p, 1, 100000);
-    wavvix::mem::free(p);                              /* 私有堆 large 块用 wavvix::mem::free 释放 */
-    void* q = wavvix::mem::alloc(100000);             /* 默认堆 large */
-    CHECK(q != NULL);
-    memset(q, 2, 100000);
-    mem_heap_destroy(h);                      /* 不得触碰 q 的页 */
-    void* r = wavvix::mem::alloc(100000);
-    CHECK_MSG(r != q, "live block handed out twice after heap_destroy");
-    CHECK(((unsigned char*)q)[0] == 2 && ((unsigned char*)q)[99999] == 2);
-    wavvix::mem::free(q);
-    wavvix::mem::free(r);
-    /* 私有堆 large 块在 destroy 时整体归还 */
-    mem_heap_t* h2 = mem_heap_new();
-    void* big = mem_heap_malloc(h2, 300000);
-    CHECK(big != NULL);
-    memset(big, 3, 300000);
-    mem_heap_destroy(h2);
-}
-
 /* ---- 8. 增长：越过首个 arena、huge、全部归还 ---- */
 void test_growth() {
     std::vector<void*> v;
@@ -602,10 +546,6 @@ int main() {
     std::printf("  aligned small footprint OK\n");
     test_posix_memalign();
     std::printf("  posix_memalign OK\n");
-    test_heap();
-    std::printf("  heap OK\n");
-    test_heap_large_interleave();
-    std::printf("  heap large interleave OK\n");
     test_growth();
     std::printf("  growth OK\n");
     test_stale_cont_lookup();

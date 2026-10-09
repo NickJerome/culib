@@ -205,15 +205,3 @@ int mem_posix_memalign(void** memptr, size_t alignment, size_t size) {
   *memptr = p;
   return 0;
 }
-
-/* ------------------------------ heap 族 -------------------------------- */
-/* mem_heap_new / mem_heap_destroy 在 heap.cpp；此处仅包装分配入口 */
-
-void* mem_heap_malloc(mem_heap_t* heap, size_t size) {
-  if (WAVVIX_MEM_UNLIKELY(size > SIZE_MAX / 2)) return NULL;
-#if defined(WAVVIX_MEM_DEBUG)
-  return mem_l2_wrap(mem_heap_malloc_internal(heap, size + WAVVIX_MEM_L2_OVERHEAD));
-#else
-  return mem_heap_malloc_internal(heap, size);
-#endif
-}
