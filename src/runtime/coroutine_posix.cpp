@@ -1,10 +1,11 @@
 // POSIX 协程栈分配：mmap 加最低一页保护页。
 
+#include <atomic>
 #include <cstddef>
 #include <limits>
 
-#include <sys/mman.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "coroutine_detail.h"
@@ -19,12 +20,13 @@ std::size_t page_size() noexcept {
     return reported > 0 ? static_cast<std::size_t>(reported) : 4096;
 }
 
-pthread_once_t pool_exit_once = PTHREAD_ONCE_INIT;
-pthread_key_t pool_exit_key;
-bool pool_exit_ready = false;
+pthread_once_t runtime_exit_once = PTHREAD_ONCE_INIT;
+pthread_key_t runtime_exit_key;
+std::atomic<bool> runtime_exit_ready(false);
 
-void init_pool_exit_key() {
-    pool_exit_ready = ::pthread_key_create(&pool_exit_key, &stack_pool_thread_exit) == 0;
+void init_runtime_exit_key() {
+    if (::pthread_key_create(&runtime_exit_key, &runtime_thread_exit) == 0)
+        runtime_exit_ready.store(true, std::memory_order_release);
 }
 
 }  // namespace
@@ -63,14 +65,15 @@ void release_stack(const stack_memory& memory) noexcept {
     if (memory.base) ::munmap(memory.base, memory.total);
 }
 
-void* stack_pool_current() noexcept {
-    if (::pthread_once(&pool_exit_once, &init_pool_exit_key) != 0 || !pool_exit_ready) return 0;
-    return ::pthread_getspecific(pool_exit_key);
+void* runtime_thread_state_current() noexcept {
+    if (!runtime_exit_ready.load(std::memory_order_acquire)) return 0;
+    return ::pthread_getspecific(runtime_exit_key);
 }
 
-bool stack_pool_set(void* state) noexcept {
-    return ::pthread_once(&pool_exit_once, &init_pool_exit_key) == 0 &&
-           pool_exit_ready && ::pthread_setspecific(pool_exit_key, state) == 0;
+bool runtime_thread_state_set(void* state) noexcept {
+    return ::pthread_once(&runtime_exit_once, &init_runtime_exit_key) == 0 &&
+           runtime_exit_ready.load(std::memory_order_acquire) &&
+           ::pthread_setspecific(runtime_exit_key, state) == 0;
 }
 
 }  // namespace detail

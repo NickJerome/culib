@@ -50,11 +50,49 @@ struct observable_task {
     std::unique_ptr<int> marker_;
 };
 
+#if defined(_MSC_VER)
+struct late_scheduler_probe {
+    late_scheduler_probe() : observed(0) {}
+    ~late_scheduler_probe() {
+        if (observed && scheduled() == 0) observed->fetch_add(1);
+    }
+    std::atomic<int>* observed;
+};
+
+thread_local late_scheduler_probe late_probe;
+#endif
+
 }  // namespace
 
 TEST(scheduler, runs_nothing_when_nothing_was_spawned) {
     EXPECT(scheduled(), ==, 0u);
     EXPECT(run(), ==, 0u);
+}
+
+TEST(scheduler, reaps_vcpus_during_concurrent_thread_exit) {
+    std::atomic<int> completed(0);
+#if defined(_MSC_VER)
+    std::atomic<int> late_observed(0);
+#endif
+    std::atomic<int> failed(0);
+    for (int round = 0; round < 4; ++round) {
+        std::vector<std::thread> workers;
+        for (int i = 0; i < 16; ++i) workers.push_back(std::thread([&] {
+#if defined(_MSC_VER)
+            // MSVC 的线程局部析构晚于 FLS 回调。
+            late_probe.observed = &late_observed;
+#endif
+            spawn([&] { completed.fetch_add(1); });
+            run();
+            if (!wavvix::detail::scheduler_remote_prepare()) failed.fetch_add(1);
+        }));
+        for (std::size_t i = 0; i < workers.size(); ++i) workers[i].join();
+    }
+    EXPECT(completed.load(), ==, 64);
+#if defined(_MSC_VER)
+    EXPECT(late_observed.load(), ==, 64);
+#endif
+    EXPECT(failed.load(), ==, 0);
 }
 
 TEST(scheduler, scope_runs_submitted_coroutines_on_exit) {

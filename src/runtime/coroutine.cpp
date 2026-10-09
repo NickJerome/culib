@@ -129,22 +129,25 @@ struct pooled_stack {
     pooled_stack* next;
 };
 
-struct stack_pool_state {
-    stack_pool_state() noexcept : buckets(), bytes(0), storage() {}
+struct runtime_thread_state {
+    runtime_thread_state() noexcept
+        : buckets(), bytes(0), storage(), exit_owner(0), exit_cleanup(0) {}
     pooled_stack* buckets[pool_bucket_count];
     std::size_t bytes;
     stack_memory storage;
+    void* exit_owner;
+    void (*exit_cleanup)(void*);
 };
 
-stack_pool_state* current_pool() noexcept {
-    void* const value = stack_pool_current();
-    if (value == &stack_pool_exit_marker) return 0;
-    if (value) return static_cast<stack_pool_state*>(value);
-    const stack_memory storage = allocate_stack(sizeof(stack_pool_state));
+runtime_thread_state* current_pool() noexcept {
+    void* const value = runtime_thread_state_current();
+    if (value == &runtime_thread_exit_marker) return 0;
+    if (value) return static_cast<runtime_thread_state*>(value);
+    const stack_memory storage = allocate_stack(sizeof(runtime_thread_state));
     if (!storage.base) return 0;
-    stack_pool_state* const state = new (storage.base + storage.guard) stack_pool_state();
+    runtime_thread_state* const state = new (storage.base + storage.guard) runtime_thread_state();
     state->storage = storage;
-    if (!stack_pool_set(state)) {
+    if (!runtime_thread_state_set(state)) {
         release_stack(storage);
         return 0;
     }
@@ -166,7 +169,7 @@ std::size_t pool_bucket_size(int bucket) noexcept {
 }
 
 stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
-    stack_pool_state* const state = current_pool();
+    runtime_thread_state* const state = current_pool();
     if (!state) return allocate_stack(usable);
     const int bucket = pool_bucket_of(usable);
     if (bucket >= 0 && state->buckets[bucket]) {
@@ -183,9 +186,9 @@ stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
 
 void pooled_release_stack(const stack_memory& memory) noexcept {
     if (!memory.base) return;
-    void* const value = stack_pool_current();
-    stack_pool_state* const state = value == &stack_pool_exit_marker
-        ? 0 : static_cast<stack_pool_state*>(value);
+    void* const value = runtime_thread_state_current();
+    runtime_thread_state* const state = value == &runtime_thread_exit_marker
+        ? 0 : static_cast<runtime_thread_state*>(value);
     if (!state) { release_stack(memory); return; }
     const int bucket = pool_bucket_of(memory.total - memory.guard);
     if (bucket < 0 || memory.total > pool_budget - state->bytes) {
@@ -231,14 +234,15 @@ void trampoline(context_transfer from) {
 
 }  // namespace
 
-char stack_pool_exit_marker;
+char runtime_thread_exit_marker;
 
-void stack_pool_thread_exit(void* value) noexcept {
+void runtime_thread_exit(void* value) noexcept {
     // 退出回调可能早于其他线程局部对象的析构；之后直接释放栈，不再建池。
-    if (!stack_pool_set(&stack_pool_exit_marker)) return;
-    if (value == &stack_pool_exit_marker) return;
-    stack_pool_state* const state = static_cast<stack_pool_state*>(value);
+    if (!runtime_thread_state_set(&runtime_thread_exit_marker)) return;
+    if (value == &runtime_thread_exit_marker) return;
+    runtime_thread_state* const state = static_cast<runtime_thread_state*>(value);
     if (!state) return;
+    if (state->exit_cleanup) state->exit_cleanup(state->exit_owner);
     for (int bucket = 0; bucket < pool_bucket_count; ++bucket) {
         pooled_stack* node = state->buckets[bucket];
         while (node) {
@@ -249,8 +253,26 @@ void stack_pool_thread_exit(void* value) noexcept {
         }
     }
     const stack_memory storage = state->storage;
-    state->~stack_pool_state();
+    state->~runtime_thread_state();
     release_stack(storage);
+}
+
+bool register_runtime_thread_exit(void* owner, void (*cleanup)(void*)) noexcept {
+    runtime_thread_state* const state = current_pool();
+    if (!state) return false;
+    state->exit_owner = owner;
+    state->exit_cleanup = cleanup;
+    return true;
+}
+
+void unregister_runtime_thread_exit(void* owner) noexcept {
+    void* const value = runtime_thread_state_current();
+    if (!value || value == &runtime_thread_exit_marker) return;
+    runtime_thread_state* const state = static_cast<runtime_thread_state*>(value);
+    if (state->exit_owner == owner) {
+        state->exit_owner = 0;
+        state->exit_cleanup = 0;
+    }
 }
 
 coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_size,

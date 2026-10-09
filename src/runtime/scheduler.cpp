@@ -2,6 +2,7 @@
 
 #include <culib/scheduler.h>
 
+#include "coroutine_detail.h"
 #include "io_engine.h"
 #include "park.h"
 #include "scheduler_detail.h"
@@ -126,51 +127,54 @@ void reap(std::vector<fiber*>& queue) {
 
 void reap_detached(vcpu& self) noexcept;
 
-// 线程退出时释放 vCPU 和事件引擎；只在首次创建 vCPU 时注册。
-struct vcpu_reaper {
-    ~vcpu_reaper() {
-        vcpu* const self = current_vcpu;
-        if (!self) return;
-        if (self->pool) {
-            std::fputs("wavvix::scheduler: 工作 vCPU 仍在运行；请先关闭作用域\n", stderr);
-            std::abort();
-        }
-        if (!self->parked.empty() || !self->roused.empty() ||
-            io_engine_pending(self->engine) != 0) {
-            std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
-            std::abort();
-        }
-        current_vcpu = 0;    // 先摘掉，免得析构过程里又有人 here() 把它救活
-
-        // 可以销毁尚未执行或仅处于 ready/incoming 的协程；挂起协程不能直接释放。
-        reap(self->ready);
-        reap(self->incoming);
-        reap_detached(*self);
-
-        delete self->remote;
-
-        if (self->engine) io_engine_destroy(self->engine);
-        delete self;
+// OS 退出回调传入 vCPU 指针，不在 MinGW 的 TLS 析构阶段读取线程局部变量。
+void reap_vcpu(void* owner) noexcept {
+    vcpu* const self = static_cast<vcpu*>(owner);
+    if (self->pool) {
+        std::fputs("wavvix::scheduler: 工作 vCPU 仍在运行；请先关闭作用域\n", stderr);
+        std::abort();
     }
-};
+    if (!self->parked.empty() || !self->roused.empty() ||
+        io_engine_pending(self->engine) != 0) {
+        std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
+        std::abort();
+    }
+    // 可以销毁尚未执行或仅处于 ready/incoming 的协程；挂起协程不能直接释放。
+    reap(self->ready);
+    reap(self->incoming);
+    reap_detached(*self);
 
-// 热路径使用 current_vcpu；thread_local 哨兵只在此处首次触发。
+    delete self->remote;
+
+    if (self->engine) io_engine_destroy(self->engine);
+    delete self;
+}
+
+vcpu* active_vcpu() noexcept {
+    return runtime_thread_state_current() == &runtime_thread_exit_marker ? 0 : current_vcpu;
+}
+
+void die(const char* what);
+
 vcpu& here() {
+    if (runtime_thread_state_current() == &runtime_thread_exit_marker)
+        die("wavvix::scheduler: 线程正在退出，不能再创建协程");
     if (!current_vcpu) {
-        current_vcpu = new vcpu();
-        current_vcpu->engine = 0;
-        current_vcpu->current = 0;
-        current_vcpu->park_of_current = 0;
-        current_vcpu->completed_task = 0;
-        current_vcpu->running = false;
-        current_vcpu->scope_depth = 0;
-        current_vcpu->pool_scope_depth = 0;
-        current_vcpu->detached = 0;
-        current_vcpu->remote = 0;
-        current_vcpu->pool = 0;
-        current_vcpu->worker_stop = 0;
-        static thread_local vcpu_reaper reaper;
-        (void)reaper;
+        vcpu* const self = new vcpu();
+        self->engine = 0;
+        self->current = 0;
+        self->park_of_current = 0;
+        self->completed_task = 0;
+        self->running = false;
+        self->scope_depth = 0;
+        self->pool_scope_depth = 0;
+        self->detached = 0;
+        self->remote = 0;
+        self->pool = 0;
+        self->worker_stop = 0;
+        if (!register_runtime_thread_exit(self, &reap_vcpu))
+            die("wavvix::scheduler: 无法注册线程退出清理");
+        current_vcpu = self;
     }
     return *current_vcpu;
 }
@@ -430,7 +434,7 @@ result<void*> scheduler_scope_enter_with_workers(unsigned workers) {
 }
 
 void scheduler_scope_leave(void* owner) noexcept {
-    vcpu* const self = current_vcpu;
+    vcpu* const self = active_vcpu();
     if (!self || self != owner || self->scope_depth == 0 || self->running)
         die("wavvix::scheduler_scope 必须在创建它的线程上、run() 外析构");
     --self->scope_depth;
@@ -444,6 +448,7 @@ void scheduler_scope_leave(void* owner) noexcept {
         wavvix::run();
     }
     if (self->scope_depth != 0) return;
+    unregister_runtime_thread_exit(self);
     current_vcpu = 0;
     delete self->remote;
     if (self->engine) io_engine_destroy(self->engine);
@@ -452,7 +457,7 @@ void scheduler_scope_leave(void* owner) noexcept {
 
 void scheduler_init() { scheduler_scope_enter(); }
 
-void scheduler_shutdown() noexcept { scheduler_scope_leave(current_vcpu); }
+void scheduler_shutdown() noexcept { scheduler_scope_leave(active_vcpu()); }
 
 task_state* scheduler_task_create() { return new task_state(&here()); }
 
@@ -501,7 +506,7 @@ void scheduler_task_complete(task_state* task) noexcept {
 
 void scheduler_task_join(task_state* task) {
     // done 只由所属 vCPU 写；先拒绝跨线程调用，再读取它。
-    vcpu* const self = current_vcpu;
+    vcpu* const self = active_vcpu();
     if (!self || task->owner != self)
         die("wavvix::coroutine::join() 必须在创建它的 vCPU 上调用");
     if (task->remote) {
@@ -542,7 +547,7 @@ void scheduler_task_join(task_state* task) {
 }
 
 void scheduler_task_detach(task_state* task) noexcept {
-    if (task->owner != current_vcpu)
+    if (task->owner != active_vcpu())
         die("wavvix::coroutine::detach() 必须在创建它的 vCPU 上调用");
     if (task->remote) {
         release_remote(task);
@@ -649,7 +654,7 @@ void scheduler_io(io_request& request, std::chrono::nanoseconds timeout) {
 void yield() {
     if (detail::fiber::inside()) {
         detail::fiber::yield();
-    } else if (detail::current_vcpu) {
+    } else if (detail::active_vcpu()) {
         detail::scheduler_yield_main();
     } else {
         detail::die("wavvix::yield() 需要先初始化当前 vCPU");
@@ -659,7 +664,7 @@ void yield() {
 void sleep_for(std::chrono::nanoseconds duration) {
     if (detail::fiber::inside()) {
         detail::scheduler_sleep_for(duration);
-    } else if (detail::current_vcpu) {
+    } else if (detail::active_vcpu()) {
         detail::scheduler_run_for(duration);
     } else {
         std::this_thread::sleep_for(duration);
@@ -667,7 +672,7 @@ void sleep_for(std::chrono::nanoseconds duration) {
 }
 
 std::size_t scheduled() noexcept {
-    using detail::current_vcpu;
+    detail::vcpu* const current_vcpu = detail::active_vcpu();
     if (!current_vcpu) return 0;
     // 挂起的那些全在 parked 里（等定时器、等 I/O、等锁都算），所以这里不必再去问引擎。
     return current_vcpu->ready.size() + current_vcpu->incoming.size() +
