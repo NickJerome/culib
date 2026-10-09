@@ -123,6 +123,11 @@ const char* type_label(detail::kind which) {
     return "";
 }
 
+void append_spelling(std::string& out, const char* name) {
+    out += name[1] == '\0' ? "-" : "--";
+    out += name;
+}
+
 // 每次 parse 先把所有选项恢复成默认值，所以重复调用的结果是确定的。
 // 必填项没有默认值（铺的是空文本），跳过。
 result<void> apply_defaults(registry& self) {
@@ -379,12 +384,10 @@ std::string usage() {
         const entry& which = self.entries[i];
         std::string head = "  ";
         for (std::size_t j = 0; j < which.aliases.size(); ++j) {
-            head += which.aliases[j][1] == '\0' ? "-" : "--";
-            head += which.aliases[j];
+            append_spelling(head, which.aliases[j]);
             head += ", ";
         }
-        head += "--";
-        head += which.name;
+        append_spelling(head, which.name);
         const char* label = type_label(which.which);
         if (label[0] != '\0') {
             head += " ";

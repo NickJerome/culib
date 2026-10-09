@@ -236,6 +236,15 @@ TEST(flag, generates_usage_text) {
     EXPECT(flag::usage().find("--version") == std::string::npos, ==, true);
 }
 
+TEST(flag, shows_a_single_character_primary_name_as_a_short_option) {
+    flag::boolean enabled(false, "enable feature", {"x"});
+    EXPECT(run({"app", "-x"}).is_ok(), ==, true);
+    EXPECT(enabled.value(), ==, true);
+    const std::string text = flag::usage();
+    EXPECT(text.find("  -x") != std::string::npos, ==, true);
+    EXPECT(text.find("--x") == std::string::npos, ==, true);
+}
+
 TEST(flag, sets_values_by_name_for_config_files) {
     EXPECT(run({"app"}).is_ok(), ==, true);
 
