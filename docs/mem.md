@@ -33,4 +33,4 @@ void example() {
 
 当前实现限 64 位 Linux、macOS 和 Windows；Windows x86 暂无该模块。它预留默认 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于启动时消耗 1 TiB 物理内存。首次分配时读取 `WAVVIX_MEM_WINDOW_SIZE`（默认 `1T`）、`WAVVIX_MEM_ARENA_RESERVE`（`64M`）、`WAVVIX_MEM_PURGE_DELAY`（`1000` 毫秒）、`WAVVIX_MEM_SECURE`（`1`）、`WAVVIX_MEM_GUARDED_SAMPLE_RATE`（`0`）和 `WAVVIX_MEM_EAGER_COMMIT`（`0`）。
 
-导入后，Windows MSVC x64 与 WSL2 Linux x86_64 的分配器单元、压力、安全和 RSS 测试通过；全局 `new/delete` 在两平台通过计数测试，Linux `malloc/new` 共享库覆盖通过计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论；性能和占用还需在当前源码与目标平台上重新配对测量。
+Windows MSVC x64、Linux x86_64/arm64 和 macOS arm64/x86_64 的 debug、release 构建已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)，包含分配器单元、压力、安全和 RSS 测试，以及全局 `new/delete` 覆盖测试；Linux 的 `malloc/new` 共享库覆盖也通过了计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论；性能和占用还需在当前源码与目标平台上重新配对测量。
