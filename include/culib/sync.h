@@ -42,14 +42,15 @@ private:
 // 计数信号量。常见用处是**给并发量封顶**：起 1000 根协程但只让 16 根同时去连数据库。
 class semaphore {
 public:
-    explicit semaphore(std::ptrdiff_t initial)
-        : count_(initial), head_(0), tail_(0) {}
+    // initial 须非负；传入负数是编程错误，会打印诊断并终止。
+    explicit semaphore(std::ptrdiff_t initial);
     ~semaphore();
 
     void acquire();                                        // 没有就挂起
     bool try_acquire();                                    // 没有就立刻回 false
     // 零或负时长只尝试一次；只能在协程里调。
     bool try_acquire_for(std::chrono::nanoseconds timeout);
+    // amount 须非负；计数溢出会打印诊断并终止。
     void release(std::ptrdiff_t amount = 1);
 
     std::ptrdiff_t count() const { return count_; }

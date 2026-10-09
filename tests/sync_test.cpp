@@ -220,6 +220,19 @@ TEST(semaphore, release_without_waiters_puts_the_permit_back) {
     EXPECT(permits.count(), ==, 2);
 }
 
+TEST(semaphore, batch_release_wakes_waiters_and_keeps_the_rest) {
+    wavvix::scheduler_scope runtime;
+    semaphore permits(0);
+    int awakened = 0;
+    for (int i = 0; i < 3; ++i)
+        spawn([&] { permits.acquire(); ++awakened; }).value();
+    wavvix::yield();
+    permits.release(5);
+    EXPECT(permits.count(), ==, 2);
+    EXPECT(run(), ==, 3u);
+    EXPECT(awakened, ==, 3);
+}
+
 TEST(condition_variable, wakes_a_waiter_once_the_condition_holds) {
     mutex lock;
     condition_variable ready;

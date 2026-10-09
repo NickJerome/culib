@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 
 namespace wavvix {
 
@@ -60,13 +61,15 @@ bool hand_over(park_token*& head, park_token*& tail) {
     }
 }
 
-void die_if_busy(const park_token* head, const char* what) {
-    if (!head) return;
-    // 带着等待者销毁是误用，而且是那种「现在不崩、半年后在别的地方崩」的误用：
-    // 那些协程永远醒不过来，run() 也就永远不返回。当场说清楚比那样好。
+[[noreturn]] void die(const char* what) {
     std::fputs(what, stderr);
     std::fputc('\n', stderr);
     std::abort();
+}
+
+void die_if_busy(const park_token* head, const char* what) {
+    // 带着等待者销毁会让那些协程永久挂起。
+    if (head) die(what);
 }
 
 }  // namespace
@@ -113,6 +116,11 @@ void mutex::unlock() {
 
 // ---- semaphore ------------------------------------------------------------------
 
+semaphore::semaphore(std::ptrdiff_t initial)
+    : count_(initial), head_(0), tail_(0) {
+    if (initial < 0) die("wavvix::semaphore 初始名额不能为负数");
+}
+
 semaphore::~semaphore() {
     die_if_busy(head_, "wavvix::semaphore 销毁时还有协程在等它");
 }
@@ -148,9 +156,11 @@ bool semaphore::try_acquire_for(std::chrono::nanoseconds timeout) {
 }
 
 void semaphore::release(std::ptrdiff_t amount) {
-    for (std::ptrdiff_t i = 0; i < amount; ++i) {
-        if (!hand_over(head_, tail_)) ++count_;   // 没人接才加回计数
-    }
+    if (amount < 0) die("wavvix::semaphore 释放名额不能为负数");
+    while (amount > 0 && hand_over(head_, tail_)) --amount;
+    if (amount > (std::numeric_limits<std::ptrdiff_t>::max)() - count_)
+        die("wavvix::semaphore 名额计数溢出");
+    count_ += amount;
 }
 
 // ---- condition_variable ---------------------------------------------------------
