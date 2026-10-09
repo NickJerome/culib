@@ -1,9 +1,4 @@
-// 事件引擎的测试。
-//
-// **第三期的验证判据是「一套测试跑三个后端，行为必须一致」**（调度器设计第 5 节），
-// 所以这个文件里不出现 epoll / kqueue / IOCP 任何一个名字，只有一对连起来的套接字
-// 和完成形状的调用点。平台分支只在「怎么造那对套接字」上——POSIX 有 socketpair，
-// Windows 没有，只能在 127.0.0.1 上真连一次。
+// 事件引擎的跨平台行为与完成包生命周期测试。
 
 #include <culib/scheduler.h>
 #include <culib/test.h>
@@ -155,9 +150,7 @@ public:
             return;
         }
         // 两个句柄在第一次参与 I/O 之前先交给引擎。POSIX 两个后端这一步什么都不做，
-        // IOCP 要靠它做完成端口的一次性关联——**这件事必须由持有句柄生命周期的那一方
-        // 来做**，引擎自己记表会被句柄值回收坑死，见 io_engine.h。将来是 net 的
-        // socket 构造函数干这件事，现在是这里。
+        // IOCP 要靠它做完成端口的一次性关联，见 io_engine.h。
         if (!wavvix::detail::scheduler_adopt(left) || !wavvix::detail::scheduler_adopt(right)) {
             close_handle(left);
             close_handle(right);
@@ -179,7 +172,6 @@ private:
 };
 
 // 完成形状的调用点：**没有「等可读」那一步**，醒来时结果已经在手。
-// 将来 net 的 socket::read 就是在这上面包一层 result。
 // 没有时限（-1）。**每个调用点都要自己说等多久**，所以 scheduler_io 没给默认值；
 // 这两个测试辅助函数就是「一直等」，因为对面一定会写。带时限的那条路单独有测试。
 const std::chrono::nanoseconds forever(-1);
@@ -301,6 +293,68 @@ TEST(io_engine, cross_thread_notification_interrupts_wait) {
     EXPECT(wavvix::detail::io_engine_pending(engine), ==, 0u);
     wavvix::detail::io_engine_destroy(engine);
 }
+
+#if defined(_WIN32)
+TEST(io_engine, cancel_keeps_completed_overlapped_alive_until_packet_is_taken) {
+    io_handle left = no_handle();
+    io_handle right = no_handle();
+    if (!EXPECT(make_linked(left, right), ==, true)) return;
+
+    wavvix::detail::io_engine* const engine = wavvix::detail::io_engine_create();
+    if (!EXPECT(engine != 0, ==, true)) {
+        close_handle(left);
+        close_handle(right);
+        return;
+    }
+    const bool adopted = wavvix::detail::io_engine_adopt(engine, right);
+    if (EXPECT(adopted, ==, true)) {
+        const char sent = 'x';
+        const int written = ::send(reinterpret_cast<SOCKET>(left), &sent, 1, 0);
+        if (EXPECT(written, ==, 1)) {
+            char received = 0;
+            wavvix::detail::park_token token;
+            io_request request;
+            request.direction = io_read;
+            request.operation = io_socket_transfer;
+            request.handle = right;
+            request.buffer = &received;
+            request.length = 1;
+            request.waiter = &token;
+            const bool armed = wavvix::detail::io_engine_arm(engine, request);
+            if (EXPECT(armed, ==, true)) {
+                bool finished = false;
+                for (int i = 0; i < 50; ++i) {
+                    DWORD moved = 0;
+                    DWORD flags = 0;
+                    if (::WSAGetOverlappedResult(
+                            reinterpret_cast<SOCKET>(right),
+                            reinterpret_cast<WSAOVERLAPPED*>(&request.overlapped[0]),
+                            &moved, FALSE, &flags)) {
+                        finished = true;
+                        break;
+                    }
+                    if (::WSAGetLastError() != WSA_IO_INCOMPLETE) break;
+                    std::this_thread::sleep_for(ms(1));
+                }
+                const bool cancelled = wavvix::detail::io_engine_cancel(engine, request);
+                const DWORD cancel_error = ::GetLastError();
+                wavvix::detail::io_completion_batch completed;
+                wavvix::detail::io_engine_wait(engine, std::chrono::seconds(3), completed);
+                EXPECT(finished, ==, true);
+                EXPECT(cancelled, ==, false);
+                if (finished) EXPECT(cancel_error, ==, static_cast<DWORD>(ERROR_NOT_FOUND));
+                EXPECT(completed.pop(), ==, &request);
+                EXPECT(completed.empty(), ==, true);
+                EXPECT(wavvix::detail::io_engine_pending(engine), ==, 0u);
+                EXPECT(received, ==, 'x');
+            }
+        }
+    }
+    wavvix::detail::io_engine_destroy(engine);
+    close_handle(left);
+    close_handle(right);
+}
+#endif
 
 TEST(io_engine, reads_what_the_peer_wrote) {
     linked_pair pair;

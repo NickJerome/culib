@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
-#include <vector>
 
 #include <fcntl.h>
 #include <sys/epoll.h>

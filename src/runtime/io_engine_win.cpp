@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <new>
-#include <vector>
 
 // GetQueuedCompletionStatusEx 和 OVERLAPPED_ENTRY 要 Vista 以上；下限由 xmake.lua
 // 统一定成 Windows 10（_WIN32_WINNT=0x0A00），这里不再各自兜底。
@@ -258,18 +257,9 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
     if (!engine || unusable(request.handle)) return true;
 
-    // **CancelIoEx 只是「请求」撤销。** 不管它成功还是失败，这次操作的完成包都还会
-    // 回来（撤销成功时带 ERROR_OPERATION_ABORTED），而 OVERLAPPED 必须活到那时候——
-    // 它住在调用方的栈帧里。所以这里返回 false，让调用方再挂起一次等那个包。
-    if (::CancelIoEx(static_cast<HANDLE>(request.handle), overlapped_of(request))) {
-        return false;
-    }
-    if (::GetLastError() == ERROR_NOT_FOUND) {
-        // 内核不认识这个操作了：它已经完成、包也已经被取走，不会再有通知。
-        // 正常路径到不了这里（包取走时凭据就交回去了，调用方不会超时），
-        // 但兜住它比让一根协程永久挂死便宜。pending 在取包那次已经减过，这里不动。
-        return true;
-    }
+    // ERROR_NOT_FOUND 也可能表示操作已完成、包还在 IOCP 队列中。
+    // 请求和 OVERLAPPED 必须活到 io_engine_wait 取走那个包。
+    (void)::CancelIoEx(static_cast<HANDLE>(request.handle), overlapped_of(request));
     return false;
 }
 

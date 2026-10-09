@@ -101,7 +101,7 @@ bool io_engine_cancel(io_engine* engine, io_request& request);
 | 后端 | 撤销 | 返回 |
 | --- | --- | --- |
 | epoll / kqueue | 从等待链上摘掉，重算兴趣集。**同步完成** | `true` |
-| IOCP | `CancelIoEx`。**完成包照样会回来**（带 `ERROR_OPERATION_ABORTED`），而 `OVERLAPPED` 住在调用方的栈帧里，必须活到那时候 | `false` |
+| IOCP | `CancelIoEx`。**完成包照样会回来**（取消成功时带 `ERROR_OPERATION_ABORTED`）；即使返回 `ERROR_NOT_FOUND`，操作也可能已完成但包尚未取走。`OVERLAPPED` 住在调用方的栈帧里，必须活到取包之后 | `false` |
 
 调用点因此是这样，两个平台一套写法：
 

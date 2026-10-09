@@ -111,6 +111,10 @@ API），见 superpowers/specs/2026-10-05-event-engine-design.md 第 2 节。
 写的时候本机只有 MinGW 交叉编译 + wine，真 MSVC 是推上 CI 才第一次编到、跑到的
 （`3a766aa` 那次全绿，`3e8ed8d` 记录）。
 
+取消操作后始终等对应完成包。`CancelIoEx` 报 `ERROR_NOT_FOUND` 时，操作可能已完成，
+但完成包仍在 IOCP 队列；此时释放请求栈帧会让包里的 `OVERLAPPED` 地址悬空。
+Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序。
+
 ## [`park.h`](../src/runtime/park.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。

@@ -5,7 +5,6 @@
 #include <cerrno>
 #include <cstddef>
 #include <new>
-#include <vector>
 
 #include <fcntl.h>
 #include <sys/types.h>
