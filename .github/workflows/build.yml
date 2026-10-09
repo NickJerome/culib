@@ -115,7 +115,7 @@ jobs:
       - name: run tests under AddressSanitizer
         shell: bash
         env:
-          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
         run: bash .github/report-failure.sh xmake test -v
 
   build:
