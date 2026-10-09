@@ -137,12 +137,12 @@ result<void> write_with_disposition(string_view path, string_view content, bool 
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
     // 同上：共享模式给 0 的话，写的过程中别人连读都不行。POSIX 没有这种限制。
-    const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_WRITE,
+    const HANDLE file = ::CreateFileW(wide.value().c_str(),
+                                      append ? FILE_APPEND_DATA : GENERIC_WRITE,
                                       FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
                                       append ? OPEN_ALWAYS : CREATE_ALWAYS,
                                       FILE_ATTRIBUTE_NORMAL, 0);
     if (file == INVALID_HANDLE_VALUE) return from_last_error("打开", path, ::GetLastError());
-    if (append) ::SetFilePointer(file, 0, 0, FILE_END);
     std::size_t offset = 0;
     while (offset < content.size()) {
         // WriteFile 一次最多 DWORD 能表示的字节数，大文件要分几次
@@ -153,6 +153,10 @@ result<void> write_with_disposition(string_view path, string_view content, bool 
             const DWORD code = ::GetLastError();
             ::CloseHandle(file);
             return from_last_error("写入", path, code);
+        }
+        if (written == 0) {
+            ::CloseHandle(file);
+            return make_error(error_kind::io, path.to_string() + " 写入未前进");
         }
         offset += written;
     }
@@ -315,6 +319,7 @@ result<void> output_file::write(string_view content) {
         if (!::WriteFile(file, at, chunk, &moved, 0)) {
             return from_last_error("写入", "", ::GetLastError());
         }
+        if (moved == 0) return make_error(error_kind::io, "写入未前进");
         at += moved;
         left -= moved;
         written_ += moved;

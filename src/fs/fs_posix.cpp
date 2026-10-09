@@ -249,6 +249,7 @@ result<void> output_file::write(string_view content) {
             if (errno == EINTR) continue;   // 信号打断，接着写
             return from_errno("写入", "", errno);
         }
+        if (moved == 0) return make_error(error_kind::io, "写入未前进");
         at += moved;
         left -= static_cast<std::size_t>(moved);
         written_ += static_cast<std::uint64_t>(moved);
