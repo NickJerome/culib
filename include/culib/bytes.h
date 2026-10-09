@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace wavvix {
@@ -22,6 +23,24 @@ class buffer {
 public:
     buffer() : read_at_(0), write_at_(0), prepared_(0) {}
     explicit buffer(std::size_t room) : read_at_(0), write_at_(0), prepared_(0) { reserve(room); }
+    buffer(const buffer&) = default;
+    buffer& operator=(const buffer&) = default;
+    // 移动后源缓冲区为空，仍可继续使用。
+    buffer(buffer&& other) noexcept
+        : store_(std::move(other.store_)), read_at_(other.read_at_),
+          write_at_(other.write_at_), prepared_(other.prepared_) {
+        other.clear();
+    }
+    buffer& operator=(buffer&& other) noexcept {
+        if (this != &other) {
+            store_ = std::move(other.store_);
+            read_at_ = other.read_at_;
+            write_at_ = other.write_at_;
+            prepared_ = other.prepared_;
+            other.clear();
+        }
+        return *this;
+    }
 
     // ---- 状态 ----
     // 还没被读走的那些字节。data() 指向它们的开头。

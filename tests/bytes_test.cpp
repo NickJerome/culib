@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -225,4 +226,21 @@ TEST(bytes, can_append_its_own_unread_bytes_after_growth) {
     one.write("abcd", 4);
     one.write(one.data(), one.size());
     EXPECT(shown(one), ==, "abcdabcd");
+}
+
+TEST(bytes, moved_from_buffer_can_be_reused) {
+    buffer source(4);
+    source.write("abcd", 4);
+    buffer first(std::move(source));
+    EXPECT(shown(first), ==, "abcd");
+    EXPECT(source.empty(), ==, true);
+    source.write("x", 1);
+    EXPECT(shown(source), ==, "x");
+
+    buffer second;
+    second = std::move(first);
+    EXPECT(shown(second), ==, "abcd");
+    EXPECT(first.empty(), ==, true);
+    first.write("y", 1);
+    EXPECT(shown(first), ==, "y");
 }
