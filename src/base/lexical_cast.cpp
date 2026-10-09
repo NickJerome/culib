@@ -1,7 +1,8 @@
 #include <culib/lexical_cast.h>
 
-#include <cstdio>
+#include <cerrno>
 #include <clocale>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -235,14 +236,20 @@ result<T> parse_floating(string_view text, T (*convert)(const char*, char**),
     copy[local_length] = '\0';
 
     char* stopped = copy;
+    const int saved_errno = errno;
+    errno = 0;
     const T value = convert(copy, &stopped);
+    const bool range_error = errno == ERANGE;
+    errno = saved_errno;
     if (stopped != copy + local_length) {
         // 语法已经校验过，走到这里说明转换器的接受范围比我们窄，不该发生
         return malformed(text, "不是合法数字");
     }
-    // 溢出报错；下溢不报错，就是舍入到 0 或次正规数。
+    // 向零舍入时，溢出可能返回有限的最大值；下溢仍允许舍入到 0 或次正规数。
     if (value == std::numeric_limits<T>::infinity() ||
-        value == -std::numeric_limits<T>::infinity()) {
+        value == -std::numeric_limits<T>::infinity() ||
+        (range_error && (value == (std::numeric_limits<T>::max)() ||
+                         value == -(std::numeric_limits<T>::max)()))) {
         return make_error(error_kind::out_of_range,
                           quoted(text) + " 超出 " + type_name + " 的范围");
     }

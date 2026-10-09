@@ -1,6 +1,8 @@
 #include <culib/lexical_cast.h>
 #include <culib/test.h>
 
+#include <cerrno>
+#include <cfenv>
 #include <cstddef>
 #include <limits>
 #include <string>
@@ -180,6 +182,35 @@ TEST(lexical_cast, handles_floating_point_specials_and_range) {
     EXPECT(lexical_cast<float>("inf").value_or(0.0f), ==,
            std::numeric_limits<float>::infinity());
     EXPECT(lexical_cast<float>("1e-100").value_or(1.0f), ==, 0.0f);
+}
+
+TEST(lexical_cast, rejects_finite_overflow_under_round_toward_zero) {
+#if defined(FE_TOWARDZERO)
+    const int original = std::fegetround();
+    if (original < 0 || std::fesetround(FE_TOWARDZERO) != 0) return;
+    const error_kind positive = kind_of<float>("1e40");
+    const error_kind negative = kind_of<float>("-1e40");
+    const error_kind double_positive = kind_of<double>("1e400");
+    const error_kind double_negative = kind_of<double>("-1e400");
+    const result<float> underflow = lexical_cast<float>("1e-100");
+    const int original_errno = errno;
+    errno = ERANGE;
+    const result<float> exact_max = lexical_cast<float>(
+        "340282346638528859811704183484516925440");
+    const int errno_after = errno;
+    errno = original_errno;
+    std::fesetround(original);
+
+    EXPECT(positive, ==, error_kind::out_of_range);
+    EXPECT(negative, ==, error_kind::out_of_range);
+    EXPECT(double_positive, ==, error_kind::out_of_range);
+    EXPECT(double_negative, ==, error_kind::out_of_range);
+    EXPECT(underflow.is_ok(), ==, true);
+    EXPECT(underflow.value_or(1.0f), ==, 0.0f);
+    EXPECT(exact_max.is_ok(), ==, true);
+    EXPECT(exact_max.value_or(0.0f), ==, (std::numeric_limits<float>::max)());
+    EXPECT(errno_after, ==, ERANGE);
+#endif
 }
 
 TEST(lexical_cast, formats_integers) {
