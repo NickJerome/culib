@@ -119,7 +119,8 @@ unsigned long long current_thread_serial() noexcept {
 }
 
 // --- 每线程栈池；取舍与测量见调度器设计 8.2–8.4 -----------------------------
-const int pool_bucket_count = sizeof(void*) >= 8 ? 24 : 20;
+// 桶区间：4–64 KiB、128–512 KiB、1–16 MiB（32 位到 4 MiB）。
+const int pool_bucket_count = sizeof(void*) >= 8 ? 17 : 15;
 
 // 按字节限制缓存，避免大栈占满地址空间。
 const std::size_t pool_budget = sizeof(void*) >= 8 ? 32u * 1024 * 1024 : 8u * 1024 * 1024;
@@ -154,18 +155,18 @@ runtime_thread_state* current_pool() noexcept {
     return state;
 }
 
-// 返回能容纳 want 的最小桶；超出池支持范围返回 -1。
-int pool_bucket_of(std::size_t want) noexcept {
-    std::size_t size = 4096;
-    for (int i = 0; i < pool_bucket_count; ++i) {
-        if (size >= want) return i;
-        size <<= 1;
-    }
-    return -1;
+std::size_t pool_bucket_size(int bucket) noexcept {
+    if (bucket < 5) return static_cast<std::size_t>(4096) << bucket;
+    if (bucket < 12) return static_cast<std::size_t>(64 * 1024) * (bucket - 3);
+    return static_cast<std::size_t>(1024 * 1024) << (bucket - 12);
 }
 
-std::size_t pool_bucket_size(int bucket) noexcept {
-    return static_cast<std::size_t>(4096) << bucket;
+// 返回能容纳 want 的最小桶；超出池支持范围返回 -1。
+int pool_bucket_of(std::size_t want) noexcept {
+    for (int i = 0; i < pool_bucket_count; ++i) {
+        if (pool_bucket_size(i) >= want) return i;
+    }
+    return -1;
 }
 
 stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
