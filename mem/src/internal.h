@@ -50,7 +50,6 @@
 #define WAVVIX_MEM_PAGE_FLAG_IN_FULL 0x01   /* 当前挂在 pages[WAVVIX_MEM_BIN_FULL] 队列 */
 #define WAVVIX_MEM_PAGE_FLAG_HUGE    0x02   /* free 即 decommit 归还物理页       */
 #define WAVVIX_MEM_PAGE_FLAG_GUARDED 0x04   /* L3 守护页分配                     */
-#define WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED 0x08 /* 页内曾切出过对齐块：free 需按块网格找回块首 */
 
 /* xthread_id 低位标志 */
 #define WAVVIX_MEM_PAGE_XTHREAD_ABANDONED ((uintptr_t)0x1)
@@ -120,7 +119,7 @@ struct mem_page_s {
   bool                   free_is_zero;  /* 空闲块内容已清零 */
   uint8_t                flags;
   uint8_t                bin;         /* small bin（1..36）；large 为 0 */
-  uint8_t                _pad0;
+  std::atomic<uint8_t>   has_aligned; /* 一旦置位，本页复用前不再清零 */
   uint16_t               arena_idx;   /* 所属 arena 下标（slice 的固有属性） */
   uint8_t*               slice_start; /* 页首地址（slice 起始，64KiB 对齐） */
   uint32_t               slice_count; /* 连续 slice 数（small=1） */
@@ -138,6 +137,7 @@ struct mem_page_s {
   uint8_t                _pad2[8];
 };
 static_assert(sizeof(mem_page_t) == 128, "mem_page_t must be exactly two cache lines");
+static_assert(ATOMIC_CHAR_LOCK_FREE == 2, "page alignment marker must be lock-free");
 /* CONT 续页项的三个域必须同处 line 0——这是上面那条布局决策的机器可检查形式 */
 static_assert(offsetof(mem_page_t, kind) < 64 && offsetof(mem_page_t, cont_first) < 64 &&
                   offsetof(mem_page_t, magic) < 64,
@@ -187,6 +187,7 @@ struct mem_arena_s {
   uint16_t    index;                /* 自身在 g_arenas[] 中的下标 */
   std::mutex  mutex;                /* arena 唯一锁 */
   mem_page_t*  abandoned[WAVVIX_MEM_BIN_COUNT];  /* abandoned 页桶：bin b -> [b-1] */
+  std::atomic<uint64_t> abandoned_nonempty;      /* 无锁读的非空桶提示 */
 };
 
 /* 运行时选项（heap.cpp，启动解析一次，之后只读） */
@@ -365,7 +366,7 @@ void   mem_debug_verify_free_block(const mem_page_t* page, const void* block);
  * 三处共用的唯一口径（上面两个分量在这里汇合）。 */
 static inline uint8_t* mem_user_block_start(const mem_page_t* page, const void* p) {
   if (page->kind == WAVVIX_MEM_PAGE_LARGE) return mem_large_block_start(page);
-  if (WAVVIX_MEM_UNLIKELY((page->flags & WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED) != 0))
+  if (WAVVIX_MEM_UNLIKELY(page->has_aligned.load(std::memory_order_relaxed) != 0))
     return mem_small_block_start(page, p);
 #if defined(WAVVIX_MEM_DEBUG)
   return (uint8_t*)((uintptr_t)p - WAVVIX_MEM_L2_HEAD);   /* 普通块：用户指针在块首之后 */

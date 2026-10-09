@@ -15,12 +15,13 @@
 #include <cstdlib>
 #include <cstdint>
 #include <chrono>
+#include <atomic>
 
 namespace memtest {
 
 /* 已通过检查计数（每个翻译单元独立，测试均为单 TU 程序） */
-inline unsigned long& check_counter() {
-    static unsigned long n = 0;
+inline std::atomic<unsigned long>& check_counter() {
+    static std::atomic<unsigned long> n(0);
     return n;
 }
 
@@ -32,11 +33,12 @@ inline void check_fail(const char* expr, const char* file, int line, const char*
     std::exit(1);
 }
 
-inline void check_pass() { ++check_counter(); }
+inline void check_pass() { check_counter().fetch_add(1, std::memory_order_relaxed); }
 
 /* 打印汇总并以 0 退出（所有 CHECK 均已通过） */
 inline int summary(const char* name) {
-    std::printf("[PASS] %s: all %lu checks passed\n", name, check_counter());
+    std::printf("[PASS] %s: all %lu checks passed\n", name,
+                check_counter().load(std::memory_order_relaxed));
     return 0;
 }
 

@@ -148,7 +148,7 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
   page->free_is_zero = slice_is_zero;
   page->flags = 0;
   page->bin = (uint8_t)bin;
-  page->_pad0 = 0;
+  page->has_aligned.store(0, std::memory_order_relaxed);
   page->slice_start = slice_start;
   page->slice_count = slice_count;
   page->cont_first = 0;

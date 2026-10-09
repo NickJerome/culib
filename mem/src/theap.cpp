@@ -290,7 +290,9 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
 
   /* 0) 分配驱动兜底：本 bin 的 abandoned 桶非空 → 优先认领一页。
    *    否则满页压力降级产生的被弃页只进不出，内存会随时间膨胀。 */
-  if (arena != NULL && arena->abandoned[bin - 1] != NULL) {
+  if (arena != NULL &&
+      (arena->abandoned_nonempty.load(std::memory_order_relaxed) &
+          (uint64_t(1) << (bin - 1))) != 0) {
     mem_page_t* rp = mem_page_fresh(t, bin);
     if (rp != NULL && rp->free != NULL) {
       if (bin < WAVVIX_MEM_DIRECT_MAX) t->pages_free_direct[bin] = rp;
@@ -563,8 +565,8 @@ void wavvix::mem::free(void* p) noexcept {
   if (WAVVIX_MEM_UNLIKELY(offset >= (size_t)page->capacity * page->block_size))
     mem_fatal_page("free outside small block range", p, page);
 
-  /* HAS_ALIGNED 页可按网格找回块首；块内指针必须有定位标记。 */
-  if (WAVVIX_MEM_UNLIKELY((page->flags & WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED) != 0)) {
+  /* 曾有对齐块的页按网格找回块首；块内指针必须有定位标记。 */
+  if (WAVVIX_MEM_UNLIKELY(page->has_aligned.load(std::memory_order_relaxed) != 0)) {
     uint8_t* const block = mem_small_block_start(page, p);
 #if !defined(WAVVIX_MEM_DEBUG)
     if (p != block) {

@@ -126,7 +126,7 @@ void* wavvix::mem::aligned_alloc(size_t alignment, size_t size) noexcept {
 #if defined(WAVVIX_MEM_DEBUG)
     uint8_t* user = (uint8_t*)(((uintptr_t)b + WAVVIX_MEM_L2_CANARY + alignment - 1)
                                & ~(uintptr_t)(alignment - 1));
-    page->flags |= WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED;
+    page->has_aligned.store(1, std::memory_order_relaxed);
     return mem_l2_wrap_at(b, user);
 #else
     uint8_t* user = (uint8_t*)(((uintptr_t)b + alignment - 1)
@@ -135,7 +135,7 @@ void* wavvix::mem::aligned_alloc(size_t alignment, size_t size) noexcept {
     if (user != b) {
       const uintptr_t cookie = mem_aligned_cookie(user);
       std::memcpy(user - sizeof(cookie), &cookie, sizeof(cookie));
-      page->flags |= WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED;
+      page->has_aligned.store(1, std::memory_order_relaxed);
     }
     return user;
 #endif

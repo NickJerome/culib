@@ -91,8 +91,12 @@ void producer(BlockQueue* bq, size_t nblocks, uint8_t magic_base) {
     memtest::splitmix64 rng(0xBEEF + magic_base);
     for (size_t i = 0; i < nblocks; ++i) {
         size_t size = (size_t)rng.range(16, 2048);
-        uint8_t* p = (uint8_t*)wavvix::mem::alloc(size);
+        uint8_t* p = (uint8_t*)((i & 7) == 0
+            ? wavvix::mem::aligned_alloc(64, size)
+            : wavvix::mem::alloc(size));
         CHECK_MSG(p != NULL, "producer malloc failed");
+        if ((i & 7) == 0)
+            CHECK_MSG(((uintptr_t)p & 63) == 0, "producer aligned allocation failed");
         p[0] = (uint8_t)(magic_base ^ (uint8_t)i);   /* 魔数写入首字节 */
         p[size - 1] = 0x5A;
         {
@@ -269,7 +273,7 @@ void test_abandon_returns_memory() {
 /* ------------------------------------------------------------------ */
 /* f) 跨线程释放对齐块                                                  */
 /* ------------------------------------------------------------------ */
-/* 对齐块的用户指针不是块首，释放侧要按块网格把它找回（WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED）。
+/* 对齐块的用户指针不是块首，释放侧要按块网格把它找回（has_aligned）。
  * 本地释放那一条由 test_unit 覆盖；这里补的是另一条分支——owner 线程已退出、
  * 页进了 abandoned 桶，释放走 mem_free_to_page 的 CAS 压 xthread_free。
  *
