@@ -164,6 +164,14 @@ TEST(lexical_cast, handles_floating_point_specials_and_range) {
 
     EXPECT(kind_of<double>("1e400"), ==, error_kind::out_of_range);
     EXPECT(lexical_cast<double>("1e-400").value_or(1.0), ==, 0.0);    // 下溢不报错
+
+    const float largest = (std::numeric_limits<float>::max)();
+    EXPECT(lexical_cast<float>(to_string(largest)).value_or(0.0f), ==, largest);
+    EXPECT(kind_of<float>("1e40"), ==, error_kind::out_of_range);
+    EXPECT(kind_of<float>("-1e40"), ==, error_kind::out_of_range);
+    EXPECT(lexical_cast<float>("inf").value_or(0.0f), ==,
+           std::numeric_limits<float>::infinity());
+    EXPECT(lexical_cast<float>("1e-100").value_or(1.0f), ==, 0.0f);
 }
 
 TEST(lexical_cast, formats_integers) {

@@ -152,13 +152,13 @@ result<bool> parse_bool(string_view text) {
     return malformed(text, "不是布尔值（true/false/1/0/yes/no/on/off，大小写不敏感）");
 }
 
-// 浮点解析分两步：这里严格校验语法，换算交给 strtod。
+// 浮点解析分两步：这里严格校验语法，换算交给 strtof / strtod。
 //
-// locale：strtod 的小数点看 LC_NUMERIC。不调 setlocale（进程级，会影响别的线程），
+// locale：转换器的小数点看 LC_NUMERIC。不调 setlocale（进程级，会影响别的线程），
 // 改成把输入里的 '.' 换成当前 locale 的小数点再交给它，和 to_string 那边同一招。
 
-// 严格校验 [+-]?(数字[.数字]?|.数字)([eE][+-]?数字)+ 的形状。
-// strtod 自己会接受十六进制浮点（0x1p3）和前导空白，所以必须先过这一道。
+// 严格校验 [+-]?(数字[.数字]?|.数字)([eE][+-]?数字)? 的形状。
+// 转换器自己会接受十六进制浮点（0x1p3）和前导空白，所以必须先过这一道。
 bool is_strict_decimal(string_view text) {
     std::size_t i = 0;
     if (i < text.size() && (text[i] == '+' || text[i] == '-')) ++i;
@@ -180,7 +180,9 @@ bool is_strict_decimal(string_view text) {
     return i == text.size();
 }
 
-result<double> parse_double(string_view text) {
+template <typename T>
+result<T> parse_floating(string_view text, T (*convert)(const char*, char**),
+                         const char* type_name) {
     if (text.empty()) return malformed(text, "是空的，不是数字");
 
     // inf / infinity / nan，大小写不敏感。不认的话 to_string 的输出就解析不回来。
@@ -196,48 +198,63 @@ result<double> parse_double(string_view text) {
             for (std::size_t i = 0; i < body.size(); ++i) folded[i] = lowered(body[i]);
             folded[body.size()] = '\0';
             if (std::strcmp(folded, "inf") == 0 || std::strcmp(folded, "infinity") == 0) {
-                const double infinity = std::numeric_limits<double>::infinity();
+                const T infinity = std::numeric_limits<T>::infinity();
                 return negative ? -infinity : infinity;
             }
-            if (std::strcmp(folded, "nan") == 0) return std::numeric_limits<double>::quiet_NaN();
+            if (std::strcmp(folded, "nan") == 0) return std::numeric_limits<T>::quiet_NaN();
         }
     }
 
     if (!is_strict_decimal(text)) return malformed(text, "不是合法数字");
 
-    // strtod 要 '\0' 结尾，而视图不保证；顺便把小数点换成当前 locale 的。
+    // strtof / strtod 要 '\0' 结尾，而视图不保证；顺便换成当前 locale 的小数点。
     // 短输入走栈上缓冲区，长输入（"0.000…1" 这种）才分配。
-    const char* const point = std::localeconv()->decimal_point;
-    const char local_point = (point && point[0] && point[1] == '\0') ? point[0] : '.';
+    const char* point = std::localeconv()->decimal_point;
+    if (!point || !point[0]) point = ".";
+    const std::size_t point_size = std::strlen(point);
+    const char* const dot = static_cast<const char*>(std::memchr(text.data(), '.', text.size()));
+    const std::size_t dot_at = dot ? static_cast<std::size_t>(dot - text.data()) : text.size();
+    const std::size_t extra = dot ? point_size - 1 : 0;
+    if (text.size() >= (std::numeric_limits<std::size_t>::max)() - extra)
+        return make_error(error_kind::out_of_range, "浮点输入太长");
+    const std::size_t local_length = text.size() + extra;
     char stack_buffer[64];
     std::string heap_buffer;
     char* copy = stack_buffer;
-    if (text.size() + 1 > sizeof stack_buffer) {
-        heap_buffer.assign(text.data(), text.size());
-        heap_buffer.push_back('\0');
+    if (local_length + 1 > sizeof stack_buffer) {
+        heap_buffer.resize(local_length + 1);
         copy = &heap_buffer[0];
-    } else {
-        std::memcpy(stack_buffer, text.data(), text.size());
-        stack_buffer[text.size()] = '\0';
     }
-    if (local_point != '.') {
-        for (std::size_t i = 0; i < text.size(); ++i) {
-            if (copy[i] == '.') copy[i] = local_point;
-        }
+    std::memcpy(copy, text.data(), text.size());
+    if (dot) {
+        if (point_size > 1)
+            std::memmove(copy + dot_at + point_size, copy + dot_at + 1,
+                         text.size() - dot_at - 1);
+        std::memcpy(copy + dot_at, point, point_size);
     }
+    copy[local_length] = '\0';
 
     char* stopped = copy;
-    const double value = std::strtod(copy, &stopped);
-    if (stopped != copy + text.size()) {
-        // 语法已经校验过，走到这里说明 strtod 的接受范围比我们窄，不该发生
+    const T value = convert(copy, &stopped);
+    if (stopped != copy + local_length) {
+        // 语法已经校验过，走到这里说明转换器的接受范围比我们窄，不该发生
         return malformed(text, "不是合法数字");
     }
-    // 溢出：语法合法但数值超出 double。下溢不报错，就是舍入到 0 或次正规数。
-    if (value == std::numeric_limits<double>::infinity() ||
-        value == -std::numeric_limits<double>::infinity()) {
-        return make_error(error_kind::out_of_range, quoted(text) + " 超出 double 的范围");
+    // 溢出报错；下溢不报错，就是舍入到 0 或次正规数。
+    if (value == std::numeric_limits<T>::infinity() ||
+        value == -std::numeric_limits<T>::infinity()) {
+        return make_error(error_kind::out_of_range,
+                          quoted(text) + " 超出 " + type_name + " 的范围");
     }
     return value;
+}
+
+result<float> parse_float(string_view text) {
+    return parse_floating<float>(text, &std::strtof, "float");
+}
+
+result<double> parse_double(string_view text) {
+    return parse_floating<double>(text, &std::strtod, "double");
 }
 
 error signed_out_of_range(string_view text, long long low, long long high) {

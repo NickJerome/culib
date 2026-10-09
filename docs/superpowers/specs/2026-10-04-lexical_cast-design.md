@@ -63,7 +63,7 @@ lexical_cast refuses char-like types: casting "65" to char is ambiguous
 
 `strtoul("-1")` 会回绕成 `ULLONG_MAX`。那是教科书级的「意外」，这里直接 `invalid_argument`，消息是「是负数，而目标类型是无符号的」。
 
-### 3.4 浮点：自己严格校验语法，换算交给 strtod
+### 3.4 浮点：自己严格校验语法，换算交给 strtof / strtod
 
 **先写了手算版本**（Clinger 快路径：尾数 ≤ 2^53 且指数在 ±22 内时，一次乘除是正确舍入的；超出就 `mantissa * pow(10, exp)`）。实测两个输入错掉：
 
@@ -74,12 +74,12 @@ lexical_cast refuses char-like types: casting "65" to char is ambiguous
 
 改成**两步**：
 
-1. 自己用 `is_strict_decimal` 校验 `[+-]?(数字[.数字]?|.数字)([eE][+-]?数字)?` 的形状。这一步必须有，因为 `strtod` 自己会接受十六进制浮点（`0x1p3`）和前导空白。
-2. 换算交给 `strtod`，它是正确舍入的。
+1. 自己用 `is_strict_decimal` 校验 `[+-]?(数字[.数字]?|.数字)([eE][+-]?数字)?` 的形状。这一步必须有，因为 libc 转换函数自己会接受十六进制浮点（`0x1p3`）和前导空白。
+2. `float` 换算交给 `strtof`，`double` 交给 `strtod`，各自在目标精度下正确舍入。先按 `double` 解析再转 `float` 会让超出 `float` 范围的输入走到未定义的浮点缩窄，也可能错过目标精度的舍入。
 
 这比手算**更简单也更正确**：少 60 行，而「严格」本来就是我们自己校验出来的。代价是依赖 libc 的 `strtod` 质量（glibc / musl / macOS / MSVC 都是正确舍入的）。
 
-**locale 怎么办**：`strtod` 的小数点看 `LC_NUMERIC`。不调 `setlocale`（进程级，会影响别的线程），改成**把输入里的 `'.'` 换成当前 locale 的小数点**再交给它。格式化那边是反向的同一招：`snprintf("%g")` 之后把 locale 的小数点换回 `'.'`。两边都不碰全局状态。
+**locale 怎么办**：`strtof` / `strtod` 的小数点看 `LC_NUMERIC`。不调 `setlocale`（进程级，会影响别的线程），改成**把输入里的 `'.'` 换成当前 locale 的小数点**再交给它，包括多字节小数点。格式化那边是反向的同一招：`snprintf("%g")` 之后把 locale 的小数点换回 `'.'`。两边都不碰全局状态。
 
 短输入（< 64 字节）走栈上缓冲区，只有 `"0.000…1"` 这种长输入才分配。
 
@@ -196,9 +196,8 @@ std::string to_string(T value) {
 | `lexical_cast<void*>("x")` | 同上 |
 | `lexical_cast<bool>("1", 2)` | the base overload … is for integral types other than bool |
 
-### 4.5 没覆盖
+### 4.5 后续验证与范围
 
-- **Clang、MSVC、macOS、最低版本编译器都没跑过。** 本机只有 GCC 14.2。MSVC 那边 `strtod` 的正确舍入是文档承诺的但没有实测。
-- **locale 的两处替换都没有在非 `'.'` 小数点的环境里跑过。** 需要一个装了 `de_DE` 之类 locale 的环境，并且程序主动 `setlocale(LC_NUMERIC, "de_DE")`。代码路径写了（单字节和多字节小数点都处理），但只有 `'.'` 这一支被执行过。**这是本模块最大的未验证面。**
-- `float` 只测了一个值；`long double` 不支持（会走 `float_tag` 收窄到 `double` 再转回去，精度有损）——没有消费者，没有专门处理。
+- 2026-10-09 补测：Linux GCC 和 Windows MSVC 的常规测试通过。本机 Linux 生成 `ps_AF.UTF-8` locale（小数点为多字节的 `٫`），显式 `setlocale(LC_NUMERIC, "ps_AF.UTF-8")` 后，`float` / `double` 解析 `"1.5"` 与 `to_string(1.5)` 均通过。`float` 的最大值往返、溢出、特殊值与下溢已纳入单元测试。
+- `long double` 没有对应的解析和格式化实现，现会给出编译期错误，不再悄悄经 `double` 损失精度。
 - `to_chars(double)` 的容量不足分支只测了整数那一侧。

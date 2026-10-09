@@ -302,9 +302,10 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
 （超出目标类型范围），消息里带上出错的那段输入和允许的范围。要说明「这是哪个字段」
 时，在自己那一层把上下文拼进去，见 CLAUDE.md「错误处理」。
 
-不受 locale 影响：小数点一律是 '.'。整数完全自己解析；浮点的语法自己严格校验，换算
-交给 strtod（它是正确舍入的），但先把 '.' 换成当前 locale 的小数点——不调 setlocale，
-那是进程级的、会影响别的线程。
+不受 locale 影响：小数点一律是 '.'。整数完全自己解析；浮点的语法自己严格校验，
+`float` 交给 `strtof`、`double` 交给 `strtod` 正确舍入，先把 '.' 换成当前 locale 的
+小数点（包括多字节小数点）。库不调用进程级的 `setlocale`。`long double` 目前没有实现，
+传给 `lexical_cast`、`to_string` 或 `to_chars` 会在编译期报错。
 
 ## [`log.h`](../include/culib/log.h)
 

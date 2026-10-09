@@ -18,6 +18,7 @@ namespace detail {
 // 真正干活的在 lexical_cast.cpp 里；模板只负责挑一个、再把结果收窄到 T。
 result<long long> parse_signed(string_view text, int base);
 result<unsigned long long> parse_unsigned(string_view text, int base);
+result<float> parse_float(string_view text);
 result<double> parse_double(string_view text);
 result<bool> parse_bool(string_view text);
 
@@ -49,6 +50,8 @@ struct widen {
                   "to_string refuses char-like types: to_string('A') is ambiguous "
                   "(\"65\", or \"A\"?). Cast to int for the number, or use "
                   "std::string(1, c) for the character");
+    static_assert(!std::is_same<T, long double>::value,
+                  "long double formatting is unsupported: converting it to double loses precision");
     using type = typename std::conditional<
         std::is_floating_point<T>::value, double,
         typename std::conditional<std::is_signed<T>::value, long long,
@@ -105,19 +108,29 @@ struct caster<T, unsigned_tag> {
 template <typename T>
 struct caster<T, float_tag> {
     static result<T> cast(string_view text, int) {
-        result<double> wide = parse_double(text);
-        if (wide.is_err()) return std::move(wide).error();
-        return static_cast<T>(wide.value());
+        static_assert(!std::is_same<T, T>::value,
+                      "lexical_cast supports float and double, not long double");
+        return make_error(error_kind::invalid_argument, text.to_string());
     }
+};
+
+template <>
+struct caster<float, float_tag> {
+    static result<float> cast(string_view text, int) { return parse_float(text); }
+};
+
+template <>
+struct caster<double, float_tag> {
+    static result<double> cast(string_view text, int) { return parse_double(text); }
 };
 
 }  // namespace detail
 
-// 字符串 -> T。T 只能是整数、浮点或 bool；别的类型给出一句 static_assert 说明。
+// 字符串 -> T。T 只能是整数、float、double 或 bool；别的类型给出 static_assert。
 template <typename T>
 result<T> lexical_cast(string_view text) {
     static_assert(std::is_integral<T>::value || std::is_floating_point<T>::value,
-                  "lexical_cast supports only integral, floating point and bool target types");
+                  "lexical_cast supports only integral, float, double and bool target types");
     static_assert(!detail::is_character_type<T>::value,
                   "lexical_cast refuses char-like types: casting \"65\" to char is ambiguous "
                   "(the number 65, or the character '6'?). Use int instead, or index the text");
