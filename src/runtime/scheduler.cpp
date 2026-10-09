@@ -805,10 +805,12 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
                 self.remote->pending_tasks.load(std::memory_order_acquire) != 0;
             const bool worker_alive = self.worker_stop &&
                 !self.worker_stop->load(std::memory_order_acquire);
-            if (!timed && self.parked_count == 0 && io_engine_pending(self.engine) == 0 &&
+            const std::size_t pending_io = io_engine_pending(self.engine);
+            if (!timed && self.parked_count == 0 && pending_io == 0 &&
                 !remote_tasks && !worker_alive) break;
-            // 没有引擎、定时器和就绪任务时，同一 vCPU 上已没有代码能发出唤醒。
-            if (!self.engine && !have_deadline && self.parked_count != 0)
+            // 没有待完成 I/O、计时器或跨线程通知时，剩余的本地等待无法被唤醒。
+            if (!have_deadline && self.parked_count != 0 && pending_io == 0 &&
+                !self.remote && !worker_alive)
                 die("wavvix::scheduler: 无时限等待的协程已无唤醒来源");
             idle(self, have_deadline, nearest);
             continue;
