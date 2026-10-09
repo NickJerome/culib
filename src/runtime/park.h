@@ -3,6 +3,8 @@
 // 协程挂起时使用的内部凭据。
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 
 namespace wavvix {
 namespace detail {
@@ -23,6 +25,9 @@ struct park_token {
     // 排回 ready、但还没来得及把自己从等待队列里摘掉的协程，会被同一轮里的 wake
     // 再排一次，于是同一根协程在 ready 里出现两次、被 resume 两次。
     bool settled;
+    bool parked;             // 已计入所属 vCPU 的挂起数量
+    std::size_t heap_index;  // timed 时在定时器堆中的位置
+    std::uint64_t order;     // 相同截止时间按挂起顺序唤醒
     park_token* next;        // 给各自的等待队列串用（mutex / semaphore 的 FIFO）
 };
 

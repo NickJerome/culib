@@ -159,6 +159,25 @@ TEST(semaphore, try_acquire_for_gives_up_when_the_time_is_up) {
     EXPECT(permits.count(), ==, 0);
 }
 
+TEST(semaphore, early_wakes_remove_timers_without_losing_later_timeouts) {
+    semaphore permits(0);
+    int acquired = 0;
+    int expired = 0;
+    for (int i = 0; i < 32; ++i) {
+        const int timeout = 80 + (i * 7 % 4) * 10;
+        spawn([&, timeout] {
+            if (permits.try_acquire_for(ms(timeout))) ++acquired;
+            else ++expired;
+        }).value();
+    }
+    spawn([&] { permits.release(16); }).value();
+
+    EXPECT(run(), ==, 33u);
+    EXPECT(acquired, ==, 16);
+    EXPECT(expired, ==, 16);
+    EXPECT(permits.count(), ==, 0);
+}
+
 TEST(semaphore, release_without_waiters_puts_the_permit_back) {
     semaphore permits(0);
     permits.release();
