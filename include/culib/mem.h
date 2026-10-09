@@ -2,8 +2,8 @@
 
 #include <cstddef>
 
-#if !((defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))) || defined(_WIN64))
-#error "wavvix::mem currently supports only 64-bit Linux and Windows"
+#if !(((defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__aarch64__))) || defined(_WIN64))
+#error "wavvix::mem currently supports only 64-bit Linux, macOS, and Windows"
 #endif
 
 namespace wavvix {

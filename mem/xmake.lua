@@ -1,4 +1,4 @@
-local supported = is_plat("linux", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a")
+local supported = is_plat("linux", "macosx", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a")
 
 if supported then
     target("culib_new_override")

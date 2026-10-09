@@ -1,7 +1,7 @@
 /* rand_s 需要在包含任何 CRT 头之前定义（MSVC 与 MinGW-w64 皆然） */
 #define _CRT_RAND_S
 /* ----------------------------------------------------------------------------
- * os.cpp — OS 抽象层实现（Linux / Windows 双路径）
+ * os.cpp — OS 抽象层实现（Linux / macOS / Windows）
  *
  * 平台头文件只在本文件包含：os.h 仅有接口声明，不把 windows.h / sys/mman.h
  * 泄漏给其余 15 个源文件。编译器差异见 compiler.h。
@@ -25,6 +25,9 @@
 #  include <unistd.h>
 #  include <pthread.h>
 #  include <time.h>
+#  if defined(__APPLE__)
+#    include <mach/mach.h>
+#  endif
 #else
 #  error "culib mem: unsupported platform (add a branch in src/os.cpp)"
 #endif
@@ -132,11 +135,13 @@ static int mem_open_readonly(const char* path) {
 }
 
 bool mem_os_reserve(size_t size, void** out) {
-  /* mmap 只保证页对齐：超额 WAVVIX_MEM_OS_RESERVE_ALIGN 后裁掉两端，得到 64KiB 对齐。
-   * MAP_NORESERVE：不预扣 swap，TiB 级保留才不会被 overcommit 策略拒绝。 */
+  /* mmap 只保证页对齐：超额 WAVVIX_MEM_OS_RESERVE_ALIGN 后裁掉两端，得到 64KiB 对齐。 */
   const size_t over = size + WAVVIX_MEM_OS_RESERVE_ALIGN;
-  uint8_t* p = (uint8_t*)mmap(NULL, over, PROT_NONE,
-                              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if !defined(__APPLE__)
+  flags |= MAP_NORESERVE;
+#endif
+  uint8_t* p = (uint8_t*)mmap(NULL, over, PROT_NONE, flags, -1, 0);
   if (p == MAP_FAILED) return false;
   uintptr_t raw = (uintptr_t)p;
   uintptr_t aligned = (raw + WAVVIX_MEM_OS_RESERVE_ALIGN - 1) & ~(uintptr_t)(WAVVIX_MEM_OS_RESERVE_ALIGN - 1);
@@ -153,6 +158,11 @@ bool mem_os_commit(void* p, size_t size) {
 }
 
 bool mem_os_decommit(void* p, size_t size) {
+#if defined(__APPLE__)
+  // 重新映射为不可访问的匿名页；下次 commit 后由内核保证内容为零。
+  return mmap(p, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+              -1, 0) == p;
+#else
   /* madvise DONTNEED：内容作废、物理页归还内核，映射保持 RW，
    * 下次访问得到零页——这正是"免清零传递"（free_is_zero）的内核依据。 */
   if (madvise(p, size, MADV_DONTNEED) != 0) return false;
@@ -164,6 +174,7 @@ bool mem_os_decommit(void* p, size_t size) {
   return mprotect(p, size, PROT_NONE) == 0;
 #else
   return true;
+#endif
 #endif
 }
 
@@ -180,6 +191,14 @@ size_t mem_os_page_size(void) {
 }
 
 size_t mem_os_process_rss(void) {
+#if defined(__APPLE__)
+  mach_task_basic_info_data_t info;
+  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS)
+    return 0;
+  return static_cast<size_t>(info.resident_size);
+#else
   /* /proc/self/statm 第二个字段是常驻页数。无分配读取：固定栈缓冲。 */
   int fd = mem_open_readonly("/proc/self/statm");
   if (fd < 0) return 0;
@@ -195,6 +214,7 @@ size_t mem_os_process_rss(void) {
   size_t pages = 0;
   while (*c >= '0' && *c <= '9') { pages = pages * 10 + (size_t)(*c - '0'); c++; }
   return pages * mem_os_page_size();
+#endif
 }
 
 bool mem_os_random_buf(void* buf, size_t n) {

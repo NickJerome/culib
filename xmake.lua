@@ -25,7 +25,7 @@ target("culib")
     add_includedirs("src")
     add_headerfiles("include/(culib/**.h)")
     add_files("src/**.cpp")
-    if is_plat("linux", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
+    if is_plat("linux", "macosx", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
         add_files("mem/src/*.cpp")
         if is_plat("windows") then add_defines("_CRT_SECURE_NO_WARNINGS") end
         if is_plat("linux") then add_syslinks("pthread", {public = true}) end
@@ -88,7 +88,7 @@ target("culib")
 target_end()
 
 -- 全局符号覆盖由独立目标显式启用；普通 culib 已包含分配器实现。
--- 分配器只在 64 位 Windows/Linux 编译，其余平台照常构建 culib。
+-- 分配器只在 64 位目标编译；Windows x86 照常构建 culib。
 includes("mem")
 
 -- 测试和示例只在 culib 作为主工程时构建；被其他工程 includes 时跳过

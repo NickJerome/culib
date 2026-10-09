@@ -1,4 +1,4 @@
-if is_plat("linux", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
+if is_plat("linux", "macosx", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
     for _, file in ipairs(os.files(path.join(os.scriptdir(), "*.cpp"))) do
         local name = path.basename(file)
         if name ~= "test_malloc_override" or is_plat("linux") then

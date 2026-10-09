@@ -1,4 +1,4 @@
-#if (defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))) || defined(_WIN64)
+#if ((defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__aarch64__))) || defined(_WIN64)
 
 #include <culib/mem.h>
 
@@ -19,7 +19,7 @@ int main() {
 
 #include <cstdio>
 int main() {
-    std::puts("culib allocator currently supports 64-bit Linux and Windows");
+    std::puts("wavvix::mem requires a 64-bit target");
     return 0;
 }
 

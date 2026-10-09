@@ -48,7 +48,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | log | 日志：`LOG_INFO << ...`，**级别不够时参数一行都不求值**（1.5 ns/行）；级别、多个输出目标、文件轮转；一行日志**不分配内存**也**没有用户态缓冲**（崩了不丢已写出的行） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-log-design.md)。那边逐条定掉了预期接口留的四个待定项 |
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | 公开接口为构造即提交、`join()` / `detach()` 的线程式句柄；底层换栈原语已覆盖 x86_64、arm64 与 Windows x86。Windows x86 已在 MSVC 本机和 CI 运行验证 |
-| mem | 自带通用分配器 `wavvix::mem`，支持显式分配；可显式覆盖全局 `new/delete`，Linux 可覆盖 `malloc/free` | 64 位 Linux/Windows 已集成；平台边界与覆盖方式见[分配器用法](docs/mem.md) |
+| mem | 自带通用分配器 `wavvix::mem`，支持显式分配；可显式覆盖全局 `new/delete`，Linux 可覆盖 `malloc/free` | 64 位 Linux/Windows 已验证，macOS 后端待 CI 验证；平台边界与覆盖方式见[分配器用法](docs/mem.md) |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发已落地。见[网络用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
 | fs::watcher / fs::poller | 文件变化监听（`culib/fs_watcher.h`）。`watcher` 用内核通知监听本机目录；`poller` 用目录快照轮询，也适用于网络挂载 | **可用**；见[用法](docs/fs-watcher.md)和[设计](docs/superpowers/specs/2026-10-08-fs-watcher-design.md) |

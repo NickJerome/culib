@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
- * test_rss.cpp — RSS 归还测试（SPEC §9: test_rss），Linux / Windows 双平台
+ * test_rss.cpp — RSS 归还测试（SPEC §9: test_rss）
  *
  * 主用例：读进程常驻集基线
  *   → 以 64 KiB 粒度分配并逐页 touch 共 256 MiB（记录峰值）
@@ -8,13 +8,12 @@
  * 子用例（!WAVVIX_MEM_DEBUG）：wavvix::mem::calloc(1, 64 MiB) 前后常驻集增量 < 8 MiB——
  *   大块 calloc 不得为了"清零"把整块拖进常驻集。
  *
- * 常驻集口径：Linux 读 /proc/self/status 的 VmRSS，Windows 取
- * PROCESS_MEMORY_COUNTERS::WorkingSetSize；两者都是"当前实际占用的物理页"，
- * 判定逻辑两平台共用。
+ * 常驻集口径：Linux 读 VmRSS，macOS 读 task_info 的 resident_size，
+ * Windows 取 WorkingSetSize；判定逻辑三平台共用。
  *
  * 这里有意不调用 os 层的 mem_os_process_rss()：本测试要判定的正是"分配器有没有
  * 把内存还给操作系统"，度量值必须来自被测库之外，否则 os.cpp 的一次回归就能
- * 悄悄改掉这个测试的含义。代价是两平台各 ~10 行。
+ * 悄悄改掉这个测试的含义。
  * ------------------------------------------------------------------------- */
 #include "test_util.h"
 
@@ -32,6 +31,8 @@
 #  include <windows.h>
 #  define PSAPI_VERSION 2
 #  include <psapi.h>
+#elif defined(__APPLE__)
+#  include <mach/mach.h>
 #endif
 
 namespace {
@@ -46,6 +47,13 @@ long read_rss_kb() {
     pmc.cb = sizeof(pmc);
     if (!K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return -1;
     return (long)(pmc.WorkingSetSize / 1024);
+#elif defined(__APPLE__)
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS)
+        return -1;
+    return static_cast<long>(info.resident_size / 1024);
 #else
     FILE* f = std::fopen("/proc/self/status", "r");
     if (!f) return -1;
