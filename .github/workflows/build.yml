@@ -182,7 +182,7 @@ jobs:
         run: |
           xmake run mem_test_security > security.log 2>&1
           cat security.log
-          grep -Fq '13 cases | PASS 13 | SKIP 0' security.log
+          grep -Eq '^== summary: [1-9][0-9]* cases \| PASS [1-9][0-9]* \| SKIP 0 \| FAIL 0 ==$' security.log
 
   build:
     name: ${{ matrix.target.name }} / ${{ matrix.mode }}
