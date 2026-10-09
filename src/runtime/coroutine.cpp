@@ -8,6 +8,7 @@
 #include <limits>
 #include <cstdio>
 #include <cstdlib>
+#include <new>
 
 #include "coroutine_detail.h"
 
@@ -118,7 +119,7 @@ unsigned long long current_thread_serial() noexcept {
 }
 
 // --- 每线程栈池；取舍与测量见调度器设计 8.2–8.4 -----------------------------
-const int pool_bucket_count = 24;                 // 4 KB 起按 2 的幂分桶，到 32 GB
+const int pool_bucket_count = sizeof(void*) >= 8 ? 24 : 20;
 
 // 按字节限制缓存，避免大栈占满地址空间。
 const std::size_t pool_budget = sizeof(void*) >= 8 ? 32u * 1024 * 1024 : 8u * 1024 * 1024;
@@ -128,13 +129,27 @@ struct pooled_stack {
     pooled_stack* next;
 };
 
-#if defined(_MSC_VER)
-__declspec(thread) pooled_stack* pool_buckets[pool_bucket_count];
-__declspec(thread) std::size_t pool_bytes = 0;
-#else
-__thread pooled_stack* pool_buckets[pool_bucket_count];   // 常量初始化，全是 0
-__thread std::size_t pool_bytes = 0;
-#endif
+struct stack_pool_state {
+    stack_pool_state() noexcept : buckets(), bytes(0), storage() {}
+    pooled_stack* buckets[pool_bucket_count];
+    std::size_t bytes;
+    stack_memory storage;
+};
+
+stack_pool_state* current_pool() noexcept {
+    void* const value = stack_pool_current();
+    if (value == &stack_pool_exit_marker) return 0;
+    if (value) return static_cast<stack_pool_state*>(value);
+    const stack_memory storage = allocate_stack(sizeof(stack_pool_state));
+    if (!storage.base) return 0;
+    stack_pool_state* const state = new (storage.base + storage.guard) stack_pool_state();
+    state->storage = storage;
+    if (!stack_pool_set(state)) {
+        release_stack(storage);
+        return 0;
+    }
+    return state;
+}
 
 // 返回能容纳 want 的最小桶；超出池支持范围返回 -1。
 int pool_bucket_of(std::size_t want) noexcept {
@@ -151,12 +166,14 @@ std::size_t pool_bucket_size(int bucket) noexcept {
 }
 
 stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
+    stack_pool_state* const state = current_pool();
+    if (!state) return allocate_stack(usable);
     const int bucket = pool_bucket_of(usable);
-    if (bucket >= 0 && pool_buckets[bucket]) {
-        pooled_stack* const node = pool_buckets[bucket];
-        pool_buckets[bucket] = node->next;
+    if (bucket >= 0 && state->buckets[bucket]) {
+        pooled_stack* const node = state->buckets[bucket];
+        state->buckets[bucket] = node->next;
         const stack_memory memory = node->memory;   // 先拷出来，下面那块内存要被覆盖
-        pool_bytes -= memory.total;
+        state->bytes -= memory.total;
         return memory;
     }
     // 按桶大小分配，确保同桶请求可复用。
@@ -166,17 +183,21 @@ stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
 
 void pooled_release_stack(const stack_memory& memory) noexcept {
     if (!memory.base) return;
+    void* const value = stack_pool_current();
+    stack_pool_state* const state = value == &stack_pool_exit_marker
+        ? 0 : static_cast<stack_pool_state*>(value);
+    if (!state) { release_stack(memory); return; }
     const int bucket = pool_bucket_of(memory.total - memory.guard);
-    if (bucket < 0 || pool_bytes + memory.total > pool_budget) {
+    if (bucket < 0 || memory.total > pool_budget - state->bytes) {
         release_stack(memory);                      // 超预算就真还给系统
         return;
     }
     // 链表节点放在保护页上方；取出栈时先读走节点。
     pooled_stack* const node = reinterpret_cast<pooled_stack*>(memory.base + memory.guard);
     node->memory = memory;
-    node->next = pool_buckets[bucket];
-    pool_buckets[bucket] = node;
-    pool_bytes += memory.total;
+    node->next = state->buckets[bucket];
+    state->buckets[bucket] = node;
+    state->bytes += memory.total;
 }
 
 void die(const char* what) {
@@ -209,6 +230,28 @@ void trampoline(context_transfer from) {
 }
 
 }  // namespace
+
+char stack_pool_exit_marker;
+
+void stack_pool_thread_exit(void* value) noexcept {
+    // 退出回调可能早于其他线程局部对象的析构；之后直接释放栈，不再建池。
+    if (!stack_pool_set(&stack_pool_exit_marker)) return;
+    if (value == &stack_pool_exit_marker) return;
+    stack_pool_state* const state = static_cast<stack_pool_state*>(value);
+    if (!state) return;
+    for (int bucket = 0; bucket < pool_bucket_count; ++bucket) {
+        pooled_stack* node = state->buckets[bucket];
+        while (node) {
+            pooled_stack* const next = node->next;
+            const stack_memory memory = node->memory;
+            release_stack(memory);
+            node = next;
+        }
+    }
+    const stack_memory storage = state->storage;
+    state->~stack_pool_state();
+    release_stack(storage);
+}
 
 coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_size,
                                     std::size_t body_align, void** body_slot) noexcept {

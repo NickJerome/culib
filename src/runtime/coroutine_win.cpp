@@ -24,6 +24,25 @@ std::size_t page_size() noexcept {
     return info.dwPageSize != 0 ? static_cast<std::size_t>(info.dwPageSize) : 4096;
 }
 
+DWORD pool_exit_slot = FLS_OUT_OF_INDEXES;
+DWORD pool_state_slot = TLS_OUT_OF_INDEXES;
+INIT_ONCE pool_exit_once = INIT_ONCE_STATIC_INIT;
+
+VOID CALLBACK pool_exit_callback(PVOID state) {
+    stack_pool_thread_exit(state);
+}
+
+BOOL CALLBACK init_pool_exit_slot(PINIT_ONCE, PVOID, PVOID*) {
+    pool_state_slot = ::TlsAlloc();
+    if (pool_state_slot == TLS_OUT_OF_INDEXES) return TRUE;
+    pool_exit_slot = ::FlsAlloc(&pool_exit_callback);
+    if (pool_exit_slot == FLS_OUT_OF_INDEXES) {
+        ::TlsFree(pool_state_slot);
+        pool_state_slot = TLS_OUT_OF_INDEXES;
+    }
+    return TRUE;
+}
+
 }  // namespace
 
 stack_memory allocate_stack(std::size_t usable) noexcept {
@@ -59,6 +78,22 @@ stack_memory allocate_stack(std::size_t usable) noexcept {
 void release_stack(const stack_memory& memory) noexcept {
     // MEM_RELEASE 要求大小为 0。
     if (memory.base) ::VirtualFree(memory.base, 0, MEM_RELEASE);
+}
+
+void* stack_pool_current() noexcept {
+    if (!::InitOnceExecuteOnce(&pool_exit_once, &init_pool_exit_slot, 0, 0) ||
+        pool_state_slot == TLS_OUT_OF_INDEXES) return 0;
+    return ::TlsGetValue(pool_state_slot);
+}
+
+bool stack_pool_set(void* state) noexcept {
+    if (!::InitOnceExecuteOnce(&pool_exit_once, &init_pool_exit_slot, 0, 0) ||
+        pool_state_slot == TLS_OUT_OF_INDEXES) return false;
+    if (state == &stack_pool_exit_marker) return ::TlsSetValue(pool_state_slot, state) != 0;
+    if (!::FlsSetValue(pool_exit_slot, state)) return false;
+    if (::TlsSetValue(pool_state_slot, state)) return true;
+    ::FlsSetValue(pool_exit_slot, 0);
+    return false;
 }
 
 }  // namespace detail

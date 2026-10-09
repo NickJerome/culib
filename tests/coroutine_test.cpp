@@ -3,9 +3,31 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  define PSAPI_VERSION 2
+#  include <windows.h>
+#  include <psapi.h>
+#endif
+
+#if defined(__SANITIZE_ADDRESS__)
+#  define WAVVIX_TEST_ASAN 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define WAVVIX_TEST_ASAN 1
+#  endif
+#endif
+#ifndef WAVVIX_TEST_ASAN
+#  define WAVVIX_TEST_ASAN 0
+#endif
 
 namespace {
 
@@ -22,6 +44,48 @@ struct tracked {
 };
 
 }  // namespace
+
+#if (defined(__linux__) && !WAVVIX_TEST_ASAN) || defined(_WIN32)
+namespace {
+
+std::size_t virtual_memory_kb() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS_EX counters = {};
+    if (!::K32GetProcessMemoryInfo(::GetCurrentProcess(),
+            reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) return 0;
+    return static_cast<std::size_t>(counters.PrivateUsage / 1024);
+#else
+    std::FILE* const input = std::fopen("/proc/self/status", "r");
+    if (!input) return 0;
+    char line[256];
+    std::size_t size = 0;
+    while (std::fgets(line, sizeof(line), input)) {
+        if (std::strncmp(line, "VmSize:", 7) == 0) {
+            unsigned long parsed = 0;
+            if (std::sscanf(line + 7, "%lu", &parsed) == 1) size = parsed;
+            break;
+        }
+    }
+    std::fclose(input);
+    return size;
+#endif
+}
+
+#if defined(_WIN32)
+struct late_fiber_dtor {
+    bool enabled = false;
+    ~late_fiber_dtor() {
+        if (!enabled) return;
+        std::unique_ptr<fiber> fibers[64];
+        for (int i = 0; i < 64; ++i) fibers[i].reset(new fiber([] {}));
+    }
+};
+
+thread_local late_fiber_dtor late_fibers;
+#endif
+
+}  // namespace
+#endif
 
 TEST(fiber, runs_nothing_until_resumed) {
     int ran = 0;
@@ -289,6 +353,27 @@ TEST(fiber, keeps_pooled_stacks_usable_after_heavy_churn) {
         EXPECT(verified, ==, true);
     }
 }
+
+#if (defined(__linux__) && !WAVVIX_TEST_ASAN) || defined(_WIN32)
+TEST(fiber, releases_cached_stacks_when_threads_exit) {
+    const std::size_t before = virtual_memory_kb();
+    EXPECT(before != 0, ==, true);
+    for (int round = 0; round < 20; ++round) {
+        std::thread worker([] {
+#if defined(_WIN32)
+            late_fibers.enabled = true;
+#endif
+            std::unique_ptr<fiber> fibers[64];
+            for (int i = 0; i < 64; ++i) fibers[i].reset(new fiber([] {}));
+        });
+        worker.join();
+    }
+    const std::size_t after = virtual_memory_kb();
+    EXPECT(after != 0, ==, true);
+    // 未清理时每根线程至少留下 8 MiB；容忍系统分配器的地址空间保留。
+    EXPECT(after <= before || after - before < 128u * 1024, ==, true);
+}
+#endif
 
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
 TEST(fiber, lets_exceptions_throw_and_catch_inside) {

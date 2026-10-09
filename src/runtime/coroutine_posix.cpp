@@ -4,6 +4,7 @@
 #include <limits>
 
 #include <sys/mman.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "coroutine_detail.h"
@@ -16,6 +17,14 @@ namespace {
 std::size_t page_size() noexcept {
     const long reported = ::sysconf(_SC_PAGESIZE);
     return reported > 0 ? static_cast<std::size_t>(reported) : 4096;
+}
+
+pthread_once_t pool_exit_once = PTHREAD_ONCE_INIT;
+pthread_key_t pool_exit_key;
+bool pool_exit_ready = false;
+
+void init_pool_exit_key() {
+    pool_exit_ready = ::pthread_key_create(&pool_exit_key, &stack_pool_thread_exit) == 0;
 }
 
 }  // namespace
@@ -52,6 +61,16 @@ stack_memory allocate_stack(std::size_t usable) noexcept {
 
 void release_stack(const stack_memory& memory) noexcept {
     if (memory.base) ::munmap(memory.base, memory.total);
+}
+
+void* stack_pool_current() noexcept {
+    if (::pthread_once(&pool_exit_once, &init_pool_exit_key) != 0 || !pool_exit_ready) return 0;
+    return ::pthread_getspecific(pool_exit_key);
+}
+
+bool stack_pool_set(void* state) noexcept {
+    return ::pthread_once(&pool_exit_once, &init_pool_exit_key) == 0 &&
+           pool_exit_ready && ::pthread_setspecific(pool_exit_key, state) == 0;
 }
 
 }  // namespace detail

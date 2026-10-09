@@ -42,6 +42,11 @@ struct stack_memory {
 stack_memory allocate_stack(std::size_t usable) noexcept;
 void release_stack(const stack_memory& memory) noexcept;
 
+// OS 线程槽保存栈池，并在线程退出时清理；退出期间仍可能创建协程。
+extern char stack_pool_exit_marker;
+void* stack_pool_current() noexcept;
+bool stack_pool_set(void* state) noexcept;
+void stack_pool_thread_exit(void* state) noexcept;
 
 }  // namespace detail
 }  // namespace wavvix
