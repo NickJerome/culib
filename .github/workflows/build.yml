@@ -26,9 +26,22 @@ jobs:
           msystem: MINGW32
           install: mingw-w64-i686-gcc
           suppress-deprecation-warnings: msystem-mingw32
-      - name: build and run 32-bit tests
+      - name: build 32-bit tests and examples, run tests
         shell: msys2 {0}
-        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_i686.sh
+        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh i686
+
+  mingw-x86_64:
+    name: MinGW x86_64 C++11
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+      - name: build 64-bit tests and examples, run tests
+        shell: msys2 {0}
+        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh x86_64
 
   legacy-gcc:
     name: GCC 4.8 C++11
