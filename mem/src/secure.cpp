@@ -24,17 +24,7 @@ void* mem_guarded_alloc(mem_theap_t* t, size_t size) {
 
 #if defined(WAVVIX_MEM_DEBUG)
 /* ============================ L2 debug 层 ============================== */
-/* 块布局见 internal.h 的 WAVVIX_MEM_L2_* 定义。本文件只负责两件事：把块包装成用户指针
- * （写两个 canary + 0xD0 填充），以及从用户指针解包回块首（验两个 canary）。
- *
- * 两个 canary 都与**自身所在地址**异或，而不是与块首异或。这条口径是被对齐族
- * 逼出来的：wavvix::mem::aligned_alloc 的用户指针落在块内部，解包时"块首"还没算出来
- * （要先拿到页、页要先过 L0），而头 canary 必须第一个被验——它是整条解包链上
- * 唯一只依赖用户指针的一环。既然头的口径改了，尾的也一并统一，免得两个 canary
- * 各有各的密钥推导；两者都仍然做到"同图案不同块不同值"。
- *
- * usable_size 报的是"用户指针到用户区末尾"。
- * 空闲块的 0xDF 填充与校验都从 WAVVIX_MEM_L2_LINK(8) 起——前 8 字节是空闲链编码域。 */
+/* 两个 canary 都与自身地址异或；解包先验紧贴用户指针的头部。 */
 #define WAVVIX_MEM_CANARY_HEAD 0xC0FFEE11ED0C4DE1ull
 #define WAVVIX_MEM_CANARY_TAIL 0x7A11C0DE5AFEED5Aull
 
@@ -94,19 +84,7 @@ void* mem_l2_unwrap(void* user) {
   return b;
 }
 
-/* L2：tcache 块弹出时校验 0xDF 填充——被改写即 UAF 写。
- *
- * 区间与页空闲链那套不同，两处差异都是被块布局逼出来的，不是随手选的：
- *   - 起点 WAVVIX_MEM_L2_TCACHE_META(16) 而非 WAVVIX_MEM_L2_LINK(8)：块驻留 tcache 期间，
- *     块首两个机器字是 tcache 元数据（编码链指针 + 驻留 guard），[8,16) 被
- *     guard 占着，填 0xDF 会直接毁掉 double-free 检测。
- *   - 终点是块尾而非 bs - WAVVIX_MEM_L2_TAIL：页路径保留尾 canary 是因为页上的空闲块
- *     还可能被 mem_l2_unwrap 读到；tcache 里的块读不到——一次 double-free 走
- *     mem_l2_unwrap 时，[8,16) 处的头 canary 已被驻留 guard 覆写，必先撞上头
- *     canary 校验而死，尾 canary 永远轮不到。既然它买不到任何检出，就让 0xDF
- *     盖过去，换来块尾这 8 字节也纳入 UAF 写的监控范围。
- * 填与校用同一个区间 [WAVVIX_MEM_L2_TCACHE_META, bs)，不留"填了却从不校"的缝
- * （WAVVIX_MEM_L2_LINK/WAVVIX_MEM_L2_HEAD 那条历史缺陷正是这么来的）。 */
+/* tcache 的前两个机器字是元数据；校验其后的 [16, bs) 区间。 */
 void mem_debug_verify_tcache_block(const void* block, size_t bs) {
   if (bs <= WAVVIX_MEM_L2_TCACHE_META) return;
   const uint8_t* b = (const uint8_t*)block;

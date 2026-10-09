@@ -164,9 +164,7 @@ void inject_interior_free_large() {
     child_exit(0);
 }
 
-#ifdef WAVVIX_MEM_DEBUG
-/* HARD(仅 WAVVIX_MEM_DEBUG): small 块内部指针释放 —— 头 canary 紧贴用户指针，
- * p+8 处读到的是 0xD0 用户区填充而非 canary。 */
+/* HARD: small 块内部指针释放，release 与 L2 构建都必须拒收。 */
 void inject_interior_free_small() {
     char* p = (char*)wavvix::mem::alloc(64);
     if (!p) child_exit(kSetupFail);
@@ -175,6 +173,7 @@ void inject_interior_free_small() {
     child_exit(0);
 }
 
+#ifdef WAVVIX_MEM_DEBUG
 /* HARD(仅 WAVVIX_MEM_DEBUG): 对齐分配的溢出也要被 canary 抓获。
  * 旧实现把对齐分配整体标记为"不包 canary"（BARE），这一注入全身而退。
  *
@@ -217,25 +216,18 @@ void inject_underflow_aligned() {
     child_exit(0);
 }
 
-/* HARD(仅 WAVVIX_MEM_DEBUG): 已切出过对齐块的页上，真正的内部指针 free 仍必须被拒。
- * 这一条盯的是新设计最大的风险点：HAS_ALIGNED 页的释放路径会把用户指针按块
- * 网格向下取整找回块首，若没有"头 canary 紧贴用户指针"这道闸，野指针就会被
- * 静默纠正成一个合法块首，L0 在这些页上彻底失效。 */
+#endif /* WAVVIX_MEM_DEBUG */
+
+/* HARD: 带 HAS_ALIGNED 标记的页也不能把内部指针归整成合法释放。 */
 void inject_interior_free_aligned_page() {
-    /* 两次同参对齐分配 ⇒ 同一个 bin ⇒ 同一页（第一次就把 HAS_ALIGNED 打上了）。
-     * 不用"对齐块 + 普通 malloc"配对：两者的 bin 由各自的请求值决定，
-     * release 与 WAVVIX_MEM_DEBUG 的 slack 不同，很容易落到不同 bin、不同页上，
-     * 那样这条用例测的就不再是 HAS_ALIGNED 页了。 */
     char* a = (char*)wavvix::mem::aligned_alloc(64, 100);
     char* p = (char*)wavvix::mem::aligned_alloc(64, 100);
     if (!a || !p) child_exit(kSetupFail);
-    /* 前提不成立时按"未检测"退出：宁可让用例显性失败，也不要静默地测了个空。 */
-    if (((uintptr_t)a >> 16) != ((uintptr_t)p >> 16)) child_exit(0);
+    if (((uintptr_t)a >> 16) != ((uintptr_t)p >> 16)) child_exit(kSetupFail);
     memset(p, 0x66, 100);
     wavvix::mem::free(p + 24);            /* 必须 abort */
     child_exit(0);
 }
-#endif /* WAVVIX_MEM_DEBUG */
 
 /* HARD: tcache 满时 double free —— 块驻留 tcache，bin 已满，
  * 再次 free 走页路径也必须检出（页路径原先不校验 tcache guard） */
@@ -278,12 +270,12 @@ const CaseDef kCases[] = {
     { "double_free_cross_thread",  inject_double_free_cross_thread,  HARD },
     { "uaf_write_detect",  inject_uaf_write_detect,  SOFT },
     { "interior_free_large", inject_interior_free_large, HARD },
-#ifdef WAVVIX_MEM_DEBUG
     { "interior_free_small", inject_interior_free_small, HARD },
+    { "interior_free_aligned_page", inject_interior_free_aligned_page, HARD },
+#ifdef WAVVIX_MEM_DEBUG
     { "overflow_aligned",    inject_overflow_aligned,    HARD },
     { "double_free_aligned", inject_double_free_aligned, HARD },
     { "underflow_aligned",  inject_underflow_aligned,  HARD },
-    { "interior_free_aligned_page", inject_interior_free_aligned_page, HARD },
     { "overflow_canary",   inject_overflow_canary,   HARD },
     { "uaf_write_tcache_body", inject_uaf_write_tcache_body, HARD },
 #endif

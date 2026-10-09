@@ -131,9 +131,12 @@ void* wavvix::mem::aligned_alloc(size_t alignment, size_t size) noexcept {
 #else
     uint8_t* user = (uint8_t*)(((uintptr_t)b + alignment - 1)
                                & ~(uintptr_t)(alignment - 1));
-    /* 对齐恰好落在块首时这个块与普通块无异，就不给整页打标记：标记是有代价的
-     * ——本页此后每一次内部指针 free 都会被静默纠正（见 mem::free）。 */
-    if (user != b) page->flags |= WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED;
+    /* 块首已满足对齐时无需标记；否则在用户指针前写定位 cookie。 */
+    if (user != b) {
+      const uintptr_t cookie = mem_aligned_cookie(user);
+      std::memcpy(user - sizeof(cookie), &cookie, sizeof(cookie));
+      page->flags |= WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED;
+    }
     return user;
 #endif
   }

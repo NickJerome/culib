@@ -555,42 +555,32 @@ void wavvix::mem::free(void* p) noexcept {
     if (lt != NULL) mem_stat_free(lt, usable);   /* 口径见 mem_stat_large_alloc */
     return;
   }
-  /* L0 兜底：下面整条 small 路径都假定 kind == SMALL——尤其 bin 落在 1..36，
-   * 否则 mem_free_to_page 的 t->pages[bin - 1] 会越界读写 theap 结构本身
-   * （large 页 bin == 0）。mem_ptr_page 已经保证不会返回续页项，这里把那条
-   * 跨模块的隐式契约变成使用点上一次可预测的比较：kind 与上面那次判断读的是
-   * 同一个字节、同一条 cache line，代价在噪声以下。 */
+  /* 后续 small 路径以 bin 在 1..36 为前提。 */
   if (WAVVIX_MEM_UNLIKELY(page->kind != WAVVIX_MEM_PAGE_SMALL))
     mem_fatal_page("invalid free (descriptor is not a live page)", p, page);
 
-  /* 对齐族：wavvix::mem::aligned_alloc 交出去的指针落在块内部而不是块首，按块网格找回。
-   * 只对"曾切出过对齐块"的页做（HAS_ALIGNED 由 wavvix::mem::aligned_alloc 打上，页归还
-   * 重建时随 mem_page_init 清零）。代价要说清楚：这些页上真正的内部指针 free 在
-   * release 构建里会被静默纠正而不是报错，L0 的检出强度在此类页上确有下降；
-   * 换成无条件找回则是把全部 small 页都降到这个强度，那才是不能接受的。
-   * WAVVIX_MEM_DEBUG 不受影响：头 canary 紧贴用户指针，内部指针在 mem_l2_unwrap 就已被
-   * 抓住，走到这里的 p 必定已是块首——下面那条整除校验就是这句话的兜底。
-   *
-   * 那条整除校验只在 WAVVIX_MEM_DEBUG 存在，这是**有意的取舍，不是漏加**：
-   *   - bin 尺寸是 16/32/48/64/80/96/112/128/160/192... 并不全是 2 的幂，
-   *     `off % block_size` 里的 block_size 又不是编译期常量，所以它在 release
-   *     的 free 快路径（目标 ≤6 条指令）上就是一次实打实的硬件除法，没有便宜的
-   *     等价写法；
-   *   - 非 HAS_ALIGNED 页上，内部指针 free 仍有 L1 编码哨兵兜底
-   *     （mem_secure_check_free 解码出页内地址即报 double free）；
-   *   - HAS_ALIGNED 页上则确实没有：release 下内部指针会被上面那次向下取整
-   *     **静默纠正**成合法块首，调用方的 bug 不会当场暴露。这是为了不让小对齐
-   *     分配吃掉整个 slice 所付的代价，范围被限制在"曾切出过对齐块"的页上。
-   * 想改成 release 也检查，请连带评估 free 快路径的除法开销，而不是直接把
-   * #if 去掉。 */
+  const size_t offset = (size_t)((uint8_t*)p - page->slice_start);
+  if (WAVVIX_MEM_UNLIKELY(offset >= (size_t)page->capacity * page->block_size))
+    mem_fatal_page("free outside small block range", p, page);
+
+  /* HAS_ALIGNED 页可按网格找回块首；块内指针必须有定位标记。 */
   if (WAVVIX_MEM_UNLIKELY((page->flags & WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED) != 0)) {
-    p = mem_small_block_start(page, p);
+    uint8_t* const block = mem_small_block_start(page, p);
+#if !defined(WAVVIX_MEM_DEBUG)
+    if (p != block) {
+      if (WAVVIX_MEM_UNLIKELY((size_t)((uint8_t*)p - block) < sizeof(uintptr_t)))
+        mem_fatal_page("free of interior pointer (small block)", p, page);
+      uintptr_t cookie = 0;
+      std::memcpy(&cookie, (uint8_t*)p - sizeof(cookie), sizeof(cookie));
+      if (WAVVIX_MEM_UNLIKELY(cookie != mem_aligned_cookie(p)))
+        mem_fatal_page("free of interior pointer (small block)", p, page);
+    }
+#endif
+    p = block;
   }
-#if defined(WAVVIX_MEM_DEBUG)
-  else if ((size_t)((uint8_t*)p - page->slice_start) % page->block_size != 0) {
+  else if (WAVVIX_MEM_UNLIKELY(offset % page->block_size != 0)) {
     mem_fatal_page("free of interior pointer (small block)", p, page);
   }
-#endif
 
   mem_theap_t* t = mem_theap_current();
   /* 小块释放的统计汇合点：无论块进 tcache 还是直接还页，都只记这一次。

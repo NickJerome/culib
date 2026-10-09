@@ -27,8 +27,7 @@
 #define WAVVIX_MEM_BIN_FULL         36                          /* 满页队列索引        */
 #define WAVVIX_MEM_DIRECT_MAX       25                          /* direct 直达 bin 1..24 */
 
-/* 地址窗口：所有 arena 都从这一片连续保留区里切分，描述符是与之平铺的数组。
- * 窗口保留失败时逐级减半，下限 4 GiB（低于此无法支撑教学级工作负载）。 */
+/* 窗口保留失败时逐级减半。 */
 #define WAVVIX_MEM_WINDOW_DEFAULT   ((size_t)1 << 40)          /* 1 TiB               */
 #define WAVVIX_MEM_WINDOW_MIN       ((size_t)4 << 30)          /* 4 GiB               */
 #define WAVVIX_MEM_ARENA_MIN        ((size_t)2 << 20)          /* 2 MiB：描述符提交粒度 4 KiB 的最小单位 */
@@ -148,11 +147,7 @@ static_assert(offsetof(mem_page_t, kind) < 64 && offsetof(mem_page_t, cont_first
 WAVVIX_MEM_NORETURN void mem_fatal_page(const char* msg, const void* p, const mem_page_t* page);
 
 /* 线程本地堆（thread_local 持有） */
-/* tcache：线程本地小块缓存（glibc 式；release 与 WAVVIX_MEM_DEBUG 均启用）。
- * 块在 tcache 中时页视角仍为"已分配"（used 不变），延迟批量归还。
- * L1 一致性：链指针按线程密钥 XOR 编码；guard 域 = 进程级密钥 ^ 块地址。
- * guard 必须是进程级而非线程级：块驻留 A 线程 tcache 时，B 线程再次
- * free 同一块（跨线程 double-free）必须能算出同样的标记才检得出来。 */
+/* tcache 中的块仍计入 page->used；跨线程检查需要进程级驻留标记。 */
 struct mem_tcache_bin_t {
   void*    head;
   uint32_t count;
@@ -205,39 +200,14 @@ struct mem_options_t {
 };
 extern mem_options_t mem_options;
 
-/* ===================== 地址窗口 + 平铺描述符数组（arena.cpp 定义） =======
- * 窗口是一整片 PROT_NONE 保留区；描述符数组是与之等长（每 slice 一项）的
- * 第二片保留区，按 arena 粒度提交。两者都只增不减，故 mem_ptr_page 是
- * 「一次减法 + 一次移位 + 一次数组访问」，没有查表间接层。 */
+/* 地址窗口与平铺描述符数组由 arena.cpp 定义。 */
 extern uint8_t*            mem_window_base;
 extern size_t              mem_window_size;
 extern mem_page_t*          mem_desc_base;
 extern std::atomic<size_t> mem_window_used_slices;   /* 已切分给 arena 的 slice 数 */
 
-/* free 的第一步：窗口内定位描述符。无锁只读；窗口外/未登记返回 NULL。
- *
- * 依赖的不变式：对任一 slice 下标 j，至多有一个活页覆盖它。由两件事保证——
- *   (i)  arena 位图的排他性：一段 slice 同时只属于一个页；
- *   (ii) 登记顺序：mem_desc_mark_cont 写完全部续页项，才 mem_page_publish 点亮首项。
- *
- * 难点在于续页项在页归还时**不清**（见 arena.cpp 的 mem_desc_clear），所以
- * desc[idx] 可能是一个陈旧的 CONT 项。下面三条复核缺一不可，按"跳转目标
- * desc[first] 处于什么状态"枚举，每条各挡一格：
- *
- *   目标状态                       挡它的是
- *   ── 已释放（magic 灭）           magic 复核
- *   ── 被征用为别的页的续页项       kind != CONT 复核  ← 最易漏掉的一格
- *   ── 活页，但并不覆盖 idx         区间复核
- *   ── 活页，且确实覆盖 idx         全部通过，这正是要找的页
- *
- * 第二条为什么不能省：mem_desc_mark_cont 只写 kind/cont_first/magic，**不写
- * slice_count**。因此一个"曾当过首项、现被征用成别人续页项"的描述符，会带着
- * 上一辈子的 slice_count 亮着 magic 站在那里；只查第一、三条的话，区间复核读到
- * 的是陈旧值，会把这个 CONT 项当页返回——后果是悬垂 free 被静默接受、slice
- * 重复归还，最终两次分配返回重叠内存。
- *
- * 区间复核写成无符号减法：idx < first（陈旧项指向更高地址）会回绕成巨大值，
- * 同样被 >= slice_count 挡下，一条比较覆盖两个方向。 */
+/* CONT 项可能过时；跳转后须复核首页仍活、不是 CONT 且覆盖原 slice。
+ * 顺序与原因见 docs/mem-internals.md。 */
 static inline mem_page_t* mem_ptr_page(const void* p) {
   uintptr_t off = (uintptr_t)p - (uintptr_t)mem_window_base;   /* p < base 回绕为巨大值 */
   size_t idx = off >> WAVVIX_MEM_SLICE_SHIFT;
@@ -246,19 +216,13 @@ static inline mem_page_t* mem_ptr_page(const void* p) {
   mem_page_t* d = mem_desc_base + idx;
   if (WAVVIX_MEM_UNLIKELY(d->magic.load(std::memory_order_acquire) != WAVVIX_MEM_PAGE_MAGIC)) return NULL;
   if (WAVVIX_MEM_UNLIKELY(d->kind == WAVVIX_MEM_PAGE_CONT)) {
-    /* 续页项在页归还时不清（见 arena.cpp 的 mem_desc_clear），因此这里必须复核：
-     * 首项仍活，且本 slice 确实落在它的 [first, first+slice_count) 里。 */
+    /* 陈旧 CONT 不能直接信任 cont_first。 */
     size_t first = d->cont_first;
-    /* 先给 first 定界再解引用：idx 有 used_slices 把关，first 却是从描述符里
-     * 读出来的裸值。合法续页项恒满足 first < idx（mem_desc_mark_cont 只写
-     * [first+1, first+n)），所以这条比较既拦住了损坏值，也让下面这次数组访问
-     * 可证明在界内——原先的区间复核发生在解引用之后，救不了越界读本身。 */
+    /* 合法续页项的首页必须在它之前；先定界再解引用。 */
     if (WAVVIX_MEM_UNLIKELY(first >= idx)) return NULL;
     d = mem_desc_base + first;
     if (WAVVIX_MEM_UNLIKELY(d->magic.load(std::memory_order_acquire) != WAVVIX_MEM_PAGE_MAGIC)) return NULL;
-    /* 跳转目标必须是真页：mem_desc_mark_cont 不写 slice_count，所以一个"曾当过首项、
-     * 现被征用成别人续页项"的描述符会带着上一辈子的 slice_count 亮着 magic。
-     * 少了这一条，下面的区间复核就会读到陈旧值而放行，把 CONT 项当页返回。 */
+    /* 首页若也变成 CONT，旧 slice_count 可能仍在。 */
     if (WAVVIX_MEM_UNLIKELY(d->kind == WAVVIX_MEM_PAGE_CONT)) return NULL;
     if (WAVVIX_MEM_UNLIKELY(idx - first >= d->slice_count)) return NULL;
   }
@@ -325,12 +289,13 @@ static inline uint32_t mem_tcache_cap(size_t block_size) {
 void mem_debug_verify_tcache_block(const void* block, size_t block_size);
 #endif
 
-/* 进程级 tcache guard（heap.cpp 在 init 时用 OS 熵源初始化，恒非 0）。 */
-/* 代价：guard 是进程级的，任一线程对自己释放过的块做一次 UAF 读即可还原它，
- * 之后可为任意线程的块伪造驻留标记，跨线程 tcache 溢出的检出强度因此下降。
- * 接受这个代价是因为：链劫持仍由 per-thread 的 tcache_key 把守；而若改用页密钥
- * 做驻留标记，就要在最热的 mem_tcache_pop 快路径上加一次 mem_ptr_page 查找。 */
+/* 进程级驻留标记供跨线程重复释放检查；权衡见 docs/mem-internals.md。 */
 extern uintptr_t mem_tcache_guard;
+
+/* release 对齐块在用户指针前保存定位标记；调试构建使用头 canary。 */
+static inline uintptr_t mem_aligned_cookie(const void* user) {
+  return mem_tcache_guard ^ (uintptr_t)user;
+}
 
 /* tcache 驻留标记：w[1] == guard ^ 块地址。任何线程都能校验，
  * 因此跨线程 double-free 与 bin 满时走页路径的 double-free 都检得出。 */
@@ -365,11 +330,7 @@ static inline void* mem_tcache_pop(mem_theap_t* t, int bin) {
   return NULL;
 }
 
-/* ==================== 用户指针 ←→ 块首 ================================
- * wavvix::mem::aligned_alloc 交给调用方的指针**不一定是块首**：小块路径先超额分配一个
- * 普通块，再在块内向上对齐。于是"从用户指针走回块首"成了释放侧的必修课，而且
- * wavvix::mem::free / wavvix::mem::usable_size / mem_l2_unwrap 三处必须走同一条口径——三处
- * 各推一遍，是"free 已经对了而 usable_size 还错着"这类缺陷的温床。 */
+/* 对齐分配可能返回块内指针；找回块首统一走 mem_user_block_start。 */
 
 /* large/huge/guarded 页里那唯一一个块的起点。guarded 时对象贴守护页右对齐
  * 放置，因此不等于 slice_start；其余情况就是 slice_start。 */
@@ -379,10 +340,7 @@ static inline uint8_t* mem_large_block_start(const mem_page_t* page) {
          - page->large_size;
 }
 
-/* small 页：页内任意地址 → 所在块的起点（块在页内等间距平铺）。
- * 它对**块内任意偏移**都给出一个合法块首，所以只能用在已知会出现"用户指针
- * 落在块内部"的页上（WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED）。无条件用它，等于把每一次
- * 内部指针 free 都静默纠正成合法释放，L0 的野指针检出就整体失效了。 */
+/* 只对 HAS_ALIGNED 页使用：它会把任何块内地址归整为块首。 */
 static inline uint8_t* mem_small_block_start(const mem_page_t* page, const void* p) {
   size_t off = (size_t)((const uint8_t*)p - page->slice_start);
   return page->slice_start + (off / page->block_size) * page->block_size;
@@ -390,29 +348,13 @@ static inline uint8_t* mem_small_block_start(const mem_page_t* page, const void*
 
 /* ======================== 页内快路径（≤10 指令目标） =================== */
 #if defined(WAVVIX_MEM_DEBUG)
-/* L2 普通块布局（user = block + WAVVIX_MEM_L2_HEAD）：
- *   [0, 8)              空闲链编码域 WAVVIX_MEM_L2_LINK：空闲时存编码 next，
- *                       已分配时存 encode(WAVVIX_MEM_BLOCK_ALLOCATED)（L1 哨兵）
- *   [8, 16)             头 canary（紧贴用户指针之前）
- *   [16, usable-8)      用户数据
- *   [usable-8, usable)  尾 canary
- * 于是 WAVVIX_MEM_L2_HEAD = WAVVIX_MEM_L2_LINK + WAVVIX_MEM_L2_CANARY 是推导出来的，不是巧合：头 canary
- * 只能放在编码域之后（否则每次 pop/push 都会把它冲掉），又必须紧贴用户指针
- * （否则对齐块的头 canary 离用户指针有一个 alignment 那么远，解包时还没找回
- * 块首就没法先验它）。用户指针因此恒落在块首 +16，16 字节对齐保证同样成立。
- *
- * 不变式：被包装的块 usable >= 32（请求恒为 size + WAVVIX_MEM_L2_OVERHEAD，size >= 1，
- * 经 mem_bin 上取整后最小 32），故 usable - WAVVIX_MEM_L2_OVERHEAD 不会下溢。
- * 对齐块的同一笔账由 wavvix::mem::aligned_alloc 的 slack 负责，两者都在 mem_l2_wrap_at
- * 里有一次机器可检查的兜底。 */
+/* L2 普通块：编码域、头 canary、用户区、尾 canary；布局见 docs/mem-internals.md。 */
 #define WAVVIX_MEM_L2_LINK      8                            /* 空闲链编码域，fill/verify 跳过 */
 #define WAVVIX_MEM_L2_CANARY    8                            /* 单个 canary 的字节数 */
 #define WAVVIX_MEM_L2_HEAD     (WAVVIX_MEM_L2_LINK + WAVVIX_MEM_L2_CANARY)   /* = 16：用户指针相对块首的偏移 */
 #define WAVVIX_MEM_L2_TAIL      WAVVIX_MEM_L2_CANARY
 #define WAVVIX_MEM_L2_OVERHEAD (WAVVIX_MEM_L2_HEAD + WAVVIX_MEM_L2_TAIL)
-/* L2（编译期 -DWAVVIX_MEM_DEBUG，实现于 secure.cpp）：canary 包装/解包 + UAF 写校验。
- * mem_l2_wrap_at 是对齐族用的通式：user 可以落在块内任意位置，头 canary 始终
- * 紧贴 user 之前 8 字节。mem_l2_wrap 是它 user = block + WAVVIX_MEM_L2_HEAD 的特例。 */
+/* 对齐块的头 canary 始终紧贴 user；普通块是固定偏移的特例。 */
 void*  mem_l2_wrap(void* block);
 void*  mem_l2_wrap_at(void* block, void* user);
 void*  mem_l2_unwrap(void* user);
@@ -455,13 +397,7 @@ void       mem_meta_unlock(void);
 void       mem_meta_reinit_locks_child(void);
 
 /* --- page.cpp --- */
-/* 调用序约定：
- *   page->arena_idx = ...        （slice 的固有属性，mem_page_init 不碰）
- *   mem_page_init(...)            （清 magic → 写全部字段，此时本页对外不可见）
- *   ...large 还要补 large_size / flags / used / mem_desc_mark_cont...
- *   mem_page_publish(page)        （release store magic，唯一的发布点）
- * 把发布点单独拿出来，是因为 magic 就是 mem_ptr_page 的准入门槛：任何在它
- * 之后才写的字段，都可能被并发的野指针 free 读到半成品。 */
+/* 先 init 并填好全部字段，最后 publish 点亮 magic。 */
 void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_size,
                   int kind, uint8_t* slice_start, uint32_t slice_count,
                   bool slice_is_zero);
