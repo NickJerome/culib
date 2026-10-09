@@ -265,8 +265,7 @@ culib/
 
 ## 错误处理
 
-- 可能失败的操作通过 `result` 返回结果或错误，由调用方显式检查；库不主动抛出异常。
-- 库不主动抛出异常，也不依赖 RTTI；详见下面的「对使用方的保证」。
+可能失败的操作通常通过 `result` 返回错误，由调用方显式检查。线程式的 `coroutine` 构造函数是例外：构造失败时抛出异常；无异常构建会终止进程。库不依赖 RTTI。
 
 可能失败的函数返回 `wavvix::result<T>`：成功直接返回值，失败返回 `make_error(...)`。
 
@@ -292,7 +291,6 @@ use(port.value());
 - 只关心成败时用 `result<void>`，`return {};` 表示成功。
 - **错误类型固定为 `error`。** culib 不为「高频转换」之类的场景另开枚举错误类型——量过了，成功路径两边都是零分配、相差 ~3 ns，而两种错误类型会让每个层边界上多一次显式转换。真遇到热失败路径时，`make_error(kind)` 不带说明字符串就是零分配。
 - 跨层把错误传上去时，在中间那一层把上下文拼进消息：底层只知道「不是合法整数」，只有你这一层同时知道「这是 `/etc/app.conf` 的 `port` 字段」。
-- `result<T>` 的错误类型固定为 `error`；调用点无需选择或转换另一种错误类型。
 - 支持复制、移动及只能移动的值或错误；赋值要求两种类型都能无异常移动构造。用不了的组合（如复制只能移动的 `result`）在用到的那一行编译报错并说明原因，但 `std::is_copy_constructible` 这类类型特征只看声明，对 `result` 会乐观地回答「可以」。
 - `value()` / `error()` 访问错误分支会打印诊断并终止程序，release 同样检查。
 - 结果容器自身不分配内存；值或错误自身仍可能分配内存。
@@ -319,7 +317,7 @@ wavvix::result<config> load(const std::string& path) {
 
 ## 对使用方的保证
 
-- **不抛异常、不依赖 RTTI**：公共头文件里没有 `throw`、`try`、`dynamic_cast`、`typeid`，可以用在 `-fno-exceptions` / `-fno-rtti` 的工程里。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 会在这两个选项下构建库和示例，并运行测试。
+- **可关闭异常和 RTTI**：除 `coroutine` 构造失败的条件编译分支外，公共头文件不使用 `throw`、`try`、`dynamic_cast`、`typeid`；`-fno-exceptions` / `-fno-rtti` 下仍可构建和使用全库。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 在这两个选项下构建库和示例，并运行测试。
 - **全局登记成本可见**：定义全局 `flag` 选项或使用 `TEST` 会在 `main` 前登记；不使用这两个功能时不会产生这两笔登记成本。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **字符串一律 UTF-8**：包括文件路径；Windows 下由库内部转成 UTF-16 调用 `W` 系列 API。
