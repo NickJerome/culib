@@ -87,8 +87,9 @@ struct worker_entry {
 };
 
 struct scheduler_pool {
-    scheduler_pool() : next(0) {}
-    std::vector<std::unique_ptr<worker_entry> > workers;
+    scheduler_pool() : count(0), next(0) {}
+    std::unique_ptr<worker_entry[]> workers;
+    unsigned count;
     std::size_t next;
 };
 
@@ -449,15 +450,15 @@ void worker_main(worker_entry* worker) noexcept {
 
 void close_pool(scheduler_pool* pool) noexcept {
     if (!pool) return;
-    for (std::size_t i = 0; i < pool->workers.size(); ++i) {
-        worker_entry& worker = *pool->workers[i];
+    for (unsigned i = 0; i < pool->count; ++i) {
+        worker_entry& worker = pool->workers[i];
         std::lock_guard<std::mutex> lock(worker.mutex);
         worker.stopping.store(true, std::memory_order_release);
         if (worker.waker && !io_engine_notify(worker.waker->engine))
             die("wavvix::scheduler: 不能停止工作 vCPU");
     }
-    for (std::size_t i = 0; i < pool->workers.size(); ++i) {
-        if (pool->workers[i]->thread.joinable()) pool->workers[i]->thread.join();
+    for (unsigned i = 0; i < pool->count; ++i) {
+        if (pool->workers[i].thread.joinable()) pool->workers[i].thread.join();
     }
 }
 
@@ -472,11 +473,13 @@ result<void> start_pool(vcpu& self, unsigned workers) {
 #endif
         if (!scheduler_remote_prepare())
             return make_error(error_kind::io, "cannot enable scheduler wakeup");
-        pool.reset(new scheduler_pool());
-        pool->workers.reserve(workers);
+        pool.reset(new (std::nothrow) scheduler_pool());
+        if (!pool) return make_error(error_kind::resource_exhausted);
+        pool->workers.reset(new (std::nothrow) worker_entry[workers]);
+        if (!pool->workers) return make_error(error_kind::resource_exhausted);
+        pool->count = workers;
         for (unsigned i = 0; i < workers; ++i) {
-            pool->workers.emplace_back(new worker_entry());
-            worker_entry& worker = *pool->workers.back();
+            worker_entry& worker = pool->workers[i];
             worker.thread = std::thread(&worker_main, &worker);
             std::unique_lock<std::mutex> lock(worker.mutex);
             worker.changed.wait(lock, [&worker] { return worker.ready; });
@@ -584,7 +587,7 @@ void scheduler_task_schedule(task_state* task, coroutine_control* body) {
     }
 
     scheduler_pool& pool = *self.pool;
-    worker_entry& worker = *pool.workers[pool.next++ % pool.workers.size()];
+    worker_entry& worker = pool.workers[pool.next++ % pool.count];
     self.remote->pending_tasks.fetch_add(1, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(worker.waker->mutex);
