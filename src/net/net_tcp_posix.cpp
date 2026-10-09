@@ -3,11 +3,9 @@
 #include "runtime/scheduler_detail.h"
 
 #include <cerrno>
-#include <cstring>
 #include <string>
 #include <utility>
 
-#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -17,40 +15,13 @@ namespace wavvix {
 namespace net {
 namespace {
 
-socklen_t socket_address(const endpoint& value, sockaddr_storage& storage) {
-    std::memset(&storage, 0, sizeof storage);
-    if (value.family() == address_family::ipv4) {
-        sockaddr_in* const address = reinterpret_cast<sockaddr_in*>(&storage);
-        address->sin_family = AF_INET;
-        address->sin_port = htons(value.port());
-        std::memcpy(&address->sin_addr, detail::endpoint_access::bytes(value), 4);
-        return sizeof *address;
-    }
-    sockaddr_in6* const address = reinterpret_cast<sockaddr_in6*>(&storage);
-    address->sin6_family = AF_INET6;
-    address->sin6_port = htons(value.port());
-    address->sin6_scope_id = value.scope_id();
-    std::memcpy(&address->sin6_addr, detail::endpoint_access::bytes(value), 16);
-    return sizeof *address;
-}
-
 result<endpoint> endpoint_from_socket(int socket) {
-    sockaddr_storage storage;
-    socklen_t length = sizeof storage;
-    if (::getsockname(socket, reinterpret_cast<sockaddr*>(&storage), &length) < 0)
+    detail::socket_address address;
+    socklen_t length = sizeof address.storage;
+    if (::getsockname(socket, reinterpret_cast<sockaddr*>(&address.storage), &length) < 0)
         return detail::tcp_error("getsockname", errno);
-    if (storage.ss_family == AF_INET && length >= sizeof(sockaddr_in)) {
-        const sockaddr_in* const value = reinterpret_cast<const sockaddr_in*>(&storage);
-        return detail::endpoint_access::make(address_family::ipv4,
-            reinterpret_cast<const unsigned char*>(&value->sin_addr), ntohs(value->sin_port), 0);
-    }
-    if (storage.ss_family == AF_INET6 && length >= sizeof(sockaddr_in6)) {
-        const sockaddr_in6* const value = reinterpret_cast<const sockaddr_in6*>(&storage);
-        return detail::endpoint_access::make(address_family::ipv6,
-            reinterpret_cast<const unsigned char*>(&value->sin6_addr), ntohs(value->sin6_port),
-            value->sin6_scope_id);
-    }
-    return make_error(error_kind::unsupported, "unsupported socket address family");
+    return detail::decode_address(reinterpret_cast<const sockaddr*>(&address.storage),
+                                  static_cast<int>(length));
 }
 
 int new_socket(address_family family) {
@@ -111,9 +82,10 @@ result<tcp_listener> tcp_listener::listen(const endpoint& local, int backlog) {
     const int socket = new_socket(local.family());
     if (socket < 0) return detail::tcp_error("socket", errno);
     tcp_listener listener(static_cast<std::uintptr_t>(socket));
-    sockaddr_storage address;
-    const socklen_t length = socket_address(local, address);
-    if (::bind(socket, reinterpret_cast<const sockaddr*>(&address), length) < 0)
+    detail::socket_address address;
+    detail::encode_address(local, address);
+    if (::bind(socket, reinterpret_cast<const sockaddr*>(&address.storage),
+               static_cast<socklen_t>(address.length)) < 0)
         return detail::tcp_error("bind", errno);
     if (::listen(socket, backlog) < 0) return detail::tcp_error("listen", errno);
     return result<tcp_listener>(std::move(listener));
@@ -164,14 +136,14 @@ result<tcp_stream> tcp_stream::connect(const endpoint& peer,
     if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(stream.native_)))
         return make_error(error_kind::io, "cannot adopt TCP stream");
     stream.adopted_ = true;
-    sockaddr_storage address;
-    const socklen_t length = socket_address(peer, address);
+    detail::socket_address address;
+    detail::encode_address(peer, address);
     wavvix::detail::io_request request;
     request.operation = wavvix::detail::io_connect;
     request.direction = wavvix::detail::io_write;
     request.handle = detail::io_handle_of(stream.native_);
-    request.address = &address;
-    request.address_length = static_cast<int>(length);
+    request.address = &address.storage;
+    request.address_length = address.length;
     wavvix::detail::scheduler_io(request, timeout);
     if (request.transferred < 0) return detail::tcp_error("connect", request.failure);
     return result<tcp_stream>(std::move(stream));

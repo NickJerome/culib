@@ -4,6 +4,19 @@
 
 #include <cstring>
 
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#else
+#  include <sys/socket.h>
+#endif
+
 namespace wavvix {
 namespace net {
 namespace detail {
@@ -23,6 +36,18 @@ struct endpoint_access {
         return value.address_.data();
     }
 };
+
+struct socket_address {
+    sockaddr_storage storage;
+    int length;
+};
+
+void encode_address(const endpoint& value, socket_address& output) noexcept;
+result<endpoint> decode_address(const sockaddr* address, int length);
+
+#if defined(_WIN32)
+int winsock_startup_error();
+#endif
 
 }  // namespace detail
 }  // namespace net

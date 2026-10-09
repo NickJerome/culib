@@ -56,8 +56,8 @@ result<std::size_t> udp_socket::send_to(const void* buffer, std::size_t size,
             return make_error(error_kind::io, "cannot adopt UDP socket");
         adopted_ = true;
     }
-    detail::udp_address address;
-    detail::udp_encode_address(peer, address);
+    detail::socket_address address;
+    detail::encode_address(peer, address);
     char empty = 0;
     wavvix::detail::io_request request;
     request.operation = wavvix::detail::io_datagram_transfer;
@@ -65,7 +65,7 @@ result<std::size_t> udp_socket::send_to(const void* buffer, std::size_t size,
     request.handle = detail::udp_io_handle(native_);
     request.buffer = const_cast<void*>(buffer ? buffer : &empty);
     request.length = size;
-    request.address = address.storage;
+    request.address = &address.storage;
     request.address_length = address.length;
     wavvix::detail::scheduler_io(request, timeout);
     if (request.transferred < 0) return detail::udp_error("send_to", request.failure);
@@ -86,7 +86,7 @@ result<udp_datagram> udp_socket::recv_from(void* buffer, std::size_t size,
             return make_error(error_kind::io, "cannot adopt UDP socket");
         adopted_ = true;
     }
-    detail::udp_address address;
+    detail::socket_address address;
     address.length = static_cast<int>(sizeof address.storage);
     char empty = 0;
     wavvix::detail::io_request request;
@@ -95,7 +95,7 @@ result<udp_datagram> udp_socket::recv_from(void* buffer, std::size_t size,
     request.handle = detail::udp_io_handle(native_);
     request.buffer = buffer ? buffer : &empty;
     request.length = size == 0 ? 1 : size;
-    request.address = address.storage;
+    request.address = &address.storage;
     request.address_length = address.length;
     wavvix::detail::scheduler_io(request, timeout);
     if (request.truncated || detail::udp_is_truncated(request.failure) ||
@@ -103,7 +103,8 @@ result<udp_datagram> udp_socket::recv_from(void* buffer, std::size_t size,
         return make_error(error_kind::out_of_range, "UDP datagram was truncated");
     if (request.transferred < 0) return detail::udp_error("recv_from", request.failure);
     address.length = request.address_length;
-    result<endpoint> from = detail::udp_decode_address(address);
+    result<endpoint> from = detail::decode_address(
+        reinterpret_cast<const sockaddr*>(&address.storage), address.length);
     if (from.is_err()) return from.error();
     return udp_datagram(static_cast<std::size_t>(request.transferred), from.value());
 }

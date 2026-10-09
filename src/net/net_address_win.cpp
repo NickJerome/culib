@@ -7,27 +7,10 @@
 #include <utility>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
 namespace wavvix {
 namespace net {
 
 namespace {
-
-int winsock_startup_error() {
-    static const int failed = []() {
-        WSADATA data;
-        return ::WSAStartup(MAKEWORD(2, 2), &data);
-    }();
-    return failed;
-}
 
 result<std::vector<endpoint>> lookup(string_view host, std::uint16_t port, bool numeric) {
     if (host.empty() || host.find('\0') != string_view::npos) {
@@ -39,7 +22,7 @@ result<std::vector<endpoint>> lookup(string_view host, std::uint16_t port, bool 
     const std::wstring name(converted.value().begin(), converted.value().end());
     const std::wstring service = std::to_wstring(port);
 
-    const int startup = winsock_startup_error();
+    const int startup = detail::winsock_startup_error();
     if (startup != 0)
         return make_error(error_kind::io, "WSAStartup failed: " + std::to_string(startup));
 
@@ -59,17 +42,10 @@ result<std::vector<endpoint>> lookup(string_view host, std::uint16_t port, bool 
 
     std::vector<endpoint> result_addresses;
     for (const ADDRINFOW* item = addresses; item; item = item->ai_next) {
-        if (item->ai_family == AF_INET && item->ai_addrlen >= sizeof(sockaddr_in)) {
-            const sockaddr_in* value = reinterpret_cast<const sockaddr_in*>(item->ai_addr);
-            result_addresses.push_back(detail::endpoint_access::make(address_family::ipv4,
-                reinterpret_cast<const unsigned char*>(&value->sin_addr),
-                ::ntohs(value->sin_port), 0));
-        } else if (item->ai_family == AF_INET6 && item->ai_addrlen >= sizeof(sockaddr_in6)) {
-            const sockaddr_in6* value = reinterpret_cast<const sockaddr_in6*>(item->ai_addr);
-            result_addresses.push_back(detail::endpoint_access::make(address_family::ipv6,
-                reinterpret_cast<const unsigned char*>(&value->sin6_addr),
-                ::ntohs(value->sin6_port), value->sin6_scope_id));
-        }
+        if (item->ai_family != AF_INET && item->ai_family != AF_INET6) continue;
+        result<endpoint> decoded = detail::decode_address(item->ai_addr,
+                                                           static_cast<int>(item->ai_addrlen));
+        if (decoded.is_ok()) result_addresses.push_back(std::move(decoded).value());
     }
     ::FreeAddrInfoW(addresses);
     if (result_addresses.empty())
@@ -90,7 +66,7 @@ result<std::vector<endpoint>> resolve(string_view host, std::uint16_t port) {
 }
 
 std::string endpoint::to_string() const {
-    if (winsock_startup_error() != 0) return std::string();
+    if (detail::winsock_startup_error() != 0) return std::string();
     char text[INET6_ADDRSTRLEN];
     const int family = family_ == address_family::ipv4 ? AF_INET : AF_INET6;
     if (!::InetNtopA(family,
