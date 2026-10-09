@@ -27,16 +27,14 @@ wait() 实现的，在 wait() 里调它就是自己等自己。（这个坑是 P
 
 ### 为什么是自由函数加不透明指针
 
-四个后端的状态没有公共部分（epoll 要 fd 下标表、io_uring 要映射环、kqueue 要
-变更缓冲、IOCP 要句柄关联），所以 io_engine 只在这里前置声明。Linux 的
-io_engine_linux.cpp 选择 io_uring 或 epoll，具体环在独立实现文件；调度器只拿指针。
-后端选择只在第一次 I/O 时发生，调用路径多一次分支；这部分代价尚未单独测量。
+三个后端的状态没有公共部分（epoll 要 fd 下标表、kqueue 要过滤器状态、IOCP 要
+句柄关联），所以 io_engine 只在这里前置声明；调度器只拿指针。
 
 ### 跨线程通知
 
 给后续的多 vCPU 任务提交和阻塞任务池，事件引擎现在有内部的 `io_engine_enable_notify()` / `io_engine_notify()`。启用只在需要跨线程提交任务的 vCPU 上发生；普通 I/O 引擎不创建唤醒源。通知只打断 `io_engine_wait()`，不增加 I/O 完成数，也不进入协程的 `park_token` 队列。
 
-Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。旧版 glibc 缺少 `<sys/eventfd.h>`，Linux 实现直接调用 `eventfd2`；当旧系统头文件也缺少系统调用号时，使用项目支持的 x86_64 / arm64 Linux 调用号。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径及[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37870009886) 验证。调度器现在能接收工作线程完成通知；多 vCPU 的协程分发仍需实现。
+Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。旧版 glibc 缺少 `<sys/eventfd.h>`，Linux 实现直接调用 `eventfd2`；当旧系统头文件也缺少系统调用号时，使用项目支持的 x86_64 / arm64 Linux 调用号。跨线程唤醒与多 vCPU 协程分发已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37874443895) 验证。
 
 ## [`io_engine_posix.h`](../src/runtime/io_engine_posix.h)
 
@@ -55,7 +53,7 @@ kq 加两个独立的过滤器，没有值得放进公共基类的东西。
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
-Linux 事件引擎的运行期选择与 epoll 后端。io_uring 可用时选它，探测失败退回 epoll；`WAVVIX_IO_BACKEND` 只供测试时强制选择。
+Linux 的 epoll 后端。此前曾实现 io_uring；它只服务于套接字公共接口，普通文件 I/O 没有接入公共 API，额外的环管理、运行期探测和每请求字段没有实际调用方，因此移除。x86_64 / GCC 11.4 下 `sizeof(io_request)` 从 160 字节降到 88 字节。历史设计仍在 [io_uring 设计](superpowers/specs/2026-10-08-io-uring-design.md)；有明确的性能需求与对照测量后再考虑恢复。
 
 「完成」形状在一个「就绪」后端上要多做的事，就是**醒来之后当场做一次系统调用**——
 那段在 io_engine_posix.h 的 io_complete() 里，和 kqueue 后端共用同一份。本文件只管
@@ -66,23 +64,6 @@ superpowers/specs/2026-10-05-event-engine-design.md 6.1：边沿触发要求
 「一直读到 EAGAIN」，那是配合「一个 fd 一个常驻读循环」的用法，而我们的用法是
 「一个请求一次操作」；EPOLLONESHOT 是按 fd 而不是按方向生效的，同一个 fd 上同时
 挂着读和写时，一边触发会把另一边也解除，于是要补一套重新登记的记账。
-
-## [`io_engine_uring_linux.cpp`](../src/runtime/io_engine_uring_linux.cpp)
-
-完整设计和验证见 [io_uring 设计](superpowers/specs/2026-10-08-io-uring-design.md)。
-
-这个后端直接使用 Linux UAPI 的 SQ/CQ 环与 `READV` / `WRITEV`，不依赖 liburing。
-一个 vCPU 独占一个环；同一 fd、同一方向只提交队首请求，其余在栈上串成 FIFO。
-CQE 到来后再提交下一位，避免多个读者抢同一份数据而打乱顺序。
-
-取消已提交的请求时，先提交 `ASYNC_CANCEL`，再等原请求的 CQE：内核仍可能引用
-请求里的 `iovec`，不能因为超时就让协程栈退出。普通文件的直接读写只在这个后端
-可用；epoll 的公共 I/O 范围仍限于可等待的句柄，具体公共句柄语义留给 `net`。
-
-为 `net` 增加的套接字传输与普通文件请求分开：套接字使用 `SEND` / `RECV`，
-发送带 `MSG_NOSIGNAL`，避免对端关闭时的 `SIGPIPE`；文件仍走 `READV` / `WRITEV`。
-建环时还探测这两个操作，不支持就退回 epoll。Linux 本地分别强制 uring 和 epoll
-跑过已就绪收发、等待后收发，以及对端关闭时快路和慢路发送的测试。
 
 ## [`io_engine_macos.cpp`](../src/runtime/io_engine_macos.cpp)
 

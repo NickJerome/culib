@@ -1,11 +1,9 @@
-// Linux 事件引擎：io_uring 探测、epoll 退回。
+// Linux 事件引擎：epoll。
 
 #include "io_engine_eventfd_linux.h"
 #include "io_engine_posix.h"
-#include "io_engine_uring_linux.h"
 
 #include <cerrno>
-#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -19,7 +17,6 @@ namespace detail {
 
 class io_engine {
 public:
-    uring_engine* uring;
     int epoll_fd;
     int wake_fd;
     std::vector<io_fd_slot> slots;
@@ -77,26 +74,9 @@ void sync_interest(io_engine* engine, int fd, io_fd_slot& slot, unsigned armed) 
 }  // namespace
 
 io_engine* io_engine_create() noexcept {
-    const char* const choice = std::getenv("WAVVIX_IO_BACKEND");
-    const bool force_epoll = choice && std::strcmp(choice, "epoll") == 0;
-    const bool force_uring = choice && std::strcmp(choice, "uring") == 0;
-    if (!force_epoll) {
-        uring_engine* const uring = uring_engine_create();
-        if (uring) {
-            io_engine* const engine = new io_engine();
-            engine->uring = uring;
-            engine->epoll_fd = -1;
-            engine->wake_fd = -1;
-            engine->pending = 0;
-            return engine;
-        }
-        if (force_uring) return 0;
-    }
-
     const int epoll_fd = open_epoll();
     if (epoll_fd < 0) return 0;
     io_engine* const engine = new io_engine();
-    engine->uring = 0;
     engine->epoll_fd = epoll_fd;
     engine->wake_fd = -1;
     engine->pending = 0;
@@ -105,7 +85,6 @@ io_engine* io_engine_create() noexcept {
 
 void io_engine_destroy(io_engine* engine) noexcept {
     if (!engine) return;
-    if (engine->uring) uring_engine_destroy(engine->uring);
     if (engine->wake_fd >= 0) ::close(engine->wake_fd);
     if (engine->epoll_fd >= 0) ::close(engine->epoll_fd);
     delete engine;
@@ -113,7 +92,6 @@ void io_engine_destroy(io_engine* engine) noexcept {
 
 bool io_engine_enable_notify(io_engine* engine) noexcept {
     if (!engine) return false;
-    if (engine->uring) return uring_engine_enable_notify(engine->uring);
     if (engine->wake_fd >= 0) return true;
     const int fd = io_eventfd_open();
     if (fd < 0) return false;
@@ -133,18 +111,15 @@ bool io_engine_enable_notify(io_engine* engine) noexcept {
 
 bool io_engine_notify(io_engine* engine) noexcept {
     if (!engine) return false;
-    if (engine->uring) return uring_engine_notify(engine->uring);
     return engine->wake_fd >= 0 && io_eventfd_notify(engine->wake_fd);
 }
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
-    if (engine && engine->uring) return uring_engine_adopt(engine->uring, handle);
     // epoll 每次操作单独登记，无需一次性关联。
     return engine != 0 && handle >= 0;
 }
 
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
-    if (engine && engine->uring) return uring_engine_arm(engine->uring, request);
     const int fd = request.handle;
     if (!engine || fd < 0) {
         request.transferred = -1;
@@ -191,7 +166,6 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
 std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                            std::vector<park_token*>& completed) noexcept {
     if (!engine) return 0;
-    if (engine->uring) return uring_engine_wait(engine->uring, timeout, completed);
     const long milliseconds = io_timeout_ms(timeout);
 
     epoll_event events[64];
@@ -235,7 +209,6 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
 }
 
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
-    if (engine && engine->uring) return uring_engine_cancel(engine->uring, request);
     const int fd = request.handle;
     if (!engine || fd < 0) return true;
     if (static_cast<std::size_t>(fd) >= engine->slots.size()) return true;
@@ -258,7 +231,7 @@ bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {
     if (!engine) return 0;
-    return engine->uring ? uring_engine_pending(engine->uring) : engine->pending;
+    return engine->pending;
 }
 
 }  // namespace detail

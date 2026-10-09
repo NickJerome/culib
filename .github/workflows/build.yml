@@ -206,12 +206,6 @@ jobs:
         # 有失败时 -v 打印完整报告
         run: bash .github/report-failure.sh xmake test -v
 
-      # Linux 上即使 io_uring 可用，也强制跑一次 epoll，验证运行期退回路径。
-      - name: run tests with epoll fallback
-        if: startsWith(matrix.target.name, 'linux-')
-        shell: bash
-        run: WAVVIX_IO_BACKEND=epoll bash .github/report-failure.sh xmake test -v
-
       # 示例默认不参与构建，这里显式编译：接口改了而示例没跟着改时就会在这一步失败。
       # 这一步抓到过 examples/os.cpp 的 std::fopen 在 MSVC 上是 C4996。
       - name: build examples

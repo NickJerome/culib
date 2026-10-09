@@ -513,7 +513,7 @@ thread_local 和异常状态在协程脚下变掉，见 coroutine 设计文档 3
 
 ### 当前边界
 
-事件引擎已有 io_uring、epoll、kqueue、IOCP 四个后端；Linux 上 io_uring 不可用时自动退回 epoll。
+事件引擎在 Linux、macOS、Windows 上分别使用 epoll、kqueue、IOCP。
 [sync.h](../include/culib/sync.h) 提供协程感知的同步原语，
 [net.h](../include/culib/net.h) 提供 TCP 连接、监听和收发。调度策略是轮转，不承诺抢占或优先级。
 分期和已完成范围见 [调度器设计](superpowers/specs/2026-10-04-scheduler-design.md)

@@ -8,11 +8,6 @@
 #include <cstddef>
 #include <vector>
 
-#if defined(__linux__)
-#include <sys/socket.h>
-#include <sys/uio.h>
-#endif
-
 namespace wavvix {
 namespace detail {
 
@@ -70,10 +65,6 @@ struct io_request {
     // 继续了」之后怎么排队是调度器的事。调用方（scheduler_io）用同一个 token 挂起自己。
     park_token* waiter;
     io_request* next;             // 同一句柄同一方向上的等待链
-#if defined(__linux__)
-    struct iovec iov;             // io_uring 的 READV/WRITEV 在完成前一直引用它
-    struct msghdr message;        // io_uring 的 SENDMSG/RECVMSG 在完成前引用它
-#endif
 #if defined(_WIN32)
     unsigned long datagram_flags;  // WSARecvFrom 的标志位，完成前不能离开栈帧
     // OVERLAPPED 的位置。真正的类型在 io_engine_win.cpp 里 reinterpret 回去——
@@ -106,7 +97,7 @@ bool io_engine_notify(io_engine* engine) noexcept;
 // POSIX 后端什么都不用做，直接返回 true。
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 
-// 把这次操作挂上去。epoll / kqueue 登记兴趣，io_uring / IOCP 提交真正的 I/O。
+// 把这次操作挂上去。epoll / kqueue 登记兴趣，IOCP 提交真正的 I/O。
 // **不挂起协程**——挂起是调度器的事。
 //
 // 返回 true 表示挂上了，调用方应当挂起当前协程；返回 false 表示挂不上去，

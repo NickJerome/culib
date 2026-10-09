@@ -10,15 +10,10 @@
 
 #include "runtime/io_engine.h"
 #include "runtime/scheduler_detail.h"
-#if defined(__linux__)
-#  include "runtime/io_engine_uring_linux.h"
-#endif
 
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -590,116 +585,6 @@ TEST(io_engine, carries_many_concurrent_readers) {
 }
 
 #if defined(__linux__)
-TEST(io_engine, uring_reads_and_writes_a_regular_file) {
-    // epoll 不能等待普通文件；直接测 io_uring 后端的 READV / WRITEV。
-    wavvix::detail::uring_engine* const engine = wavvix::detail::uring_engine_create();
-    if (!engine) {
-        const char* const forced = std::getenv("WAVVIX_IO_BACKEND");
-        if (forced && std::strcmp(forced, "uring") == 0) EXPECT(false, ==, true);
-        return;  // 旧内核或受限容器由 epoll 负责套接字 I/O
-    }
-    std::FILE* const file = std::tmpfile();
-    if (!EXPECT(file != 0, ==, true)) {
-        wavvix::detail::uring_engine_destroy(engine);
-        return;
-    }
-    const int fd = ::fileno(file);
-    const char message[] = "abc";
-    wavvix::detail::park_token write_token = {
-        0, wavvix::detail::park_instant(), false, false, false, 0};
-    io_request writing = {};
-    writing.direction = io_write;
-    writing.handle = fd;
-    writing.buffer = const_cast<char*>(message);
-    writing.length = 3;
-    writing.waiter = &write_token;
-    const bool write_armed = wavvix::detail::uring_engine_arm(engine, writing);
-    EXPECT(write_armed, ==, true);
-    std::vector<wavvix::detail::park_token*> completed;
-    if (write_armed) {
-        const std::size_t done = wavvix::detail::uring_engine_wait(engine, ms(1000), completed);
-        EXPECT(done, ==, 1u);
-        if (done != 1) std::abort();  // 内核仍引用栈上的 request，不能退出本测试
-        EXPECT(writing.transferred, ==, 3);
-        EXPECT(completed.size(), ==, 1u);
-        if (!completed.empty()) EXPECT(completed[0], ==, &write_token);
-    }
-
-    EXPECT(::lseek(fd, 0, SEEK_SET), ==, 0);
-    char got[4] = {};
-    wavvix::detail::park_token read_token = {
-        0, wavvix::detail::park_instant(), false, false, false, 0};
-    io_request reading = {};
-    reading.direction = io_read;
-    reading.handle = fd;
-    reading.buffer = got;
-    reading.length = 3;
-    reading.waiter = &read_token;
-    const bool read_armed = wavvix::detail::uring_engine_arm(engine, reading);
-    EXPECT(read_armed, ==, true);
-    completed.clear();
-    if (read_armed) {
-        const std::size_t done = wavvix::detail::uring_engine_wait(engine, ms(1000), completed);
-        EXPECT(done, ==, 1u);
-        if (done != 1) std::abort();
-        EXPECT(reading.transferred, ==, 3);
-        EXPECT(std::string(got, 3), ==, "abc");
-        EXPECT(completed.size(), ==, 1u);
-        if (!completed.empty()) EXPECT(completed[0], ==, &read_token);
-    }
-    std::fclose(file);
-    wavvix::detail::uring_engine_destroy(engine);
-}
-
-TEST(io_engine, uring_keeps_completions_when_the_cq_fills) {
-    wavvix::detail::uring_engine* const engine = wavvix::detail::uring_engine_create();
-    if (!engine) return;
-    const int count = 300;  // 大于 64 项 SQ 对应的 CQ 容量
-    struct slot {
-        int fds[2];
-        char byte;
-        wavvix::detail::park_token token;
-        io_request request;
-        bool armed;
-    } slots[count];
-    int created = 0;
-    for (; created < count; ++created) {
-        if (::pipe(slots[created].fds) != 0) break;
-        slots[created].byte = 0;
-        EXPECT(::write(slots[created].fds[1], "x", 1), ==, 1);
-    }
-    EXPECT(created, ==, count);
-    int armed = 0;
-    for (int i = 0; i < created; ++i) {
-        slot& current = slots[i];
-        current.request.direction = io_read;
-        current.request.handle = current.fds[0];
-        current.request.buffer = &current.byte;
-        current.request.length = 1;
-        current.request.waiter = &current.token;
-        current.armed = wavvix::detail::uring_engine_arm(engine, current.request);
-        EXPECT(current.armed, ==, true);
-        if (current.armed) ++armed;
-    }
-    std::this_thread::sleep_for(ms(10));
-    EXPECT(wavvix::detail::uring_engine_cq_overflowed(engine), ==, true);
-    std::vector<wavvix::detail::park_token*> completed;
-    for (int attempt = 0; attempt < 3 && wavvix::detail::uring_engine_pending(engine); ++attempt)
-        wavvix::detail::uring_engine_wait(engine, ms(1000), completed);
-    EXPECT(wavvix::detail::uring_engine_pending(engine), ==, 0u);
-    if (wavvix::detail::uring_engine_pending(engine)) std::abort();
-    EXPECT(completed.size(), ==, static_cast<std::size_t>(armed));
-    for (int i = 0; i < created; ++i) {
-        if (slots[i].armed) {
-            EXPECT(slots[i].request.transferred, ==, 1);
-            EXPECT(slots[i].byte, ==, 'x');
-        }
-        ::close(slots[i].fds[0]);
-        ::close(slots[i].fds[1]);
-    }
-    wavvix::detail::uring_engine_destroy(engine);
-}
-
 TEST(io_engine, builds_no_engine_for_a_program_that_never_does_io) {
     // 「不用的功能不产生任何代价」是硬约束：一个只算东西的程序不该因为库里有事件
     // 引擎就多一个句柄。引擎是每 vCPU 一个而且比 vCPU 更懒一层（第一次真做 I/O 才

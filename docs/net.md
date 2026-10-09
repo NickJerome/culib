@@ -1,6 +1,6 @@
 # 网络地址、TCP 与 UDP
 
-`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析，以及协程中的 TCP 和 UDP 收发。TCP 与 UDP 公共接口已通过 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37761276843)；Linux epoll/io_uring 与 Windows/MSVC 的本地回环测试也通过。
+`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析，以及协程中的 TCP 和 UDP 收发。TCP 与 UDP 公共接口已通过 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37761276843)。
 
 ## 地址
 
@@ -48,7 +48,7 @@ Windows 默认会把发向不可达 UDP 端口的 ICMP 错误作为下一次接�
 
 ## 平台路径
 
-- Linux：TCP 优先 io_uring 的 `ACCEPT` / `CONNECT` / `SEND` / `RECV`，UDP 慢路用 `SENDMSG` / `RECVMSG`；缺少必需操作时退回 epoll。开发时可设 `WAVVIX_IO_BACKEND=epoll` 或 `uring` 强制选择。
+- Linux：epoll 上使用非阻塞 TCP 与 UDP 系统调用。
 - macOS：kqueue 上使用非阻塞 TCP 与 UDP 系统调用。
 - Windows：IOCP 上的 TCP `AcceptEx` / `ConnectEx` 和 UDP `WSASendTo` / `WSARecvFrom`。
 

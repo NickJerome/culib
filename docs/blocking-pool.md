@@ -28,4 +28,4 @@ wavvix::blocking_pool pool = std::move(created).value();
 
 ## 实现验证
 
-Windows MSVC x64 和 WSL2 GCC 的完整测试通过；Linux 分别强制 epoll、io_uring 跑过测试。[`eed3929` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/37870009886) 21/21 通过，包含 macOS arm64/x86_64、GCC 4.8、MinGW i686、ASan/UBSan 和关闭异常/RTTI 的构建。测试覆盖等待期间其他协程继续运行、两根系统工作线程并发执行、移动参数，以及一个池服务两个 vCPU。
+Windows MSVC x64 和 WSL2 GCC 的完整测试通过。[`eed3929` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/37870009886) 21/21 通过，包含 macOS arm64/x86_64、GCC 4.8、MinGW i686、ASan/UBSan 和关闭异常/RTTI 的构建。测试覆盖等待期间其他协程继续运行、两根系统工作线程并发执行、移动参数，以及一个池服务两个 vCPU。
