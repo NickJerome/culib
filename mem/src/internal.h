@@ -530,10 +530,6 @@ static inline void* mem_malloc_internal_with(mem_theap_t* t, size_t size) {
   return mem_malloc_large(t, size);   /* large 路径在 theap.cpp 内自行记账 */
 }
 
-static inline void* mem_malloc_internal(size_t size) {
-  return mem_malloc_internal_with(mem_theap_fast(), size);
-}
-
 /* small 块的可用字节数 */
 static inline size_t mem_page_usable_size(const mem_page_t* page) {
   if (page->kind == WAVVIX_MEM_PAGE_SMALL) return page->block_size;

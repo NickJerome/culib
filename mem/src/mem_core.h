@@ -20,4 +20,3 @@ struct mem_stats_t {
 };
 
 void mem_stats_get(mem_stats_t* out);
-void mem_stats_print();

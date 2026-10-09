@@ -9,7 +9,7 @@
  *   4. aligned_alloc(16/32/64/256/4096) 对齐 + 写读
  *   5. posix_memalign 合法/非法参数（非 2 幂 → EINVAL）
  *   6. heap_new → heap_malloc → heap_destroy 整体销毁
- *   7. wavvix::mem::collect / mem_stats_print 冒烟
+ *   7. wavvix::mem::collect / free(NULL) 冒烟
  *   9. mem_stats_get 字段自洽；分配/释放计数与字节口径精确（快路径也必须记账）
  *
  * 测试使用公开的 wavvix::mem API 与 mem_core.h 中的实现内接口。
@@ -327,7 +327,6 @@ void test_collect_with_live_blocks() {
 /* ---- 7. 诊断族冒烟 ---- */
 void test_diag() {
     wavvix::mem::collect();          /* 不应崩溃 */
-    mem_stats_print();      /* 打印统计，不校验内容 */
     wavvix::mem::free(NULL);         /* 再次确认 NULL 安全 */
 }
 

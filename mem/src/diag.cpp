@@ -1,24 +1,14 @@
 /* ----------------------------------------------------------------------------
- * diag.cpp — 诊断与报错：fatal 报告、mem_stats_print、WAVVIX_MEM_DEBUG 泄漏报告
+ * diag.cpp — 诊断与报错：fatal 报告、统计快照、WAVVIX_MEM_DEBUG 泄漏报告
  *
  * fatal 路径必须无分配、无 stdio：错误发生时堆状态已不可信，而 override
  * 场景下 fprintf 自身还会再次调用 malloc。因此这里手写十六进制/十进制格式化
  * 到 256 字节栈缓冲，最终只经 mem_os_fatal 走一次裸 write。
  * ------------------------------------------------------------------------- */
 #include "internal.h"
-#include "bitmap.h"
 
 #include <cstdio>
 #include <cstring>
-
-/* 诊断计数器（定义在 arena.cpp / theap.cpp）。必须在文件作用域声明：
- * 放在函数体内的块作用域 extern 会被 MSVC 按 C 链接解析，与定义处的
- * C++ 链接不匹配（LNK2019）。 */
-#if defined(WAVVIX_MEM_DEBUG)
-extern std::atomic<uint64_t> g_dbg_slice_alloc, g_dbg_slice_free;
-extern std::atomic<uint64_t> g_dbg_to_full, g_dbg_abandon, g_dbg_reclaim,
-                             g_dbg_unfull, g_dbg_retire, g_dbg_fresh_slice;
-#endif
 
 namespace {
 
@@ -120,94 +110,6 @@ void mem_stats_get(mem_stats_t* out) {
   for (int bin = 1; bin <= WAVVIX_MEM_BIN_FULL; bin++)
     out->thread_tcache_bytes +=
         (size_t)t->tcache[bin - 1].count * mem_bin_size(bin);
-}
-
-/* ------------------------------ 统计打印 ------------------------------- */
-
-void mem_stats_print(void) {
-  mem_stats_t s;
-  mem_stats_get(&s);          /* 内含 mem_init_once */
-
-  std::fprintf(stderr, "=== culib mem stats ===\n");
-  std::fprintf(stderr,
-               "options: purge_delay=%ldms window=%zu arena_reserve=%zu\n",
-               mem_options.purge_delay_ms, mem_options.window_size,
-               mem_options.arena_reserve);
-  std::fprintf(stderr, "window: base=%p size=%zu used_slices=%zu desc=%p\n",
-               (void*)mem_window_base, mem_window_size,
-               mem_window_used_slices.load(std::memory_order_relaxed),
-               (void*)mem_desc_base);
-  std::fprintf(stderr,
-               "process: reserved=%zu committed=%zu arenas=%zu "
-               "abandoned_pages=%zu rss=%zu\n",
-               s.reserved_bytes, s.committed_bytes, s.arena_count,
-               s.abandoned_pages, s.process_rss_bytes);
-
-  mem_theap_t* t = mem_t_theap;
-  if (t != NULL) {
-    /* current 是截断后的净值；两个累计量一并打出来，截断掉的那部分
-     * （跨线程释放 / heap_destroy 造成的偏差）才有迹可循。 */
-    std::fprintf(stderr,
-                 "thread heap: allocs=%llu frees=%llu current=%zu bytes "
-                 "(alloc_bytes=%llu free_bytes=%llu) tcache=%zu bytes\n",
-                 s.thread_alloc_count, s.thread_free_count,
-                 s.thread_current_bytes,
-                 (unsigned long long)t->stat_alloc_bytes,
-                 (unsigned long long)t->stat_free_bytes,
-                 s.thread_tcache_bytes);
-    for (int bin = 1; bin <= WAVVIX_MEM_BIN_FULL; bin++) {
-      mem_page_queue_t* q = &t->pages[bin - 1];
-      if (q->count == 0 && t->full_count[bin] == 0 &&
-          t->tcache[bin - 1].count == 0)
-        continue;
-      size_t used = 0, cap = 0;
-      for (mem_page_t* p = q->first; p != NULL; p = p->next) {
-        used += p->used;
-        cap += p->capacity;
-      }
-      std::fprintf(stderr,
-                   /* 注意 used 与上面 thread heap 行的 current 口径不同：
-                    * tcache 滞留块在这里计入 used（页视角仍是已分配），
-                    * 在 current 里却已算作已释放。同屏两个"在用"，标明避免误读。 */
-                   "  bin %2d (bsize %5zu): pages=%zu full=%u used=%zu/%zu "
-                   "(used 含 tcache 滞留块) tcache=%u\n",
-                   bin, q->block_size, q->count, (unsigned)t->full_count[bin],
-                   used, cap, (unsigned)t->tcache[bin - 1].count);
-    }
-  }
-
-  int count = mem_arena_count();
-  for (int i = 0; i < count; i++) {
-    mem_arena_t* a = mem_arena_get(i);
-    if (a == NULL) continue;
-    size_t free_slices = 0;
-    size_t nw = mem_bitmap_words(a->slice_count);
-    for (size_t w = 0; w < nw; w++)
-      free_slices += (size_t)mem_popcount64(a->slices_free->map.words[w]);
-    int64_t expire = a->purge_expire.load(std::memory_order_relaxed);
-    std::fprintf(stderr,
-                 "arena %d: base=%p first_slice=%zu slices=%zu free=%zu "
-                 "purge_pending=%s\n",
-                 i, (void*)a->base, a->first_slice, a->slice_count, free_slices,
-                 expire != 0 ? "yes" : "no");
-  }
-  /* committed / abandoned 已在上面的 process 行报过，不再二次加锁遍历 */
-#if defined(WAVVIX_MEM_DEBUG)
-  std::fprintf(stderr,
-               "to_full=%llu abandon=%llu reclaim=%llu unfull=%llu retire=%llu "
-               "fresh_slice=%llu\n",
-               (unsigned long long)g_dbg_to_full.load(),
-               (unsigned long long)g_dbg_abandon.load(),
-               (unsigned long long)g_dbg_reclaim.load(),
-               (unsigned long long)g_dbg_unfull.load(),
-               (unsigned long long)g_dbg_retire.load(),
-               (unsigned long long)g_dbg_fresh_slice.load());
-  std::fprintf(stderr, "slices: alloc=%llu free=%llu live=%lld\n",
-               (unsigned long long)g_dbg_slice_alloc.load(),
-               (unsigned long long)g_dbg_slice_free.load(),
-               (long long)(g_dbg_slice_alloc.load() - g_dbg_slice_free.load()));
-#endif
-  std::fflush(stderr);
 }
 
 /* --------------------------- WAVVIX_MEM_DEBUG 泄漏报告 -------------------------- */

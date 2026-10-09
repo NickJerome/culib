@@ -5,10 +5,6 @@
 /* 快路径直接读取的 TLS 指针（internal.h 中 inline） */
 thread_local mem_theap_t* mem_t_theap = NULL;
 
-#if defined(WAVVIX_MEM_DEBUG)
-std::atomic<uint64_t> g_dbg_to_full(0), g_dbg_abandon(0), g_dbg_reclaim(0), g_dbg_unfull(0), g_dbg_retire(0), g_dbg_fresh_slice(0);
-#endif
-
 static void mem_tcache_flush_all(mem_theap_t* t);
 
 namespace {
@@ -40,9 +36,6 @@ mem_theap_t*  g_theap_recycle = NULL;
 /* 页退休 */
 
 void mem_theap_retire_page(mem_theap_t* t, mem_page_t* page) {
-#if defined(WAVVIX_MEM_DEBUG)
-  g_dbg_retire.fetch_add(1, std::memory_order_relaxed);
-#endif
   int bin = page->bin;
   if ((page->flags & WAVVIX_MEM_PAGE_FLAG_IN_FULL) != 0) {
     mem_page_queue_remove(&t->pages[WAVVIX_MEM_BIN_FULL], page);
@@ -88,9 +81,6 @@ void mem_theap_page_empty(mem_theap_t* t, mem_page_t* page) {
 }
 
 void mem_theap_page_to_full(mem_theap_t* t, mem_page_t* page) {
-#if defined(WAVVIX_MEM_DEBUG)
-  g_dbg_to_full.fetch_add(1, std::memory_order_relaxed);
-#endif
   int bin = page->bin;
   mem_page_queue_remove(&t->pages[bin - 1], page);
   if (bin < WAVVIX_MEM_DIRECT_MAX && t->pages_free_direct[bin] == page)
@@ -104,9 +94,6 @@ void mem_theap_page_to_full(mem_theap_t* t, mem_page_t* page) {
 
 /* 满页腾空 → 移回本 bin 普通队列 */
 void mem_theap_unfull(mem_theap_t* t, mem_page_t* page) {
-#if defined(WAVVIX_MEM_DEBUG)
-  g_dbg_unfull.fetch_add(1, std::memory_order_relaxed);
-#endif
   int bin = page->bin;
   mem_page_queue_remove(&t->pages[WAVVIX_MEM_BIN_FULL], page);
   t->full_count[bin]--;
@@ -146,9 +133,6 @@ mem_page_t* mem_page_fresh(mem_theap_t* t, int bin) {
       mem_page_t* page = mem_arena_reclaim_page(arena, bin);
       if (page == NULL) break;
       /* 接管所有权 */
-#if defined(WAVVIX_MEM_DEBUG)
-      g_dbg_reclaim.fetch_add(1, std::memory_order_relaxed);
-#endif
       /* 只清 IN_FULL；其余标志属于页本身。 */
       page->flags &= (uint8_t)~WAVVIX_MEM_PAGE_FLAG_IN_FULL;
       mem_page_set_owner(page, t);
@@ -234,9 +218,6 @@ void mem_theap_abandon(mem_theap_t* t) {
                                 std::memory_order_acq_rel);
       mem_arena_t* arena = mem_arena_get(page->arena_idx);
       if (arena != NULL) mem_arena_abandon_page(arena, page);
-#if defined(WAVVIX_MEM_DEBUG)
-      g_dbg_abandon.fetch_add(1, std::memory_order_relaxed);
-#endif
     }
   }
   /* large 页不在队列中，free 路径直接处理。 */
@@ -338,9 +319,6 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
       if (arena != NULL) mem_arena_purge_check(arena);
       bool zeroed = false;
       mem_arena_t* a = NULL;
-#if defined(WAVVIX_MEM_DEBUG)
-      g_dbg_fresh_slice.fetch_add(1, std::memory_order_relaxed);
-#endif
       size_t sidx = mem_arena_alloc_slices_any(t, 1, 1, &a, &zeroed);
       if (sidx == (size_t)-1) return NULL;
       /* 描述符与 slice 平铺：slice 下标即描述符下标，无需分配与登记 */

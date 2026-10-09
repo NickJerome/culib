@@ -130,9 +130,6 @@ uintptr_t mem_next_thread_id(void) {
   return g_thread_counter.fetch_add(1, std::memory_order_relaxed) << 3;
 }
 
-/* ------------------------------ 诊断族 --------------------------------- */
-/* mem_stats_print 见 diag.cpp */
-
 void wavvix::mem::collect() noexcept {
   if (mem_t_theap != NULL) mem_theap_collect(mem_t_theap);
   int count = mem_arena_count();

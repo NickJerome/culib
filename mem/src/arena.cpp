@@ -7,12 +7,6 @@
 #include <limits>
 #include <new>
 
-/* 仅调试构建收集事件计数，普通分配路径不为诊断付原子操作。 */
-#if defined(WAVVIX_MEM_DEBUG)
-std::atomic<uint64_t> g_dbg_slice_alloc(0);
-std::atomic<uint64_t> g_dbg_slice_free(0);
-#endif
-
 /* 地址窗口与平铺描述符数组（internal.h 声明；mem_ptr_page 内联读取） */
 uint8_t*            mem_window_base = NULL;
 size_t              mem_window_size = 0;
@@ -227,9 +221,6 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
   }
   if (!mem_bitmap_any(arena->slices_purge))
     arena->purge_expire.store(0, std::memory_order_relaxed);
-#if defined(WAVVIX_MEM_DEBUG)
-  g_dbg_slice_alloc.fetch_add(n, std::memory_order_relaxed);
-#endif
   *out_zeroed = zeroed;
   return idx;
 }
@@ -286,9 +277,6 @@ size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
 /* 归还 slice：置 free/dirty/purge 位图并刷新到期时间戳（SPEC §6.3.2）。
  * 此刻不做 madvise——物理页归还延迟到 purge 到期。 */
 void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
-#if defined(WAVVIX_MEM_DEBUG)
-  g_dbg_slice_free.fetch_add(n, std::memory_order_relaxed);
-#endif
   std::lock_guard<std::mutex> lock(arena->mutex);
   mem_bbitmap_free(arena->slices_free, slice_idx, n);
   mem_bitmap_set_range(arena->slices_dirty, slice_idx, n);
@@ -302,9 +290,6 @@ void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
 
 /* 归还已由调用方 decommit 的 slice（huge 页：free 即归还物理页）。 */
 void mem_arena_free_slices_decommitted(mem_arena_t* arena, size_t slice_idx, size_t n) {
-#if defined(WAVVIX_MEM_DEBUG)
-  g_dbg_slice_free.fetch_add(n, std::memory_order_relaxed);
-#endif
   std::lock_guard<std::mutex> lock(arena->mutex);
   mem_bbitmap_free(arena->slices_free, slice_idx, n);
   mem_bitmap_clear_range(arena->slices_committed, slice_idx, n);
