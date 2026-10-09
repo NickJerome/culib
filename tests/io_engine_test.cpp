@@ -260,6 +260,36 @@ std::size_t open_handle_count() {
 
 }  // namespace
 
+TEST(io_engine, cross_thread_notification_interrupts_wait) {
+    wavvix::detail::io_engine* const engine = wavvix::detail::io_engine_create();
+    EXPECT(engine != 0, ==, true);
+    if (!engine) return;
+    const bool enabled = wavvix::detail::io_engine_enable_notify(engine);
+    EXPECT(enabled, ==, true);
+    if (!enabled) {
+        wavvix::detail::io_engine_destroy(engine);
+        return;
+    }
+
+    bool posted = false;
+    std::thread notifier([engine, &posted] {
+        std::this_thread::sleep_for(ms(20));
+        posted = wavvix::detail::io_engine_notify(engine);
+    });
+    std::vector<wavvix::detail::park_token*> completed;
+    const std::chrono::steady_clock::time_point start =
+        std::chrono::steady_clock::now();
+    wavvix::detail::io_engine_wait(engine, std::chrono::seconds(3), completed);
+    const std::chrono::steady_clock::duration elapsed =
+        std::chrono::steady_clock::now() - start;
+    notifier.join();
+    EXPECT(posted, ==, true);
+    EXPECT(elapsed < std::chrono::seconds(2), ==, true);
+    EXPECT(completed.empty(), ==, true);
+    EXPECT(wavvix::detail::io_engine_pending(engine), ==, 0u);
+    wavvix::detail::io_engine_destroy(engine);
+}
+
 TEST(io_engine, reads_what_the_peer_wrote) {
     linked_pair pair;
     if (!EXPECT(pair.ok(), ==, true)) return;

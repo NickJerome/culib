@@ -11,6 +11,8 @@ class uring_engine;
 
 uring_engine* uring_engine_create() noexcept;
 void uring_engine_destroy(uring_engine* engine) noexcept;
+bool uring_engine_enable_notify(uring_engine* engine) noexcept;
+bool uring_engine_notify(uring_engine* engine) noexcept;
 bool uring_engine_adopt(uring_engine* engine, io_handle handle) noexcept;
 bool uring_engine_arm(uring_engine* engine, io_request& request) noexcept;
 std::size_t uring_engine_wait(uring_engine* engine, std::chrono::nanoseconds timeout,

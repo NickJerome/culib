@@ -32,6 +32,12 @@ wait() 实现的，在 wait() 里调它就是自己等自己。（这个坑是 P
 io_engine_linux.cpp 选择 io_uring 或 epoll，具体环在独立实现文件；调度器只拿指针。
 后端选择只在第一次 I/O 时发生，调用路径多一次分支；这部分代价尚未单独测量。
 
+### 跨线程通知
+
+给后续的多 vCPU 任务提交和阻塞任务池，事件引擎现在有内部的 `io_engine_enable_notify()` / `io_engine_notify()`。启用只在需要跨线程提交任务的 vCPU 上发生；普通 I/O 引擎不创建唤醒源。通知只打断 `io_engine_wait()`，不增加 I/O 完成数，也不进入协程的 `park_token` 队列。
+
+Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径验证；macOS 交给 CI。任务队列与生命周期管理仍需在调度器层实现。
+
 ## [`io_engine_posix.h`](../src/io_engine_posix.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。

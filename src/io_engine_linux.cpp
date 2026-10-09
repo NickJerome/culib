@@ -1,5 +1,6 @@
 // Linux 事件引擎：io_uring 探测、epoll 退回。
 
+#include "io_engine_eventfd_linux.h"
 #include "io_engine_posix.h"
 #include "io_engine_uring_linux.h"
 
@@ -20,6 +21,7 @@ class io_engine {
 public:
     uring_engine* uring;
     int epoll_fd;
+    int wake_fd;
     std::vector<io_fd_slot> slots;
     std::size_t pending;    // 还在等的请求数
 };
@@ -84,6 +86,7 @@ io_engine* io_engine_create() noexcept {
             io_engine* const engine = new io_engine();
             engine->uring = uring;
             engine->epoll_fd = -1;
+            engine->wake_fd = -1;
             engine->pending = 0;
             return engine;
         }
@@ -95,6 +98,7 @@ io_engine* io_engine_create() noexcept {
     io_engine* const engine = new io_engine();
     engine->uring = 0;
     engine->epoll_fd = epoll_fd;
+    engine->wake_fd = -1;
     engine->pending = 0;
     return engine;
 }
@@ -102,8 +106,35 @@ io_engine* io_engine_create() noexcept {
 void io_engine_destroy(io_engine* engine) noexcept {
     if (!engine) return;
     if (engine->uring) uring_engine_destroy(engine->uring);
+    if (engine->wake_fd >= 0) ::close(engine->wake_fd);
     if (engine->epoll_fd >= 0) ::close(engine->epoll_fd);
     delete engine;
+}
+
+bool io_engine_enable_notify(io_engine* engine) noexcept {
+    if (!engine) return false;
+    if (engine->uring) return uring_engine_enable_notify(engine->uring);
+    if (engine->wake_fd >= 0) return true;
+    const int fd = io_eventfd_open();
+    if (fd < 0) return false;
+    epoll_event event;
+    std::memset(&event, 0, sizeof event);
+    event.events = EPOLLIN;
+    event.data.fd = fd;
+    if (::epoll_ctl(engine->epoll_fd, EPOLL_CTL_ADD, fd, &event) != 0) {
+        const int failed = errno;
+        ::close(fd);
+        errno = failed;
+        return false;
+    }
+    engine->wake_fd = fd;
+    return true;
+}
+
+bool io_engine_notify(io_engine* engine) noexcept {
+    if (!engine) return false;
+    if (engine->uring) return uring_engine_notify(engine->uring);
+    return engine->wake_fd >= 0 && io_eventfd_notify(engine->wake_fd);
 }
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
@@ -178,6 +209,10 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
     std::size_t fired = 0;
     for (int i = 0; i < ready; ++i) {
         const int fd = events[i].data.fd;
+        if (fd == engine->wake_fd) {
+            io_eventfd_drain(fd);
+            continue;
+        }
         if (fd < 0 || static_cast<std::size_t>(fd) >= engine->slots.size()) continue;
         io_fd_slot& slot = engine->slots[static_cast<std::size_t>(fd)];
         const std::uint32_t got = events[i].events;

@@ -106,6 +106,14 @@ void io_engine_destroy(io_engine* engine) noexcept {
     delete engine;
 }
 
+bool io_engine_enable_notify(io_engine* engine) noexcept {
+    return engine != 0;
+}
+
+bool io_engine_notify(io_engine* engine) noexcept {
+    return engine && ::PostQueuedCompletionStatus(engine->port, 0, 0, 0) != 0;
+}
+
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
     if (!engine || unusable(handle)) return false;
     // **关联是一次性的**：同一个句柄再关联一次直接失败。所以这个函数由持有句柄生命

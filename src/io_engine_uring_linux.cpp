@@ -1,6 +1,7 @@
 // Linux io_uring 后端。选择和 epoll 退回在 io_engine_linux.cpp。
 
 #include "io_engine_uring_linux.h"
+#include "io_engine_eventfd_linux.h"
 #include "io_engine_posix.h"
 
 #include <cerrno>
@@ -37,11 +38,12 @@ namespace detail {
 class uring_engine {
 public:
     uring_engine() noexcept
-        : fd(-1), sq_map(0), cq_map(0), sqes_map(0), sq_size(0), cq_size(0),
+        : fd(-1), wake_fd(-1), sq_map(0), cq_map(0), sqes_map(0), sq_size(0), cq_size(0),
           sqes_size(0), sq_head(0), sq_tail(0), sq_mask(0), sq_array(0), sq_flags(0),
           cq_head(0), cq_tail(0), cq_mask(0), cqes(0), sqes(0), pending(0) {}
 
     int fd;
+    int wake_fd;
     void* sq_map;
     void* cq_map;
     void* sqes_map;
@@ -350,12 +352,26 @@ uring_engine* uring_engine_create() noexcept {
 
 void uring_engine_destroy(uring_engine* engine) noexcept {
     if (!engine) return;
+    if (engine->wake_fd >= 0) ::close(engine->wake_fd);
     if (engine->sqes_map) ::munmap(engine->sqes_map, engine->sqes_size);
     if (engine->cq_map && engine->cq_map != engine->sq_map)
         ::munmap(engine->cq_map, engine->cq_size);
     if (engine->sq_map) ::munmap(engine->sq_map, engine->sq_size);
     if (engine->fd >= 0) ::close(engine->fd);
     delete engine;
+}
+
+bool uring_engine_enable_notify(uring_engine* engine) noexcept {
+    if (!engine) return false;
+    if (engine->wake_fd >= 0) return true;
+    const int fd = io_eventfd_open();
+    if (fd < 0) return false;
+    engine->wake_fd = fd;
+    return true;
+}
+
+bool uring_engine_notify(uring_engine* engine) noexcept {
+    return engine && engine->wake_fd >= 0 && io_eventfd_notify(engine->wake_fd);
 }
 
 bool uring_engine_adopt(uring_engine* engine, io_handle handle) noexcept {
@@ -417,10 +433,17 @@ std::size_t uring_engine_wait(uring_engine* engine, std::chrono::nanoseconds tim
             limit.tv_nsec = static_cast<long>(left.count() % 1000000000);
             wait_for = &limit;
         }
-        struct pollfd descriptor = {engine->fd, POLLIN, 0};
-        const int ready = ::ppoll(&descriptor, 1, wait_for, 0);
+        struct pollfd descriptors[2] = {
+            {engine->fd, POLLIN, 0}, {engine->wake_fd, POLLIN, 0}
+        };
+        const nfds_t count = engine->wake_fd >= 0 ? 2 : 1;
+        const int ready = ::ppoll(descriptors, count, wait_for, 0);
         if (ready == 0) return 0;
         if (ready < 0 && errno != EINTR) return 0;
+        if (ready > 0 && count == 2 && descriptors[1].revents) {
+            io_eventfd_drain(engine->wake_fd);
+            return drain(*engine, completed);
+        }
     }
 }
 
@@ -452,6 +475,8 @@ class uring_engine {};
 
 uring_engine* uring_engine_create() noexcept { errno = ENOSYS; return 0; }
 void uring_engine_destroy(uring_engine*) noexcept {}
+bool uring_engine_enable_notify(uring_engine*) noexcept { return false; }
+bool uring_engine_notify(uring_engine*) noexcept { return false; }
 bool uring_engine_adopt(uring_engine*, io_handle) noexcept { return false; }
 bool uring_engine_arm(uring_engine*, io_request&) noexcept { return false; }
 std::size_t uring_engine_wait(uring_engine*, std::chrono::nanoseconds,

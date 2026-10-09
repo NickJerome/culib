@@ -103,6 +103,11 @@ class io_engine;
 io_engine* io_engine_create() noexcept;
 void io_engine_destroy(io_engine* engine) noexcept;
 
+// 为跨线程提交任务启用唤醒源。只由 vCPU 线程调用一次；成功后其他线程可调用
+// io_engine_notify() 打断 io_engine_wait()。普通 I/O 不启用，也不为它付唤醒源开销。
+bool io_engine_enable_notify(io_engine* engine) noexcept;
+bool io_engine_notify(io_engine* engine) noexcept;
+
 // 把一个句柄交给引擎，**在它第一次参与 I/O 之前**。
 //
 // 这一步是 IOCP 要的：那边句柄必须先关联到完成端口，而关联**是一次性的**（重复关联

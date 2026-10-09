@@ -19,6 +19,7 @@ namespace detail {
 class io_engine {
 public:
     int kq;
+    bool notify_enabled;
     std::vector<io_fd_slot> slots;
     std::size_t pending;    // 还在等的请求数
 };
@@ -78,6 +79,7 @@ io_engine* io_engine_create() noexcept {
 
     io_engine* const engine = new io_engine();
     engine->kq = kq;
+    engine->notify_enabled = false;
     engine->pending = 0;
     return engine;
 }
@@ -86,6 +88,25 @@ void io_engine_destroy(io_engine* engine) noexcept {
     if (!engine) return;
     if (engine->kq >= 0) ::close(engine->kq);
     delete engine;
+}
+
+bool io_engine_enable_notify(io_engine* engine) noexcept {
+    if (!engine) return false;
+    if (engine->notify_enabled) return true;
+    struct kevent change;
+    EV_SET(&change, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, 0);
+    struct timespec immediately = {0, 0};
+    if (::kevent(engine->kq, &change, 1, 0, 0, &immediately) < 0) return false;
+    engine->notify_enabled = true;
+    return true;
+}
+
+bool io_engine_notify(io_engine* engine) noexcept {
+    if (!engine || !engine->notify_enabled) return false;
+    struct kevent change;
+    EV_SET(&change, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, 0);
+    struct timespec immediately = {0, 0};
+    return ::kevent(engine->kq, &change, 1, 0, 0, &immediately) >= 0;
 }
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
@@ -171,6 +192,7 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
 
     std::size_t fired = 0;
     for (int i = 0; i < ready; ++i) {
+        if (events[i].filter == EVFILT_USER) continue;
         const int fd = static_cast<int>(events[i].ident);
         if (fd < 0 || static_cast<std::size_t>(fd) >= engine->slots.size()) continue;
         io_fd_slot& slot = engine->slots[static_cast<std::size_t>(fd)];
