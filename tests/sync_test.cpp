@@ -275,3 +275,50 @@ TEST(condition_variable, wait_for_times_out_and_comes_back_holding_the_lock) {
     EXPECT(notified, ==, false);
     EXPECT(lock_is_held_again, ==, true);
 }
+
+TEST(sync, nonpositive_timeouts_do_not_wait) {
+    mutex lock;
+    semaphore permits(1);
+    mutex condition_lock;
+    condition_variable condition;
+    bool lock_done = false;
+    bool permit_done = false;
+    bool condition_done = false;
+    bool lock_now = false, lock_negative = true, lock_zero = true;
+    bool permit_now = false, permit_negative = true, permit_zero = true;
+    bool condition_negative = true, condition_zero = true;
+
+    spawn([&] {
+        lock_now = lock.try_lock_for(ms(-1));
+        lock_negative = lock.try_lock_for(ms(-1));
+        lock_zero = lock.try_lock_for(ms(0));
+        lock_done = true;
+        if (lock_now) lock.unlock();
+    }).value();
+    spawn([&] { sleep_for(ms(5)); if (!lock_done) lock.unlock(); }).value();
+    spawn([&] {
+        permit_now = permits.try_acquire_for(ms(-1));
+        permit_negative = permits.try_acquire_for(ms(-1));
+        permit_zero = permits.try_acquire_for(ms(0));
+        permit_done = true;
+    }).value();
+    spawn([&] { sleep_for(ms(5)); if (!permit_done) permits.release(); }).value();
+    spawn([&] {
+        condition_lock.lock();
+        condition_negative = condition.wait_for(condition_lock, ms(-1));
+        condition_zero = condition.wait_for(condition_lock, ms(0));
+        condition_done = true;
+        condition_lock.unlock();
+    }).value();
+    spawn([&] { sleep_for(ms(5)); if (!condition_done) condition.notify_one(); }).value();
+
+    EXPECT(run(), ==, 6u);
+    EXPECT(lock_now, ==, true);
+    EXPECT(lock_negative, ==, false);
+    EXPECT(lock_zero, ==, false);
+    EXPECT(permit_now, ==, true);
+    EXPECT(permit_negative, ==, false);
+    EXPECT(permit_zero, ==, false);
+    EXPECT(condition_negative, ==, false);
+    EXPECT(condition_zero, ==, false);
+}

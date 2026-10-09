@@ -99,6 +99,7 @@ bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
         held_ = true;
         return true;
     }
+    if (timeout.count() <= 0) return false;
     park_token token;
     enqueue(head_, tail_, token);
     if (detail::scheduler_park(token, timeout)) return true;   // 交棒给我们了
@@ -138,6 +139,7 @@ bool semaphore::try_acquire_for(std::chrono::nanoseconds timeout) {
         --count_;
         return true;
     }
+    if (timeout.count() <= 0) return false;
     park_token token;
     enqueue(head_, tail_, token);
     if (detail::scheduler_park(token, timeout)) return true;
@@ -168,6 +170,7 @@ void condition_variable::wait(mutex& held) {
 }
 
 bool condition_variable::wait_for(mutex& held, std::chrono::nanoseconds timeout) {
+    if (timeout.count() <= 0) return false;
     park_token token;
     enqueue(head_, tail_, token);
     held.unlock();

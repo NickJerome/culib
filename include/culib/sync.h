@@ -25,7 +25,7 @@ public:
     // 拿不到就立刻回 false，**不挂起**。可以在协程外调。
     bool try_lock();
 
-    // 最多等这么久。拿到回 true，到点还没拿到回 false。只能在协程里调。
+    // 最多等这么久。零或负时长只尝试一次；只能在协程里调。
     bool try_lock_for(std::chrono::nanoseconds timeout);
 
     void unlock();
@@ -48,6 +48,7 @@ public:
 
     void acquire();                                        // 没有就挂起
     bool try_acquire();                                    // 没有就立刻回 false
+    // 零或负时长只尝试一次；只能在协程里调。
     bool try_acquire_for(std::chrono::nanoseconds timeout);
     void release(std::ptrdiff_t amount = 1);
 
@@ -76,7 +77,7 @@ public:
     void wait(mutex& held);
 
     // 同上，但最多等这么久。**返回 false 表示到点了**（不管哪种情况，返回时锁都
-    // 重新拿在手里）。
+    // 重新拿在手里）。零或负时长立即返回 false，锁仍由调用方持有。
     bool wait_for(mutex& held, std::chrono::nanoseconds timeout);
 
     void notify_one();

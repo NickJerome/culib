@@ -66,6 +66,8 @@ bool settled;   // 已经交还给调度器了，之后再 wake 无效
 | `condition_variable` | `wait` / `wait_for` / `notify_one` / `notify_all` |
 | `lock_guard<T>` | RAII |
 
+三个带 `_for` 的方法对零或负时长都不挂起：`try_lock_for` / `try_acquire_for` 先做一次立即尝试；`condition_variable::wait_for` 直接返回超时且保持锁。无限等待由 `lock` / `acquire` / `wait` 表达，不能把内部 `scheduler_park` 使用的负数哨兵泄漏成公开接口的意外行为。
+
 内部的（`src/runtime/scheduler_detail.h`）：`scheduler_park` / `scheduler_wake`，加上 `scheduler_io` 多了一个 `timeout` 参数。
 
 **`scheduler_io` 的 `timeout` 故意不给默认值。** 给了默认值就等于给「永远等下去」开一条默认路，而那正是 7.2 说的那个会把程序挂死的洞。每个调用点自己说等多久，写的时候就得想一下。
