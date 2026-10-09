@@ -41,7 +41,7 @@ bool resolve_base(string_view& text, int& base) {
             text.remove_prefix(2);
             return true;
         }
-        if (detect && digit_value(marker) < 8) {
+        if (detect) {
             base = 8;
             text.remove_prefix(1);
             return true;
@@ -104,8 +104,8 @@ result<long long> parse_signed(string_view text, int base) {
         return make_error(error_kind::out_of_range, quoted(text) + " 超出 64 位整数的范围");
     }
     if (negative) {
-        // 先取到 unsigned 域再取反，避免 -LLONG_MIN 的溢出
-        return static_cast<long long>(~magnitude + 1ull);
+        if (magnitude == limit) return (std::numeric_limits<long long>::min)();
+        return -static_cast<long long>(magnitude);
     }
     return static_cast<long long>(magnitude);
 }

@@ -91,6 +91,9 @@ TEST(lexical_cast, honours_the_base_overload) {
     EXPECT(lexical_cast<int>("0X1F", 0).value_or(-1), ==, 31);
     EXPECT(lexical_cast<int>("0b101", 0).value_or(-1), ==, 5);
     EXPECT(lexical_cast<int>("0755", 0).value_or(-1), ==, 493);
+    EXPECT(lexical_cast<int>("08", 0).is_err(), ==, true);
+    EXPECT(lexical_cast<int>("09", 0).is_err(), ==, true);
+    EXPECT(lexical_cast<int>("08", 10).value_or(-1), ==, 8);
     EXPECT(lexical_cast<int>("42", 0).value_or(-1), ==, 42);
     EXPECT(lexical_cast<int>("0", 0).value_or(-1), ==, 0);
 
