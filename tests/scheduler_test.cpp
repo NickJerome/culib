@@ -82,7 +82,7 @@ TEST(scheduler, reaps_vcpus_during_concurrent_thread_exit) {
             // MSVC 的线程局部析构晚于 FLS 回调。
             late_probe.observed = &late_observed;
 #endif
-            spawn([&] { completed.fetch_add(1); });
+            spawn([&] { completed.fetch_add(1); }).value();
             run();
             if (!wavvix::detail::scheduler_remote_prepare()) failed.fetch_add(1);
         }));
@@ -99,7 +99,7 @@ TEST(scheduler, scope_runs_submitted_coroutines_on_exit) {
     int finished = 0;
     {
         wavvix::scheduler_scope scope;
-        spawn([&] { ++finished; });
+        spawn([&] { ++finished; }).value();
         EXPECT(finished, ==, 0);
         EXPECT(scheduled(), ==, 1u);
     }
@@ -113,7 +113,7 @@ TEST(scheduler, nested_scopes_finish_at_the_outer_boundary) {
         wavvix::scheduler_scope outer;
         {
             wavvix::scheduler_scope inner;
-            spawn([&] { ++finished; });
+            spawn([&] { ++finished; }).value();
         }
         EXPECT(finished, ==, 0);
         EXPECT(scheduled(), ==, 1u);
@@ -138,7 +138,7 @@ TEST(scheduler, wakes_a_parked_coroutine_from_another_thread) {
         resumed = wavvix::detail::scheduler_park(
             token, std::chrono::nanoseconds(-1));
         worker.join();
-    });
+    }).value();
     EXPECT(run(), ==, 1u);
     EXPECT(notified, ==, true);
     EXPECT(resumed, ==, true);
@@ -148,7 +148,7 @@ TEST(scheduler, spawn_moves_arguments_and_accepts_explicit_references) {
     int value = 0;
     spawn([](std::unique_ptr<int> input, int& output) {
         output = *input;
-    }, std::unique_ptr<int>(new int(11)), std::ref(value));
+    }, std::unique_ptr<int>(new int(11)), std::ref(value)).value();
     EXPECT(value, ==, 0);
     EXPECT(run(), ==, 1u);
     EXPECT(value, ==, 11);
@@ -158,9 +158,23 @@ TEST(scheduler, spawn_with_stack_separates_stack_size_from_function_argument) {
     std::size_t value = 0;
     wavvix::spawn_with_stack(32 * 1024,
         [](std::size_t input, std::size_t* output) { *output = input; },
-        std::size_t(42), &value);
+        std::size_t(42), &value).value();
     EXPECT(run(), ==, 1u);
     EXPECT(value, ==, std::size_t(42));
+}
+
+TEST(scheduler, invalid_spawn_stack_returns_error_without_scheduling) {
+    bool ran = false;
+    const std::size_t before = scheduled();
+    wavvix::result<void> too_small = wavvix::spawn_with_stack(0, [&] { ran = true; });
+    EXPECT(too_small.is_err(), ==, true);
+    EXPECT(too_small.error().kind(), ==, wavvix::error_kind::out_of_range);
+    wavvix::result<void> too_large = wavvix::spawn_with_stack(
+        (std::numeric_limits<std::size_t>::max)(), [&] { ran = true; });
+    EXPECT(too_large.is_err(), ==, true);
+    EXPECT(too_large.error().kind(), ==, wavvix::error_kind::out_of_range);
+    EXPECT(scheduled(), ==, before);
+    EXPECT(ran, ==, false);
 }
 
 TEST(scheduler, coroutine_object_joins_like_a_thread) {
@@ -255,7 +269,7 @@ TEST(scheduler, spawn_stays_local_when_coroutines_use_workers) {
     wavvix::scheduler_scope runtime = std::move(opened).value();
     const std::thread::id main_thread = std::this_thread::get_id();
     std::thread::id spawned_thread;
-    spawn([&] { spawned_thread = std::this_thread::get_id(); });
+    spawn([&] { spawned_thread = std::this_thread::get_id(); }).value();
     EXPECT(run(), ==, 1u);
     EXPECT(spawned_thread == main_thread, ==, true);
 }
@@ -311,7 +325,7 @@ TEST(scheduler, coroutine_join_inside_parent_vcpu_wakes_after_remote_completion)
             wavvix::coroutine worker([&] { ++completed; });
             worker.join();
         }
-    });
+    }).value();
     EXPECT(run(), ==, 1u);
     EXPECT(completed, ==, 64);
 }
@@ -328,7 +342,7 @@ TEST(scheduler, detached_remote_tasks_and_worker_children_finish_on_scope_exit) 
         wavvix::coroutine detached([&] {
             wavvix::sleep_for(ms(10));
             detached_finished.store(true);
-            spawn([&] { child_finished.store(true); });
+            spawn([&] { child_finished.store(true); }).value();
         });
         detached.detach();
     }
@@ -384,7 +398,7 @@ TEST(scheduler, coroutine_object_joins_from_another_coroutine) {
         });
         worker.join();
         joined = finished;
-    });
+    }).value();
     EXPECT(run(), ==, 2u);
     EXPECT(joined, ==, true);
 }
@@ -452,7 +466,7 @@ TEST(scheduler, main_thread_yield_runs_another_coroutine) {
 
 TEST(scheduler, joining_one_coroutine_leaves_unrelated_work_scheduled) {
     int other = 0;
-    spawn([&] { sleep_for(ms(20)); ++other; });
+    spawn([&] { sleep_for(ms(20)); ++other; }).value();
     wavvix::coroutine worker([] {});
     worker.join();
     EXPECT(other, ==, 0);
@@ -463,7 +477,7 @@ TEST(scheduler, joining_one_coroutine_leaves_unrelated_work_scheduled) {
 
 TEST(scheduler, runs_a_single_coroutine_to_completion) {
     int ran = 0;
-    spawn([&] { ++ran; });
+    spawn([&] { ++ran; }).value();
     EXPECT(scheduled(), ==, 1u);
 
     EXPECT(run(), ==, 1u);
@@ -479,13 +493,13 @@ TEST(scheduler, interleaves_on_yield) {
             trace += "甲";
             yield();
         }
-    });
+    }).value();
     spawn([&] {
         for (int i = 0; i < 3; ++i) {
             trace += "乙";
             yield();
         }
-    });
+    }).value();
     EXPECT(run(), ==, 2u);
     EXPECT(trace, ==, "甲乙甲乙甲乙");
 }
@@ -495,9 +509,9 @@ TEST(scheduler, lets_a_coroutine_spawn_more) {
     int leaves = 0;
     spawn([&] {
         for (int i = 0; i < 4; ++i) {
-            spawn([&] { ++leaves; });
+            spawn([&] { ++leaves; }).value();
         }
-    });
+    }).value();
     const std::size_t finished = run();
     EXPECT(finished, ==, 5u);        // 1 根父 + 4 根子
     EXPECT(leaves, ==, 4);
@@ -511,7 +525,7 @@ TEST(scheduler, spawns_many_without_losing_any) {
             yield();
             ++done;
             yield();
-        });
+        }).value();
     }
     EXPECT(run(), ==, static_cast<std::size_t>(count));
     EXPECT(done, ==, count);
@@ -526,14 +540,14 @@ TEST(scheduler, sleeping_a_coroutine_does_not_block_the_others) {
     spawn([&] {
         sleep_for(ms(30));
         slept = true;
-    });
+    }).value();
     spawn([&] {
         // 等到对面睡醒为止，一直让出
         while (!slept) {
             ++spins;
             yield();
         }
-    });
+    }).value();
 
     wavvix::stopwatch watch;
     EXPECT(run(), ==, 2u);
@@ -547,9 +561,9 @@ TEST(scheduler, sleeping_a_coroutine_does_not_block_the_others) {
 
 TEST(scheduler, wakes_sleepers_in_time_order) {
     std::string order;
-    spawn([&] { sleep_for(ms(30)); order += "C"; });
-    spawn([&] { sleep_for(ms(10)); order += "A"; });
-    spawn([&] { sleep_for(ms(20)); order += "B"; });
+    spawn([&] { sleep_for(ms(30)); order += "C"; }).value();
+    spawn([&] { sleep_for(ms(10)); order += "A"; }).value();
+    spawn([&] { sleep_for(ms(20)); order += "B"; }).value();
     EXPECT(run(), ==, 3u);
     EXPECT(order, ==, "ABC");
 }
@@ -563,15 +577,15 @@ TEST(scheduler, wakes_sleepers_in_time_order_when_they_expire_in_one_round) {
     // 这一条不靠平台的定时器粒度，而是**让三个 deadline 必定落在同一轮**：另一根协程
     // 不让出地占住 vCPU 直到所有 deadline 都过去。所以它在 Linux 上也能复现那个 bug。
     std::string order;
-    spawn([&] { sleep_for(ms(30)); order += "C"; });
-    spawn([&] { sleep_for(ms(10)); order += "A"; });
-    spawn([&] { sleep_for(ms(20)); order += "B"; });
+    spawn([&] { sleep_for(ms(30)); order += "C"; }).value();
+    spawn([&] { sleep_for(ms(10)); order += "A"; }).value();
+    spawn([&] { sleep_for(ms(20)); order += "B"; }).value();
     spawn([&] {
         const wavvix::stopwatch hog;
         while (hog.elapsed() < ms(45)) {
             // 故意不 yield：这一根跑完之前调度器不会去看定时器
         }
-    });
+    }).value();
 
     EXPECT(run(), ==, 4u);
     EXPECT(order, ==, "ABC");
@@ -586,8 +600,8 @@ TEST(scheduler, sleeps_the_thread_when_called_outside_a_coroutine) {
 
 TEST(scheduler, counts_what_is_still_scheduled) {
     EXPECT(scheduled(), ==, 0u);
-    spawn([] {});
-    spawn([] {});
+    spawn([] {}).value();
+    spawn([] {}).value();
     EXPECT(scheduled(), ==, 2u);
     run();
     EXPECT(scheduled(), ==, 0u);
@@ -609,7 +623,7 @@ TEST(scheduler, keeps_each_coroutines_own_stack) {
             // 让出五次之后，自己的栈上那些东西还在
             EXPECT(filler[4], ==, static_cast<char>(mine + 4));
             results[static_cast<std::size_t>(mine)] = accumulated;
-        });
+        }).value();
     }
     EXPECT(run(), ==, 3u);
     EXPECT(results[0], ==, 0 + 1 + 2 + 3 + 4);
@@ -618,7 +632,7 @@ TEST(scheduler, keeps_each_coroutines_own_stack) {
 }
 
 TEST(scheduler, run_returns_zero_after_everything_finished) {
-    spawn([] {});
+    spawn([] {}).value();
     EXPECT(run(), ==, 1u);
     EXPECT(run(), ==, 0u);        // 再跑一次没活了
 }

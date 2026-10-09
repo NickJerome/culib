@@ -48,7 +48,7 @@ TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
             server.send_to("pong", 4, received.value().from, ms(1000));
         EXPECT(sent.is_ok(), ==, true);
         if (sent.is_ok()) EXPECT(sent.value(), ==, std::size_t(4));
-    });
+    }).value();
     wavvix::spawn([&] {
         const wavvix::result<std::size_t> sent =
             client.send_to("ping", 4, server_local.value(), ms(1000));
@@ -60,7 +60,7 @@ TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
         if (received.is_err()) return;
         EXPECT(std::string(data, received.value().size), ==, std::string("pong"));
         EXPECT(received.value().from.port(), ==, server_local.value().port());
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
@@ -83,7 +83,7 @@ TEST(net_udp, zero_length_datagram_is_not_eof) {
         const wavvix::result<udp_datagram> nonempty = received_socket.recv_from(0, 0, ms(1000));
         EXPECT(nonempty.is_err(), ==, true);
         if (nonempty.is_err()) EXPECT(nonempty.error().kind(), ==, error_kind::out_of_range);
-    });
+    }).value();
     wavvix::spawn([&] {
         const wavvix::result<std::size_t> sent =
             sent_socket.send_to(0, 0, target.value(), ms(1000));
@@ -92,7 +92,7 @@ TEST(net_udp, zero_length_datagram_is_not_eof) {
         const wavvix::result<std::size_t> next =
             sent_socket.send_to("x", 1, target.value(), ms(1000));
         EXPECT(next.is_ok(), ==, true);
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
@@ -118,13 +118,13 @@ TEST(net_udp, reports_truncation_and_receives_next_datagram) {
         const wavvix::result<udp_datagram> received = receiver.recv_from(next, sizeof next, ms(1000));
         EXPECT(received.is_ok(), ==, true);
         if (received.is_ok()) EXPECT(std::string(next, received.value().size), ==, std::string("ok"));
-    });
+    }).value();
     wavvix::spawn([&] {
         const wavvix::result<std::size_t> first = sender.send_to("large", 5, target.value(), ms(1000));
         EXPECT(first.is_ok(), ==, true);
         const wavvix::result<std::size_t> second = sender.send_to("ok", 2, target.value(), ms(1000));
         EXPECT(second.is_ok(), ==, true);
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
@@ -148,12 +148,12 @@ TEST(net_udp, timeout_does_not_consume_later_datagram) {
         const wavvix::result<udp_datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
         EXPECT(received.is_ok(), ==, true);
         if (received.is_ok()) EXPECT(std::string(data, received.value().size), ==, std::string("yes"));
-    });
+    }).value();
     wavvix::spawn([&] {
         wavvix::sleep_for(ms(30));
         const wavvix::result<std::size_t> sent = sender.send_to("yes", 3, target.value(), ms(1000));
         EXPECT(sent.is_ok(), ==, true);
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
@@ -175,11 +175,11 @@ TEST(net_udp, ipv6_loopback_when_available) {
             EXPECT(received.value().from.family(), ==, wavvix::net::address_family::ipv6);
             EXPECT(std::string(data, received.value().size), ==, std::string("v6"));
         }
-    });
+    }).value();
     wavvix::spawn([&] {
         const wavvix::result<std::size_t> sent = sender.send_to("v6", 2, target.value(), ms(1000));
         EXPECT(sent.is_ok(), ==, true);
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
@@ -235,7 +235,7 @@ TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
         EXPECT(received.is_ok(), ==, true);
         if (received.is_ok())
             EXPECT(std::string(bytes, received.value().size), ==, std::string("ok"));
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(1));
 }
 #endif

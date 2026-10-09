@@ -276,7 +276,9 @@ void unregister_runtime_thread_exit(void* owner) noexcept {
 }
 
 coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_size,
-                                    std::size_t body_align, void** body_slot) noexcept {
+                                    std::size_t body_align, void** body_slot,
+                                    fiber_failure* failure) noexcept {
+    if (failure) *failure = fiber_failure::invalid_size;
     const std::size_t max = (std::numeric_limits<std::size_t>::max)();
     if (stack_size < 16 * 1024 || body_size > max - sizeof(coroutine_control)) return 0;
     std::size_t extra = sizeof(coroutine_control) + body_size;
@@ -285,7 +287,11 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
     if (extra > max - 64 || stack_size > max - (extra + 64)) return 0;
     extra += 64;
     const stack_memory memory = pooled_allocate_stack(stack_size + extra);
-    if (!memory.base) return 0;
+    if (!memory.base) {
+        if (failure) *failure = fiber_failure::resource_exhausted;
+        return 0;
+    }
+    if (failure) *failure = fiber_failure::none;
 
     char* cursor = memory.base + memory.total;
     cursor = align_down(cursor - sizeof(coroutine_control), sizeof(void*) * 2);

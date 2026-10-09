@@ -14,10 +14,12 @@ namespace wavvix {
 namespace detail {
 
 struct coroutine_control;
+enum class fiber_failure { none, invalid_size, resource_exhausted };
 
 // 分配栈和可调用对象槽；失败返回 0。
 coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_size,
-                                    std::size_t body_align, void** body_slot) noexcept;
+                                    std::size_t body_align, void** body_slot,
+                                    fiber_failure* failure) noexcept;
 void coroutine_arm(coroutine_control* control, void (*invoke)(void*),
                    void (*destroy)(void*)) noexcept;
 void coroutine_destroy(coroutine_control* control) noexcept;
@@ -39,11 +41,13 @@ class fiber {
 public:
     // 可调用对象就地存储在协程栈上；resume() 才运行。
     template <typename F>
-    explicit fiber(F&& body, std::size_t stack_size = default_stack_size)
+    explicit fiber(F&& body, std::size_t stack_size = default_stack_size,
+                   fiber_failure* failure = 0)
         : control_(0) {
         typedef typename std::decay<F>::type stored_type;
         void* slot = 0;
-        control_ = coroutine_create(stack_size, sizeof(stored_type), alignof(stored_type), &slot);
+        control_ = coroutine_create(stack_size, sizeof(stored_type), alignof(stored_type),
+                                    &slot, failure);
         if (!control_) return;
         std::unique_ptr<coroutine_control, void (*)(coroutine_control*)> guard(
             control_, &coroutine_destroy);

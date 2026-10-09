@@ -34,7 +34,7 @@ int main() {
                 if (part.is_err() || part.value() == 0) { worked = false; return; }
                 sent += part.value();
             }
-        });
+        }).value();
         wavvix::spawn([&] {
             wavvix::result<wavvix::net::tcp_stream> connected =
                 wavvix::net::tcp_stream::connect(local.value(), seconds(2));
@@ -56,7 +56,7 @@ int main() {
                 received += part.value();
             }
             std::printf("echo: %s\n", answer);
-        });
+        }).value();
     }
     return worked ? 0 : 1;
 }

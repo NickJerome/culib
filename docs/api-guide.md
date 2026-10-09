@@ -486,11 +486,11 @@ value() / error() 取错分支会打印信息并终止程序，release 同样检
     wavvix::spawn([] {
         wavvix::sleep_for(std::chrono::milliseconds(10));   // 睡的是协程，不是线程
         do_work();
-    });
-    wavvix::spawn([] { other_work(); });
+    }).value();
+    wavvix::spawn([] { other_work(); }).value();
     wavvix::run();                                          // 跑到全部结束
 
-`spawn()` 用于不需要句柄的任务，也可写 `spawn(function, args...)`；参数按值保存，传引用要用 `std::ref`。需要指定栈大小时用 `spawn_with_stack(bytes, function, args...)`，整数函数参数不会被误认为栈大小。需要等待指定任务时，用上面的 `coroutine` 和 `join()`。
+`spawn()` 用于不需要句柄的任务，也可写 `spawn(function, args...)`；参数按值保存，传引用要用 `std::ref`。它和 `spawn_with_stack()` 都返回 `result<void>`；失败时不提交任务。非法栈大小是 `out_of_range`，协程对象或栈分配失败是 `resource_exhausted`。示例用 `.value()` 让提交失败立即报错；服务程序可检查 `is_err()` 并处理。指定栈大小时用 `spawn_with_stack(bytes, function, args...)`，整数函数参数不会被误认为栈大小。需要等待指定任务时，用上面的 `coroutine` 和 `join()`。
 
 确实只能调用阻塞接口时，可用 [`blocking_pool`](blocking-pool.md) 把该调用交给系统工作线程；等待期间同一 vCPU 的其他协程继续运行。
 
@@ -592,7 +592,7 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
     wavvix::spawn([&] {
         wavvix::lock_guard<wavvix::mutex> held(lock);
         update(shared);                    // 这中间可以放心让出
-    });
+    }).value();
 
 名字和 std:: 对齐（`lock` / `try_lock` / `try_lock_for` / `unlock`、
 `acquire` / `release`、`wait` / `notify_one` / `notify_all`），所以看名字就会用。

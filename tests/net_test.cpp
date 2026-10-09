@@ -111,7 +111,7 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
         const wavvix::result<std::size_t> eof = accepted.value().read(input, 1, ms(1000));
         EXPECT(eof.is_ok(), ==, true);
         if (eof.is_ok()) EXPECT(eof.value(), ==, std::size_t(0));
-    });
+    }).value();
     wavvix::spawn([&] {
         wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
         EXPECT(connected.is_ok(), ==, true);
@@ -135,7 +135,7 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
             received += part.value();
         }
         EXPECT(std::string(answer, received), ==, std::string("pong"));
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
@@ -157,12 +157,12 @@ TEST(net, tcp_accept_recovers_after_timeout) {
         if (timed.is_err()) EXPECT(timed.error().kind(), ==, error_kind::timeout);
         const wavvix::result<tcp_stream> accepted = listener.accept(ms(1000));
         EXPECT(accepted.is_ok(), ==, true);
-    });
+    }).value();
     wavvix::spawn([&] {
         wavvix::sleep_for(ms(30));
         const wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
         EXPECT(connected.is_ok(), ==, true);
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
@@ -180,7 +180,7 @@ TEST(net, tcp_ipv6_loopback_when_available) {
     wavvix::spawn([&] {
         const wavvix::result<tcp_stream> accepted = listener.accept(ms(1000));
         EXPECT(accepted.is_ok(), ==, true);
-    });
+    }).value();
     wavvix::spawn([&] {
         wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
         EXPECT(connected.is_ok(), ==, true);
@@ -191,6 +191,6 @@ TEST(net, tcp_ipv6_loopback_when_available) {
         const wavvix::result<std::size_t> bad = connected.value().read(0, 1, ms(1000));
         EXPECT(bad.is_err(), ==, true);
         if (bad.is_err()) EXPECT(bad.error().kind(), ==, error_kind::invalid_argument);
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }

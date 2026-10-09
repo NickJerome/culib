@@ -18,7 +18,7 @@ wavvix::blocking_pool pool = std::move(created).value();
         if (done.is_err()) {
             // 处理提交或唤醒源初始化失败。
         }
-    });
+    }).value();
 }
 ```
 

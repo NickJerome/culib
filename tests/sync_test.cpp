@@ -38,7 +38,7 @@ TEST(mutex, serializes_critical_sections_that_yield) {
             trace += name;
             sleep_for(ms(5));      // 临界区中间让出
             trace += name;
-        });
+        }).value();
     }
 
     EXPECT(run(), ==, 2u);
@@ -55,7 +55,7 @@ TEST(mutex, hands_the_lock_over_in_arrival_order) {
         lock.lock();
         sleep_for(ms(20));         // 占着，让后面三根都排上队
         lock.unlock();
-    });
+    }).value();
     const char* names = "ABC";
     for (int i = 0; i < 3; ++i) {
         const char name = names[i];
@@ -63,7 +63,7 @@ TEST(mutex, hands_the_lock_over_in_arrival_order) {
             lock.lock();
             order += name;
             lock.unlock();
-        });
+        }).value();
     }
 
     EXPECT(run(), ==, 4u);
@@ -79,7 +79,7 @@ TEST(mutex, try_lock_never_suspends) {
         first = lock.try_lock();       // 空着，拿得到
         second = lock.try_lock();      // 自己已经持有，拿不到，但**不挂起**
         lock.unlock();
-    });
+    }).value();
 
     EXPECT(run(), ==, 1u);
     EXPECT(first, ==, true);
@@ -94,8 +94,8 @@ TEST(mutex, try_lock_for_gives_up_when_the_time_is_up) {
         lock.lock();
         sleep_for(ms(40));
         lock.unlock();
-    });
-    spawn([&] { got = lock.try_lock_for(ms(10)); });
+    }).value();
+    spawn([&] { got = lock.try_lock_for(ms(10)); }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(got, ==, false);
@@ -112,15 +112,15 @@ TEST(mutex, does_not_lose_the_lock_when_a_waiter_times_out) {
         lock.lock();
         sleep_for(ms(20));
         lock.unlock();
-    });
+    }).value();
     spawn([&] {
         if (lock.try_lock_for(ms(20))) lock.unlock();
-    });
+    }).value();
     spawn([&] {
         lock.lock();
         second_got_it = true;
         lock.unlock();
-    });
+    }).value();
 
     EXPECT(run(), ==, 3u);
     EXPECT(second_got_it, ==, true);
@@ -140,7 +140,7 @@ TEST(semaphore, caps_how_many_run_at_once) {
             sleep_for(ms(5));      // 占着名额让出
             --inside;
             permits.release();
-        });
+        }).value();
     }
 
     EXPECT(run(), ==, 6u);
@@ -152,7 +152,7 @@ TEST(semaphore, try_acquire_for_gives_up_when_the_time_is_up) {
     semaphore permits(0);
     bool got = true;
 
-    spawn([&] { got = permits.try_acquire_for(ms(10)); });
+    spawn([&] { got = permits.try_acquire_for(ms(10)); }).value();
 
     EXPECT(run(), ==, 1u);
     EXPECT(got, ==, false);
@@ -178,7 +178,7 @@ TEST(condition_variable, wakes_a_waiter_once_the_condition_holds) {
         lock_guard<mutex> held(lock);
         while (queue.empty()) ready.wait(lock);    // 照例用 while，不是 if
         taken = queue.back();
-    });
+    }).value();
     spawn([&] {
         sleep_for(ms(10));
         {
@@ -186,7 +186,7 @@ TEST(condition_variable, wakes_a_waiter_once_the_condition_holds) {
             queue.push_back(42);
         }
         ready.notify_one();
-    });
+    }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(taken, ==, 42);
@@ -205,7 +205,7 @@ TEST(condition_variable, notify_all_wakes_everyone_in_arrival_order) {
             lock_guard<mutex> held(lock);
             while (!go) ready.wait(lock);
             order += name;
-        });
+        }).value();
     }
     spawn([&] {
         sleep_for(ms(10));
@@ -214,7 +214,7 @@ TEST(condition_variable, notify_all_wakes_everyone_in_arrival_order) {
             go = true;
         }
         ready.notify_all();
-    });
+    }).value();
 
     EXPECT(run(), ==, 4u);
     EXPECT(order, ==, "ABC");
@@ -232,7 +232,7 @@ TEST(condition_variable, wait_for_times_out_and_comes_back_holding_the_lock) {
         notified = never.wait_for(lock, ms(20));
         lock_is_held_again = !lock.try_lock();    // 已经持有，所以拿不到
         lock.unlock();
-    });
+    }).value();
 
     EXPECT(run(), ==, 1u);
     EXPECT(notified, ==, false);

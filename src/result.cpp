@@ -13,6 +13,7 @@ const char* error_kind_name(error_kind kind) noexcept {
     case error_kind::unknown: return "unknown";
     case error_kind::invalid_argument: return "invalid_argument";
     case error_kind::out_of_range: return "out_of_range";
+    case error_kind::resource_exhausted: return "resource_exhausted";
     case error_kind::not_found: return "not_found";
     case error_kind::already_exists: return "already_exists";
     case error_kind::permission_denied: return "permission_denied";

@@ -119,11 +119,11 @@ TEST(fs_poller, yields_while_waiting_in_coroutine) {
         std::vector<fs::change_event> events;
         wavvix::result<std::size_t> waited = poller.wait(ms(200), events);
         found = waited.is_ok() && contains(events, dir.root(), "item", fs::change::created);
-    });
+    }).value();
     wavvix::spawn([&] {
         wavvix::sleep_for(ms(5));
         (void)fs::write_file(dir.at("item"), "x");
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
     EXPECT(found, ==, true);
 }

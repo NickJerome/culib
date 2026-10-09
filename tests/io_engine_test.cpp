@@ -298,8 +298,8 @@ TEST(io_engine, reads_what_the_peer_wrote) {
     std::memset(got, 0, sizeof got);
     std::ptrdiff_t received = -1;
 
-    spawn([&] { received = read_now(pair.right, got, sizeof got); });
-    spawn([&] { write_now(pair.left, "hello", 5); });
+    spawn([&] { received = read_now(pair.right, got, sizeof got); }).value();
+    spawn([&] { write_now(pair.left, "hello", 5); }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(received, ==, 5);
@@ -320,11 +320,11 @@ TEST(io_engine, moves_bytes_in_both_directions_over_one_pair) {
     spawn([&] {
         read_now(pair.right, there, sizeof there);
         write_now(pair.right, "pong", 4);
-    });
+    }).value();
     spawn([&] {
         write_now(pair.left, "ping", 4);
         read_now(pair.left, back, sizeof back);
-    });
+    }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(std::string(there, 4), ==, "ping");
@@ -338,8 +338,8 @@ TEST(io_engine, socket_transfer_uses_the_same_completion_contract) {
     char got[8] = {};
     std::ptrdiff_t received = -1;
     std::ptrdiff_t sent = -1;
-    spawn([&] { received = socket_read_now(pair.right, got, sizeof got); });
-    spawn([&] { sent = socket_write_now(pair.left, "hello", 5); });
+    spawn([&] { received = socket_read_now(pair.right, got, sizeof got); }).value();
+    spawn([&] { sent = socket_write_now(pair.left, "hello", 5); }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(sent, ==, 5);
@@ -355,7 +355,7 @@ TEST(io_engine, socket_write_after_peer_close_does_not_raise_sigpipe) {
 
     std::ptrdiff_t sent = 0;
     int failure = 0;
-    spawn([&] { sent = socket_write_now(pair.left, "x", 1, &failure); });
+    spawn([&] { sent = socket_write_now(pair.left, "x", 1, &failure); }).value();
     EXPECT(run(), ==, 1u);
     EXPECT(sent, ==, -1);
     EXPECT(failure, ==, EPIPE);
@@ -378,8 +378,8 @@ TEST(io_engine, waiting_socket_write_does_not_raise_sigpipe_after_peer_close) {
 
     std::ptrdiff_t sent = 0;
     int failure = 0;
-    spawn([&] { sent = socket_write_now(pair.left, "x", 1, &failure, ms(500)); });
-    spawn([&] { sleep_for(ms(10)); close_handle(pair.right); });
+    spawn([&] { sent = socket_write_now(pair.left, "x", 1, &failure, ms(500)); }).value();
+    spawn([&] { sleep_for(ms(10)); close_handle(pair.right); }).value();
     EXPECT(run(), ==, 2u);
     EXPECT(sent, ==, -1);
     EXPECT(failure == EPIPE || failure == ECONNRESET, ==, true);
@@ -398,12 +398,12 @@ TEST(io_engine, keeps_run_from_returning_while_a_coroutine_is_blocked_on_io) {
     std::ptrdiff_t received = -1;
     bool wrote_late = false;
 
-    spawn([&] { received = read_now(pair.right, got, sizeof got); });
+    spawn([&] { received = read_now(pair.right, got, sizeof got); }).value();
     spawn([&] {
         sleep_for(ms(20));          // 让读的那根先真的挂到引擎上去
         wrote_late = true;
         write_now(pair.left, "late", 4);
-    });
+    }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(wrote_late, ==, true);
@@ -418,11 +418,11 @@ TEST(io_engine, reports_peer_close_as_zero_not_as_a_failure) {
     char got[8];
     std::ptrdiff_t received = -1;
 
-    spawn([&] { received = read_now(pair.right, got, sizeof got); });
+    spawn([&] { received = read_now(pair.right, got, sizeof got); }).value();
     spawn([&] {
         sleep_for(ms(10));
         close_handle(pair.left);    // 对端关了
-    });
+    }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(received, ==, 0);        // 0 是「对端关了」，不是错误
@@ -438,14 +438,14 @@ TEST(io_engine, counts_a_coroutine_that_is_blocked_on_io) {
     spawn([&] {
         char got[4];
         read_now(pair.right, got, sizeof got);
-    });
+    }).value();
     spawn([&] {
         sleep_for(ms(10));
         // 此刻读的那根在 blocked 里。**自己不算**——正在跑的那根已经被 swap 到
         // run() 的局部副本里，不在任何队列上。
         seen_while_blocked = scheduled();
         write_now(pair.left, "x", 1);
-    });
+    }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(seen_while_blocked, ==, 1u);
@@ -469,12 +469,12 @@ TEST(io_engine, does_not_suspend_when_the_operation_is_already_ready) {
         trace += "a";
         write_now(pair.left, "x", 1);    // 缓冲是空的，这次写必定就绪
         trace += "a";
-    });
+    }).value();
     spawn([&] {
         trace += "b";
         wavvix::yield();
         trace += "b";
-    });
+    }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(trace, ==, "aabb");           // 那次写让出了的话会是 "abba"
@@ -493,7 +493,7 @@ TEST(io_engine, times_out_a_read_that_never_arrives) {
     spawn([&] {
         char got[8];
         outcome = read_within(pair.right, got, sizeof got, ms(20), &failure);
-    });
+    }).value();
 
     EXPECT(run(), ==, 1u);
     EXPECT(outcome, <, 0);
@@ -510,11 +510,11 @@ TEST(io_engine, a_timed_read_that_arrives_in_time_still_succeeds) {
     std::ptrdiff_t received = -1;
     int failure = -1;
 
-    spawn([&] { received = read_within(pair.right, got, sizeof got, ms(2000), &failure); });
+    spawn([&] { received = read_within(pair.right, got, sizeof got, ms(2000), &failure); }).value();
     spawn([&] {
         sleep_for(ms(10));
         write_now(pair.left, "ok", 2);
-    });
+    }).value();
 
     EXPECT(run(), ==, 2u);
     EXPECT(received, ==, 2);
@@ -531,7 +531,7 @@ TEST(io_engine, fails_a_bad_handle_without_suspending_the_coroutine) {
         char got[4];
         outcome = read_now(no_handle(), got, sizeof got);
         continued = true;
-    });
+    }).value();
 
     EXPECT(run(), ==, 1u);
     EXPECT(continued, ==, true);
@@ -548,17 +548,17 @@ TEST(io_engine, serves_two_readers_on_one_handle_in_order) {
     spawn([&] {
         char one = 0;
         if (read_now(pair.right, &one, 1) == 1) order += one;
-    });
+    }).value();
     spawn([&] {
         char one = 0;
         if (read_now(pair.right, &one, 1) == 1) order += one;
-    });
+    }).value();
     spawn([&] {
         sleep_for(ms(10));
         write_now(pair.left, "A", 1);
         sleep_for(ms(10));
         write_now(pair.left, "B", 1);
-    });
+    }).value();
 
     EXPECT(run(), ==, 3u);
     EXPECT(order, ==, "AB");
@@ -578,11 +578,11 @@ TEST(io_engine, carries_many_concurrent_readers) {
         spawn([pair, &received] {
             char got[4];
             if (read_now(pair->right, got, sizeof got) == 1) ++received;
-        });
+        }).value();
     }
     for (int i = 0; i < count; ++i) {
         linked_pair* const pair = &pairs[i];
-        spawn([pair] { write_now(pair->left, "x", 1); });
+        spawn([pair] { write_now(pair->left, "x", 1); }).value();
     }
 
     EXPECT(run(), ==, static_cast<std::size_t>(count) * 2);
@@ -716,11 +716,11 @@ TEST(io_engine, builds_no_engine_for_a_program_that_never_does_io) {
                 total += i;
                 wavvix::yield();
             }
-        });
+        }).value();
         spawn([&] {
             sleep_for(ms(5));
             total += 10;
-        });
+        }).value();
         run();
         after = open_handle_count();
     });

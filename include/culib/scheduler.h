@@ -8,14 +8,15 @@
 
 #include <chrono>
 #include <cstddef>
+#include <new>
 #include <utility>
 
 namespace wavvix {
 
 namespace detail {
 
-// 接管这根协程的所有权，排进当前 vCPU 的运行队列。
-void scheduler_spawn(fiber* taken);
+// 接管这根协程的所有权；成功后排进当前 vCPU 的运行队列。
+fiber_failure scheduler_spawn(fiber* taken, fiber_failure failure);
 void scheduler_sleep_for(std::chrono::nanoseconds duration);
 void* scheduler_scope_enter();
 result<void*> scheduler_scope_enter_with_workers(unsigned workers);
@@ -34,6 +35,16 @@ std::size_t scheduler_drive(task_state* task, bool timed,
                             std::chrono::steady_clock::time_point deadline, bool once);
 void scheduler_run_for(std::chrono::nanoseconds duration);
 void scheduler_yield_main();
+
+template <typename F>
+result<void> spawn_fiber(F&& body, std::size_t stack_size) {
+    fiber_failure failure = fiber_failure::resource_exhausted;
+    fiber* const worker = new (std::nothrow) fiber(std::forward<F>(body), stack_size, &failure);
+    failure = scheduler_spawn(worker, failure);
+    if (failure == fiber_failure::none) return result<void>();
+    return make_error(failure == fiber_failure::invalid_size
+        ? error_kind::out_of_range : error_kind::resource_exhausted);
+}
 
 }  // namespace detail
 
@@ -55,31 +66,32 @@ private:
     void* owner_;
 };
 
-// 起一根协程，排到当前 vCPU 的队尾。参数按值保存；传引用请用 std::ref。
+// 起一根协程，排到当前 vCPU 的队尾；失败时任务不会提交。
+// 参数按值保存；传引用请用 std::ref。
 template <typename F>
-void spawn(F&& body) {
-    detail::scheduler_spawn(new detail::fiber(std::forward<F>(body)));
+result<void> spawn(F&& body) {
+    return detail::spawn_fiber(std::forward<F>(body), default_stack_size);
 }
 
 template <typename F, typename Arg, typename... Args>
-void spawn(F&& body, Arg&& arg, Args&&... args) {
-    detail::scheduler_spawn(new detail::fiber(detail::bind_coroutine_call(
+result<void> spawn(F&& body, Arg&& arg, Args&&... args) {
+    return detail::spawn_fiber(detail::bind_coroutine_call(
         std::forward<F>(body), std::forward<Arg>(arg),
-        std::forward<Args>(args)...)));
+        std::forward<Args>(args)...), default_stack_size);
 }
 
 // 显式指定栈大小，避免把整数函数参数误认成栈大小。
 template <typename F>
-void spawn_with_stack(std::size_t stack_size, F&& body) {
-    detail::scheduler_spawn(new detail::fiber(std::forward<F>(body), stack_size));
+result<void> spawn_with_stack(std::size_t stack_size, F&& body) {
+    return detail::spawn_fiber(std::forward<F>(body), stack_size);
 }
 
 template <typename F, typename Arg, typename... Args>
-void spawn_with_stack(std::size_t stack_size, F&& body, Arg&& arg,
-                      Args&&... args) {
-    detail::scheduler_spawn(new detail::fiber(detail::bind_coroutine_call(
+result<void> spawn_with_stack(std::size_t stack_size, F&& body, Arg&& arg,
+                              Args&&... args) {
+    return detail::spawn_fiber(detail::bind_coroutine_call(
         std::forward<F>(body), std::forward<Arg>(arg),
-        std::forward<Args>(args)...), stack_size));
+        std::forward<Args>(args)...), stack_size);
 }
 
 // 协程内让出；已初始化 vCPU 的主线程调用时推进一轮就绪任务。

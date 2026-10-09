@@ -13,7 +13,7 @@
 namespace wavvix {
 
 enum class error_kind {
-    unknown, invalid_argument, out_of_range, not_found, already_exists,
+    unknown, invalid_argument, out_of_range, resource_exhausted, not_found, already_exists,
     permission_denied, timeout, unsupported, io
 };
 

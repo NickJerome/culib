@@ -384,15 +384,11 @@ result<void> start_pool(vcpu& self, unsigned workers) {
 
 }  // namespace
 
-void scheduler_spawn(fiber* taken) {
-    if (!taken) return;
+fiber_failure scheduler_spawn(fiber* taken, fiber_failure failure) {
+    if (!taken) return fiber_failure::resource_exhausted;
     std::unique_ptr<fiber> owned(taken);
     if (!taken->ok()) {
-        // 栈没分到。不 abort（服务器要降级不要殉职），但 debug 下吭一声。
-#ifndef NDEBUG
-        std::fputs("wavvix::spawn: 协程栈分配失败，这根协程不会跑\n", stderr);
-#endif
-        return;
+        return failure == fiber_failure::none ? fiber_failure::resource_exhausted : failure;
     }
 
     vcpu& self = here();
@@ -404,6 +400,7 @@ void scheduler_spawn(fiber* taken) {
         self.ready.push_back(taken);
     }
     owned.release();
+    return fiber_failure::none;
 }
 
 void* scheduler_scope_enter() {
@@ -468,7 +465,8 @@ void scheduler_task_schedule(task_state* task, fiber* body) {
     vcpu& self = *task->owner;
     task->body = body;
     if (!self.pool) {
-        scheduler_spawn(owned.release());
+        if (scheduler_spawn(owned.release(), fiber_failure::none) != fiber_failure::none)
+            die("wavvix::coroutine: 已验证的协程无法入队");
         return;
     }
 

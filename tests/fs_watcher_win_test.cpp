@@ -70,11 +70,11 @@ TEST(fs_watcher_win, reports_file_creation_without_blocking_vcpu) {
             if (waited.is_err()) break;
             noticed = contains(events, dir.root(), "item", fs::change::created);
         }
-    });
+    }).value();
     wavvix::spawn([&] {
         wavvix::sleep_for(ms(100));
         (void)fs::write_file(dir.at("item"), "hello");
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
     EXPECT(noticed, ==, true);
 }

@@ -29,13 +29,13 @@ int main() {
                 trace += "甲";
                 yield();
             }
-        });
+        }).value();
         spawn([&] {
             for (int i = 0; i < 3; ++i) {
                 trace += "乙";
                 yield();
             }
-        });
+        }).value();
         const std::size_t finished = run();
         std::printf("   执行顺序 %s   跑完 %zu 根（轮转，不是一根跑到底）\n", trace.c_str(),
                     finished);
@@ -48,13 +48,13 @@ int main() {
         spawn([&] {
             sleep_for(ms(30));
             slept = true;
-        });
+        }).value();
         spawn([&] {
             while (!slept) {
                 ++spins;
                 yield();
             }
-        });
+        }).value();
         wavvix::stopwatch watch;
         run();
         std::printf("   一根睡了 30 ms，另一根在这段时间里转了 %ld 轮\n", spins);
@@ -65,9 +65,9 @@ int main() {
     std::printf("\n3. 定时器按时间排序唤醒\n");
     {
         std::string order;
-        spawn([&] { sleep_for(ms(30)); order += "C"; });
-        spawn([&] { sleep_for(ms(10)); order += "A"; });
-        spawn([&] { sleep_for(ms(20)); order += "B"; });
+        spawn([&] { sleep_for(ms(30)); order += "C"; }).value();
+        spawn([&] { sleep_for(ms(10)); order += "A"; }).value();
+        spawn([&] { sleep_for(ms(20)); order += "B"; }).value();
         run();
         std::printf("   spawn 的顺序是 C A B，醒来的顺序是 %s\n", order.c_str());
     }
@@ -76,8 +76,8 @@ int main() {
     {
         int leaves = 0;
         spawn([&] {
-            for (int i = 0; i < 4; ++i) spawn([&] { ++leaves; });
-        });
+            for (int i = 0; i < 4; ++i) spawn([&] { ++leaves; }).value();
+        }).value();
         const std::size_t finished = run();
         std::printf("   一根父协程起了 4 根子协程，总共跑完 %zu 根\n", finished);
     }
@@ -98,7 +98,7 @@ int main() {
                         // 一点活，中间让出两次
                         yield();
                         yield();
-                    });
+                    }).value();
                 }
                 *slot = run();          // 把这根线程变成 vCPU
             }));
@@ -118,7 +118,7 @@ int main() {
         // 默认栈在 Windows 上会整段 commit，控制冷启动样本的峰值占用。
         const int burst = 512;
         wavvix::stopwatch watch;
-        for (int i = 0; i < burst; ++i) spawn([] {});
+        for (int i = 0; i < burst; ++i) spawn([] {}).value();
         const double cold = static_cast<double>(watch.elapsed().count()) / burst;
         run();
 
@@ -127,7 +127,7 @@ int main() {
         const int steady = 20000;
         watch.restart();
         for (int i = 0; i < steady; ++i) {
-            spawn([] {});
+            spawn([] {}).value();
             run();
         }
         const double warm = static_cast<double>(watch.elapsed().count()) / steady;

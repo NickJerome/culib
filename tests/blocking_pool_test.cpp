@@ -32,8 +32,8 @@ TEST(blocking_pool, leaves_the_vcpu_free_while_work_blocks) {
                 worker_finished = true;
             });
             resumed_after_both = done.is_ok() && worker_finished && other_ran;
-        });
-        wavvix::spawn([&] { other_ran = true; });
+        }).value();
+        wavvix::spawn([&] { other_ran = true; }).value();
     }
     EXPECT(pool.size(), ==, 1u);
     EXPECT(resumed_after_both, ==, true);
@@ -61,7 +61,7 @@ TEST(blocking_pool, runs_two_blocking_calls_on_two_system_threads) {
                                                        [&] { return entered == 2; });
                 });
                 returned[i] = done.is_ok();
-            });
+            }).value();
         }
     }
     EXPECT(pool.size(), ==, 2u);
@@ -84,7 +84,7 @@ TEST(blocking_pool, forwards_move_only_arguments_and_rejects_main_thread_wait) {
                 [](std::unique_ptr<int> input, int& output) { output = *input; },
                 std::unique_ptr<int>(new int(17)), std::ref(value));
             returned = done.is_ok();
-        });
+        }).value();
     }
     EXPECT(returned, ==, true);
     EXPECT(value, ==, 17);

@@ -242,9 +242,10 @@ TEST(result, void_results_support_success_error_and_state_changes) {
 
 TEST(result, formats_error_names_messages_and_stream_output) {
     const error_kind kinds[] = {error_kind::unknown, error_kind::invalid_argument,
-        error_kind::out_of_range, error_kind::not_found, error_kind::already_exists,
+        error_kind::out_of_range, error_kind::resource_exhausted,
+        error_kind::not_found, error_kind::already_exists,
         error_kind::permission_denied, error_kind::timeout, error_kind::unsupported, error_kind::io};
-    const char* names[] = {"unknown", "invalid_argument", "out_of_range", "not_found",
+    const char* names[] = {"unknown", "invalid_argument", "out_of_range", "resource_exhausted", "not_found",
         "already_exists", "permission_denied", "timeout", "unsupported", "io"};
     for (unsigned i = 0; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
         EXPECT(wavvix::error_kind_name(kinds[i]), ==, names[i]);

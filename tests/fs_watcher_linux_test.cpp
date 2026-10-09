@@ -115,11 +115,11 @@ TEST(fs_watcher_linux, yields_to_another_coroutine) {
             fs::detail::watcher_backend_wait(watcher.get(), ms(200), events);
         noticed = waited.is_ok() &&
             contains(events, dir.root(), "item", fs::change::created);
-    });
+    }).value();
     wavvix::spawn([&] {
         wavvix::sleep_for(ms(5));
         (void)fs::write_file(dir.at("item"), "x");
-    });
+    }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
     EXPECT(noticed, ==, true);
 }

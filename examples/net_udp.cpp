@@ -30,12 +30,12 @@ int main() {
             if (packet.is_err()) { worked = false; return; }
             std::printf("UDP from %s: %.*s\n", packet.value().from.to_string().c_str(),
                         static_cast<int>(packet.value().size), data);
-        });
+        }).value();
         wavvix::spawn([&] {
             const wavvix::result<std::size_t> sent =
                 client.send_to("hello", 5, destination.value(), seconds(2));
             if (sent.is_err() || sent.value() != 5) worked = false;
-        });
+        }).value();
     }
     return worked ? 0 : 1;
 }

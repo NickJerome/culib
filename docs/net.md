@@ -23,10 +23,10 @@ endpoint local = listener.local_endpoint().value(); // 端口 0 已换成实际�
     spawn([&] {
         result<tcp_stream> incoming = listener.accept(ms(1000));
         // 在协程中调用 read / write；检查 result 后处理数据。
-    });
+    }).value();
     spawn([&] {
         result<tcp_stream> outgoing = tcp_stream::connect(local, ms(1000));
-    });
+    }).value();
 } // 运行全部已提交协程并清理当前 vCPU
 ```
 

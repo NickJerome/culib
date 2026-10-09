@@ -26,8 +26,8 @@ int main() {
                     output = input * 2;
                 }, 21, std::ref(answer));
             completed = done.is_ok();
-        });
-        wavvix::spawn([] { std::puts("another coroutine ran while work blocked"); });
+        }).value();
+        wavvix::spawn([] { std::puts("another coroutine ran while work blocked"); }).value();
     }
     if (!completed) return 1;
     std::printf("answer: %d\n", answer);
