@@ -84,9 +84,6 @@ void mem_page_release_slices(mem_page_t* page) {
   if (a == NULL) return;                      /* 不应发生；不再二次归还 */
   const size_t aidx = idx - a->first_slice;
   if ((flags & WAVVIX_MEM_PAGE_FLAG_HUGE) != 0) {
-    /* 守护页此刻仍是 PROT_NONE：先放开保护，decommit 才能覆盖整段 */
-    if ((flags & WAVVIX_MEM_PAGE_FLAG_GUARDED) != 0)
-      mem_os_protect(start + (n - 1) * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE, true);
     mem_os_decommit(start, n * WAVVIX_MEM_SLICE_SIZE);
     mem_arena_free_slices_decommitted(a, aidx, n);
   } else {
@@ -166,7 +163,7 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
     }
 #endif
   } else {
-    /* large/huge/guarded：整块即一个对象 */
+    /* large/huge：整块即一个对象 */
     page->capacity = 1;
     page->block_size = 0;
     page->large_size = (size_t)slice_count * WAVVIX_MEM_SLICE_SIZE;

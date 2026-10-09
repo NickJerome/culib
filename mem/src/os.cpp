@@ -61,11 +61,6 @@ bool mem_os_release(void* p, size_t size) {
   return VirtualFree(p, 0, MEM_RELEASE) != 0;
 }
 
-bool mem_os_protect(void* p, size_t size, bool rw) {
-  DWORD old = 0;
-  return VirtualProtect(p, size, rw ? PAGE_READWRITE : PAGE_NOACCESS, &old) != 0;
-}
-
 size_t mem_os_page_size(void) {
   SYSTEM_INFO si;
   GetSystemInfo(&si);
@@ -180,10 +175,6 @@ bool mem_os_decommit(void* p, size_t size) {
 
 bool mem_os_release(void* p, size_t size) {
   return munmap(p, size) == 0;
-}
-
-bool mem_os_protect(void* p, size_t size, bool rw) {
-  return mprotect(p, size, rw ? (PROT_READ | PROT_WRITE) : PROT_NONE) == 0;
 }
 
 size_t mem_os_page_size(void) {

@@ -49,7 +49,6 @@
 /* mem_page_t.flags 位 */
 #define WAVVIX_MEM_PAGE_FLAG_IN_FULL 0x01   /* 当前挂在 pages[WAVVIX_MEM_BIN_FULL] 队列 */
 #define WAVVIX_MEM_PAGE_FLAG_HUGE    0x02   /* free 即 decommit 归还物理页       */
-#define WAVVIX_MEM_PAGE_FLAG_GUARDED 0x04   /* L3 守护页分配                     */
 
 /* xthread_id 低位标志 */
 #define WAVVIX_MEM_PAGE_XTHREAD_ABANDONED ((uintptr_t)0x1)
@@ -133,7 +132,7 @@ struct mem_page_s {
   mem_page_t*             next;
   mem_page_t*             prev;
   uintptr_t              keys[2];      /* L1：空闲链 XOR 密钥 */
-  size_t                 large_size;   /* large/huge/guarded：可用字节数 */
+  size_t                 large_size;   /* large/huge：可用字节数 */
   uint8_t                _pad2[8];
 };
 static_assert(sizeof(mem_page_t) == 128, "mem_page_t must be exactly two cache lines");
@@ -162,7 +161,6 @@ struct mem_theap_s {
   uintptr_t       thread_id;                        /* 唯一 id（非 0，低3位为 0） */
   int             arena_idx;                        /* 当前偏好 arena */
   uint32_t        full_count[WAVVIX_MEM_BIN_COUNT];         /* 每 bin 在 FULL 队列中的页数 */
-  uint64_t        guarded_countdown;                /* L3：按字节倒数采样 */
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
   mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
   uintptr_t       tcache_key;
@@ -195,7 +193,6 @@ struct mem_options_t {
   long    purge_delay_ms;        /* WAVVIX_MEM_PURGE_DELAY        默认 1000 */
   size_t  window_size;           /* WAVVIX_MEM_WINDOW_SIZE        默认 1TiB */
   size_t  arena_reserve;         /* WAVVIX_MEM_ARENA_RESERVE      默认 64MiB */
-  long    guarded_sample_rate;   /* WAVVIX_MEM_GUARDED_SAMPLE_RATE 默认 0   */
 };
 extern mem_options_t mem_options;
 
@@ -334,14 +331,6 @@ static inline void* mem_tcache_pop(mem_theap_t* t, int bin) {
 
 /* 对齐分配可能返回块内指针；找回块首统一走 mem_user_block_start。 */
 
-/* large/huge/guarded 页里那唯一一个块的起点。guarded 时对象贴守护页右对齐
- * 放置，因此不等于 slice_start；其余情况就是 slice_start。 */
-static inline uint8_t* mem_large_block_start(const mem_page_t* page) {
-  if ((page->flags & WAVVIX_MEM_PAGE_FLAG_GUARDED) == 0) return page->slice_start;
-  return page->slice_start + (size_t)(page->slice_count - 1) * WAVVIX_MEM_SLICE_SIZE
-         - page->large_size;
-}
-
 /* 只对 HAS_ALIGNED 页使用：它会把任何块内地址归整为块首。 */
 static inline uint8_t* mem_small_block_start(const mem_page_t* page, const void* p) {
   size_t off = (size_t)((const uint8_t*)p - page->slice_start);
@@ -366,7 +355,7 @@ void   mem_debug_verify_free_block(const mem_page_t* page, const void* block);
 /* 用户指针 → 块首。wavvix::mem::free / usable_size / mem_l2_unwrap
  * 三处共用的唯一口径（上面两个分量在这里汇合）。 */
 static inline uint8_t* mem_user_block_start(const mem_page_t* page, const void* p) {
-  if (page->kind == WAVVIX_MEM_PAGE_LARGE) return mem_large_block_start(page);
+  if (page->kind == WAVVIX_MEM_PAGE_LARGE) return page->slice_start;
   if (WAVVIX_MEM_UNLIKELY(page->has_aligned.load(std::memory_order_relaxed) != 0))
     return mem_small_block_start(page, p);
 #if defined(WAVVIX_MEM_DEBUG)
@@ -422,10 +411,7 @@ void mem_theap_exit_hook_init(void);   /* 注册线程退出回调（init 调一
 mem_theap_t* mem_theap_current(void);
 mem_theap_t* mem_theap_create(void);
 void*       mem_malloc_generic(mem_theap_t* t, int bin);
-void*       mem_malloc_large(mem_theap_t* t, size_t size);   /* 8KiB < size：含 huge */
-/* large 总入口：guarded 时多要一个 slice 作 PROT_NONE 守护页、对象贴其前边界 */
-void*       mem_malloc_large_ex(mem_theap_t* t, size_t size, bool guarded,
-                               bool* out_zeroed);
+void*       mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed = NULL);
 void*       mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size);
 void        mem_theap_abandon(mem_theap_t* t);
 void        mem_theap_collect(mem_theap_t* t);               /* wavvix::mem::collect 用 */
@@ -478,7 +464,6 @@ uintptr_t   mem_next_thread_id(void);                /* 全局自增，左移3�
 
 /* --- secure.cpp --- */
 void   mem_secure_page_keys(mem_page_t* page, uint64_t* random_state);
-void*  mem_guarded_alloc(mem_theap_t* t, size_t size);   /* L3 守护页分配 */
 /* L2 声明（mem_l2_wrap / mem_l2_unwrap / mem_debug_verify_free_block）见上文
  * "页内快路径"一节——mem_page_malloc 内联需要先行声明。 */
 

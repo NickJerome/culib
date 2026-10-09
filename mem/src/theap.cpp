@@ -187,7 +187,6 @@ mem_theap_t* mem_theap_create(void) {
   t->thread_id = mem_next_thread_id();
   t->random_state = mem_random_seed(mem_global_seed() ^ t->thread_id ^ (uintptr_t)t);
   t->tcache_key   = mem_random_next(&t->random_state);
-  t->guarded_countdown = (uint64_t)mem_options.guarded_sample_rate;
   if (mem_arena_pick_for_thread(t) < 0) return NULL;   /* 确保至少一个 arena */
   mem_t_theap = t;
   /* 线程退出钩子登记。放在最后一步：上面任何一个失败返回都不该留下一个
@@ -350,48 +349,35 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
 
 /* large / huge */
 
-/* guarded 多取一个 slice 作为保护页；huge/guarded 在 free 时 decommit。 */
-void* mem_malloc_large_ex(mem_theap_t* t, size_t size, bool guarded,
-                         bool* out_zeroed) {
+/* huge 在 free 时 decommit。 */
+void* mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed) {
   if (size == 0) size = 1;
   const size_t data = (size + WAVVIX_MEM_SLICE_SIZE - 1) / WAVVIX_MEM_SLICE_SIZE * WAVVIX_MEM_SLICE_SIZE;
   const size_t n = data >> WAVVIX_MEM_SLICE_SHIFT;
-  const size_t total_slices = n + (guarded ? 1 : 0);
 
   bool zeroed = false;
   mem_arena_t* a = NULL;
-  size_t sidx = mem_arena_alloc_slices_any(t, total_slices, 1, &a, &zeroed);
+  size_t sidx = mem_arena_alloc_slices_any(t, n, 1, &a, &zeroed);
   if (sidx == (size_t)-1) return NULL;
 
   mem_page_t* page = mem_desc_at(a->first_slice + sidx);
   uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = a->index;   /* slice 的固有属性，mem_page_init 不碰 */
-  mem_page_init(page, t, 0, 0, WAVVIX_MEM_PAGE_LARGE, start, (uint32_t)total_slices, zeroed);
-  /* 对象大小按 16 字节取整，起点才满足 alloc 的对齐保证。 */
-  const size_t gsize = (size + 15) & ~(size_t)15;
-  page->large_size = guarded ? gsize : n * WAVVIX_MEM_SLICE_SIZE;
-  if (size > WAVVIX_MEM_HUGE_THRESHOLD || guarded) page->flags |= WAVVIX_MEM_PAGE_FLAG_HUGE;
-  if (guarded) {
-    page->flags |= WAVVIX_MEM_PAGE_FLAG_GUARDED;
-    mem_os_protect(start + n * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE, false);
-  }
-  mem_desc_mark_cont(mem_page_slice_index(page), total_slices);
+  mem_page_init(page, t, 0, 0, WAVVIX_MEM_PAGE_LARGE, start, (uint32_t)n, zeroed);
+  page->large_size = n * WAVVIX_MEM_SLICE_SIZE;
+  if (size > WAVVIX_MEM_HUGE_THRESHOLD) page->flags |= WAVVIX_MEM_PAGE_FLAG_HUGE;
+  mem_desc_mark_cont(mem_page_slice_index(page), n);
   page->used = 1;
   mem_page_publish(page);   /* 续页项先于首项发布：野指针只会解析到 magic==0 */
 
   mem_stat_alloc(t, page->large_size);
   if (out_zeroed != NULL) *out_zeroed = zeroed;
-  /* guarded：对象右对齐贴住守护页（按取整后的 gsize，见上） */
-  return guarded ? start + data - gsize : start;
-}
-
-void* mem_malloc_large(mem_theap_t* t, size_t size) {
-  return mem_malloc_large_ex(t, size, false, NULL);
+  return start;
 }
 
 /* alignment > 64KiB 的对齐分配：位图按对齐起点选段（arena 相对下标 + 基址
  * 相位，见 mem_arena_alloc_slices）。alignment ≤ 64KiB 由 slice 天然对齐覆盖，
- * 走 mem_malloc_large_ex 即可。 */
+ * 走 mem_malloc_large 即可。 */
 void* mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size) {
   if (size == 0) size = 1;
   const size_t data = (size + WAVVIX_MEM_SLICE_SIZE - 1) / WAVVIX_MEM_SLICE_SIZE * WAVVIX_MEM_SLICE_SIZE;
@@ -422,9 +408,9 @@ void* mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size) {
   return start;
 }
 
-/* large/huge/guarded 只有一个合法块首，无需 owner。 */
+/* large/huge 只有一个合法块首，无需 owner。 */
 static void mem_page_free_large(mem_page_t* page, void* p) {
-  const uint8_t* expect = mem_large_block_start(page);
+  const uint8_t* expect = page->slice_start;
   if (WAVVIX_MEM_UNLIKELY((const uint8_t*)p != expect))
     mem_fatal_page("free of interior pointer (large block)", p, page);
 

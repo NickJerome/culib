@@ -1,9 +1,8 @@
 /* ----------------------------------------------------------------------------
- * secure.cpp — 页密钥、守护页采样与调试校验
+ * secure.cpp — 页密钥与调试校验
  *
  * L1（默认开）：空闲链 XOR 密钥生成（编码本身内联在 internal.h 快路径），
  *   double-free 编码哨兵（internal.h 的 mem_secure_check_free 内联）。
- * L3 采样命中时从 arena 分配带 PROT_NONE 尾页的块。
  * L2 在 WAVVIX_MEM_DEBUG 构建中校验 canary 与 UAF 写入。
  * ------------------------------------------------------------------------- */
 #include "internal.h"
@@ -14,12 +13,6 @@
 void mem_secure_page_keys(mem_page_t* page, uint64_t* random_state) {
   page->keys[0] = mem_random_next(random_state) | 1ull;   /* 必须非 0 */
   page->keys[1] = mem_random_next(random_state);
-}
-
-/* L3：守护页采样分配。 */
-void* mem_guarded_alloc(mem_theap_t* t, size_t size) {
-  if (size == 0) size = 1;
-  return mem_malloc_large_ex(t, size, true, NULL);
 }
 
 #if defined(WAVVIX_MEM_DEBUG)

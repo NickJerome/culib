@@ -1,7 +1,7 @@
 /* ----------------------------------------------------------------------------
  * api.cpp — mem API 入口与参数校验
  *
- * 分层锚点：L0 溢出检查 / L3 采样计数 / L2 canary 包装都挂在本层，
+ * 分层锚点：L0 溢出检查 / L2 canary 包装都挂在本层，
  * 快路径本身（internal.h 内联）不含任何安全开销分支（L1 除外：1 次 XOR）。
  * ------------------------------------------------------------------------- */
 #include "internal.h"
@@ -15,22 +15,9 @@ void* wavvix::mem::alloc(size_t size) noexcept {
   /* L0：size 溢出检查（拒绝 > SIZE_MAX/2，为 L2 canary 等外扩留足余量） */
   if (WAVVIX_MEM_UNLIKELY(size > SIZE_MAX / 2)) return NULL;
 
-  /* theap_fast 保证 init_once 已执行（选项已解析），再做 L3 采样判断 */
+  /* theap_fast 保证 init_once 已执行。 */
   mem_theap_t* t = mem_theap_fast();
   if (WAVVIX_MEM_UNLIKELY(t == NULL)) return NULL;
-
-  /* L3：按请求字节倒数采样（guarded_sample_rate>0 时启用） */
-  if (mem_options.guarded_sample_rate > 0) {
-    if (t->guarded_countdown <= size) {
-      t->guarded_countdown = (uint64_t)mem_options.guarded_sample_rate;
-#if defined(WAVVIX_MEM_DEBUG)
-      return mem_l2_wrap(mem_malloc_large_ex(t, size + WAVVIX_MEM_L2_OVERHEAD, true, NULL));
-#else
-      return mem_guarded_alloc(t, size);
-#endif
-    }
-    t->guarded_countdown -= size;
-  }
 
 #if defined(WAVVIX_MEM_DEBUG)
   /* L2：块外扩 WAVVIX_MEM_L2_OVERHEAD 容纳头部与尾 canary（先归一 0→1，保证 usable_size >= 1） */
@@ -48,13 +35,12 @@ void* wavvix::mem::calloc(size_t count, size_t size) noexcept {
   if (WAVVIX_MEM_UNLIKELY(total > SIZE_MAX / 2)) return NULL;
 
 #if !defined(WAVVIX_MEM_DEBUG)
-  /* 先初始化选项，再检查采样是否关闭；仅此时可绕过 alloc，
-   * 利用新提交 slice 的零页避免整块 memset。 */
+  /* 新提交 slice 的零页可避免整块 memset。 */
   mem_theap_t* t = mem_theap_fast();
   if (t == NULL) return NULL;
-  if (total > WAVVIX_MEM_SMALL_MAX && mem_options.guarded_sample_rate == 0) {
+  if (total > WAVVIX_MEM_SMALL_MAX) {
     bool zeroed = false;
-    void* p = mem_malloc_large_ex(t, total, false, &zeroed);
+    void* p = mem_malloc_large(t, total, &zeroed);
     if (p != NULL && !zeroed) std::memset(p, 0, total);
     return p;
   }
@@ -150,7 +136,7 @@ void* wavvix::mem::aligned_alloc(size_t alignment, size_t size) noexcept {
   extra = alignment + WAVVIX_MEM_L2_OVERHEAD;
 #endif
   uint8_t* start = (uint8_t*)((alignment <= WAVVIX_MEM_SLICE_SIZE)
-                     ? mem_malloc_large_ex(t, size + extra, false, NULL)
+                     ? mem_malloc_large(t, size + extra)
                      : mem_malloc_large_aligned(t, alignment, size + extra));
   if (start == NULL) return NULL;
 #if defined(WAVVIX_MEM_DEBUG)

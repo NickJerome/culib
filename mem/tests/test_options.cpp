@@ -19,7 +19,6 @@ int main() {
     set_option("WAVVIX_MEM_WINDOW_SIZE", "4G");
     set_option("WAVVIX_MEM_ARENA_RESERVE", "03M");
     set_option("WAVVIX_MEM_PURGE_DELAY", "9223372036854775807");
-    set_option("WAVVIX_MEM_GUARDED_SAMPLE_RATE", "18446744073709551615T");
 
     mem_init_once();
     CHECK(mem_options.window_size == (size_t(4) << 30));
@@ -29,7 +28,6 @@ int main() {
 #else
     CHECK(mem_options.purge_delay_ms == WAVVIX_MEM_PURGE_DELAY_MS);
 #endif
-    CHECK(mem_options.guarded_sample_rate == 0);
 
     void* block = wavvix::mem::alloc(60000);
     CHECK(block != NULL);

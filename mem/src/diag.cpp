@@ -128,10 +128,9 @@ void mem_stats_print(void) {
 
   std::fprintf(stderr, "=== culib mem stats ===\n");
   std::fprintf(stderr,
-               "options: purge_delay=%ldms window=%zu arena_reserve=%zu "
-               "guarded_sample_rate=%ld\n",
+               "options: purge_delay=%ldms window=%zu arena_reserve=%zu\n",
                mem_options.purge_delay_ms, mem_options.window_size,
-               mem_options.arena_reserve, mem_options.guarded_sample_rate);
+               mem_options.arena_reserve);
   std::fprintf(stderr, "window: base=%p size=%zu used_slices=%zu desc=%p\n",
                (void*)mem_window_base, mem_window_size,
                mem_window_used_slices.load(std::memory_order_relaxed),

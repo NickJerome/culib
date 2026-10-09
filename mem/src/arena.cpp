@@ -294,7 +294,7 @@ void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
   arena->purge_expire.store(expire, std::memory_order_release);
 }
 
-/* 归还已由调用方 decommit 的 slice（huge/guarded 页：free 即归还物理页）。 */
+/* 归还已由调用方 decommit 的 slice（huge 页：free 即归还物理页）。 */
 void mem_arena_free_slices_decommitted(mem_arena_t* arena, size_t slice_idx, size_t n) {
   g_dbg_slice_free.fetch_add(n, std::memory_order_relaxed);
   std::lock_guard<std::mutex> lock(arena->mutex);

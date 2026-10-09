@@ -22,13 +22,11 @@
  * release   整片归还（必须与某次 reserve 的 [p, size) 完全一致）。
  * commit    使 [p,size) 可读写；首次访问读到零。必须落在已 reserve 区内。
  * decommit  作废内容并归还物理页；再次访问前必须重新 commit。
- * protect   仅对已 commit 区域切换 读写/不可访问。
  * 全部以字节为单位，size 需为系统页大小的倍数（调用方保证）。 */
 bool    mem_os_reserve(size_t size, void** out);
 bool    mem_os_release(void* p, size_t size);
 bool    mem_os_commit(void* p, size_t size);
 bool    mem_os_decommit(void* p, size_t size);
-bool    mem_os_protect(void* p, size_t size, bool rw);
 
 /* 系统页大小（字节）。 */
 size_t  mem_os_page_size(void);
