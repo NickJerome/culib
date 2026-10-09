@@ -328,7 +328,7 @@ TEST(io_engine, cancel_keeps_completed_overlapped_alive_until_packet_is_taken) {
                     DWORD flags = 0;
                     if (::WSAGetOverlappedResult(
                             reinterpret_cast<SOCKET>(right),
-                            reinterpret_cast<WSAOVERLAPPED*>(&request.overlapped[0]),
+                            reinterpret_cast<WSAOVERLAPPED*>(request.overlapped.bytes),
                             &moved, FALSE, &flags)) {
                         finished = true;
                         break;
