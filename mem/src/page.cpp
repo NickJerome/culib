@@ -106,7 +106,7 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
   page->magic.store(0, std::memory_order_relaxed);
   std::atomic_thread_fence(std::memory_order_release);
 
-  /* 描述符是复用的（slice i 恒对应 mem_desc_base[i]），所有字段显式重写。
+  /* 描述符是复用的（slice i 恒对应 mem_desc_at(i)），所有字段显式重写。
    * 唯独 arena_idx 不碰：它是 slice 的固有属性，由调用方在本函数之前设好。 */
   page->free = NULL;
   page->local_free = NULL;

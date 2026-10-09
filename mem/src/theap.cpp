@@ -331,7 +331,7 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
       size_t sidx = mem_arena_alloc_slices_any(t, 1, 1, &a, &zeroed);
       if (sidx == (size_t)-1) return NULL;
       /* 描述符与 slice 平铺：slice 下标即描述符下标，无需分配与登记 */
-      fresh = mem_desc_base + a->first_slice + sidx;
+      fresh = mem_desc_at(a->first_slice + sidx);
       uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
       fresh->arena_idx = a->index;   /* 必须先于 mem_page_init 的 magic 发布 */
       mem_page_init(fresh, t, bin, mem_bin_size(bin), WAVVIX_MEM_PAGE_SMALL,
@@ -363,7 +363,7 @@ void* mem_malloc_large_ex(mem_theap_t* t, size_t size, bool guarded,
   size_t sidx = mem_arena_alloc_slices_any(t, total_slices, 1, &a, &zeroed);
   if (sidx == (size_t)-1) return NULL;
 
-  mem_page_t* page = mem_desc_base + a->first_slice + sidx;
+  mem_page_t* page = mem_desc_at(a->first_slice + sidx);
   uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = a->index;   /* slice 的固有属性，mem_page_init 不碰 */
   mem_page_init(page, t, 0, 0, WAVVIX_MEM_PAGE_LARGE, start, (uint32_t)total_slices, zeroed);
@@ -409,7 +409,7 @@ void* mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size) {
   size_t sidx = mem_arena_alloc_slices_any(t, n, align_slices, &a, &zeroed);
   if (sidx == (size_t)-1) return NULL;
 
-  mem_page_t* page = mem_desc_base + a->first_slice + sidx;
+  mem_page_t* page = mem_desc_at(a->first_slice + sidx);
   uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = a->index;
   mem_page_init(page, t, 0, 0, WAVVIX_MEM_PAGE_LARGE, start, (uint32_t)n, zeroed);

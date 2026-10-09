@@ -221,11 +221,14 @@ void mem_debug_leak_report(void) {
 
   size_t leaked_pages = 0, leaked_blocks = 0;
   int count = mem_arena_count();
+  const size_t constructed = mem_desc_constructed_slices.load(std::memory_order_acquire);
   for (int ai = 0; ai < count; ai++) {
     mem_arena_t* a = mem_arena_get(ai);
     if (a == NULL) continue;
     for (size_t i = 0; i < a->slice_count; i++) {
-      mem_page_t* page = mem_desc_base + a->first_slice + i;
+      const size_t idx = a->first_slice + i;
+      if (idx >= constructed) break;
+      mem_page_t* page = mem_desc_at(idx);
       if (page->magic.load(std::memory_order_relaxed) != WAVVIX_MEM_PAGE_MAGIC) continue;
       if (page->kind == WAVVIX_MEM_PAGE_CONT) continue;   /* 续页项：首项已计过 */
       /* used 含未 collect 的 xthread_free 块：先 collect 再读，排除误报 */

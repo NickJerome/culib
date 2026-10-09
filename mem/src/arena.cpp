@@ -15,6 +15,7 @@ uint8_t*            mem_window_base = NULL;
 size_t              mem_window_size = 0;
 mem_page_t*          mem_desc_base   = NULL;
 std::atomic<size_t> mem_window_used_slices(0);
+std::atomic<size_t> mem_desc_constructed_slices(0);
 
 namespace {
 
@@ -27,14 +28,13 @@ size_t                g_arena_next_size = 0;            /* 下一个 arena 的�
 size_t g_window_slices  = 0;    /* 窗口总 slice 数 */
 size_t g_desc_reserve   = 0;    /* 描述符数组保留字节数 */
 size_t g_desc_committed = 0;    /* 描述符数组已提交字节数（单调递增） */
-size_t g_desc_constructed = 0;  /* 已构造描述符数 */
+const size_t desc_init_chunk = 64;
 
 inline size_t mem_round_up(size_t v, size_t granule) {
   return (v + granule - 1) / granule * granule;
 }
 
-/* 描述符按 arena 提交：窗口 slice 是顺序切分的，故只需一个单调水位线。
- * 新描述符的 magic 为 0，表示无活页。
+/* 描述符按 arena 提交虚拟页；对象到首次使用时才构造。
  * 调用方持 g_subproc_lock。 */
 bool mem_desc_commit_upto(size_t end_slice) {
   size_t need = mem_round_up(end_slice * sizeof(mem_page_t), mem_os_page_size());
@@ -49,11 +49,20 @@ bool mem_desc_commit_upto(size_t end_slice) {
       return false;
     g_desc_committed = need;
   }
-  for (; g_desc_constructed < end_slice; ++g_desc_constructed) {
-    mem_page_t* d = new (mem_desc_base + g_desc_constructed) mem_page_t;
+  return true;
+}
+
+/* 调用方持 g_subproc_lock；分批触碰描述符，减少小程序的冷启动占用。 */
+void mem_desc_construct_upto(size_t end_slice, size_t arena_end) {
+  size_t want = mem_round_up(end_slice, desc_init_chunk);
+  if (want > arena_end) want = arena_end;
+  size_t done = mem_desc_constructed_slices.load(std::memory_order_relaxed);
+  if (want <= done) return;
+  for (size_t i = done; i < want; ++i) {
+    mem_page_t* d = new (mem_desc_at(i)) mem_page_t;
     d->magic.store(0, std::memory_order_relaxed);
   }
-  return true;
+  mem_desc_constructed_slices.store(want, std::memory_order_release);
 }
 
 /* 从窗口里顺序切下一段 arena。调用方持 g_subproc_lock；size 已是 2MiB 倍数。 */
@@ -106,7 +115,7 @@ mem_arena_t* mem_arena_create(size_t size) {
 
   g_arenas[count] = arena;
   g_arena_count.store(count + 1, std::memory_order_release);
-  /* 最后推进水位线：mem_ptr_page 以它为准入门槛，描述符必须先就绪 */
+  /* arena 完整初始化后再发布；描述符由分配路径按需构造。 */
   mem_window_used_slices.store(start + n, std::memory_order_release);
   return arena;
 }
@@ -133,7 +142,7 @@ bool mem_window_init(size_t want) {
         mem_desc_base    = (mem_page_t*)d;
         g_desc_reserve  = dres;
         g_desc_committed = 0;
-        g_desc_constructed = 0;
+        mem_desc_constructed_slices.store(0, std::memory_order_relaxed);
         return true;
       }
       mem_os_release(base, size);
@@ -237,6 +246,11 @@ size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
     mem_arena_t* a = g_arenas[idx];
     size_t s = mem_arena_alloc_slices(a, n, align_slices, out_zeroed);
     if (s != (size_t)-1) {
+      const size_t end = a->first_slice + s + n;
+      if (end > mem_desc_constructed_slices.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(g_subproc_lock);
+        mem_desc_construct_upto(end, a->first_slice + a->slice_count);
+      }
       t->arena_idx = idx;
       *out_arena = a;
       return s;
@@ -256,6 +270,7 @@ size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
   g_arena_next_size = size;
   size_t s = mem_arena_alloc_slices(a, n, align_slices, out_zeroed);
   if (s == (size_t)-1) return (size_t)-1;
+  mem_desc_construct_upto(a->first_slice + s + n, a->first_slice + a->slice_count);
   t->arena_idx = a->index;
   *out_arena = a;
   return s;
@@ -397,7 +412,7 @@ size_t mem_arena_abandoned_count(void) {
  * mem_ptr_page 命中续页时经 cont_first 一跳落到首描述符。 */
 void mem_desc_mark_cont(size_t first_idx, size_t n) {
   for (size_t i = 1; i < n; i++) {
-    mem_page_t* d = mem_desc_base + first_idx + i;
+    mem_page_t* d = mem_desc_at(first_idx + i);
     d->kind = (uint8_t)WAVVIX_MEM_PAGE_CONT;
     d->cont_first = (uint32_t)first_idx;
     d->magic.store(WAVVIX_MEM_PAGE_MAGIC, std::memory_order_release);
@@ -407,7 +422,7 @@ void mem_desc_mark_cont(size_t first_idx, size_t n) {
 /* 只清首项；续页项可陈旧，mem_ptr_page 的三条复核必须保留。
  * 不变式见 internal.h，逐项清零的成本见 mem/docs/decisions.md D3。 */
 void mem_desc_clear(size_t first_idx) {
-  mem_desc_base[first_idx].magic.store(0, std::memory_order_release);
+  mem_desc_at(first_idx)->magic.store(0, std::memory_order_release);
 }
 
 /* ------------------------ fork 钩子支撑（heap.cpp 注册） ---------------- */

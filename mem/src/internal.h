@@ -206,22 +206,27 @@ extern uint8_t*            mem_window_base;
 extern size_t              mem_window_size;
 extern mem_page_t*          mem_desc_base;
 extern std::atomic<size_t> mem_window_used_slices;   /* 已切分给 arena 的 slice 数 */
+extern std::atomic<size_t> mem_desc_constructed_slices; /* 已构造描述符的连续前缀 */
+
+static inline mem_page_t* mem_desc_at(size_t idx) {
+  return (mem_page_t*)((uint8_t*)mem_desc_base + idx * sizeof(mem_page_t));
+}
 
 /* CONT 项可能过时；跳转后须复核首页仍活、不是 CONT 且覆盖原 slice。
  * 顺序与原因见 docs/mem-internals.md。 */
 static inline mem_page_t* mem_ptr_page(const void* p) {
   uintptr_t off = (uintptr_t)p - (uintptr_t)mem_window_base;   /* p < base 回绕为巨大值 */
   size_t idx = off >> WAVVIX_MEM_SLICE_SHIFT;
-  if (WAVVIX_MEM_UNLIKELY(idx >= mem_window_used_slices.load(std::memory_order_acquire)))
+  if (WAVVIX_MEM_UNLIKELY(idx >= mem_desc_constructed_slices.load(std::memory_order_acquire)))
     return NULL;
-  mem_page_t* d = mem_desc_base + idx;
+  mem_page_t* d = mem_desc_at(idx);
   if (WAVVIX_MEM_UNLIKELY(d->magic.load(std::memory_order_acquire) != WAVVIX_MEM_PAGE_MAGIC)) return NULL;
   if (WAVVIX_MEM_UNLIKELY(d->kind == WAVVIX_MEM_PAGE_CONT)) {
     /* 陈旧 CONT 不能直接信任 cont_first。 */
     size_t first = d->cont_first;
     /* 合法续页项的首页必须在它之前；先定界再解引用。 */
     if (WAVVIX_MEM_UNLIKELY(first >= idx)) return NULL;
-    d = mem_desc_base + first;
+    d = mem_desc_at(first);
     if (WAVVIX_MEM_UNLIKELY(d->magic.load(std::memory_order_acquire) != WAVVIX_MEM_PAGE_MAGIC)) return NULL;
     /* 首页若也变成 CONT，旧 slice_count 可能仍在。 */
     if (WAVVIX_MEM_UNLIKELY(d->kind == WAVVIX_MEM_PAGE_CONT)) return NULL;
@@ -232,7 +237,7 @@ static inline mem_page_t* mem_ptr_page(const void* p) {
 
 /* 描述符指针 -> 窗口 slice 下标（纯算术） */
 static inline size_t mem_page_slice_index(const mem_page_t* page) {
-  return (size_t)(page - mem_desc_base);
+  return ((uintptr_t)page - (uintptr_t)mem_desc_base) / sizeof(mem_page_t);
 }
 
 /* ======================== 空闲链 XOR 编码（L1） ======================== */
