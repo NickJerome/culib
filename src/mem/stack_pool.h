@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <new>
 
 namespace wavvix {
 namespace mem {
@@ -30,6 +31,7 @@ public:
             cached_stack* const node = buckets_[bucket];
             buckets_[bucket] = node->next;
             const stack_memory memory = node->memory;
+            node->~cached_stack();
             bytes_ -= memory.total;
             return memory;
         }
@@ -47,9 +49,8 @@ public:
             release_stack(memory);
             return;
         }
-        cached_stack* const node = reinterpret_cast<cached_stack*>(memory.base + memory.guard);
-        node->memory = memory;
-        node->next = buckets_[bucket];
+        cached_stack* const node = new (memory.base + memory.guard)
+            cached_stack{memory, buckets_[bucket]};
         buckets_[bucket] = node;
         bytes_ += memory.total;
     }

@@ -28,7 +28,7 @@ public:
 
 namespace {
 
-// io_request 里给 OVERLAPPED 留的那块地方（void* overlapped[8]）必须装得下、对得齐。
+// io_request 里给 OVERLAPPED 留的那块地方必须装得下、对得齐。
 // Win64 是 64 字节对 32，Win32 是 32 对 20，都够；但这件事值得让编译器盯着，
 // 因为 io_engine.h 是平台中立的，改那个数组长度的人看不到这边。
 static_assert(sizeof(io_request::overlapped) >= sizeof(OVERLAPPED),
@@ -113,9 +113,8 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         return false;
     }
 
-    OVERLAPPED* const overlapped = overlapped_of(request);
-    // 每次都要清零：残留的 Offset / OffsetHigh 会被当成读写位置。
-    ::ZeroMemory(overlapped, sizeof *overlapped);
+    // 同一请求可能再次提交；每次构造一个全零的 OVERLAPPED。
+    OVERLAPPED* const overlapped = new (request.overlapped) OVERLAPPED();
 
     const HANDLE handle = static_cast<HANDLE>(request.handle);
     DWORD moved = 0;

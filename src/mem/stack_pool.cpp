@@ -13,6 +13,7 @@ void stack_pool::drain() noexcept {
         while (node) {
             cached_stack* const next = node->next;
             const stack_memory memory = node->memory;
+            node->~cached_stack();
             release_stack(memory);
             node = next;
         }

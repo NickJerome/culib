@@ -227,7 +227,7 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
 
     char* cursor = memory.base + memory.total;
     cursor = align_down(cursor - sizeof(coroutine_control), sizeof(void*) * 2);
-    coroutine_control* const control = reinterpret_cast<coroutine_control*>(cursor);
+    coroutine_control* const control = new (cursor) coroutine_control;
 
     cursor = align_down(cursor - body_size, body_align < 16 ? 16 : body_align);
     *body_slot = cursor;
@@ -267,6 +267,7 @@ void coroutine_destroy(coroutine_control* control) noexcept {
     // 未启动的 body 由销毁路径析构；运行过的 body 已由 trampoline 析构。
     if (control->destroy && !control->started) control->destroy(control->body);
     const stack_memory memory = control->memory;
+    control->~coroutine_control();
     pooled_release_stack(memory);
 }
 
