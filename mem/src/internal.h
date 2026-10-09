@@ -410,7 +410,7 @@ static inline uint8_t* mem_small_block_start(const mem_page_t* page, const void*
 #define WAVVIX_MEM_L2_HEAD     (WAVVIX_MEM_L2_LINK + WAVVIX_MEM_L2_CANARY)   /* = 16：用户指针相对块首的偏移 */
 #define WAVVIX_MEM_L2_TAIL      WAVVIX_MEM_L2_CANARY
 #define WAVVIX_MEM_L2_OVERHEAD (WAVVIX_MEM_L2_HEAD + WAVVIX_MEM_L2_TAIL)
-/* L2（编译期 -DED_DEBUG，实现于 secure.cpp）：canary 包装/解包 + UAF 写校验。
+/* L2（编译期 -DWAVVIX_MEM_DEBUG，实现于 secure.cpp）：canary 包装/解包 + UAF 写校验。
  * mem_l2_wrap_at 是对齐族用的通式：user 可以落在块内任意位置，头 canary 始终
  * 紧贴 user 之前 8 字节。mem_l2_wrap 是它 user = block + WAVVIX_MEM_L2_HEAD 的特例。 */
 void*  mem_l2_wrap(void* block);
@@ -419,7 +419,7 @@ void*  mem_l2_unwrap(void* user);
 void   mem_debug_verify_free_block(const mem_page_t* page, const void* block);
 #endif
 
-/* 用户指针 → 块首。mem_free_internal / wavvix::mem::usable_size / mem_l2_unwrap
+/* 用户指针 → 块首。wavvix::mem::free / usable_size / mem_l2_unwrap
  * 三处共用的唯一口径（上面两个分量在这里汇合）。 */
 static inline uint8_t* mem_user_block_start(const mem_page_t* page, const void* p) {
   if (page->kind == WAVVIX_MEM_PAGE_LARGE) return mem_large_block_start(page);
@@ -489,7 +489,6 @@ void*       mem_malloc_large(mem_theap_t* t, size_t size);   /* 8KiB < size：�
 void*       mem_malloc_large_ex(mem_theap_t* t, size_t size, bool guarded,
                                bool* out_zeroed);
 void*       mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size);
-void        mem_free_internal(void* p);
 void        mem_theap_abandon(mem_theap_t* t);
 void        mem_theap_collect(mem_theap_t* t);               /* wavvix::mem::collect 用 */
 void        mem_theap_recycle_lock(void);                   /* fork 钩子用 */

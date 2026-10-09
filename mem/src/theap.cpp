@@ -455,14 +455,14 @@ static void mem_page_free_large(mem_page_t* page, void* p) {
     mem_fatal_page("free of interior pointer (large block)", p, page);
 
   mem_page_release_slices(page);
-  /* 记账在 mem_free_internal（large_size 在那里于归还之前已取出） */
+  /* 记账在 mem::free（large_size 在那里于归还之前已取出） */
 }
 
 /* ------------------------- 释放路径（SPEC §4.6） ----------------------- */
 
 /* 页归还路径（tcache 未命中/未启用时的完整语义路径）。
  * 不记统计：本函数还会被 mem_tcache_flush_all 调用，而那些块在进 tcache 时
- * 就已经作为一次 wavvix::mem::free 记过账了。统计只记在 mem_free_internal 那一处。 */
+ * 就已经作为一次 wavvix::mem::free 记过账了。统计只记在 mem::free 那一处。 */
 static void mem_free_to_page(mem_theap_t* t, mem_page_t* page, void* p) {
   /* 先取出后面要用的字段：本地分支里 mem_theap_page_empty 可能退休本页（描述符
    * 失效、slice 归还），跨线程分支里 CAS 一成功块就对 owner 可见、owner 可能
@@ -527,7 +527,7 @@ static void mem_tcache_flush_all(mem_theap_t* t) {
       tc->head = (void*)next;
       mem_page_t* page = mem_ptr_page(w);
       if (page == NULL) continue;
-      /* 与 mem_free_internal 同一条护栏：mem_free_to_page 里的 t->pages[bin-1]
+      /* 与 mem::free 同一条护栏：mem_free_to_page 里的 t->pages[bin-1]
        * 对非 small 页会越界读写 theap 自身。两个调用方必须保持一致。 */
       if (WAVVIX_MEM_UNLIKELY(page->kind != WAVVIX_MEM_PAGE_SMALL))
         mem_fatal_page("tcache flush: descriptor is not a live small page", w, page);
@@ -537,7 +537,10 @@ static void mem_tcache_flush_all(mem_theap_t* t) {
   }
 }
 
-void mem_free_internal(void* p) {
+void wavvix::mem::free(void* p) noexcept {
+#if defined(WAVVIX_MEM_DEBUG)
+  p = mem_l2_unwrap(p);   /* 校验首尾 canary，还原块首 */
+#endif
   if (WAVVIX_MEM_UNLIKELY(p == NULL)) return;
   mem_page_t* page = mem_ptr_page(p);
   /* L0：窗口内且描述符 magic 匹配（两者均由 mem_ptr_page 完成）*/

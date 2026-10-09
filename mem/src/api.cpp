@@ -40,13 +40,6 @@ void* wavvix::mem::alloc(size_t size) noexcept {
 #endif
 }
 
-void wavvix::mem::free(void* p) noexcept {
-#if defined(WAVVIX_MEM_DEBUG)
-  p = mem_l2_unwrap(p);   /* 校验首尾 canary，还原块首 */
-#endif
-  mem_free_internal(p);
-}
-
 void* wavvix::mem::calloc(size_t count, size_t size) noexcept {
   /* L0：count*size 溢出检查 */
   if (count != 0 && size > SIZE_MAX / count) return NULL;
@@ -139,7 +132,7 @@ void* wavvix::mem::aligned_alloc(size_t alignment, size_t size) noexcept {
     uint8_t* user = (uint8_t*)(((uintptr_t)b + alignment - 1)
                                & ~(uintptr_t)(alignment - 1));
     /* 对齐恰好落在块首时这个块与普通块无异，就不给整页打标记：标记是有代价的
-     * ——本页此后每一次内部指针 free 都会被静默纠正（见 mem_free_internal）。 */
+     * ——本页此后每一次内部指针 free 都会被静默纠正（见 mem::free）。 */
     if (user != b) page->flags |= WAVVIX_MEM_PAGE_FLAG_HAS_ALIGNED;
     return user;
 #endif
