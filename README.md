@@ -147,7 +147,8 @@ myapp/
 ```lua
 -- myapp/xmake.lua
 add_rules("mode.debug", "mode.release")
-set_languages("c++11")              -- 使用方也可以用更高的标准
+-- MSVC 不提供 C++11 模式，默认语言模式已包含 C++11；其他编译器显式限定。
+if not is_plat("windows") then set_languages("c++11") end
 
 includes("third_party/culib")
 

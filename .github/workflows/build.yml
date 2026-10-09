@@ -224,10 +224,18 @@ jobs:
 
   # 确认 culib 被当作源码依赖引入时能正常工作。
   # 这覆盖 xmake.lua 里 is_main_project 为假的那条分支（不强加 -Werror、不构建测试和示例），
-  # 以及 README「使用方也可以用更高的标准」这条说法 —— 两者手工都测不到。
+  # 以及 README 的 C++11 接入方式与更高标准使用方。
   consumed-as-dependency:
-    name: consumed as dependency
-    runs-on: ubuntu-latest
+    name: consumed as dependency / ${{ matrix.platform.name }} / ${{ matrix.standard }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { name: Linux, os: ubuntu-latest, toolchain: gcc }
+          - { name: macOS, os: macos-latest, toolchain: clang }
+          - { name: Windows, os: windows-latest, toolchain: msvc }
+        standard: [c++11, c++17]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -239,18 +247,25 @@ jobs:
           xmake-version: latest
 
       - name: create a consumer project
+        shell: bash
         run: |
-          mkdir -p consumer/src consumer/third_party
-          cp -r culib consumer/third_party/culib
-          rm -rf consumer/third_party/culib/.git consumer/third_party/culib/build
+          mkdir -p consumer/src consumer/third_party/culib
+          git -C culib archive HEAD | tar -x -C consumer/third_party/culib
           cat > consumer/xmake.lua <<'LUA'
           add_rules("mode.debug", "mode.release")
-          set_languages("c++17")   -- 使用方用比 culib 本身更高的标准
+          -- MSVC 不提供 C++11 模式；最低即 C++14，不能传 -std:c++11。
+          if not is_plat("windows") or "${{ matrix.standard }}" ~= "c++11" then
+              set_languages("${{ matrix.standard }}")
+          end
 
           includes("third_party/culib")
 
           target("consumer")
               set_kind("binary")
+              set_warnings("allextra", "pedantic", "error")
+              if is_plat("windows") and "${{ matrix.standard }}" == "c++17" then
+                  add_cxflags("/Zc:__cplusplus")
+              end
               add_files("src/*.cpp")
               add_deps("culib")
           LUA
@@ -258,10 +273,12 @@ jobs:
           #include <culib/culib.h>
           #include <cstdio>
           #include <string>
-          #include <string_view>
-          #include <type_traits>
           #include <utility>
           #include <vector>
+          #if __cplusplus >= 201703L
+          #include <string_view>
+          #include <type_traits>
+          #endif
 
           static wavvix::result<int> checked_port(int port) {
               if (port < 1 || port > 65535) {
@@ -281,11 +298,26 @@ jobs:
               defer { std::printf("done\n"); };
               wavvix::stopwatch watch;
 
-              // 第一程的五个模块各用一下，确认它们在「C++17 使用方」这一侧也能用
+              // 两种标准都使用相同的 culib API；C++17 还检查与标准 string_view 互操作。
+          #if __cplusplus >= 201703L
               std::string_view standard = "from std::string_view";
               wavvix::string_view ours = standard;
               static_assert(!std::is_same<wavvix::string_view, std::string_view>::value,
                             "wavvix::string_view must stay a distinct type from std::string_view");
+          #else
+              wavvix::string_view ours = "from C++11";
+          #endif
+
+              wavvix::coroutine::init();
+              defer { wavvix::coroutine::shutdown(); };
+              int completed = 0;
+              wavvix::coroutine worker([&] { ++completed; });
+              if (!worker.joinable()) return 1;
+              worker.join();
+              if (completed != 1) return 1;
+              void* block = wavvix::mem::alloc(64);
+              if (!block) return 1;
+              wavvix::mem::free(block);
 
               const wavvix::result<int> parsed = wavvix::lexical_cast<int>("42");
               const std::vector<wavvix::string_view> parts = wavvix::split("a,b,c", ',');
@@ -307,8 +339,9 @@ jobs:
           CPP
 
       - name: build and run the consumer
+        shell: bash
         run: |
           cd consumer
-          xmake f -m release -y
-          xmake -w -y
+          xmake f -m release --toolchain=${{ matrix.platform.toolchain }} -y
+          xmake -y
           xmake run consumer

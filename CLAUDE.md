@@ -182,7 +182,7 @@
 | 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/37877826017) **22/22 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64/x86 × debug/release，加 GCC 4.8、MinGW x64/i686、公共头文件及源码依赖检查。VS2015 尚未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与两种 MinGW 架构都编译全部 29 个示例 |
 | CI 失败能诊断 | `.github/report-failure.sh`，把失败命令的输出发成 `::error::` annotation | 编译 / 测试 / 示例四个步骤全经过它，**编译器诊断和测试失败两种式样都认**。**不这么做的话从公开 API 看只有「exit code 1」**——job 日志要仓库 admin 权限，而 `run:` 步骤里编译器的原始诊断不会自动变成 annotation。**测试失败那一半原先是漏的**，代价是 macOS 红了五个提交没人知道原因，见下 |
-| 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，构造一个 C++17 使用方工程 | Linux GCC（同上） |
+| 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
