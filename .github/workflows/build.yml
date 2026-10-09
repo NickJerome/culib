@@ -27,8 +27,14 @@ jobs:
           msystem: MINGW32
           install: mingw-w64-i686-gcc
           suppress-deprecation-warnings: msystem-mingw32
+      - name: locate MinGW
+        id: mingw
+        shell: msys2 {0}
+        run: echo "path=$(cygpath -w "$MINGW_PREFIX")" >> "$GITHUB_OUTPUT"
       - name: build 32-bit library and tests with xmake
         shell: pwsh
+        env:
+          MINGW_HOME: ${{ steps.mingw.outputs.path }}
         run: |
           function Invoke-CheckedXmake {
             & xmake @args 2>&1 | Tee-Object -Variable lines
@@ -38,7 +44,7 @@ jobs:
               exit $code
             }
           }
-          Invoke-CheckedXmake f -c -p mingw -a i686 -m release --mingw=C:/msys64/mingw32 -y
+          Invoke-CheckedXmake f -c -p mingw -a i686 -m release "--mingw=$env:MINGW_HOME" -y
           Invoke-CheckedXmake build -y culib culib_test
       - name: build 32-bit tests and examples, run tests
         shell: msys2 {0}
