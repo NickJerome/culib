@@ -10,6 +10,7 @@
 #include <culib/lexical_cast.h>
 
 #include <cstddef>
+#include <utility>
 
 namespace wavvix {
 
@@ -142,12 +143,12 @@ result<config> config::parse(string_view text) {
         if (end >= text.size()) break;
     }
 
-    return result<config>(built);
+    return result<config>(std::move(built));
 }
 
 result<config> config::load(string_view path) {
-    const result<std::string> text = fs::read_file(path);
-    if (!text.is_ok()) return result<config>(text.error());
+    result<std::string> text = fs::read_file(path);
+    if (!text.is_ok()) return result<config>(std::move(text).error());
     result<config> parsed = parse(text.value());
     if (!parsed.is_ok()) {
         // 在错误里补上文件名——底层只知道「第 7 行」，不知道是哪个文件的第 7 行。
