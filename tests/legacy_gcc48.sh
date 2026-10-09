@@ -16,7 +16,7 @@ while IFS= read -r source; do
     g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
         -Iinclude -Isrc -c "$source" \
         -o "$build_dir/${source//\//_}.o"
-done < <(find src allocator/src -type f -name '*.cpp' | sort)
+done < <(find src mem/src -type f -name '*.cpp' | sort)
 g++ -c src/runtime/asm/context_x86_64_sysv.S -o "$build_dir/context.o"
 ar rcs "$build_dir/libculib.a" "$build_dir"/*.o
 

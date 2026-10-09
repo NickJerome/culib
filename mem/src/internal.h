@@ -16,7 +16,7 @@
 #include "compiler.h"
 #include "os.h"
 #include "random.h"
-#include "edumalloc/edumalloc.h"
+#include "culib/detail/allocator_c.h"
 
 /* ============================== 常量表（SPEC §1） ======================== */
 #define ED_PAGE_SIZE        ((size_t)64 * 1024)        /* page = slice        */

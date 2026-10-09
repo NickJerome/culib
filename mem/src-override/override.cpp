@@ -1,5 +1,5 @@
-// Linux malloc 符号覆盖；使用方法见 docs/allocator.md。
-#include "edumalloc/edumalloc.h"
+// Linux malloc 符号覆盖；使用方法见 docs/mem.md。
+#include "culib/detail/allocator_c.h"
 
 #include <cstddef>
 #include <cerrno>

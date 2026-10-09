@@ -39,7 +39,7 @@ if [[ "$arch" == x86_64 ]]; then
         object="$output/${source//\//_}.o"
         "$compiler" "${flags[@]}" -c "$source" -o "$object"
         library_objects+=("$object")
-    done < <(find allocator/src -type f -name '*.cpp' | sort)
+    done < <(find mem/src -type f -name '*.cpp' | sort)
 fi
 
 context_object="$output/context.S.o"

@@ -1,24 +1,4 @@
-﻿/* ----------------------------------------------------------------------------
- * edumalloc.h — EduMalloc 公共 API 契约（接口唯一事实源）
- *
- * EduMalloc：教学优先的生产级通用内存分配器
- * 设计依据：docs/design_skeleton.md（大纲）与 SPEC.md（规格，逐条对应 src/internal.h）
- *
- * 四族接口（共 13 个符号）：
- *   标准族：ed_malloc / ed_free / ed_calloc / ed_realloc / ed_malloc_usable_size
- *   对齐族：ed_aligned_alloc / ed_posix_memalign
- *   heap 族：ed_heap_new / ed_heap_destroy / ed_heap_malloc
- *   诊断族：ed_stats_print / ed_collect / ed_stats_get
- *
- * 运行时选项（环境变量 EDUMALLOC_<NAME>，进程启动时解析一次）：
- *   EDUMALLOC_PURGE_DELAY        (默认 1000)   空闲 slice 归还 OS 前的延迟(ms)
- *   EDUMALLOC_WINDOW_SIZE        (默认 1TiB)   一次性保留的地址窗口
- *                                              (下限 4GiB；保留失败逐级减半)
- *   EDUMALLOC_ARENA_RESERVE      (默认 64MiB)  首个 arena 的大小(2MiB 的整数倍)
- *   EDUMALLOC_SECURE             (默认 1)      L1 主动防御总开关
- *   EDUMALLOC_GUARDED_SAMPLE_RATE(默认 0)      L3 守护页采样率(0=关闭, N=每N字节1次)
- *   EDUMALLOC_EAGER_COMMIT       (默认 0)      保留 arena 时是否立即提交
- * ------------------------------------------------------------------------- */
+﻿/* 内部分配器 C ABI；公开用法见 <culib/mem.h> 和 docs/mem.md。 */
 #ifndef EDUMALLOC_H
 #define EDUMALLOC_H
 

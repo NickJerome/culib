@@ -12,12 +12,12 @@
  *   7. ed_collect / ed_stats_print 冒烟
  *   9. ed_stats_get 字段自洽；分配/释放计数与字节口径精确（快路径也必须记账）
  *
- * 只使用 include/edumalloc/edumalloc.h 公共 API。
+ * 只使用 include/culib/detail/allocator_c.h 公共 API。
  * 编译：g++ -std=c++11 -I include tests/test_unit.cpp <lib> -o test_unit
  * ------------------------------------------------------------------------- */
 #include "test_util.h"
 
-#include <edumalloc/edumalloc.h>
+#include <culib/detail/allocator_c.h>
 
 #include <cstdint>
 #include <cstring>

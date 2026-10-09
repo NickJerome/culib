@@ -1,8 +1,8 @@
-if is_plat("linux", "windows") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
+if is_plat("linux", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
     for _, file in ipairs(os.files(path.join(os.scriptdir(), "*.cpp"))) do
         local name = path.basename(file)
         if name ~= "test_malloc_override" or is_plat("linux") then
-            target("allocator_" .. name)
+            target("mem_" .. name)
                 set_kind("binary")
                 set_default(false)
                 if not is_plat("windows") then set_languages("c++11") end
@@ -12,7 +12,7 @@ if is_plat("linux", "windows") and is_arch("x86_64", "x64", "arm64", "arm64-v8a"
                 if name == "test_malloc_override" then
                     add_deps("culib_malloc_override")
                 else
-                    add_deps("culib_allocator")
+                    add_deps("culib")
                 end
                 if name == "test_new_override" then
                     add_deps("culib_new_override")

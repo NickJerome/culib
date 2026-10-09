@@ -25,8 +25,10 @@ target("culib")
     add_includedirs("src")
     add_headerfiles("include/(culib/**.h)")
     add_files("src/**.cpp")
-    if is_plat("linux", "windows") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
-        add_deps("culib_allocator", {public = true})
+    if is_plat("linux", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
+        add_files("mem/src/*.cpp")
+        if is_plat("windows") then add_defines("_CRT_SECURE_NO_WARNINGS") end
+        if is_plat("linux") then add_syslinks("pthread", {public = true}) end
     end
     -- 平台相关实现按文件名后缀区分：Windows / MinGW 用 *_win.cpp，其他平台用 *_posix.cpp
     if is_plat("windows", "mingw") then
@@ -85,13 +87,13 @@ target("culib")
     end
 target_end()
 
--- 通用分配器独立编译，避免它的实现和全局符号覆盖进入普通 culib 链接。
--- 当前 EduMalloc 实现要求 64 位 Windows/Linux；其余平台照常构建 culib。
-includes("allocator")
+-- 全局符号覆盖由独立目标显式启用；普通 culib 已包含分配器实现。
+-- 分配器只在 64 位 Windows/Linux 编译，其余平台照常构建 culib。
+includes("mem")
 
 -- 测试和示例只在 culib 作为主工程时构建；被其他工程 includes 时跳过
 if is_main_project then
     includes("tests")
     includes("examples")
-    includes("allocator/tests")
+    includes("mem/tests")
 end

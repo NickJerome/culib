@@ -5,7 +5,7 @@
 
 #include <culib/blocking_pool.h>
 #if (defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))) || defined(_WIN64)
-#include <culib/allocator.h>
+#include <culib/mem.h>
 #endif
 #include <culib/bytes.h>
 #include <culib/config.h>

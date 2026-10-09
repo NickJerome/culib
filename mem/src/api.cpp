@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
- * api.cpp — 公共 API 入口与参数校验（契约：include/edumalloc/edumalloc.h）
+ * api.cpp — 公共 API 入口与参数校验（契约：include/culib/detail/allocator_c.h）
  *
  * 分层锚点：L0 溢出检查 / L3 采样计数 / L2 canary 包装都挂在本层，
  * 快路径本身（internal.h 内联）不含任何安全开销分支（L1 除外：1 次 XOR）。

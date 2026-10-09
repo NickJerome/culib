@@ -1,4 +1,4 @@
-#include <edumalloc/edumalloc.h>
+#include <culib/detail/allocator_c.h>
 
 #include <cstdlib>
 #include <new>

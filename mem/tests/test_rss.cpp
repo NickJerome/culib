@@ -18,7 +18,7 @@
  * ------------------------------------------------------------------------- */
 #include "test_util.h"
 
-#include <edumalloc/edumalloc.h>
+#include <culib/detail/allocator_c.h>
 
 #include <cstdint>
 #include <cstdio>
