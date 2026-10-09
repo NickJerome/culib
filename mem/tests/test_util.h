@@ -4,9 +4,9 @@
  * 只依赖标准头文件，不依赖分配器内部头文件。
  * 提供：
  *   - CHECK(cond) / CHECK_MSG(cond, msg)：失败打印 文件:行号 并 exit(1)
- *   - edtest::splitmix64  ：确定性随机源
- *   - edtest::now_ms()    ：steady_clock 毫秒计时
- *   - edtest::summary()   ：main 末尾打印 PASS 汇总
+ *   - memtest::splitmix64  ：确定性随机源
+ *   - memtest::now_ms()    ：steady_clock 毫秒计时
+ *   - memtest::summary()   ：main 末尾打印 PASS 汇总
  * ------------------------------------------------------------------------- */
 #ifndef WAVVIX_MEM_TEST_UTIL_H
 #define WAVVIX_MEM_TEST_UTIL_H
@@ -16,7 +16,7 @@
 #include <cstdint>
 #include <chrono>
 
-namespace edtest {
+namespace memtest {
 
 /* 已通过检查计数（每个翻译单元独立，测试均为单 TU 程序） */
 inline unsigned long& check_counter() {
@@ -76,18 +76,18 @@ struct splitmix64 {
     }
 };
 
-} /* namespace edtest */
+} /* namespace memtest */
 
 #define CHECK(cond)                                                        \
     do {                                                                   \
-        if (!(cond)) { ::edtest::check_fail(#cond, __FILE__, __LINE__, 0); }\
-        else { ::edtest::check_pass(); }                                   \
+        if (!(cond)) { ::memtest::check_fail(#cond, __FILE__, __LINE__, 0); }\
+        else { ::memtest::check_pass(); }                                   \
     } while (0)
 
 #define CHECK_MSG(cond, msg)                                                  \
     do {                                                                      \
-        if (!(cond)) { ::edtest::check_fail(#cond, __FILE__, __LINE__, msg); }\
-        else { ::edtest::check_pass(); }                                      \
+        if (!(cond)) { ::memtest::check_fail(#cond, __FILE__, __LINE__, msg); }\
+        else { ::memtest::check_pass(); }                                      \
     } while (0)
 
 #endif /* WAVVIX_MEM_TEST_UTIL_H */

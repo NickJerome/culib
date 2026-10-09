@@ -252,7 +252,7 @@ void test_heap() {
     CHECK_MSG(h != NULL, "mem_heap_new returned NULL");
 
     /* 堆内分配若干块并写读（不逐个 free） */
-    edtest::splitmix64 rng(12345);
+    memtest::splitmix64 rng(12345);
     void* keep[64];
     for (int i = 0; i < 64; ++i) {
         size_t size = (size_t)rng.range(8, 8192);
@@ -620,5 +620,5 @@ int main() {
     std::printf("  collect with live blocks OK\n");
     test_tcache_page_handoff();
     std::printf("  tcache/page fill handoff OK\n");
-    return edtest::summary("test_unit");
+    return memtest::summary("test_unit");
 }

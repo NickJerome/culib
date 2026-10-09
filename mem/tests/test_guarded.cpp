@@ -96,5 +96,5 @@ int main() {
     test_guarded_aligned_alloc();
     std::printf("  guarded aligned_alloc OK\n");
     wavvix::mem::collect();
-    return edtest::summary("test_guarded");
+    return memtest::summary("test_guarded");
 }

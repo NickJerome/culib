@@ -348,16 +348,16 @@ bool spawn_case(const char* name, int* rc_out) {
      *   1) 上面的引号让 argv 不被拆散；
      *   2) main 扫描全部 argv 找 --case，拆散了也还能认出来；
      *   3) 这一层：即便前两层都失效、子进程解析不出用例名，它也会因为看见
-     *      EDTEST_CHILD 而立即退出，而不是回退到父进程分支再 spawn 一整轮。
+     *      WAVVIX_MEM_TEST_CHILD 而立即退出，而不是回退到父进程分支再 spawn 一整轮。
      * 缺了第 3 层的后果不是"少一道保险"而是无限自我 spawn——审查实测 3 秒内
      * 涨到 114 个进程。上一版把 main 里的 getenv 检查写了、却漏了这一行，
      * 于是那个检查永远为假：没人设置的哨兵等于没有哨兵。 */
-    _putenv_s("EDTEST_CHILD", "1");
+    _putenv_s("WAVVIX_MEM_TEST_CHILD", "1");
 
     errno = 0;
     intptr_t rc = _spawnl(_P_WAIT, exe, qexe, "--case", name, (char*)NULL);
     int saved_errno = errno;
-    _putenv_s("EDTEST_CHILD", "");   /* 立刻撤掉：父进程自己不该带着它 */
+    _putenv_s("WAVVIX_MEM_TEST_CHILD", "");   /* 立刻撤掉：父进程自己不该带着它 */
     errno = saved_errno;             /* _putenv_s 会覆盖 errno，先存后取 */
 
     if (rc == -1 && errno != 0) return false;
@@ -438,14 +438,14 @@ int main(int argc, char** argv) {
     /* 子进程入口。Windows 靠它代替 fork；POSIX 的 fork 路径用不到，但两平台都
      * 保留，便于手工单跑一条用例排查：test_security --case double_free */
     /* 扫描全部 argv 而非固定 argv[1]：路径含空格时 argv 会被拆散（见 spawn_case
-     * 的注释）。配合 EDTEST_CHILD 哨兵，把"解析不出用例名"从无限递归变成一次
+     * 的注释）。配合 WAVVIX_MEM_TEST_CHILD 哨兵，把"解析不出用例名"从无限递归变成一次
      * 可见的失败退出。 */
     const char* case_name = NULL;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--case") == 0) { case_name = argv[i + 1]; break; }
     }
 #if defined(_WIN32)
-    if (case_name == NULL && std::getenv("EDTEST_CHILD") != NULL) {
+    if (case_name == NULL && std::getenv("WAVVIX_MEM_TEST_CHILD") != NULL) {
         std::fprintf(stderr, "test_security: child could not parse --case from argv\n");
         child_exit(kSetupFail);
     }

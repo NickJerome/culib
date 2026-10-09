@@ -40,7 +40,7 @@ void worker_random(size_t iterations, uint64_t seed) {
     const size_t SLOTS = 128;
     void* slots[SLOTS];
     memset(slots, 0, sizeof(slots));
-    edtest::splitmix64 rng(seed);
+    memtest::splitmix64 rng(seed);
 
     for (size_t it = 0; it < iterations; ++it) {
         size_t slot = (size_t)rng.range(0, SLOTS - 1);
@@ -88,7 +88,7 @@ struct Block {
 };
 
 void producer(BlockQueue* bq, size_t nblocks, uint8_t magic_base) {
-    edtest::splitmix64 rng(0xBEEF + magic_base);
+    memtest::splitmix64 rng(0xBEEF + magic_base);
     for (size_t i = 0; i < nblocks; ++i) {
         size_t size = (size_t)rng.range(16, 2048);
         uint8_t* p = (uint8_t*)wavvix::mem::alloc(size);
@@ -156,7 +156,7 @@ void test_producer_consumer() {
 /* c) 线程 churn                                                       */
 /* ------------------------------------------------------------------ */
 void churn_worker(size_t iterations, uint64_t seed) {
-    edtest::splitmix64 rng(seed);
+    memtest::splitmix64 rng(seed);
     /* 短小工作集，快速分配释放后线程退出 → 触发 abandon 路径 */
     const size_t SLOTS = 16;
     void* slots[SLOTS];
@@ -190,7 +190,7 @@ void test_churn() {
 /* 最终可分配性：churn 之后再起一个线程，必须能正常 malloc/free */
 void test_liveness_after_churn() {
     std::thread t([]() {
-        edtest::splitmix64 rng(0xDEAD);
+        memtest::splitmix64 rng(0xDEAD);
         for (int i = 0; i < 50000; ++i) {
             size_t size = (size_t)rng.range(8, 8192);
             uint8_t* p = (uint8_t*)wavvix::mem::alloc(size);
@@ -436,19 +436,19 @@ void test_alloc_after_exit_hook() {
 int main() {
     std::printf("== test_stress ==\n");
 
-    long long t0 = edtest::now_ms();
+    long long t0 = memtest::now_ms();
     test_random_mt();
     std::printf("  (a) 4 threads x 250k random malloc/free OK  (%lld ms)\n",
-                edtest::now_ms() - t0);
+                memtest::now_ms() - t0);
 
-    t0 = edtest::now_ms();
+    t0 = memtest::now_ms();
     test_producer_consumer();
     std::printf("  (b) producer-consumer cross-thread free OK  (%lld ms)\n",
-                edtest::now_ms() - t0);
+                memtest::now_ms() - t0);
 
-    t0 = edtest::now_ms();
+    t0 = memtest::now_ms();
     test_churn();
-    std::printf("  (c) thread churn 50x4 OK  (%lld ms)\n", edtest::now_ms() - t0);
+    std::printf("  (c) thread churn 50x4 OK  (%lld ms)\n", memtest::now_ms() - t0);
 
     test_liveness_after_churn();
     std::printf("  liveness after churn OK\n");
@@ -463,11 +463,11 @@ int main() {
     std::printf("  (h) alloc after exit hook OK\n");
     std::printf("  (e) abandoned pages returned memory OK\n");
 
-    t0 = edtest::now_ms();
+    t0 = memtest::now_ms();
     test_aligned_cross_thread();
     std::printf("  (f) cross-thread free of aligned blocks OK  (%lld ms)\n",
-                edtest::now_ms() - t0);
+                memtest::now_ms() - t0);
 
     wavvix::mem::collect();
-    return edtest::summary("test_stress");
+    return memtest::summary("test_stress");
 }

@@ -173,5 +173,5 @@ int main() {
     /*  sanity：终值不应高于峰值 */
     CHECK(final_kb <= peak);
 
-    return edtest::summary("test_rss");
+    return memtest::summary("test_rss");
 }
