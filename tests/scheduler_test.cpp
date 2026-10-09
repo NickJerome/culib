@@ -444,6 +444,21 @@ TEST(scheduler, main_thread_sleep_drives_initialized_vcpu) {
     EXPECT(scheduled(), ==, 0u);
 }
 
+TEST(scheduler, nonpositive_sleep_returns_without_suspending) {
+    wavvix::scheduler_scope runtime;
+    int steps = 0;
+    spawn([&] {
+        sleep_for(ms(-1));
+        ++steps;
+        sleep_for(ms(0));
+        ++steps;
+    }).value();
+    sleep_for(ms(-1));
+    EXPECT(steps, ==, 0);
+    EXPECT(run(), ==, 1u);
+    EXPECT(steps, ==, 2);
+}
+
 TEST(scheduler, main_thread_sleep_runs_tasks_due_before_overshoot) {
     wavvix::scheduler_scope runtime;
     int ran = 0;

@@ -742,6 +742,7 @@ void yield() {
 }
 
 void sleep_for(std::chrono::nanoseconds duration) {
+    if (duration.count() <= 0) return;
     if (detail::fiber::inside()) {
         detail::scheduler_sleep_for(duration);
     } else if (detail::active_vcpu()) {

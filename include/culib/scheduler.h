@@ -96,7 +96,7 @@ result<void> spawn_with_stack(std::size_t stack_size, F&& body, Arg&& arg,
 void yield();
 
 // 协程内挂起当前协程；已初始化 vCPU 的主线程调用时调度其他任务。
-// 没有 vCPU 时，阻塞当前系统线程。
+// 没有 vCPU 时，阻塞当前系统线程。零或负时长立即返回。
 void sleep_for(std::chrono::nanoseconds duration);
 
 // 把当前线程变成 vCPU，跑到它的协程全部结束。返回跑完了多少根。
