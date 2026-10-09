@@ -7,6 +7,7 @@
 #include <memory>
 #include <new>
 #include <stdexcept>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 
@@ -44,6 +45,15 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
     }
     scheduler_task_schedule(task.get(), worker.release());
     return task.release();
+}
+
+[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD inline void coroutine_not_joinable() {
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    throw std::system_error(std::make_error_code(std::errc::invalid_argument),
+                            "wavvix::coroutine is not joinable");
+#else
+    std::terminate();
+#endif
 }
 
 }  // namespace detail
@@ -92,12 +102,12 @@ public:
 
     bool joinable() const noexcept { return task_ != 0; }
     void join() {
-        if (!task_) return;
+        if (!task_) detail::coroutine_not_joinable();
         detail::scheduler_task_join(task_);
         task_ = 0;
     }
-    void detach() noexcept {
-        if (!task_) return;
+    void detach() {
+        if (!task_) detail::coroutine_not_joinable();
         detail::scheduler_task_detach(task_);
         task_ = 0;
     }

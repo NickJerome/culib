@@ -15,6 +15,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -399,6 +400,24 @@ TEST(scheduler, coroutine_object_transfers_join_ownership) {
     EXPECT(moved.joinable(), ==, true);
     moved.join();
     EXPECT(ran, ==, 1);
+}
+
+TEST(scheduler, coroutine_object_rejects_join_and_detach_without_a_task) {
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    wavvix::coroutine empty;
+    int errors = 0;
+    try {
+        empty.join();
+    } catch (const std::system_error& failure) {
+        if (failure.code() == std::make_error_code(std::errc::invalid_argument)) ++errors;
+    }
+    try {
+        empty.detach();
+    } catch (const std::system_error& failure) {
+        if (failure.code() == std::make_error_code(std::errc::invalid_argument)) ++errors;
+    }
+    EXPECT(errors, ==, 2);
+#endif
 }
 
 TEST(scheduler, coroutine_object_joins_from_another_coroutine) {
