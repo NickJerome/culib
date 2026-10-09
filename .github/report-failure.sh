@@ -41,9 +41,12 @@ echo "::endgroup::"
 #     [  FAILED  ] demo.deliberately_fails (17 us)
 #
 # 这几个式样都够具体，不会像光匹配 error 那样把目标名捞进来。
-grep -nE "error:|warning:|error [A-Z]+[0-9]+|warning [A-Z]+[0-9]+|: Failure$|^ +(Expression|Values): |^\[  FAILED  \]" "$log" |
-    head -40 | while IFS= read -r line; do
-        echo "::error::$line"
-    done
+diagnostics=$(grep -nE "error:|warning:|error [A-Z]+[0-9]+|warning [A-Z]+[0-9]+|: Failure$|^ +(Expression|Values): |^\[  FAILED  \]" "$log" | head -40 || true)
+if [ -z "$diagnostics" ]; then
+    diagnostics=$(tail -40 "$log")
+fi
+while IFS= read -r line; do
+    echo "::error::$line"
+done <<< "$diagnostics"
 
 exit 1
