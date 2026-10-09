@@ -338,10 +338,14 @@ jobs:
           }
           CPP
 
-      - name: build and run the consumer
-        shell: bash
-        run: |
-          cd consumer
-          xmake f -m release --toolchain=${{ matrix.platform.toolchain }} -y
-          xmake -y
-          xmake run consumer
+      - name: configure the consumer
+        working-directory: consumer
+        run: xmake f -m release --toolchain=${{ matrix.platform.toolchain }} -y
+
+      - name: build the consumer
+        working-directory: consumer
+        run: xmake -y
+
+      - name: run the consumer
+        working-directory: consumer
+        run: xmake run consumer
