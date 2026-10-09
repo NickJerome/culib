@@ -579,6 +579,8 @@ result<int64_t> parse_time(string_view text);                       // 只认 IS
 
 ### 9. thread —— `culib/thread.h`
 
+此处保留 2026-10-03 的原始预期接口。协程成为并发模型后，通用的 `thread_pool` 任务队列不再作为当前接口；实际落地的是只给协程卸载阻塞调用的 [`blocking_pool`](../../blocking-pool.md)，可调用对象留在调用协程栈上，不需要 `std::function` 的逐任务分配。多 vCPU 协程分发仍待实现。定位变化见[调度器设计](2026-10-04-scheduler-design.md)第 1 节。
+
 ```cpp
 namespace wavvix {
 

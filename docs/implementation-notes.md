@@ -36,7 +36,7 @@ io_engine_linux.cpp 选择 io_uring 或 epoll，具体环在独立实现文件�
 
 给后续的多 vCPU 任务提交和阻塞任务池，事件引擎现在有内部的 `io_engine_enable_notify()` / `io_engine_notify()`。启用只在需要跨线程提交任务的 vCPU 上发生；普通 I/O 引擎不创建唤醒源。通知只打断 `io_engine_wait()`，不增加 I/O 完成数，也不进入协程的 `park_token` 队列。
 
-Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径验证；macOS 交给 CI。调度器现在能接收工作线程完成通知；多 vCPU 任务队列与工作线程生命周期管理仍需实现。
+Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径验证；macOS 交给 CI。调度器现在能接收工作线程完成通知；多 vCPU 的协程分发仍需实现。
 
 ## [`io_engine_posix.h`](../src/io_engine_posix.h)
 
@@ -181,6 +181,12 @@ OVERLAPPED 生命周期正是靠这条兜住的（它住在挂起协程的栈上
 ### 从其他系统线程唤醒协程
 
 同一 vCPU 内的 `scheduler_wake()` 可以直接修改运行队列，工作线程则不能碰这些线程独占的状态。第一次需要跨线程完成通知时，调度器给该 vCPU 的事件引擎启用唤醒源，并创建 `remote_waker`。工作线程把仍活在挂起协程栈上的 `park_token` 串入受锁保护的队列，再通知事件引擎；vCPU 从 `io_engine_wait()` 返回后摘出队列，按原有 `rouse()` 路径调度协程。队列使用凭据自身的 `next` 指针，没有逐次分配；只有启用过的 vCPU 才检查这条队列。锁同时保证工作线程写出的任务结果在协程恢复后可见。跨线程凭据只允许无超时等待，避免超时先释放栈上凭据、工作线程随后写入的悬空指针问题。
+
+## [`blocking_pool.cpp`](../src/blocking_pool.cpp)
+
+工作线程池只接收从协程发起的 `run()`。每次调用的可调用对象、队列节点和挂起凭据均活在该协程自己的栈上；节点用 `next` 串起，提交时只对已有队列加锁，没有逐任务堆分配。工作线程执行完函数后，经 `remote_waker` 唤醒原 vCPU；协程恢复后，栈上的对象才析构。互斥锁的释放与获取让工作线程写出的结果在恢复后的协程中可见。
+
+池启动时创建指定数量的系统线程，析构时停止接单、做完已提交任务并等待所有工作线程结束。若内核通知在任务已完成后失败，等待协程已无安全的恢复路径，因此打印诊断并终止进程，避免静默挂死。工作线程不捕获调用方函数的异常，与 `std::thread` 的未捕获异常行为一致。公共用法和生命周期约束见[阻塞任务池](blocking-pool.md)。
 
 ## [`sync.cpp`](../src/sync.cpp)
 
