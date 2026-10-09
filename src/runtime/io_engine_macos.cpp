@@ -165,9 +165,9 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     return true;
 }
 
-std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<park_token*>& completed) noexcept {
-    if (!engine) return 0;
+void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
+                    io_completion_batch& completed) noexcept {
+    if (!engine) return;
 
     // **直接给纳秒，不走 io_timeout_ms 的毫秒折算。** `kevent` 收的是 timespec，
     // 本来就能表达纳秒；epoll 和 IOCP 只能收毫秒那是它们的 API 限制，不是我们要
@@ -194,10 +194,9 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         ready = ::kevent(engine->kq, 0, 0, events, capacity, limit);
         if (ready >= 0) break;
         if (errno == EINTR) continue;    // 信号来了不算失败
-        return 0;
+        return;
     }
 
-    std::size_t fired = 0;
     for (int i = 0; i < ready; ++i) {
         if (events[i].filter == EVFILT_USER) continue;
         const int fd = static_cast<int>(events[i].ident);
@@ -211,14 +210,12 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         if (events[i].flags & EV_ERROR) {
             // 这个 fd 的这个方向整个废了，data 里是 errno。把等着的全部收掉——
             // 不收的话那些协程永远醒不过来，run() 也就永远不返回。
-            const std::size_t had = completed.size();
             io_fail_chain(head, static_cast<int>(events[i].data), completed, engine->pending);
-            fired += completed.size() - had;
             slot.armed &= ~bit;
         } else {
             // EV_EOF 不单独处理：read() 会返回 0，io_complete() 把 0 当成「对端关了」
             // 交回去，和 epoll 那边同一条路。
-            while (io_complete(head, completed, engine->pending)) ++fired;
+            while (io_complete(head, completed, engine->pending)) {}
         }
 
         unsigned armed = 0;
@@ -226,7 +223,6 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         if (slot.writers) armed |= io_armed_write;
         sync_interest(engine, fd, slot, armed);
     }
-    return fired;
 }
 
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {

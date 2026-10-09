@@ -196,9 +196,9 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     return true;
 }
 
-std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<park_token*>& completed) noexcept {
-    if (!engine) return 0;
+void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
+                    io_completion_batch& completed) noexcept {
+    if (!engine) return;
     const long milliseconds = io_timeout_ms(timeout);
     const DWORD limit = (milliseconds < 0) ? INFINITE : static_cast<DWORD>(milliseconds);
 
@@ -206,12 +206,11 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
     const ULONG capacity = static_cast<ULONG>(sizeof entries / sizeof entries[0]);
     ULONG count = 0;
     // 一次取一批。超时返回 FALSE 且 GetLastError() 是 WAIT_TIMEOUT，和真出错一样
-    // 没有完成项要处理，所以两种都直接回 0。
+    // 没有完成项要处理，所以两种都直接返回。
     if (!::GetQueuedCompletionStatusEx(engine->port, entries, capacity, &count, limit, FALSE)) {
-        return 0;
+        return;
     }
 
-    std::size_t fired = 0;
     for (ULONG i = 0; i < count; ++i) {
         OVERLAPPED* const overlapped = entries[i].lpOverlapped;
         if (!overlapped) continue;    // 不是我们投的（比如 PostQueuedCompletionStatus）
@@ -251,12 +250,9 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
             }
         }
 
-        request->next = 0;
-        completed.push_back(request->waiter);
+        completed.push(request);
         if (engine->pending) --engine->pending;
-        ++fired;
     }
-    return fired;
 }
 
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {

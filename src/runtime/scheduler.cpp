@@ -131,7 +131,6 @@ struct vcpu {
     ready_queue ready;
     ready_queue round;
     std::vector<park_token*> timers;
-    std::vector<park_token*> completed;
     std::size_t parked_count;
     std::uint64_t timer_order;
     io_engine* engine;
@@ -356,12 +355,10 @@ void idle(vcpu& self, bool have_deadline, instant nearest) {
         return;
     }
 
-    self.completed.clear();
-    io_engine_wait(self.engine, timeout, self.completed);
-    // 引擎只返回凭据，入队由调度器处理。
-    for (std::size_t i = 0; i < self.completed.size(); ++i) {
-        rouse(self, *self.completed[i]);
-    }
+    io_completion_batch completed;
+    io_engine_wait(self.engine, timeout, completed);
+    // 引擎交回请求，入队由调度器处理。
+    while (io_request* const request = completed.pop()) rouse(self, *request->waiter);
 }
 
 }  // namespace

@@ -6,7 +6,6 @@
 
 #include <chrono>
 #include <cstddef>
-#include <vector>
 
 namespace wavvix {
 namespace detail {
@@ -64,7 +63,7 @@ struct io_request {
     // 挂起凭据。**引擎只负责把这个指针原样交回去，一个字段都不读**——「这根协程可以
     // 继续了」之后怎么排队是调度器的事。调用方（scheduler_io）用同一个 token 挂起自己。
     park_token* waiter;
-    io_request* next;             // 同一句柄同一方向上的等待链
+    io_request* next;             // 等待链；完成后复用为完成队列的链指针
 #if defined(_WIN32)
     unsigned long datagram_flags;  // WSARecvFrom 的标志位，完成前不能离开栈帧
     // OVERLAPPED 的位置。真正的类型在 io_engine_win.cpp 里 reinterpret 回去——
@@ -72,6 +71,32 @@ struct io_request {
     void* overlapped[8];
     alignas(void*) char accept_addresses[288];  // AcceptEx 的两个地址
 #endif
+};
+
+struct io_completion_batch {
+    io_completion_batch() noexcept : head(0), tail(0) {}
+
+    void push(io_request* request) noexcept {
+        request->next = 0;
+        if (tail) tail->next = request;
+        else head = request;
+        tail = request;
+    }
+
+    io_request* pop() noexcept {
+        io_request* const request = head;
+        if (!request) return 0;
+        head = request->next;
+        if (!head) tail = 0;
+        request->next = 0;
+        return request;
+    }
+
+    bool empty() const noexcept { return head == 0; }
+
+private:
+    io_request* head;
+    io_request* tail;
 };
 
 // 每个后端在自己的 .cpp 里完整定义。
@@ -104,10 +129,10 @@ bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 // 失败原因已经写进 req，调用方不要挂起。
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept;
 
-// 带超时地等。完成的操作把结果写进各自的 io_request，并把它们的挂起凭据追加到
-// completed。timeout 为负表示无限等。返回完成了几个。
-std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<park_token*>& completed) noexcept;
+// 带超时地等。完成的操作把结果写进各自的 io_request，并把请求追加到
+// completed。timeout 为负表示无限等。调用方须在请求离开栈帧前取完完成项。
+void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
+                    io_completion_batch& completed) noexcept;
 
 // 撤掉一次已经挂上去的操作（调用方超时了）。
 //

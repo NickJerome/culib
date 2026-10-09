@@ -288,7 +288,7 @@ TEST(io_engine, cross_thread_notification_interrupts_wait) {
         std::this_thread::sleep_for(ms(20));
         posted = wavvix::detail::io_engine_notify(engine);
     });
-    std::vector<wavvix::detail::park_token*> completed;
+    wavvix::detail::io_completion_batch completed;
     const std::chrono::steady_clock::time_point start =
         std::chrono::steady_clock::now();
     wavvix::detail::io_engine_wait(engine, std::chrono::seconds(3), completed);

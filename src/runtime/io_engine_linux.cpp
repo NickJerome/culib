@@ -170,9 +170,9 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
     return true;
 }
 
-std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
-                           std::vector<park_token*>& completed) noexcept {
-    if (!engine) return 0;
+void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
+                    io_completion_batch& completed) noexcept {
+    if (!engine) return;
     const long milliseconds = io_timeout_ms(timeout);
 
     epoll_event events[64];
@@ -184,10 +184,9 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         // 信号来了不算失败。当成失败的话程序在有信号的环境里会随机抽风——
         // Photon 的 epoll 后端也是这么接的（io/epoll.cpp:215）。
         if (errno == EINTR) continue;
-        return 0;
+        return;
     }
 
-    std::size_t fired = 0;
     for (int i = 0; i < ready; ++i) {
         const int fd = events[i].data.fd;
         if (fd == engine->wake_fd) {
@@ -201,10 +200,10 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         // EPOLLERR / EPOLLHUP 不单独处理：直接去做那次系统调用，让它去报错。
         // 一条路比两条路少一个「错误该归谁」的判断，而错误码本来就是系统调用给的。
         if (got & static_cast<std::uint32_t>(EPOLLIN | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(slot.readers, completed, engine->pending)) ++fired;
+            while (io_complete(slot.readers, completed, engine->pending)) {}
         }
         if (got & static_cast<std::uint32_t>(EPOLLOUT | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(slot.writers, completed, engine->pending)) ++fired;
+            while (io_complete(slot.writers, completed, engine->pending)) {}
         }
 
         unsigned armed = 0;
@@ -212,7 +211,6 @@ std::size_t io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         if (slot.writers) armed |= io_armed_write;
         sync_interest(engine, fd, slot, armed);
     }
-    return fired;
 }
 
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {

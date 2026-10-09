@@ -85,7 +85,7 @@ struct io_request {
     int            failure;       // transferred < 0 时的 errno / Win32 错误码
     // ---- 引擎内部 ----
     park_token*    waiter;        // 挂起凭据，引擎只转交不读（第五期把 coroutine* 换成了它）
-    io_request*    next;          // 同一句柄同一方向上的等待链
+    io_request*    next;          // 等待链；完成后复用为完成批次的链指针
 };
 ```
 
@@ -97,14 +97,14 @@ struct io_request {
 | --- | --- |
 | `bool io_engine_adopt(io_engine*, io_handle)` | 把一个句柄交给引擎，**在它第一次参与 I/O 之前**。POSIX 两个后端什么都不做；IOCP 在这里做完成端口的一次性关联 |
 | `bool io_engine_arm(io_engine*, io_request&)` | 把这次操作挂上去。epoll / kqueue 是登记兴趣，IOCP 是真的发出一个 overlapped 操作。**不挂起协程**——挂起是调度器的事，引擎不碰调度 |
-| `std::size_t io_engine_wait(io_engine*, nanoseconds timeout, std::vector<park_token*>& completed)` | 带超时地等。完成的操作把结果写进各自的 `io_request`，并把**挂起凭据**追加到 `completed`。`timeout < 0` 表示无限等。返回完成了几个 |
+| `void io_engine_wait(io_engine*, nanoseconds timeout, io_completion_batch& completed)` | 带超时地等。完成的操作把结果写进各自的 `io_request`，并把请求追加到侵入式完成批次。`timeout < 0` 表示无限等。调用方从请求取出挂起凭据 |
 | `bool io_engine_cancel(io_engine*, io_request&)` | **第五期加的**：调用方超时了，撤掉这次操作。返回值区分「撤干净了」和「通知还会来，你得再等一次」，见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md) 4.2 |
 
 加 `io_engine_create` / `destroy` 和一个查询 `io_engine_pending`（还有几个操作没回来）。那个计数**就是阻塞在 I/O 上的协程数**，调度器不另记一份，见第 5 节。
 
 **`adopt` 为什么必须在抽象里，而不能藏在引擎内部。** IOCP 要求句柄先关联到完成端口，而关联**是一次性的**（重复关联直接报错）。引擎本可以自己记一张「关联过哪些句柄」的表来判断该不该关联——**那是个 bug**：Windows 会回收句柄值，一个关掉的套接字腾出来的数值可能立刻被新套接字拿到，表就会说「这个关联过了」，于是新套接字上的操作永远不会完成，而且是静默的。
 
-所以这件事只能由**持有句柄生命周期的那一方**做：它知道「这是一个新句柄」。将来是 `net` 的 `socket` 构造函数，现在是测试里造那对套接字的地方。libuv 也是在创建时就关联的。
+所以这件事只能由**持有句柄生命周期的那一方**做：它知道「这是一个新句柄」。现在由 `net` 的 socket 创建与接收路径调用，内部测试造套接字时也会调用。libuv 也是在创建时就关联的。
 
 **代价是 POSIX 这边多一个什么都不做的函数**，调用方三个平台一个写法。这比「让 Windows 那边多一张会出错的表」便宜。
 
