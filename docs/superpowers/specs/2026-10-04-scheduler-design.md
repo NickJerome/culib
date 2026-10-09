@@ -116,7 +116,7 @@ io_uring 本身是三个系统调用（`io_uring_setup` / `io_uring_enter` / `io
 
 | | 初版 | 当前方案 | 理由 |
 | --- | --- | --- | --- |
-| 默认栈 | 初版 128 KiB | **256 KiB 请求值**（Photon 是 8 MiB） | 默认需覆盖常见调用栈；深递归用 `with_stack()` 显式加大。Windows 会提交整段栈，不能照搬 Photon 的 8 MiB |
+| 默认栈 | 初版 128 KiB | **240 KiB 请求值**（Photon 是 8 MiB） | 默认需覆盖常见调用栈；深递归用 `with_stack()` 显式加大。Windows 会提交整段栈，不能照搬 Photon 的 8 MiB |
 | 创建开销 | 约 7 µs（三个系统调用） | 栈池命中时百纳秒级，见 8.5 | 一个请求一根协程时，系统分配太慢 |
 
 具体数字见 8.4。Photon 的栈池分「每 vCPU」和「全进程」两档，而且**默认不池化**；culib 按线程池化，缓存有字节预算上限。
@@ -251,9 +251,11 @@ vCPU 在第一次需要调度器的调用（如 `spawn()` 或 `run()`）时才�
 
 多出来的是虚拟地址，没碰到的页不占物理内存，这也是每个分配器都在做的事。
 
-默认请求从 128 KiB 提到 **256 KiB**。`coroutine_create()` 将请求值、控制块和回调对象合计后分桶；普通小回调现在进入 320 KiB 桶，另加一页保护页。公开的 `default_stack_size` 是保证的最小可用栈，不是实际分配字节数。原先纯 2 的幂分桶使它跳到 512 KiB。64 位每线程 32 MiB 的缓存预算，在 4 KiB 页系统可留下约 101 根默认栈；32 位 8 MiB 可留下约 25 根。
+默认请求曾从 128 KiB 提到 256 KiB，但 `coroutine_create()` 将请求值、控制块和回调对象合计后分桶，普通小回调因此进入 320 KiB 桶。现在请求 **240 KiB**，给控制块和小回调留下 16 KiB 余量，普通任务进入 256 KiB 桶，另加一页保护页。公开的 `default_stack_size` 是保证的最小可用栈，不是实际分配字节数。64 位每线程 32 MiB 的缓存预算，在 4 KiB 页系统可留下约 126 根默认栈；32 位 8 MiB 可留下约 31 根。
 
-没有采用 Photon 的 8 MiB：POSIX `mmap` 的未触碰页主要耗虚拟地址，但 Windows 当前的 `VirtualAlloc(MEM_RESERVE | MEM_COMMIT)` 会把整段算入 commit charge。即使只选 1 MiB 的桶，数千根空闲待运行协程也会造成数 GiB 的提交。现在选择 320 KiB 实际桶，优先兼顾常见服务器负载与低占用；需要深递归或大栈帧的调用方显式传栈大小。示例的冷路径一次创建 512 根，按 4 KiB 页计算峰值约 162 MiB 提交。
+没有采用 Photon 的 8 MiB：POSIX `mmap` 的未触碰页主要耗虚拟地址，但 Windows 当前的 `VirtualAlloc(MEM_RESERVE | MEM_COMMIT)` 会把整段算入 commit charge。即使只选 1 MiB 的桶，数千根空闲待运行协程也会造成数 GiB 的提交。现在普通小回调选择 256 KiB 实际桶；需要深递归或大栈帧的调用方显式传栈大小。512 根默认协程按 4 KiB 页计算，栈映射合计从 162 MiB 降到 130 MiB。
+
+在 WSL2 / Linux x86_64 上，同一进程先建立运行时、记录 `/proc/self/status` 的 `VmSize`，再提交 512 根空回调但暂不运行：旧默认值的增量为 165888 KiB，新默认值为 133120 KiB，恰好每根少 64 KiB。这验证了分桶选择；它是虚拟地址量，不代表 Linux 的物理内存减少了同样多。Windows 的提交量变化还须由 Windows 平台测试或测量确认。
 
 Windows 的 commit charge 不是已触碰的物理内存，但仍受系统提交上限约束。当前栈不会按需增长，因此一次性 `MEM_RESERVE | MEM_COMMIT`；最低页用 `PAGE_NOACCESS` 持续拦截越界。`PAGE_GUARD` 在首次触碰后会失去保护，适合可增长的线程栈，不适合这里的固定栈。POSIX 则以 `mmap` 获取内存、`mprotect(PROT_NONE)` 保护最低页，未触碰的页不占物理内存。
 

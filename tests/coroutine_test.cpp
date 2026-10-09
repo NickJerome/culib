@@ -216,7 +216,7 @@ TEST(fiber, reports_its_usable_stack) {
     // 默认那个
     fiber standard([] {});
     EXPECT(standard.stack_size() >= wavvix::default_stack_size, ==, true);
-    EXPECT(standard.stack_size() < 320 * 1024, ==, true);
+    EXPECT(standard.stack_size() < 256 * 1024, ==, true);
 }
 
 TEST(fiber, nests_one_inside_another) {

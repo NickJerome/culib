@@ -33,7 +33,7 @@ bool coroutine_inside() noexcept;
 }  // namespace detail
 
 // 默认可用栈大小。
-const std::size_t default_stack_size = 256 * 1024;
+const std::size_t default_stack_size = 240 * 1024;
 
 namespace detail {
 
