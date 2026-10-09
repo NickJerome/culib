@@ -193,6 +193,8 @@ OVERLAPPED 生命周期正是靠这条兜住的（它住在挂起协程的栈上
 
 池启动时创建指定数量的系统线程，析构时停止接单、做完已提交任务并等待所有工作线程结束。若内核通知在任务已完成后失败，等待协程已无安全的恢复路径，因此打印诊断并终止进程，避免静默挂死。工作线程不捕获调用方函数的异常，与 `std::thread` 的未捕获异常行为一致。公共用法和生命周期约束见[阻塞任务池](blocking-pool.md)。
 
+线程句柄一次分配成数组，`worker_count` 只在一个线程成功启动后递增。若后续线程创建失败，局部池对象析构时只 join 已启动的线程；数组分配失败通过 `resource_exhausted` 返回，在关闭异常的构建中也不依赖 `vector::reserve()`。
+
 ## [`sync.cpp`](../src/runtime/sync.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。

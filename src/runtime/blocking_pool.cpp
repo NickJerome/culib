@@ -8,12 +8,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <string>
 #include <thread>
 #include <utility>
-#include <vector>
 
 namespace wavvix {
 namespace {
@@ -29,13 +29,14 @@ struct blocking_job {
 }  // namespace
 
 struct blocking_pool::impl {
-    impl() : head(0), tail(0), closing(false) {}
+    impl() : head(0), tail(0), closing(false), worker_count(0) {}
     std::mutex mutex;
     std::condition_variable ready;
     blocking_job* head;
     blocking_job* tail;
     bool closing;
-    std::vector<std::thread> workers;
+    std::unique_ptr<std::thread[]> workers;
+    unsigned worker_count;
 };
 
 result<blocking_pool> blocking_pool::create(unsigned workers) {
@@ -49,9 +50,13 @@ result<blocking_pool> blocking_pool::create(unsigned workers) {
 #if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
     try {
 #endif
-        pool.state_->workers.reserve(workers);
-        for (unsigned i = 0; i < workers; ++i)
-            pool.state_->workers.emplace_back(&blocking_pool::worker_loop, pool.state_);
+        pool.state_->workers.reset(new (std::nothrow) std::thread[workers]);
+        if (!pool.state_->workers)
+            return make_error(error_kind::resource_exhausted);
+        for (unsigned i = 0; i < workers; ++i) {
+            pool.state_->workers[i] = std::thread(&blocking_pool::worker_loop, pool.state_);
+            ++pool.state_->worker_count;
+        }
 #if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
     } catch (const std::exception& failure) {
         return make_error(error_kind::io,
@@ -83,14 +88,14 @@ void blocking_pool::close() noexcept {
         state_->closing = true;
     }
     state_->ready.notify_all();
-    for (std::size_t i = 0; i < state_->workers.size(); ++i)
+    for (unsigned i = 0; i < state_->worker_count; ++i)
         state_->workers[i].join();
     delete state_;
     state_ = 0;
 }
 
 unsigned blocking_pool::size() const noexcept {
-    return state_ ? static_cast<unsigned>(state_->workers.size()) : 0;
+    return state_ ? state_->worker_count : 0;
 }
 
 void blocking_pool::worker_loop(impl* state) noexcept {
