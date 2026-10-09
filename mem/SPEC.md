@@ -1,6 +1,8 @@
 # EduMalloc 实现规范（SPEC.md）
 
-> 本文件是代码实现的单一事实源。更深层的原理论述见：
+> **历史存档**：本文记录导入 culib 前的 EduMalloc 设计，旧 API、路径和私有堆要求不再约束当前实现。当前公共接口与平台范围见 [culib 分配器文档](../docs/mem.md)。
+
+> 原 EduMalloc 项目以本文件为代码实现的单一事实源。更深层的原理论述见：
 > - 决策记录（决定 / 备选 / 依据 / 代价）：`docs/decisions.md`
 > - 设计骨架（命名/数字 SSOT）：`docs/design_skeleton.md`
 > - 设计全文（机制论证）：`docs/design.md`

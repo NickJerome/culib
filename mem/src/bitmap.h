@@ -1,10 +1,5 @@
 /* ----------------------------------------------------------------------------
- * bitmap.h — 位图 + binned bitmap（SPEC §4.8）
- *
- * 简化决策（已在 SPEC 允许范围内声明）：mem_bbitmap_t 内部用"线性扫描空字
- * 跳跃"实现连续 N 位查找，而非 mimalloc 的多级分桶。arena ≤ 1GiB 即
- * ≤16384 slice = 256 个 uint64 字，线性扫描在冷路径上代价可忽略；
- * 接口保持 binned bitmap 语义（O(1) 语义不变，实现从简）。
+ * bitmap.h — 位图与带 rover 提示的连续空闲段查找
  * ------------------------------------------------------------------------- */
 #ifndef WAVVIX_MEM_BITMAP_H
 #define WAVVIX_MEM_BITMAP_H
@@ -18,8 +13,7 @@ struct mem_bitmap_t {
   size_t    nbits;
 };
 
-/* binned bitmap：按连续空闲长度分级的语义封装。
- * v2：rover 游标 + ctz 字级 run 扫描（摊还近 O(1)，替代 v1 逐位线性扫描） */
+/* 从上次成功的位置继续查找；位扫描按字进行。 */
 struct mem_bbitmap_t {
   mem_bitmap_t map;
   size_t      hint;    /* 上次分配成功的字下标（rover），下次分配从这里起步 */

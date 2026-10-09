@@ -1,5 +1,7 @@
 # Benchmark Results (v2, 2026-09-17)
 
+> **历史存档**：这些数据来自独立的 EduMalloc 项目，不能作为当前 culib 实现的性能结论。
+
 上一版（2026-09-14）保留在 `benchmark_results.v1-2026-09-14.md.bak`，**与本版不可比**：
 那一轮跑在另一台机器（3 vCPU 共享 VM），且当时的代码还是 v1（页映射表 + 描述符池），
 mimalloc 一列用的是来历不可考的本地构建（`bench_single` 3.804 Mops，详见下文"测量有效性"）。

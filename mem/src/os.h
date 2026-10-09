@@ -51,21 +51,13 @@ void    mem_os_write_stderr(const char* s);
 " 后 abort。 */
 WAVVIX_MEM_NORETURN void mem_os_fatal(const char* line);
 
-/* fork 钩子注册（Linux：pthread_atfork；Windows 无 fork，为空实现）。
- * prepare/parent/child 语义同 pthread_atfork。 */
-/* 线程退出回调。注册一次（进程级），此后每个线程用 mem_os_thread_exit_set 存一个
- * 值；线程退出时回调以该值为参数被调用。
- *
- * 为什么不用 thread_local 对象的析构函数：MinGW-w64 上 __cxa_thread_atexit 登记的
- * 析构函数执行时，该线程的 TLS 存储已被释放，`this` 是悬垂指针——读到的可能是
- * 全零、也可能是别的线程那份（实测撕裂出非对齐指针、同一 theap 被两个线程各回收
- * 一次）。回调把值当参数传进来，整条路径不碰 TLS，这是唯一可靠的形式。
- * Windows 用 FlsAlloc（其回调对 std::thread 创建的线程也会执行，TLS 回调不会）；
- * POSIX 用 pthread_key_create。回调内不得分配内存。 */
+/* 注册进程级线程退出回调；每个线程存入的 value 会作为回调参数传回。
+ * Windows 用 FlsAlloc，POSIX 用 pthread_key_create。 */
 typedef void (*mem_os_thread_exit_fn)(void* value);
 bool  mem_os_thread_exit_init(mem_os_thread_exit_fn fn);
 bool  mem_os_thread_exit_set(void* value);
 
+/* fork 钩子注册；Windows 无 fork，此接口为空实现。 */
 typedef void (*mem_os_fork_handler_t)(void);
 void  mem_os_atfork_register(mem_os_fork_handler_t prepare,
                             mem_os_fork_handler_t parent,

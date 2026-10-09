@@ -1,11 +1,10 @@
 /* ----------------------------------------------------------------------------
- * secure.cpp — L1/L3 安全机制（SPEC §5）
+ * secure.cpp — 页密钥、守护页采样与调试校验
  *
  * L1（默认开）：空闲链 XOR 密钥生成（编码本身内联在 internal.h 快路径），
  *   double-free 编码哨兵（internal.h 的 mem_secure_check_free 内联）。
- * L3（选项 guarded_sample_rate>0）：按请求字节倒数采样，命中者走独立映射，
- *   最后一页 PROT_NONE 守护页，对象贴守护页前边界放置，越界写立即 SIGSEGV。
- * L2（编译期 -DED_DEBUG）：块首尾 canary + 0xD0/0xDF 填充 + UAF 写校验。
+ * L3 采样命中时从 arena 分配带 PROT_NONE 尾页的块。
+ * L2 在 WAVVIX_MEM_DEBUG 构建中校验 canary 与 UAF 写入。
  * ------------------------------------------------------------------------- */
 #include "internal.h"
 
@@ -17,7 +16,7 @@ void mem_secure_page_keys(mem_page_t* page, uint64_t* random_state) {
   page->keys[1] = mem_random_next(random_state);
 }
 
-/* L3：守护页采样分配（独立映射 + 尾部 PROT_NONE 守护页） */
+/* L3：守护页采样分配。 */
 void* mem_guarded_alloc(mem_theap_t* t, size_t size) {
   if (size == 0) size = 1;
   return mem_malloc_large_ex(t, size, true, NULL);
@@ -34,7 +33,7 @@ void* mem_guarded_alloc(mem_theap_t* t, size_t size) {
  * 唯一只依赖用户指针的一环。既然头的口径改了，尾的也一并统一，免得两个 canary
  * 各有各的密钥推导；两者都仍然做到"同图案不同块不同值"。
  *
- * usable_size 报的是"用户指针到用户区末尾"（SPEC §5 L2 注）。
+ * usable_size 报的是"用户指针到用户区末尾"。
  * 空闲块的 0xDF 填充与校验都从 WAVVIX_MEM_L2_LINK(8) 起——前 8 字节是空闲链编码域。 */
 #define WAVVIX_MEM_CANARY_HEAD 0xC0FFEE11ED0C4DE1ull
 #define WAVVIX_MEM_CANARY_TAIL 0x7A11C0DE5AFEED5Aull

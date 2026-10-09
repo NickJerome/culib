@@ -1,5 +1,7 @@
 # EduMalloc v2 重设计：设计规格
 
+> **历史存档**：本文是独立 EduMalloc 项目的旧设计稿，不再约束 culib 当前实现。
+
 日期：2026-09-15。状态：已由项目所有者批准（"按照推荐来做"）。
 
 本规格取代 SPEC.md 中与之冲突的条目；实施完成后 SPEC.md、README.md、docs/design.md、docs/design_skeleton.md 按本规格回写。

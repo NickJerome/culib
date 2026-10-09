@@ -1,17 +1,5 @@
 /* ----------------------------------------------------------------------------
- * arena.cpp — 地址窗口、平铺描述符数组、arena 切分、到期 purge、abandoned 桶
- *             （SPEC §4.3/§4.7/§4.8）
- *
- * 一次性保留一整片地址窗口（默认 1 TiB，失败逐级减半，下限 4 GiB）与一片
- * 与之等长的描述符数组（每 64KiB slice 一个 128B 描述符）。arena 只是窗口里
- * 顺序切下的一段连续 slice，因此：
- *   - 指针 → 描述符 是纯算术（见 internal.h 的 mem_ptr_page），没有查表层；
- *   - 描述符不再需要池、索引与回收，slice i 的描述符恒为 mem_desc_base[i]；
- *   - 描述符按 arena 粒度提交（WAVVIX_MEM_ARENA_MIN=2MiB → 32 slice → 4KiB 描述符），
- *     提交后内容保证为零，magic==0 即"该 slice 上没有活页"。
- *
- * slice 两态回收：dirty（物理页仍持有，可复用）→ decommitted（已归还内核）。
- * purge 到期检查摊销在分配慢路径，无后台线程。
+ * arena.cpp — 地址窗口、平铺描述符、slice 回收和 abandoned 页
  * ------------------------------------------------------------------------- */
 #include "internal.h"
 #include "bitmap.h"

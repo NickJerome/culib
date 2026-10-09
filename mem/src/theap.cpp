@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
- * theap.cpp — 线程本地堆、分配/释放路径、并发模型（SPEC §4.5/§4.6/§4.7）
+ * theap.cpp — 线程本地堆、分配/释放路径、并发模型
  *
  * 核心不变式：
  *   - 每 page 恰一 owner 线程；owner 操作 free/local_free/used 零锁零原子；
@@ -20,49 +20,12 @@ static void mem_tcache_flush_all(mem_theap_t* t);
 
 namespace {
 
-/* 线程退出钩子。由 OS 层的线程退出回调驱动（Windows FlsAlloc / POSIX
- * pthread_key_create），theap 指针作为**参数**传进来。
- *
- * 为什么不能用 thread_local 对象的析构函数——这一条是拿崩溃换来的：
- * MinGW-w64 上 __cxa_thread_atexit 登记的析构函数执行时，该线程的 TLS 存储
- * 已被释放，`this` 是悬垂指针。第一版（析构里读 mem_t_theap）恒读到 NULL，
- * 钩子静默空转，test_stress 跑完有 376 MiB 卡在已死线程的页队列里。
- * 第二版（把指针存进 guard 对象自身、改读 this->t）看似修好了，实则更糟：
- * 那块存储同样已被回收，读到的可能是别的线程那份。实测证据——
- *   PROBE: dtor on tid=5408  but guard was filled by tid=0     (theap 非 NULL)
- *   PROBE: dtor on tid=40924 but guard was filled by tid=1568  (theap 0x...801 非对齐)
- *   PROBE: 同一个 theap 被两个不同 tid 的析构各处理一次 -> 双重推入回收链
- * 后果是并发线程 churn 下 MinGW release 8/10 崩溃（SIGSEGV / "double free
- * detected" / "tcache corruption"），而基线 0/10。
- *
- * 结论：退出钩子里**不能从 TLS 读任何东西**。回调把值当参数传进来就没有这个
- * 问题。mem_t_theap 不在这里清——线程正在退出，没有后续访问，而写它同样要碰
- * 那块已失效的 TLS。 */
+/* OS 回调直接传入 theap；MinGW 的 TLS 对象析构阶段不能安全读取 TLS。
+ * 历史问题与实测记录见 mem/docs/decisions.md。 */
 static void mem_thread_exit_cb(void* value) {
   mem_theap_t* t = (mem_theap_t*)value;
   if (t == NULL) return;
-  /* 必须清 mem_t_theap，而且这不是收尾卫生、是正确性：下面 mem_theap_abandon
-   * 会把 t 压进全局回收链，那一刻起别的线程随时可能取走它并 memset 重置。
-   * 而本线程在钩子之后还可能分配——更晚的 pthread key 析构、thread_local
-   * 对象的析构都排在后面——那时 mem_theap_fast() 看见 mem_t_theap 非空就直接
-   * 返回 t，于是两个线程共用同一份 tcache 与页队列。实测漏清的代价：
-   *   MSVC release 19/20 崩、WAVVIX_MEM_DEBUG 20/20 崩；Linux release 3/20；
-   *   形态是 "tcache chain corrupted" / "double free detected" / SIGSEGV。
-   * 这与本函数存在的理由（Task 9 那个 bug）完全同源：都是同一个 theap 被两个
-   * 线程同时持有，只是那一版从失效 TLS 里*读*出了别人的 theap，这一版是*留*了
-   * 自己的没清。
-   *
-   * MinGW 恰好不崩（0/20），但那是因为它身上带着原 bug 的另一半——FLS 回调
-   * 执行时它的 mem_t_theap 已读回 NULL。**不要据此认为 Windows 不需要这次清零**：
-   * MSVC 上这块 TLS 完全有效、读回的就是 t，是最需要它的平台。
-   * （两种存储不是一回事：mem_t_theap 是裸 thread_local 指针，走原生 TLS 槽；
-   *   被本函数取代的那个 EdThreadGuard 是带析构的 thread_local 对象，走
-   *   __cxa_thread_atexit/emutls。生命周期按工具链各不相同。）
-   *
-   * 写成"读-比较-再写"而非无条件写：t 只会出现在它自己线程的槽里，所以
-   * "读回的值 == t" 蕴含"这个槽就是本线程的、且 TLS 有效"。TLS 失效时读回的
-   * 要么是 NULL 要么是别人的 theap，都 != t，于是不写——无条件写会把 NULL
-   * 打到无辜线程的槽上。 */
+  /* 只清本线程仍持有的指针；后续析构可能再分配，不能复用已入回收链的 t。 */
   if (mem_t_theap == t) mem_t_theap = NULL;
   mem_tcache_flush_all(t);
   mem_theap_abandon(t);
@@ -70,8 +33,7 @@ static void mem_thread_exit_cb(void* value) {
 
 }  /* namespace */
 
-/* 由 mem_init_impl 调用一次。失败（FLS 槽位或 pthread key 耗尽）不致命，但线程
- * 退出将不再归还页——那正是改造前 376 MiB 卡死的形态，所以值得在这里留一笔。 */
+/* 进程初始化时注册一次；注册失败时仍可分配，但线程退出不会回收页。 */
 void mem_theap_exit_hook_init(void) {
   mem_os_thread_exit_init(mem_thread_exit_cb);
 }

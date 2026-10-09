@@ -1,8 +1,7 @@
 /* ----------------------------------------------------------------------------
  * internal.h — culib mem 内部公共头：常量、结构体、内联快路径
  *
- * 常量表与 SPEC.md §1 严格一致；结构体字段与 SPEC.md §3 / 设计骨架 §3 一致。
- * 本头文件禁止出现平台宏（平台差异全部收敛在 os.h/os.cpp）。
+ * 平台差异收敛在 os.h/os.cpp。
  * ------------------------------------------------------------------------- */
 #ifndef WAVVIX_MEM_INTERNAL_H
 #define WAVVIX_MEM_INTERNAL_H
@@ -18,7 +17,7 @@
 #include "random.h"
 #include "mem_core.h"
 
-/* ============================== 常量表（SPEC §1） ======================== */
+/* ============================== 常量表 ================================ */
 #define WAVVIX_MEM_PAGE_SIZE        ((size_t)64 * 1024)        /* page = slice        */
 #define WAVVIX_MEM_SLICE_SIZE       ((size_t)64 * 1024)
 #define WAVVIX_MEM_SLICE_SHIFT      16
@@ -61,7 +60,7 @@
  * 该值非 0、不可能是页内地址（页地址均 64KiB 对齐且远大于它）。 */
 #define WAVVIX_MEM_BLOCK_ALLOCATED ((uintptr_t)0x1ED0C0DE1u)
 
-/* ============================== 尺寸分级（SPEC §2） ===================== */
+/* ============================== 尺寸分级 ============================== */
 
 /* size -> bin（2..36）。wsize-- 不可省略：2 的幂必须精确落档。
  * 线性区取偶：块大小恒为 16 的倍数（x86-64/aarch64 ABI 要求 malloc 结果
@@ -82,7 +81,7 @@ static inline size_t mem_bin_size(int bin) {
   return ((size_t)(5 + q)) << (b + 1);
 }
 
-/* ============================== 结构体（SPEC §3） ======================= */
+/* ============================== 结构体 ================================ */
 
 struct mem_page_s;
 struct mem_theap_s;
@@ -107,18 +106,8 @@ struct mem_page_queue_t {
 };
 typedef struct mem_page_queue_t mem_page_queue_t;
 
-/* 页描述符：恰两条 cache line，与地址窗口的 slice 一一平铺
- * （slice i 的描述符恒为 mem_desc_base[i]，不再有描述符池与索引表）。
- *
- * 字段分组偏离设计稿一处：magic 放在 cache line 0（设计稿放在 line 1），
- * large_size 换到 line 1。理由与实测：
- *   - CONT 续页项只写 kind / cont_first / magic 三个域。三者同在 line 0 时，
- *     每个续页项只脏一条 cache line；分处两条 line 时脏两条。large 路径每次
- *     alloc+free 要走 2×slice_count 个续页项，这一项是纯放大的内存写流量。
- *   - 7 轮配对实测（bench_large，log-uniform 64KiB..4MiB，平均 ~15 slice/块）：
- *     中位数 +5.3%；bench_single/larson/xthread 的中位数都落在各自噪声带内
- *     （该机跨轮漂移 ±8%~±12%），即"large 受益、small 不受损"。
- *   - large_size 只在 usable_size 与 large free 上被读，挪到 line 1 无代价。 */
+/* 每个 64KiB slice 对应一个两条 cache line 的描述符。
+ * CONT 发布所写的 kind/cont_first/magic 集中在第一条 cache line。 */
 struct mem_page_s {
   /* ---- cache line 0：分配/释放热路径 + CONT 续页项 ---- */
   std::atomic<uintptr_t> xthread_id;  /* owner 线程 id(左移3位) | 低3位标志 */
@@ -182,13 +171,7 @@ struct mem_theap_s {
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
   mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
   uintptr_t       tcache_key;
-  /* 统计（诊断族用，见 internal.h 的 mem_stat_alloc/mem_stat_free）。
-   * 四个计数器全部单调递增，没有"current"这种可增可减的量——跨线程释放
-   * 天然会让"本线程当前字节"变成负数，用无符号存就是下溢（历史缺陷：
-   * mem_stats_print 曾打出 current=18446744073705882174）。存两个方向的
-   * 累计量，把"是否可能为负"这件事留给 mem_stats_get 显式处理。
-   * 按 alloc/free 成对相邻排列：一次 malloc 只脏前 16 字节、一次 free 只脏
-   * 后 16 字节，四者同处一条 cache line。 */
+  /* 分配与释放分别累计；跨线程释放时当前线程净值可能为负。 */
   uint64_t        stat_alloc_count;
   uint64_t        stat_alloc_bytes;
   uint64_t        stat_free_count;
@@ -196,7 +179,7 @@ struct mem_theap_s {
   struct mem_theap_s* next_free;                     /* theap 回收链 */
 };
 
-/* arena：窗口内的一段连续 slice，用位图管理（SPEC §3） */
+/* arena：窗口内的一段连续 slice，用位图管理。 */
 struct mem_arena_s {
   uint8_t*    base;                 /* = mem_window_base + first_slice*64KiB */
   size_t      slice_count;
@@ -388,7 +371,7 @@ static inline void* mem_tcache_pop(mem_theap_t* t, int bin) {
   return NULL;
 }
 
-/* ==================== 用户指针 ←→ 块首（SPEC §4.5 对齐族） ==============
+/* ==================== 用户指针 ←→ 块首 ================================
  * wavvix::mem::aligned_alloc 交给调用方的指针**不一定是块首**：小块路径先超额分配一个
  * 普通块，再在块内向上对齐。于是"从用户指针走回块首"成了释放侧的必修课，而且
  * wavvix::mem::free / wavvix::mem::usable_size / mem_l2_unwrap 三处必须走同一条口径——三处
