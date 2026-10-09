@@ -15,14 +15,12 @@ namespace wavvix {
 
 namespace detail {
 
-// 真正干活的在 lexical_cast.cpp 里；模板只负责挑一个、再把结果收窄到 T。
 result<long long> parse_signed(string_view text, int base);
 result<unsigned long long> parse_unsigned(string_view text, int base);
 result<float> parse_float(string_view text);
 result<double> parse_double(string_view text);
 result<bool> parse_bool(string_view text);
 
-// 范围写进消息比类型名有用：「"99999" 超出 -32768..32767」不需要读者知道 T 是什么。
 error signed_out_of_range(string_view text, long long low, long long high);
 error unsigned_out_of_range(string_view text, unsigned long long high);
 
@@ -31,7 +29,6 @@ struct signed_tag {};
 struct unsigned_tag {};
 struct float_tag {};
 
-// lexical_cast<char>("65") 是 65 还是 '6'？没有不让人猜的答案，所以拒绝整个 char 家族。
 template <typename T>
 struct is_character_type {
     static const bool value =
@@ -40,8 +37,6 @@ struct is_character_type {
         std::is_same<T, char16_t>::value || std::is_same<T, char32_t>::value;
 };
 
-// 把其余算术类型收敛到 to_string / to_chars 实现的基础类型之一。
-// bool 不在这里：它对 to_string(bool) 是精确匹配，走非模板重载。
 template <typename T>
 struct widen {
     static_assert(std::is_arithmetic<T>::value,
@@ -155,12 +150,7 @@ std::string to_string(float value);           // 按 float 精度格式化，保
 std::string to_string(double value);          // 不受 locale 影响，保证往返，见设计文档
 std::string to_string(bool value);            // "true" / "false"
 
-// int、long、unsigned、float 等等直接传就行，不用在调用点写 static_cast。
-//
-// 为什么要有这一个：上面的重载对 int 来说**都是**「需要一次转换」，
-// 所以 to_string(42) 有歧义。这个模板对它们是精确匹配，接住那些原本歧义的类型；
-// long long / unsigned long long / float / double / bool 等精确匹配仍走上面的非模板
-// 重载（非模板胜过模板），行为和之前一字不差。
+// 接受 int、long 等类型，调用方无需强制转换。
 template <typename T>
 std::string to_string(T value) {
     return to_string(static_cast<typename detail::widen<T>::type>(value));
