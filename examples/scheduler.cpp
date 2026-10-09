@@ -94,11 +94,11 @@ int main() {
             std::size_t* const slot = &finished[static_cast<std::size_t>(v)];
             carriers.push_back(std::thread([slot] {
                 for (int i = 0; i < per_vcpu; ++i) {
-                    spawn([] {
+                    wavvix::spawn_with_stack(32 * 1024, [] {
                         // 一点活，中间让出两次
                         yield();
                         yield();
-                    }, 32 * 1024);
+                    });
                 }
                 *slot = run();          // 把这根线程变成 vCPU
             }));

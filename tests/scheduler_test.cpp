@@ -66,6 +66,25 @@ TEST(scheduler, nested_scopes_finish_at_the_outer_boundary) {
     EXPECT(scheduled(), ==, 0u);
 }
 
+TEST(scheduler, spawn_moves_arguments_and_accepts_explicit_references) {
+    int value = 0;
+    spawn([](std::unique_ptr<int> input, int& output) {
+        output = *input;
+    }, std::unique_ptr<int>(new int(11)), std::ref(value));
+    EXPECT(value, ==, 0);
+    EXPECT(run(), ==, 1u);
+    EXPECT(value, ==, 11);
+}
+
+TEST(scheduler, spawn_with_stack_separates_stack_size_from_function_argument) {
+    std::size_t value = 0;
+    wavvix::spawn_with_stack(32 * 1024,
+        [](std::size_t input, std::size_t* output) { *output = input; },
+        std::size_t(42), &value);
+    EXPECT(run(), ==, 1u);
+    EXPECT(value, ==, std::size_t(42));
+}
+
 TEST(scheduler, coroutine_object_joins_like_a_thread) {
     int ran = 0;
     wavvix::coroutine worker([&] { ++ran; });
@@ -262,11 +281,11 @@ TEST(scheduler, spawns_many_without_losing_any) {
     const int count = 200;
     int done = 0;
     for (int i = 0; i < count; ++i) {
-        spawn([&] {
+        wavvix::spawn_with_stack(32 * 1024, [&] {
             yield();
             ++done;
             yield();
-        }, 32 * 1024);
+        });
     }
     EXPECT(run(), ==, static_cast<std::size_t>(count));
     EXPECT(done, ==, count);
@@ -353,7 +372,7 @@ TEST(scheduler, keeps_each_coroutines_own_stack) {
     std::vector<int> results(3, 0);
     for (int i = 0; i < 3; ++i) {
         const int mine = i;
-        spawn([&results, mine] {
+        wavvix::spawn_with_stack(32 * 1024, [&results, mine] {
             int accumulated = 0;
             char filler[2048];
             for (int round = 0; round < 5; ++round) {
@@ -364,7 +383,7 @@ TEST(scheduler, keeps_each_coroutines_own_stack) {
             // 让出五次之后，自己的栈上那些东西还在
             EXPECT(filler[4], ==, static_cast<char>(mine + 4));
             results[static_cast<std::size_t>(mine)] = accumulated;
-        }, 32 * 1024);
+        });
     }
     EXPECT(run(), ==, 3u);
     EXPECT(results[0], ==, 0 + 1 + 2 + 3 + 4);

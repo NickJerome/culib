@@ -130,6 +130,8 @@ io_uring 本身是三个系统调用（`io_uring_setup` / `io_uring_enter` / `io
 
 ## 7. 第一期的实现验证：vCPU + 调度器
 
+下表保留第一期的接口快照。当前 `spawn(function, args...)` 可直接传函数参数，自定义栈大小使用 `spawn_with_stack(bytes, function, args...)`；已初始化 vCPU 的主线程调用 `sleep_for()` 也会调度其他协程。现行用法见[协程调度器](../../scheduler.md)。
+
 `include/culib/scheduler.h` 四个入口加两个查询：
 
 | 签名 | 说明 |

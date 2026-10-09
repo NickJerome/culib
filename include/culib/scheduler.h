@@ -2,6 +2,7 @@
 
 // 协程调度器。
 
+#include <culib/detail/coroutine_call.h>
 #include <culib/detail/fiber.h>
 
 #include <chrono>
@@ -46,10 +47,31 @@ private:
     void* owner_;
 };
 
-// 起一根协程，排到当前 vCPU 的队尾。
+// 起一根协程，排到当前 vCPU 的队尾。参数按值保存；传引用请用 std::ref。
 template <typename F>
-void spawn(F&& body, std::size_t stack_size = default_stack_size) {
+void spawn(F&& body) {
+    detail::scheduler_spawn(new detail::fiber(std::forward<F>(body)));
+}
+
+template <typename F, typename Arg, typename... Args>
+void spawn(F&& body, Arg&& arg, Args&&... args) {
+    detail::scheduler_spawn(new detail::fiber(detail::bind_coroutine_call(
+        std::forward<F>(body), std::forward<Arg>(arg),
+        std::forward<Args>(args)...)));
+}
+
+// 显式指定栈大小，避免把整数函数参数误认成栈大小。
+template <typename F>
+void spawn_with_stack(std::size_t stack_size, F&& body) {
     detail::scheduler_spawn(new detail::fiber(std::forward<F>(body), stack_size));
+}
+
+template <typename F, typename Arg, typename... Args>
+void spawn_with_stack(std::size_t stack_size, F&& body, Arg&& arg,
+                      Args&&... args) {
+    detail::scheduler_spawn(new detail::fiber(detail::bind_coroutine_call(
+        std::forward<F>(body), std::forward<Arg>(arg),
+        std::forward<Args>(args)...), stack_size));
 }
 
 // 协程内让出；已初始化 vCPU 的主线程调用时推进一轮就绪任务。

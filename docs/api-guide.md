@@ -490,7 +490,7 @@ value() / error() 取错分支会打印信息并终止程序，release 同样检
     wavvix::spawn([] { other_work(); });
     wavvix::run();                                          // 跑到全部结束
 
-`spawn()` 用于不需要句柄的任务。需要等待指定任务时，用上面的 `coroutine` 和 `join()`。
+`spawn()` 用于不需要句柄的任务，也可写 `spawn(function, args...)`；参数按值保存，传引用要用 `std::ref`。需要指定栈大小时用 `spawn_with_stack(bytes, function, args...)`，整数函数参数不会被误认为栈大小。需要等待指定任务时，用上面的 `coroutine` 和 `join()`。
 
 ### vCPU 模型
 
