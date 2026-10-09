@@ -38,6 +38,7 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
 }  // namespace detail
 
 // 类似 std::thread 的协程句柄：构造即提交，join 等待完成。
+// join/detach 须在创建它的 vCPU 上、该 vCPU 关闭前调用。
 // 未 join/detach 就析构是误用；协程仍是协作式调度，不创建系统线程。
 class coroutine {
 public:

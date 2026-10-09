@@ -236,10 +236,12 @@ void scheduler_task_complete(task_state* task) noexcept {
 }
 
 void scheduler_task_join(task_state* task) {
+    // done 只由所属 vCPU 写；先拒绝跨线程调用，再读取它。
+    vcpu* const self = current_vcpu;
+    if (!self || task->owner != self)
+        die("wavvix::coroutine::join() 必须在创建它的 vCPU 上调用");
     if (task->done) { delete task; return; }
-    vcpu& self = here();
-    if (task->owner != &self) die("wavvix::coroutine::join() 必须在创建它的 vCPU 上调用");
-    if (fiber::inside() && self.current == task->body)
+    if (fiber::inside() && self->current == task->body)
         die("wavvix::coroutine 不能 join 自己");
     if (fiber::inside()) {
         park_token token;
@@ -253,8 +255,9 @@ void scheduler_task_join(task_state* task) {
 }
 
 void scheduler_task_detach(task_state* task) noexcept {
+    if (task->owner != current_vcpu)
+        die("wavvix::coroutine::detach() 必须在创建它的 vCPU 上调用");
     if (task->done) { delete task; return; }
-    if (task->owner != &here()) die("wavvix::coroutine::detach() 必须在创建它的 vCPU 上调用");
     task->detached = true;
     vcpu& self = *task->owner;
     task->next_detached = self.detached;

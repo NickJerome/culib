@@ -20,7 +20,7 @@ int main() {
 
 协程是协作式调度：构造后进入当前 vCPU 的队列，遇到 `join()`、协程 I/O、`sleep_for()` 或 `yield()` 时切换。`join()` 只等这一根协程；其他协程可以继续留在队列。主线程在已初始化的 vCPU 上调用 `wavvix::sleep_for()` 时也会调度其他协程。`detach()` 放弃句柄所有权；脱离句柄的协程仍需要同一 vCPU 的其他 `join()`、`sleep_for()`、`run()` 或外层 `scheduler_scope` 推进。
 
-显式调用 `shutdown()` 前，先对仍持有的协程句柄调用 `join()` 或 `detach()`。`shutdown()` 会运行当前 vCPU 剩余的任务；若任务持续等待，须先由应用发出停止信号。
+`join()` 和 `detach()` 必须在创建协程的 vCPU（同一系统线程）上调用，并且要早于该 vCPU 的 `shutdown()` 或 `scheduler_scope` 析构。`shutdown()` 会运行当前 vCPU 剩余的任务；若任务持续等待，须先由应用发出停止信号。
 协程栈分配失败时构造不会提交任务，刚构造的句柄 `joinable()` 为 `false`；需要确认任务已提交时检查它。
 和 Photon 的 `photon_std::thread` 一样，构造时可以直接传函数参数；参数按值保存，启动时移动到目标函数。传引用请显式用 `std::ref`。默认请求 256 KiB 可用栈；当前按 2 的幂分桶，普通小回调实际分配约 512 KiB 栈加一页保护页。Windows 会提交这整段内存，创建大量并发协程时要把它计入进程提交预算。需要更深的栈时用 `coroutine::with_stack(bytes, function, args...)`，避免整数函数参数和栈大小混淆。
 
