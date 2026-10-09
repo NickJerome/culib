@@ -74,7 +74,7 @@ public:
 
 private:
     static detail::kind tag() noexcept;
-    static std::string default_text(const T& value);
+    static std::string default_text(const T& value) { return to_string(value); }
 
     T stored_;
 };
@@ -90,17 +90,6 @@ template <> inline detail::kind option<unsigned long long>::tag() noexcept {
 template <> inline detail::kind option<double>::tag() noexcept { return detail::kind::number; }
 template <> inline detail::kind option<std::string>::tag() noexcept { return detail::kind::text; }
 
-template <> inline std::string option<bool>::default_text(const bool& v) { return to_string(v); }
-template <> inline std::string option<long long>::default_text(const long long& v) {
-    return to_string(v);
-}
-template <> inline std::string option<unsigned long long>::default_text(
-    const unsigned long long& v) {
-    return to_string(v);
-}
-template <> inline std::string option<double>::default_text(const double& v) {
-    return to_string(v);
-}
 template <> inline std::string option<std::string>::default_text(const std::string& v) {
     return v;
 }
