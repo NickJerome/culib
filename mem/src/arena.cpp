@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "bitmap.h"
 
+#include <limits>
 #include <new>
 
 /* 诊断计数器（mem_stats_print 展示；跨 TU 引用，不放进匿名 namespace） */
@@ -291,7 +292,10 @@ void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
   mem_bbitmap_free(arena->slices_free, slice_idx, n);
   mem_bitmap_set_range(arena->slices_dirty, slice_idx, n);
   mem_bitmap_set_range(arena->slices_purge, slice_idx, n);
-  int64_t expire = mem_os_now_ms() + mem_options.purge_delay_ms;
+  const int64_t now = mem_os_now_ms();
+  const int64_t delay = static_cast<int64_t>(mem_options.purge_delay_ms);
+  const int64_t max = (std::numeric_limits<int64_t>::max)();
+  const int64_t expire = now > max - delay ? max : now + delay;
   arena->purge_expire.store(expire, std::memory_order_release);
 }
 

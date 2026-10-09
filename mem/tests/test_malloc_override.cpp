@@ -4,7 +4,25 @@
 #include <cstdlib>
 #include <cerrno>
 
+namespace {
+struct early_allocation {
+    unsigned char* block;
+    early_allocation() : block(static_cast<unsigned char*>(std::malloc(37))) {
+        if (!block) std::abort();
+        block[0] = 0x31;
+        block[36] = 0x79;
+    }
+    ~early_allocation() { std::free(block); }
+};
+early_allocation early;
+}
+
 int main() {
+    if (early.block[0] != 0x31 || early.block[36] != 0x79 ||
+        wavvix::mem::usable_size(early.block) < 37) {
+        std::fprintf(stderr, "malloc override failed before main\n");
+        return 1;
+    }
     mem_stats_t before = {};
     mem_stats_get(&before);
 

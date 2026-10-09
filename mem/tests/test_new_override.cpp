@@ -5,7 +5,24 @@
 #include <cstdio>
 #include <thread>
 
+namespace {
+struct early_allocation {
+    unsigned char* block;
+    early_allocation() : block(new unsigned char[37]) {
+        block[0] = 0x31;
+        block[36] = 0x79;
+    }
+    ~early_allocation() { delete[] block; }
+};
+early_allocation early;
+}
+
 int main() {
+    if (early.block[0] != 0x31 || early.block[36] != 0x79 ||
+        wavvix::mem::usable_size(early.block) < 37) {
+        std::fprintf(stderr, "global new failed before main\n");
+        return 1;
+    }
     mem_stats_t before = {};
     mem_stats_get(&before);
 

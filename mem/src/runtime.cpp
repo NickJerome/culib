@@ -3,6 +3,9 @@
  * ------------------------------------------------------------------------- */
 #include "internal.h"
 
+#include <cctype>
+#include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <mutex>
 
@@ -20,34 +23,41 @@ namespace {
 std::once_flag         g_init_once;
 std::atomic<uintptr_t> g_thread_counter(1);
 
-long mem_parse_long(const char* name, long def) {
+bool mem_parse_scaled(const char* name, unsigned long long* out) {
   const char* s = std::getenv(name);
-  if (s == NULL || *s == '\0') return def;
+  if (s == NULL) return false;
+  while (std::isspace(static_cast<unsigned char>(*s))) ++s;
+  if (*s == '-') return false;
+  errno = 0;
   char* end = NULL;
-  long v = std::strtol(s, &end, 0);
-  if (end == s) return def;
-  if (*end == 'M' || *end == 'm') v <<= 20;
-  else if (*end == 'G' || *end == 'g') v <<= 30;
-  else if (*end == 'K' || *end == 'k') v <<= 10;
-  return v;
-}
-
-/* 尺寸类选项用无符号解析：窗口默认 1 TiB，long 在 LLP64（MSVC）上只有 32 位，
- * strtol 会把它钳到 LONG_MAX。后缀 K/M/G/T。 */
-size_t mem_parse_size(const char* name, size_t def) {
-  const char* s = std::getenv(name);
-  if (s == NULL || *s == '\0') return def;
-  char* end = NULL;
-  unsigned long long v = std::strtoull(s, &end, 0);
-  if (end == s) return def;
+  unsigned long long v = std::strtoull(s, &end, 10);
+  if (end == s || errno != 0) return false;
+  unsigned shift = 0;
   switch (*end) {
-    case 'K': case 'k': v <<= 10; break;
-    case 'M': case 'm': v <<= 20; break;
-    case 'G': case 'g': v <<= 30; break;
-    case 'T': case 't': v <<= 40; break;
+    case 'K': case 'k': shift = 10; ++end; break;
+    case 'M': case 'm': shift = 20; ++end; break;
+    case 'G': case 'g': shift = 30; ++end; break;
+    case 'T': case 't': shift = 40; ++end; break;
     default: break;
   }
-  return (size_t)v;
+  if (*end != '\0' || v > (ULLONG_MAX >> shift)) return false;
+  *out = v << shift;
+  return true;
+}
+
+long mem_parse_long(const char* name, long def) {
+  unsigned long long v = 0;
+  if (!mem_parse_scaled(name, &v) || v > static_cast<unsigned long long>(LONG_MAX))
+    return def;
+  return static_cast<long>(v);
+}
+
+/* 窗口默认 1 TiB；MSVC 的 long 只有 32 位，所以尺寸单独转换到 size_t。 */
+size_t mem_parse_size(const char* name, size_t def) {
+  unsigned long long v = 0;
+  if (!mem_parse_scaled(name, &v) || v > static_cast<unsigned long long>(SIZE_MAX))
+    return def;
+  return static_cast<size_t>(v);
 }
 
 void mem_options_parse(void) {
