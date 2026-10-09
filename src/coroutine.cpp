@@ -302,6 +302,10 @@ std::size_t coroutine_stack_size(const coroutine_control* control) noexcept {
     return control->usable;
 }
 
+std::uintptr_t coroutine_stack_base_address(const coroutine_control* control) noexcept {
+    return reinterpret_cast<std::uintptr_t>(control->memory.base);
+}
+
 void coroutine_yield() noexcept {
     coroutine_control* const self = current;
     if (!self) die("wavvix::coroutine::yield() 只能在协程里调用");

@@ -271,7 +271,7 @@ Windows 的 commit charge 不是已触碰的物理内存，但仍受系统提交
 
 三条，**都不靠计时**（计时在 CI 上会抖）：
 
-- `reuses_stacks_from_the_pool`：两根协程里同一位置的局部变量**地址相同**，证明栈被复用了。确定性的。
+- `reuses_stacks_from_the_pool`：比较先后创建的协程所用栈分配基址，证明栈被复用；局部变量地址可能由 ASan 的 fake stack 提供，不能充当栈基址。
 - `rounds_stack_requests_into_buckets`：40 KB 和 50 KB 的请求复用同一块栈（同桶），4 MB 的请求用另一块。
 - `keeps_pooled_stacks_usable_after_heavy_churn`：200 轮复用，每轮把 4 KB 栈空间写满再核对——池化最怕「上一根留下的东西把下一根搞坏」。
 

@@ -3,6 +3,7 @@
 // 调度器内部的有栈协程原语。
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -23,6 +24,7 @@ void coroutine_destroy(coroutine_control* control) noexcept;
 bool coroutine_resume(coroutine_control* control) noexcept;
 bool coroutine_done(const coroutine_control* control) noexcept;
 std::size_t coroutine_stack_size(const coroutine_control* control) noexcept;
+std::uintptr_t coroutine_stack_base_address(const coroutine_control* control) noexcept;
 void coroutine_yield() noexcept;
 bool coroutine_inside() noexcept;
 
@@ -65,6 +67,10 @@ public:
     // 可用栈字节数，不含保护页。
     std::size_t stack_size() const noexcept {
         return control_ ? coroutine_stack_size(control_) : 0;
+    }
+
+    std::uintptr_t stack_base_address() const noexcept {
+        return control_ ? coroutine_stack_base_address(control_) : 0;
     }
 
     // 切回 resume()；必须在协程内调用。

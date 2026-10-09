@@ -2,6 +2,7 @@
 #include <culib/test.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <thread>
 #include <vector>
@@ -226,51 +227,43 @@ TEST(fiber, binds_to_the_thread_that_first_resumes_it) {
     EXPECT(worker.done(), ==, true);
 }
 
-// 栈池：上一根协程结束后栈进池子，下一根直接复用。
-//
-// 这条**不靠计时**（那会在 CI 上抖）：看同一个位置的局部变量地址。栈被复用的话
-// 两根协程里的 local 会落在同一个地址上，这是确定性的。
+// 直接比较栈分配基址；ASan 的局部变量地址可能落在另一块 fake stack 上。
 TEST(fiber, reuses_stacks_from_the_pool) {
-    void* first = 0;
-    void* second = 0;
+    std::uintptr_t first = 0;
+    std::uintptr_t second = 0;
     {
-        fiber a([&] {
-            int local = 0;
-            first = &local;
-        });
+        fiber a([] {});
+        first = a.stack_base_address();
         while (a.resume()) {}
     }
     {
-        fiber b([&] {
-            int local = 0;
-            second = &local;
-        });
+        fiber b([] {});
+        second = b.stack_base_address();
         while (b.resume()) {}
     }
     EXPECT(first != 0, ==, true);
-    EXPECT(first == second, ==, true);   // 同一块栈
+    EXPECT(first == second, ==, true);
 }
 
-// 请求的大小被向上取整到 2 的幂的桶，这样不同请求能落进同一个桶、互相复用。
-// 多出来的是虚拟地址，没碰到的页不占物理内存。
 TEST(fiber, rounds_stack_requests_into_buckets) {
-    void* small_first = 0;
-    void* small_again = 0;
+    std::uintptr_t small_first = 0;
+    std::uintptr_t small_again = 0;
     {
-        fiber a([&] { int local = 0; small_first = &local; }, 40 * 1024);
+        fiber a([] {}, 40 * 1024);
+        small_first = a.stack_base_address();
         while (a.resume()) {}
     }
     {
-        // 40 KB 和 50 KB 取整到同一个桶，所以复用同一块栈
-        fiber b([&] { int local = 0; small_again = &local; }, 50 * 1024);
+        fiber b([] {}, 50 * 1024);
+        small_again = b.stack_base_address();
         while (b.resume()) {}
     }
     EXPECT(small_first == small_again, ==, true);
 
-    // 差很远的大小落进不同的桶，各自独立
-    void* large = 0;
+    std::uintptr_t large = 0;
     {
-        fiber c([&] { int local = 0; large = &local; }, 4 * 1024 * 1024);
+        fiber c([] {}, 4 * 1024 * 1024);
+        large = c.stack_base_address();
         while (c.resume()) {}
     }
     EXPECT(large != 0, ==, true);
