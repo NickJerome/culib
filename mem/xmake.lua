@@ -13,6 +13,7 @@ if supported then
 
     target("culib_new_override")
         set_kind("object")
+        set_default(false)
         if not is_plat("windows") then set_languages("c++11") end
         set_warnings("allextra", "pedantic", "error")
         add_files("src-override/new.cpp")
@@ -22,6 +23,7 @@ if supported then
     if is_plat("linux") then
         target("culib_malloc_override")
             set_kind("shared")
+            set_default(false)
             set_languages("c++11")
             set_warnings("allextra", "pedantic", "error")
             set_encodings("utf-8")

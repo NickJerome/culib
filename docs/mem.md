@@ -27,7 +27,7 @@ void example() {
 - Linux：构建 `culib_malloc_override`，在程序启动时用 `LD_PRELOAD=/absolute/path/libculib_malloc_override.so` 加载。它覆盖 `malloc/free/calloc/realloc`、相关对齐入口及全局 `new/delete`。也可以把该共享库作为显式链接依赖，集成测试采用这种方式。进程内不要同时加载其他 malloc 覆盖库。
 - macOS/Windows：依赖 `culib_new_override` 对象目标，可让程序中的全局 `new/delete` 使用该分配器。MSVC 动态 UCRT 的 `malloc/free` 调用不能靠一个静态库可靠地全进程替换；Windows 上需要 C 风格分配时使用显式 `mem::alloc/free`。不要把这个对象目标和另一套 `new/delete` 覆盖同时链接。
 
-普通 `culib` 依赖会提供分配器 API，但不会悄悄覆盖进程全局符号。全局替换由上述目标显式启用，避免与其他库的分配/释放族混用。
+普通 `culib` 依赖会提供分配器 API，但不会悄悄覆盖进程全局符号，也不会在默认构建中编译两个覆盖目标。全局替换由上述目标显式启用，避免与其他库的分配/释放族混用。
 
 ## 平台与验证
 
