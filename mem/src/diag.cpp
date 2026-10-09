@@ -14,9 +14,11 @@
 /* 诊断计数器（定义在 arena.cpp / theap.cpp）。必须在文件作用域声明：
  * 放在函数体内的块作用域 extern 会被 MSVC 按 C 链接解析，与定义处的
  * C++ 链接不匹配（LNK2019）。 */
+#if defined(WAVVIX_MEM_DEBUG)
 extern std::atomic<uint64_t> g_dbg_slice_alloc, g_dbg_slice_free;
 extern std::atomic<uint64_t> g_dbg_to_full, g_dbg_abandon, g_dbg_reclaim,
                              g_dbg_unfull, g_dbg_retire, g_dbg_fresh_slice;
+#endif
 
 namespace {
 
@@ -190,6 +192,7 @@ void mem_stats_print(void) {
                  expire != 0 ? "yes" : "no");
   }
   /* committed / abandoned 已在上面的 process 行报过，不再二次加锁遍历 */
+#if defined(WAVVIX_MEM_DEBUG)
   std::fprintf(stderr,
                "to_full=%llu abandon=%llu reclaim=%llu unfull=%llu retire=%llu "
                "fresh_slice=%llu\n",
@@ -203,6 +206,7 @@ void mem_stats_print(void) {
                (unsigned long long)g_dbg_slice_alloc.load(),
                (unsigned long long)g_dbg_slice_free.load(),
                (long long)(g_dbg_slice_alloc.load() - g_dbg_slice_free.load()));
+#endif
   std::fflush(stderr);
 }
 
