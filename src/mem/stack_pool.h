@@ -49,7 +49,8 @@ public:
             release_stack(memory);
             return;
         }
-        cached_stack* const node = new (memory.base + memory.guard)
+        // 栈顶页已放过控制块；在这里缓存节点可避免另外触碰栈底的一页。
+        cached_stack* const node = new (memory.base + memory.total - sizeof(cached_stack))
             cached_stack{memory, buckets_[bucket]};
         buckets_[bucket] = node;
         bytes_ += memory.total;
