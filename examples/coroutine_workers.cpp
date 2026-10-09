@@ -17,7 +17,6 @@ int main() {
     int second = 0;
     wavvix::coroutine a([&] { first = 1; });
     wavvix::coroutine b([&] { second = 2; });
-    if (!a.joinable() || !b.joinable()) return 1;
     a.join();
     b.join();
     std::printf("sum: %d\n", first + second);

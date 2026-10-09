@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <new>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -91,10 +92,19 @@ int main() {
     if (rejected_waker) return 20;
     if (!wavvix::detail::scheduler_remote_prepare()) return 21;
 #endif
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    bool local_rejected = false;
     fail_after = 1;
-    wavvix::coroutine rejected_local([] {});
+    try {
+        wavvix::coroutine unexpected([] {});
+        unexpected.join();
+    } catch (const std::system_error& error) {
+        local_rejected = error.code() ==
+            std::make_error_code(std::errc::resource_unavailable_try_again);
+    }
     fail_after = 0;
-    if (rejected_local.joinable() || wavvix::scheduled() != 0) return 1;
+    if (!local_rejected || wavvix::scheduled() != 0) return 1;
+#endif
 
     int local_ran = 0;
     fail_after = 2;
@@ -143,10 +153,19 @@ int main() {
     if (started.is_err()) return 2;
     wavvix::scheduler_scope workers = std::move(started).value();
 
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    bool remote_rejected = false;
     fail_after = 1;
-    wavvix::coroutine rejected([] {});
+    try {
+        wavvix::coroutine unexpected([] {});
+        unexpected.join();
+    } catch (const std::system_error& error) {
+        remote_rejected = error.code() ==
+            std::make_error_code(std::errc::resource_unavailable_try_again);
+    }
     fail_after = 0;
-    if (rejected.joinable() || wavvix::scheduled() != 0) return 3;
+    if (!remote_rejected || wavvix::scheduled() != 0) return 3;
+#endif
 
     int ran = 0;
     fail_after = 2;

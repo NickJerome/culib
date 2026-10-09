@@ -13,6 +13,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -397,14 +398,26 @@ TEST(scheduler, coroutine_object_accepts_size_t_argument_and_explicit_stack) {
     EXPECT(value, ==, std::size_t(42));
 }
 
-TEST(scheduler, coroutine_object_reports_unavailable_stack) {
-    wavvix::coroutine too_small = wavvix::coroutine::with_stack(0, [] {});
-    wavvix::coroutine too_large = wavvix::coroutine::with_stack(
-        (std::numeric_limits<std::size_t>::max)(), [] {});
-    EXPECT(too_small.joinable(), ==, false);
-    EXPECT(too_large.joinable(), ==, false);
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+TEST(scheduler, coroutine_object_rejects_invalid_stack) {
+    bool small_rejected = false;
+    bool large_rejected = false;
+    try {
+        wavvix::coroutine::with_stack(0, [] {});
+    } catch (const std::invalid_argument&) {
+        small_rejected = true;
+    }
+    try {
+        wavvix::coroutine::with_stack(
+            (std::numeric_limits<std::size_t>::max)(), [] {});
+    } catch (const std::invalid_argument&) {
+        large_rejected = true;
+    }
+    EXPECT(small_rejected, ==, true);
+    EXPECT(large_rejected, ==, true);
     EXPECT(scheduled(), ==, 0u);
 }
+#endif
 
 TEST(scheduler, coroutine_object_transfers_join_ownership) {
     int ran = 0;

@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <culib/detail/macros.h>
 #include <culib/scheduler.h>
 
 #include <cstddef>
@@ -8,8 +9,25 @@
 #include <type_traits>
 #include <utility>
 
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+#include <stdexcept>
+#include <system_error>
+#endif
+
 namespace wavvix {
 namespace detail {
+
+inline void coroutine_creation_failed(fiber_failure failure) {
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    if (failure == fiber_failure::invalid_size)
+        throw std::invalid_argument("wavvix::coroutine: invalid stack size");
+    throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                            "wavvix::coroutine: unable to create task");
+#else
+    (void)failure;
+    std::terminate();
+#endif
+}
 
 template <typename F>
 struct coroutine_body {
@@ -27,10 +45,12 @@ template <typename F>
 task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
     std::unique_ptr<task_state, void (*)(task_state*)> task(
         scheduler_task_create(), &scheduler_task_discard);
-    if (!task) return 0;
+    if (!task) coroutine_creation_failed(fiber_failure::resource_exhausted);
     typedef typename std::decay<F>::type function_type;
-    fiber worker(coroutine_body<function_type>(std::forward<F>(body), task.get()), stack_size);
-    if (!worker.ok()) return 0;
+    fiber_failure failure = fiber_failure::resource_exhausted;
+    fiber worker(coroutine_body<function_type>(std::forward<F>(body), task.get()),
+                 stack_size, &failure);
+    if (!worker.ok()) coroutine_creation_failed(failure);
     scheduler_task_schedule(task.get(), worker.release());
     return task.release();
 }
