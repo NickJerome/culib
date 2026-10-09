@@ -49,8 +49,8 @@
 
 ## 错误处理
 
-- 可能失败的操作一律返回 `result`，由调用方显式检查；库不主动抛出异常。用法见 README 的「错误处理」。
-- 不依赖 RTTI。公共头文件中不出现 `throw`、`try`、`dynamic_cast`、`typeid`，因此可以用于关闭了异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程。
+- 可恢复的失败通常返回 `result`，由调用方显式检查。线程式的 `coroutine(fn)` 构造函数不能返回错误：栈大小非法时抛 `std::invalid_argument`，资源不足时抛 `std::system_error`；无异常构建会终止。需要可恢复的提交失败时使用返回 `result` 的 `spawn()`。
+- 不依赖 RTTI。除 `coroutine.h` 中按异常开关编译的构造失败分支外，公共头文件不出现 `throw`、`try`、`dynamic_cast`、`typeid`；关闭异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程仍可使用全库。
 - **错误类型只有一种：默认的 `error`。** 不为「性能敏感」的接口另开 `enum class` ——量过了，枚举的优势在本库的场景里兑现不了（见下），而两种错误类型会让每个层边界上多一次显式转换，也让每个调用点都要先做一次选择。
 - **跨层传播时在层边界上补上下文。** 底层只知道「不是合法整数」，它永远不知道「这是 /etc/app.conf 的 port 字段」——那个信息只有中间那层同时持有，所以必须在那里拼进消息里。不补的话 `main` 拿到的是一句没有主语的话。
 - 运行时的误用（取错分支、越界等）打印一行诊断后 `std::abort()`，release 同样检查。诊断直接写 stderr，不分配内存、不依赖流。

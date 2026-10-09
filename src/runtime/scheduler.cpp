@@ -616,6 +616,7 @@ void scheduler_task_complete(task_state* task) noexcept {
 }
 
 void scheduler_task_join(task_state* task) {
+    if (!task) die("wavvix::coroutine::join() requires a joinable task");
     // done 只由所属 vCPU 写；先拒绝跨线程调用，再读取它。
     vcpu* const self = active_vcpu();
     if (!self || task->owner != self)
@@ -658,6 +659,7 @@ void scheduler_task_join(task_state* task) {
 }
 
 void scheduler_task_detach(task_state* task) noexcept {
+    if (!task) die("wavvix::coroutine::detach() requires a joinable task");
     if (task->owner != active_vcpu())
         die("wavvix::coroutine::detach() 必须在创建它的 vCPU 上调用");
     if (task->remote) {

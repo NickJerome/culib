@@ -22,7 +22,7 @@ int main() {
 `wavvix::sleep_for()` 的零或负时长在协程、vCPU 主线程和普通线程上都立即返回；要主动让出一次请调用 `wavvix::yield()`。
 
 `join()` 和 `detach()` 必须在创建协程的 vCPU（同一系统线程）上调用，并且要早于该 vCPU 的 `scheduler_scope` 析构。`join()` 在协程内只挂起调用者；在 vCPU 主栈上会继续调度本地任务并等待远端完成。作用域析构会运行当前及远端 vCPU 剩余的任务；若任务持续等待，须先由应用发出停止信号。最外层作用域析构还会释放当前线程缓存的协程栈；再次创建任务时按需重新分配。
-`coroutine` 构造成功就表示任务已提交。栈大小非法时抛出 `std::invalid_argument`；运行时或分配资源不足时抛出 `std::system_error`。无异常构建无法从构造函数返回错误，遇到这些失败会 `std::terminate()`。默认构造及移动后的对象才是不可 `join()` 的空句柄；需要显式处理提交失败时使用返回 `result` 的 `spawn()`。
+`coroutine` 构造成功就表示任务已提交。栈大小非法时抛出 `std::invalid_argument`；运行时或分配资源不足时抛出 `std::system_error`。无异常构建无法从构造函数返回错误，遇到这些失败会 `std::terminate()`。默认构造及移动后的对象是不持有任务的空句柄；对空句柄调用 `join()` 或 `detach()` 会打印诊断并终止。需要显式处理提交失败时使用返回 `result` 的 `spawn()`。
 和 Photon 的 `photon_std::thread` 一样，构造时可以直接传函数参数；参数按值保存，启动时移动到目标函数。传引用请显式用 `std::ref`。默认请求 240 KiB 可用栈；普通小回调进入 256 KiB 栈池桶，另加一页保护页。Windows 会提交这整段内存，创建大量并发协程时要把它计入进程提交预算。需要更深的栈时用 `coroutine::with_stack(bytes, function, args...)`，避免整数函数参数和栈大小混淆。
 
 `<culib/scheduler.h>` 提供 `spawn()` 供不持有句柄的场合使用，也提供 `yield()`、`sleep_for()` 和 `scheduler_scope`。`spawn(function, args...)` 与 `coroutine` 构造函数一样，按值保存参数，传引用请用 `std::ref`；需要指定栈大小时用 `spawn_with_stack(bytes, function, args...)`。两个提交函数都返回 `result<void>`：成功表示已入队，非法栈大小返回 `out_of_range`，协程对象或栈分配失败返回 `resource_exhausted`；失败时任务不会运行。`scheduler_scope` 用 RAII 管理 vCPU 生命周期，一个作用域可以统一跑完其间提交的任务：

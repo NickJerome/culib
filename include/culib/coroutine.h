@@ -59,6 +59,7 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
 
 // 类似 std::thread 的协程句柄：构造即提交，join 等待完成。
 // join/detach 须在创建它的 vCPU 上、该 vCPU 关闭前调用。
+// 构造失败抛异常（无异常构建终止）；空句柄不能 join/detach。
 // 未 join/detach 就析构是误用；协程仍是协作式调度，不创建系统线程。
 class coroutine {
 public:
@@ -101,12 +102,10 @@ public:
 
     bool joinable() const noexcept { return task_ != 0; }
     void join() {
-        if (!task_) return;
         detail::scheduler_task_join(task_);
         task_ = 0;
     }
     void detach() noexcept {
-        if (!task_) return;
         detail::scheduler_task_detach(task_);
         task_ = 0;
     }

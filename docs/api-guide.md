@@ -132,7 +132,7 @@ superpowers/specs/2026-10-03-variant-design.md）。
 需要额外工作 vCPU 时，检查 `scheduler_scope::with_workers(n)` 的返回结果；此后新建的 `coroutine` 可在其他系统线程立即开始运行，参见[调度器用法](scheduler.md)。`coroutine` 可移动；仍可 `join()` 的句柄析构会
 `std::terminate()`，所以离开作用域前要 `join()` 或 `detach()`。`detach()` 只放弃句柄，
 本地任务仍需由同一 vCPU 的 `join()`、`run()`、`sleep_for()` 或作用域收尾推进；远端任务由工作 vCPU 执行，外层作用域收尾会等待它。
-构造成功表示任务已提交。栈大小非法会抛出 `std::invalid_argument`，资源不足会抛出 `std::system_error`；无异常构建在这些情况下终止进程。默认构造和移动后的空句柄才不可 `join()`。
+构造成功表示任务已提交。栈大小非法会抛出 `std::invalid_argument`，资源不足会抛出 `std::system_error`；无异常构建在这些情况下终止进程。默认构造和移动后的空句柄不可 `join()` 或 `detach()`，误用会打印诊断并终止。
 构造函数与 `std::thread` 一样接受函数及其参数；参数先按值保存，运行时移动到函数中。
 需要自定义栈大小时用 `coroutine::with_stack(bytes, function, args...)`。
 协程只在合作式调度点切换，CPU 密集循环不会自动抢占主线程。
