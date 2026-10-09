@@ -182,7 +182,9 @@ stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
     }
     // 按桶大小分配，确保同桶请求可复用。
     const std::size_t rounded = bucket >= 0 ? pool_bucket_size(bucket) : usable;
-    return allocate_stack(rounded);
+    stack_memory memory = allocate_stack(rounded);
+    memory.bucket = bucket;
+    return memory;
 }
 
 void pooled_release_stack(const stack_memory& memory) noexcept {
@@ -191,7 +193,7 @@ void pooled_release_stack(const stack_memory& memory) noexcept {
     runtime_thread_state* const state = value == &runtime_thread_exit_marker
         ? 0 : static_cast<runtime_thread_state*>(value);
     if (!state) { release_stack(memory); return; }
-    const int bucket = pool_bucket_of(memory.total - memory.guard);
+    const int bucket = memory.bucket;
     if (bucket < 0 || memory.total > pool_budget - state->bytes) {
         release_stack(memory);                      // 超预算就真还给系统
         return;

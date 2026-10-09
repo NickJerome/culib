@@ -36,6 +36,7 @@ struct stack_memory {
     char* base;        // 整块的低地址（保护页就在这儿）
     std::size_t total; // 含保护页
     std::size_t guard; // 保护页大小
+    int bucket;        // 创建时选择的池桶；-1 表示不池化
 };
 
 // 至少给 usable 字节可用空间。失败时 base 为 0。

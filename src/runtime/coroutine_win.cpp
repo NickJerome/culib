@@ -54,6 +54,7 @@ stack_memory allocate_stack(std::size_t usable) noexcept {
     out.base = 0;
     out.total = 0;
     out.guard = 0;
+    out.bucket = -1;
 
     const std::size_t page = page_size();
     if (page > (std::numeric_limits<std::size_t>::max)() / 2 ||

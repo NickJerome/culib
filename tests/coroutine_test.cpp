@@ -297,16 +297,16 @@ TEST(fiber, binds_to_the_thread_that_first_resumes_it) {
 }
 
 // 直接比较栈分配基址；ASan 的局部变量地址可能落在另一块 fake stack 上。
-TEST(fiber, reuses_stacks_from_the_pool) {
+TEST(fiber, reuses_minimum_stacks_from_the_pool) {
     std::uintptr_t first = 0;
     std::uintptr_t second = 0;
     {
-        fiber a([] {});
+        fiber a([] {}, 16 * 1024);
         first = a.stack_base_address();
         while (a.resume()) {}
     }
     {
-        fiber b([] {});
+        fiber b([] {}, 16 * 1024);
         second = b.stack_base_address();
         while (b.resume()) {}
     }
