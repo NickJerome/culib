@@ -28,6 +28,7 @@ enum class kind { boolean, signed_integer, unsigned_integer, number, text };
 void register_flag(kind which, void* storage, const char* help,
                    std::initializer_list<const char*> names, bool is_required,
                    std::string default_text);
+void unregister_flag(const void* storage) noexcept;
 
 // init / parse 之前读取是编程错误，打印诊断并终止。
 [[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void read_before_parse(const void* storage) noexcept;
@@ -48,6 +49,7 @@ public:
                   "flag::option supports only bool, int64, uint64, double and string");
 
     // names 至少有一个；第一个是主名字，其余是别名，都不带前导 '-'。
+    // 名字和 help 须比选项对象活得久；对象销毁时自动注销。
     option(T default_value, const char* help, std::initializer_list<const char*> names)
         : stored_(std::move(default_value)) {
         detail::register_flag(tag(), &stored_, help, names, false, default_text(stored_));
@@ -57,6 +59,8 @@ public:
         : stored_() {
         detail::register_flag(tag(), &stored_, help, names, true, std::string());
     }
+
+    ~option() noexcept { detail::unregister_flag(&stored_); }
 
     const T& value() const noexcept {
         if (!detail::parsed()) detail::read_before_parse(&stored_);

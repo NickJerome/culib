@@ -288,3 +288,28 @@ TEST(flag, parses_an_empty_command_line) {
     EXPECT(flag::parse(0, 0, "1.0").is_ok(), ==, true);
     EXPECT(flag::usage().find("program") != std::string::npos, ==, true);
 }
+
+TEST(flag, unregisters_local_options_before_the_next_parse) {
+    {
+        flag::string temporary("default", "temporary option", {"temporary"});
+        EXPECT(run({"app", "--temporary=chosen"}).is_ok(), ==, true);
+        EXPECT(temporary.value(), ==, "chosen");
+    }
+
+    EXPECT(port.value(), ==, 8080);
+    EXPECT(run({"app"}).is_ok(), ==, true);
+    EXPECT(run({"app", "--temporary=x"}).is_err(), ==, true);
+}
+
+TEST(flag, adding_an_option_invalidates_the_previous_parse) {
+    EXPECT(run({"app", "--port=9000"}).is_ok(), ==, true);
+    {
+        flag::int64 temporary(7, "temporary option", {"temporary"});
+        EXPECT(flag::set("port", "1").is_err(), ==, true);
+        EXPECT(port.was_given(), ==, false);
+        EXPECT(run({"app", "--temporary=8"}).is_ok(), ==, true);
+        EXPECT(temporary.value(), ==, 8);
+    }
+    EXPECT(run({"app"}).is_ok(), ==, true);
+    EXPECT(port.value(), ==, 8080);
+}

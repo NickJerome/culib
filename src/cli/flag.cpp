@@ -3,6 +3,7 @@
 #include <culib/fs.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -210,6 +211,23 @@ void register_flag(kind which, void* storage, const char* help,
     added.default_text = std::move(default_text);
     added.on_command_line = false;
     self.entries.push_back(std::move(added));
+    // A new option was not part of the previous parse.
+    self.parsed = false;
+    self.positional.clear();
+    self.help_requested = false;
+    self.version_requested = false;
+    for (std::size_t i = 0; i < self.entries.size(); ++i)
+        self.entries[i].on_command_line = false;
+}
+
+void unregister_flag(const void* storage) noexcept {
+    registry& self = table();
+    for (std::size_t i = 0; i < self.entries.size(); ++i) {
+        if (self.entries[i].storage == storage) {
+            self.entries.erase(self.entries.begin() + static_cast<std::ptrdiff_t>(i));
+            return;
+        }
+    }
 }
 
 void read_before_parse(const void* storage) noexcept {
