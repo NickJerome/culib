@@ -91,7 +91,7 @@ int main() {
         std::thread carriers[16];
         for (int i = 0; i < 16; ++i) {
             carriers[i] = std::thread([&] {
-                wavvix::spawn([&] { completed.fetch_add(1); });
+                wavvix::spawn([&] { completed.fetch_add(1); }).value();
                 wavvix::run();
             });
         }

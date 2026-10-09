@@ -66,7 +66,8 @@ int main() {
     }
 
     errno = 0;
-    rejected = ::aligned_alloc(64, 100);
+    void* (*volatile aligned_allocate)(std::size_t, std::size_t) = &::aligned_alloc;
+    rejected = aligned_allocate(64, 100);
     if (rejected || errno != EINVAL) {
         std::fprintf(stderr, "C11 aligned_alloc accepted a non-multiple size\n");
         return 1;
