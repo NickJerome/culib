@@ -1,7 +1,7 @@
 # 文件变化监听设计
 
 - 日期：2026-10-08
-- 状态：`poller` 已通过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37764233014)；`watcher` 的 [Linux](https://github.com/NickJerome/culib/actions/runs/37765563922)、[macOS](https://github.com/NickJerome/culib/actions/runs/37767392319) 和 [Windows](https://github.com/NickJerome/culib/actions/runs/37767725183) 内部后端、以及[公共接口](https://github.com/NickJerome/culib/actions/runs/37768306364)均已通过三平台 CI。
+- 状态：历史设计。`poller` 和 `watcher` 曾通过三平台 CI；当前源码因没有实际调用方已移除，取舍见[开发约定](../../../CLAUDE.md)。
 - 前置：[文件系统](2026-10-04-fs-design.md)、[调度器](2026-10-04-scheduler-design.md)、[事件引擎](2026-10-05-event-engine-design.md)。
 
 ## 范围与接口

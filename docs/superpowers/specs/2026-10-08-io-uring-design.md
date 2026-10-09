@@ -1,7 +1,7 @@
 # Linux io_uring 后端设计
 
 - 日期：2026-10-08
-- 状态：已实现；本机验证和跨平台 CI 均通过。
+- 状态：历史设计。曾实现并通过本机验证和跨平台 CI；当前源码已移除，原因见[实现说明](../../implementation-notes.md)。
 - 前置：[调度器设计](2026-10-04-scheduler-design.md)第四期、[事件引擎设计](2026-10-05-event-engine-design.md)、[超时与同步原语](2026-10-05-sync-and-timeout-design.md)。
 
 ## 范围
