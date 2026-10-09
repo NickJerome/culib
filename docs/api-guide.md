@@ -113,13 +113,10 @@ superpowers/specs/2026-10-03-variant-design.md）。
 
 ## [`coroutine.h`](../include/culib/coroutine.h)
 
-公开 `coroutine` 是有栈协程的线程式句柄。先初始化当前操作系统线程的 vCPU，创建任务即提交，`join()` 等指定任务结束：
+公开 `coroutine` 是有栈协程的线程式句柄。`scheduler_scope` 管理当前操作系统线程的 vCPU，创建任务即提交，`join()` 等指定任务结束：
 
     #include <culib/coroutine.h>
-    #include <culib/defer.h>
-
-    wavvix::coroutine::init();
-    defer { wavvix::coroutine::shutdown(); };
+    wavvix::scheduler_scope runtime;
     wavvix::coroutine worker([&](int count) {
         for (int i = 0; i < count; ++i) {
             produce(i);
@@ -129,7 +126,7 @@ superpowers/specs/2026-10-03-variant-design.md）。
     if (!worker.joinable()) return 1;
     worker.join();
 
-也可用 `scheduler_scope` 管理 vCPU。需要额外工作 vCPU 时，检查 `coroutine::init(n)` 或 `scheduler_scope::with_workers(n)` 的返回结果；此后新建的 `coroutine` 可在其他系统线程立即开始运行，参见[调度器用法](scheduler.md)。`coroutine` 可移动；仍可 `join()` 的句柄析构会
+需要额外工作 vCPU 时，检查 `scheduler_scope::with_workers(n)` 的返回结果；此后新建的 `coroutine` 可在其他系统线程立即开始运行，参见[调度器用法](scheduler.md)。`coroutine` 可移动；仍可 `join()` 的句柄析构会
 `std::terminate()`，所以离开作用域前要 `join()` 或 `detach()`。`detach()` 只放弃句柄，
 本地任务仍需由同一 vCPU 的 `join()`、`run()`、`sleep_for()` 或作用域收尾推进；远端任务由工作 vCPU 执行，外层作用域收尾会等待它。
 构造后若 `joinable()` 为 `false`，说明协程栈分配失败，任务未提交。
@@ -498,9 +495,8 @@ value() / error() 取错分支会打印信息并终止程序，release 同样检
 ### vCPU 模型
 
 **一根操作系统线程 = 一个 vCPU**，上面跑一个调度器和它的一堆协程。可用
-`coroutine::init()` / `shutdown()` 或 `scheduler_scope` 管理其生命周期；不用显式初始化时，
-首次创建任务会按需建立 vCPU。要并行使用多核，调用 `coroutine::init(n)` 或
-`scheduler_scope::with_workers(n)` 显式启动 `n` 根额外工作线程；检查返回的 `result`。
+`scheduler_scope` 管理其生命周期；不用显式作用域时，首次创建任务会按需建立 vCPU。
+要并行使用多核，调用 `scheduler_scope::with_workers(n)` 显式启动 `n` 根额外工作线程；检查返回的 `result`。
 之后新构造的 `coroutine` 轮询提交给工作 vCPU，`spawn()` 仍留在当前 vCPU。
 
 协程**第一次运行后绑在该 vCPU 上**，不会被偷到别的 vCPU 去（为什么不偷：换线程会让

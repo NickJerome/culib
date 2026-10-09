@@ -468,10 +468,6 @@ void scheduler_scope_leave(void* owner) noexcept {
     delete self;
 }
 
-void scheduler_init() { scheduler_scope_enter(); }
-
-void scheduler_shutdown() noexcept { scheduler_scope_leave(active_vcpu()); }
-
 task_state* scheduler_task_create() noexcept {
     vcpu* const self = try_here();
     if (!self) return 0;

@@ -1,13 +1,11 @@
 #include <culib/coroutine.h>
-#include <culib/defer.h>
 
 #include <chrono>
 #include <cstdio>
 #include <functional>
 
 int main() {
-    wavvix::coroutine::init();
-    defer { wavvix::coroutine::shutdown(); };
+    wavvix::scheduler_scope runtime;
     int completed = 0;
     wavvix::coroutine first([&] {
         wavvix::sleep_for(std::chrono::milliseconds(10));

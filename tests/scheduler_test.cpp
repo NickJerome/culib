@@ -367,17 +367,6 @@ TEST(scheduler, many_remote_tasks_finish_after_immediate_detach) {
     EXPECT(completed.load(), ==, 256);
 }
 
-TEST(scheduler, explicit_worker_init_and_shutdown) {
-    wavvix::result<void> started = wavvix::coroutine::init(1);
-    EXPECT(started.is_ok(), ==, true);
-    if (started.is_err()) return;
-    int value = 0;
-    wavvix::coroutine task([&] { value = 42; });
-    task.join();
-    wavvix::coroutine::shutdown();
-    EXPECT(value, ==, 42);
-}
-
 TEST(scheduler, coroutine_object_accepts_size_t_argument_and_explicit_stack) {
     std::size_t value = 0;
     wavvix::coroutine worker = wavvix::coroutine::with_stack(
@@ -443,7 +432,7 @@ TEST(scheduler, detached_coroutine_finishes_at_scope_exit) {
 }
 
 TEST(scheduler, main_thread_sleep_drives_initialized_vcpu) {
-    wavvix::coroutine::init();
+    wavvix::scheduler_scope runtime;
     int ran = 0;
     wavvix::coroutine worker([&] {
         sleep_for(ms(5));
@@ -452,12 +441,11 @@ TEST(scheduler, main_thread_sleep_drives_initialized_vcpu) {
     sleep_for(ms(20));
     EXPECT(ran, ==, 1);
     worker.join();
-    wavvix::coroutine::shutdown();
     EXPECT(scheduled(), ==, 0u);
 }
 
 TEST(scheduler, main_thread_sleep_runs_tasks_due_before_overshoot) {
-    wavvix::coroutine::init();
+    wavvix::scheduler_scope runtime;
     int ran = 0;
     wavvix::coroutine worker([&] {
         sleep_for(ms(1));
@@ -468,17 +456,15 @@ TEST(scheduler, main_thread_sleep_runs_tasks_due_before_overshoot) {
     EXPECT(ran, ==, 1);
     worker.join();
     blocker.join();
-    wavvix::coroutine::shutdown();
 }
 
 TEST(scheduler, main_thread_yield_runs_another_coroutine) {
-    wavvix::coroutine::init();
+    wavvix::scheduler_scope runtime;
     int ran = 0;
     wavvix::coroutine worker([&] { ++ran; });
     wavvix::yield();
     EXPECT(ran, ==, 1);
     worker.join();
-    wavvix::coroutine::shutdown();
 }
 
 TEST(scheduler, joining_one_coroutine_leaves_unrelated_work_scheduled) {

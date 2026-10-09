@@ -93,13 +93,6 @@ public:
 
     static bool inside() noexcept { return detail::fiber::inside(); }
     static void yield() { wavvix::yield(); }
-    static void init() { detail::scheduler_init(); }
-    static result<void> init(unsigned workers) {
-        result<void*> entered = detail::scheduler_scope_enter_with_workers(workers);
-        if (entered.is_err()) return std::move(entered).error();
-        return result<void>();
-    }
-    static void shutdown() noexcept { detail::scheduler_shutdown(); }
 
 private:
     struct stack_tag {};

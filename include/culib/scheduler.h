@@ -20,8 +20,6 @@ void scheduler_sleep_for(std::chrono::nanoseconds duration);
 void* scheduler_scope_enter();
 result<void*> scheduler_scope_enter_with_workers(unsigned workers);
 void scheduler_scope_leave(void* owner) noexcept;
-void scheduler_init();
-void scheduler_shutdown() noexcept;
 struct task_state;
 task_state* scheduler_task_create() noexcept;
 void scheduler_task_discard(task_state* task) noexcept;
