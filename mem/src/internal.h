@@ -190,14 +190,12 @@ struct mem_arena_s {
   std::atomic<uint64_t> abandoned_nonempty;      /* 无锁读的非空桶提示 */
 };
 
-/* 运行时选项（heap.cpp，启动解析一次，之后只读） */
+/* 运行时选项（runtime.cpp，启动解析一次，之后只读） */
 struct mem_options_t {
   long    purge_delay_ms;        /* WAVVIX_MEM_PURGE_DELAY        默认 1000 */
   size_t  window_size;           /* WAVVIX_MEM_WINDOW_SIZE        默认 1TiB */
   size_t  arena_reserve;         /* WAVVIX_MEM_ARENA_RESERVE      默认 64MiB */
-  long    secure;                /* WAVVIX_MEM_SECURE             默认 1    */
   long    guarded_sample_rate;   /* WAVVIX_MEM_GUARDED_SAMPLE_RATE 默认 0   */
-  long    eager_commit;          /* WAVVIX_MEM_EAGER_COMMIT       默认 0    */
 };
 extern mem_options_t mem_options;
 
@@ -241,7 +239,6 @@ static inline size_t mem_page_slice_index(const mem_page_t* page) {
 }
 
 /* ======================== 空闲链 XOR 编码（L1） ======================== */
-/* secure 关闭时 keys[0]==0，编码退化为恒等——同一代码路径，零分支。 */
 static inline uintptr_t mem_encode(const mem_page_t* page, const void* p) {
   return (uintptr_t)p ^ page->keys[0];
 }
@@ -261,7 +258,6 @@ static inline void mem_block_set_next(const mem_page_t* page, mem_block_t* b,
  * 已分配块由 pop 时写入的 encode(WAVVIX_MEM_BLOCK_ALLOCATED) 标记（解码为常量，通过）。
  * 用户数据解码为随机 64 位值，误判概率 ≈ 页大小/2^64。 */
 static inline void mem_secure_check_free(const mem_page_t* page, const void* p) {
-  if (page->keys[0] == 0) return;            /* secure 关闭：无哨兵 */
   uintptr_t v = ((const mem_block_t*)p)->encoded_next ^ page->keys[0];
   if (v == WAVVIX_MEM_BLOCK_ALLOCATED) return;       /* 正常已分配块 */
   if (v == 0 ||

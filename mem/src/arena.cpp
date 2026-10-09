@@ -109,11 +109,6 @@ mem_arena_t* mem_arena_create(size_t size) {
   for (int i = 0; i < WAVVIX_MEM_BIN_COUNT; i++) arena->abandoned[i] = NULL;
   arena->abandoned_nonempty.store(0, std::memory_order_relaxed);
 
-  if (mem_options.eager_commit) {
-    if (!mem_os_commit(arena->base, size)) return NULL;
-    mem_bitmap_set_range(bm_committed, 0, n);
-  }
-
   g_arenas[count] = arena;
   g_arena_count.store(count + 1, std::memory_order_release);
   /* arena 完整初始化后再发布；描述符由分配路径按需构造。 */

@@ -64,9 +64,7 @@ void mem_options_parse(void) {
   mem_options.purge_delay_ms = mem_parse_long("WAVVIX_MEM_PURGE_DELAY", WAVVIX_MEM_PURGE_DELAY_MS);
   mem_options.window_size    = mem_parse_size("WAVVIX_MEM_WINDOW_SIZE", WAVVIX_MEM_WINDOW_DEFAULT);
   mem_options.arena_reserve  = mem_parse_size("WAVVIX_MEM_ARENA_RESERVE", WAVVIX_MEM_ARENA_FIRST);
-  mem_options.secure         = mem_parse_long("WAVVIX_MEM_SECURE", 1);
   mem_options.guarded_sample_rate = mem_parse_long("WAVVIX_MEM_GUARDED_SAMPLE_RATE", 0);
-  mem_options.eager_commit        = mem_parse_long("WAVVIX_MEM_EAGER_COMMIT", 0);
 
   if (mem_options.window_size < WAVVIX_MEM_WINDOW_MIN) mem_options.window_size = WAVVIX_MEM_WINDOW_MIN;
   /* arena 必须是 2 MiB 的整数倍：描述符按 arena 提交，2 MiB = 32 slice

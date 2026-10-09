@@ -125,8 +125,7 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
   page->xthread_free.store(0, std::memory_order_relaxed);
   page->large_size = 0;
 
-  if (mem_options.secure) mem_secure_page_keys(page, &owner->random_state);
-  else { page->keys[0] = 0; page->keys[1] = 0; }
+  mem_secure_page_keys(page, &owner->random_state);
 
   if (kind == WAVVIX_MEM_PAGE_SMALL) {
     size_t capacity = ((size_t)slice_count * WAVVIX_MEM_SLICE_SIZE) / block_size;
@@ -134,11 +133,11 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
     page->block_size = (uint16_t)block_size;
 
     uint8_t* mem = slice_start;
-    if (mem_options.secure && capacity > 1) {
+    if (capacity > 1) {
       /* Fisher-Yates 洗牌（L1 页内分配位置随机化）。
-       * 下标数组放栈上（≤16KiB，慢路径一次性开销）；不能借用页内存——
+       * 下标数组放栈上（≤8KiB，慢路径一次性开销）；不能借用页内存——
        * 链构建会覆写它。 */
-      uint16_t order[8192];   /* capacity ≤ 64KiB/8B = 8192 */
+      uint16_t order[4096];   /* 最小块 16B，capacity ≤ 64KiB/16B */
       for (size_t i = 0; i < capacity; i++) order[i] = (uint16_t)i;
       for (size_t i = capacity - 1; i > 0; i--) {
         size_t j = (size_t)(mem_random_next(&owner->random_state) % (i + 1));
