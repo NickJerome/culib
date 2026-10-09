@@ -1,4 +1,6 @@
+#include <culib/blocking_pool.h>
 #include <culib/coroutine.h>
+#include "runtime/scheduler_detail.h"
 #if !defined(_WIN32)
 #  include "runtime/io_engine.h"
 #  include <cerrno>
@@ -71,7 +73,23 @@ int main() {
     ::close(pipe_fds[1]);
 #endif
 
+    fail_after = 1;
+    wavvix::result<wavvix::blocking_pool> rejected_pool =
+        wavvix::blocking_pool::create();
+    fail_after = 0;
+    if (!rejected_pool.is_err() ||
+        rejected_pool.error().kind() != wavvix::error_kind::resource_exhausted) return 18;
+
     wavvix::scheduler_scope runtime;
+#if !defined(_WIN32)
+    if (!wavvix::detail::scheduler_adopt(0)) return 19;
+    fail_after = 1;
+    wavvix::detail::remote_waker* const rejected_waker =
+        wavvix::detail::scheduler_remote_prepare();
+    fail_after = 0;
+    if (rejected_waker) return 20;
+    if (!wavvix::detail::scheduler_remote_prepare()) return 21;
+#endif
     fail_after = 1;
     wavvix::coroutine rejected_local([] {});
     fail_after = 0;

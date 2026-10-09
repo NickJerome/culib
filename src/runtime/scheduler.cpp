@@ -660,8 +660,14 @@ remote_waker* scheduler_remote_prepare() {
     vcpu& self = here();
     if (self.remote) return self.remote;
     io_engine* const engine = engine_here(self);
-    if (!engine || !io_engine_enable_notify(engine)) return 0;
-    self.remote = new remote_waker(engine);
+    if (!engine) return 0;
+    remote_waker* const remote = new (std::nothrow) remote_waker(engine);
+    if (!remote) return 0;
+    if (!io_engine_enable_notify(engine)) {
+        delete remote;
+        return 0;
+    }
+    self.remote = remote;
     return self.remote;
 }
 

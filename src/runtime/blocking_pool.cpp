@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <exception>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
 #include <utility>
@@ -41,7 +42,10 @@ result<blocking_pool> blocking_pool::create(unsigned workers) {
     if (workers == 0)
         return make_error(error_kind::invalid_argument,
                           "blocking pool needs at least one worker");
-    blocking_pool pool(new impl());
+    impl* const state = new (std::nothrow) impl();
+    if (!state)
+        return make_error(error_kind::resource_exhausted);
+    blocking_pool pool(state);
 #if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
     try {
 #endif
