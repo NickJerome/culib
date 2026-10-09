@@ -95,7 +95,6 @@ struct scheduler_pool {
 struct vcpu {
     std::vector<coroutine_control*> ready;
     std::vector<coroutine_control*> round;
-    std::vector<coroutine_control*> incoming;
     std::vector<park_token*> timers;
     std::vector<park_token*> roused;
     std::vector<park_token*> completed;
@@ -144,9 +143,8 @@ void reap_vcpu(void* owner) noexcept {
         std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
         std::abort();
     }
-    // 可以销毁尚未执行或仅处于 ready/incoming 的协程；挂起协程不能直接释放。
+    // 可以销毁尚未执行或仅处于 ready 的协程；挂起协程不能直接释放。
     reap(self->ready);
-    reap(self->incoming);
     reap_detached(*self);
 
     delete self->remote;
@@ -470,13 +468,8 @@ fiber_failure scheduler_spawn(coroutine_control* taken) {
 
     vcpu* const self = try_here();
     if (!self) return fiber_failure::resource_exhausted;
-    // 正在跑一轮时进来的（嵌套 spawn）放 incoming，下一轮入队；
-    // 否则直接进 ready。两条路分开，是为了让「跑一轮」能安全地遍历局部副本。
-    if (self->running) {
-        self->incoming.push_back(taken);
-    } else {
-        self->ready.push_back(taken);
-    }
+    // 当前轮次使用独立的 round 队列，嵌套 spawn 可以直接进入下一轮的 ready。
+    self->ready.push_back(taken);
     owned.release();
     return fiber_failure::none;
 }
@@ -756,8 +749,8 @@ std::size_t scheduled() noexcept {
     detail::vcpu* const current_vcpu = detail::active_vcpu();
     if (!current_vcpu) return 0;
     // roused 尚未入 ready 时也算一根待运行协程。
-    return current_vcpu->ready.size() + current_vcpu->incoming.size() +
-           current_vcpu->parked_count + current_vcpu->roused.size();
+    return current_vcpu->ready.size() + current_vcpu->parked_count +
+           current_vcpu->roused.size();
 }
 
 std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
@@ -777,12 +770,6 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         accept_remote(self);
         // 已到期的协程仍须获得一轮运行机会。
         const bool time_elapsed = timed && clock_type::now() >= deadline;
-        // 上一轮 spawn 进来的入队。
-        if (!self.incoming.empty()) {
-            self.ready.insert(self.ready.end(), self.incoming.begin(), self.incoming.end());
-            self.incoming.clear();
-        }
-
         // 保持唤醒顺序，供同步原语维持 FIFO。
         for (std::size_t i = 0; i < self.roused.size(); ++i) {
             self.ready.push_back(self.roused[i]->owner);

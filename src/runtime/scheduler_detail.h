@@ -28,7 +28,8 @@ namespace detail {
 // **先把 token 串进自己的等待队列，再调这里**：这个函数不碰 token.next。
 bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout);
 
-// 叫醒一个挂起的协程。O(1)，而且可以在协程里也可以在协程外调（同一个 vCPU）。
+// 叫醒一个挂起的协程；带时限的凭据需从定时器堆中移除，为 O(log n)。
+// 可以在协程里或协程外调用，但必须在同一个 vCPU 上。
 //
 // **返回 false 表示没叫醒**：那个凭据已经交还过了（它刚因为超时被排回去，只是还没来
 // 得及把自己从你的等待队列里摘掉）。这个返回值不是可选的——`mutex::unlock` 把锁**直接
