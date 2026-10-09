@@ -4,6 +4,7 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <new>
 #include <vector>
 
 #include <fcntl.h>
@@ -77,7 +78,11 @@ io_engine* io_engine_create() noexcept {
     const int flags = ::fcntl(kq, F_GETFD, 0);
     if (flags >= 0) ::fcntl(kq, F_SETFD, flags | FD_CLOEXEC);
 
-    io_engine* const engine = new io_engine();
+    io_engine* const engine = new (std::nothrow) io_engine();
+    if (!engine) {
+        ::close(kq);
+        return 0;
+    }
     engine->kq = kq;
     engine->notify_enabled = false;
     engine->pending = 0;

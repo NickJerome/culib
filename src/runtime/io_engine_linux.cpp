@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <vector>
 
 #include <fcntl.h>
@@ -76,7 +77,11 @@ void sync_interest(io_engine* engine, int fd, io_fd_slot& slot, unsigned armed) 
 io_engine* io_engine_create() noexcept {
     const int epoll_fd = open_epoll();
     if (epoll_fd < 0) return 0;
-    io_engine* const engine = new io_engine();
+    io_engine* const engine = new (std::nothrow) io_engine();
+    if (!engine) {
+        ::close(epoll_fd);
+        return 0;
+    }
     engine->epoll_fd = epoll_fd;
     engine->wake_fd = -1;
     engine->pending = 0;

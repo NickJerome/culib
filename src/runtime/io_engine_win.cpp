@@ -3,6 +3,7 @@
 #include "io_engine.h"
 
 #include <cstddef>
+#include <new>
 #include <vector>
 
 // GetQueuedCompletionStatusEx 和 OVERLAPPED_ENTRY 要 Vista 以上；下限由 xmake.lua
@@ -71,7 +72,11 @@ io_engine* io_engine_create() noexcept {
     // 而协程不跨 vCPU 迁移（coroutine 设计 3.13）。
     const HANDLE port = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 1);
     if (!port) return 0;
-    io_engine* const engine = new io_engine();
+    io_engine* const engine = new (std::nothrow) io_engine();
+    if (!engine) {
+        ::CloseHandle(port);
+        return 0;
+    }
     engine->port = port;
     engine->pending = 0;
     return engine;
