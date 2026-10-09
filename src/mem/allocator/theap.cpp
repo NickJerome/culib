@@ -340,15 +340,24 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
 
 /* large / huge */
 
-/* huge 在 free 时 decommit。 */
-void* mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed) {
+/* huge 在 free 时 decommit。align_slices=1 表示无额外对齐约束。 */
+static void* mem_malloc_large_impl(mem_theap_t* t, size_t size,
+                                   size_t align_slices, bool* out_zeroed) {
   if (size == 0) size = 1;
   const size_t data = (size + WAVVIX_MEM_SLICE_SIZE - 1) / WAVVIX_MEM_SLICE_SIZE * WAVVIX_MEM_SLICE_SIZE;
   const size_t n = data >> WAVVIX_MEM_SLICE_SHIFT;
 
+  if (align_slices != 1) {
+    /* 新建 arena 时需要为对齐预留空间，先定界避免 slice 数回绕。 */
+    const size_t window_slices = mem_window_size >> WAVVIX_MEM_SLICE_SHIFT;
+    if (align_slices == 0 || align_slices > window_slices ||
+        n == 0 || n > window_slices - align_slices)
+      return NULL;
+  }
+
   bool zeroed = false;
   mem_arena_t* a = NULL;
-  size_t sidx = mem_arena_alloc_slices_any(t, n, 1, &a, &zeroed);
+  size_t sidx = mem_arena_alloc_slices_any(t, n, align_slices, &a, &zeroed);
   if (sidx == (size_t)-1) return NULL;
 
   mem_page_t* page = mem_desc_at(a->first_slice + sidx);
@@ -365,36 +374,15 @@ void* mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed) {
   return start;
 }
 
+void* mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed) {
+  return mem_malloc_large_impl(t, size, 1, out_zeroed);
+}
+
 /* alignment > 64KiB 的对齐分配：位图按对齐起点选段（arena 相对下标 + 基址
  * 相位，见 mem_arena_alloc_slices）。alignment ≤ 64KiB 由 slice 天然对齐覆盖，
  * 走 mem_malloc_large 即可。 */
 void* mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size) {
-  if (size == 0) size = 1;
-  const size_t data = (size + WAVVIX_MEM_SLICE_SIZE - 1) / WAVVIX_MEM_SLICE_SIZE * WAVVIX_MEM_SLICE_SIZE;
-  const size_t n = data >> WAVVIX_MEM_SLICE_SHIFT;
-  const size_t align_slices = alignment >> WAVVIX_MEM_SLICE_SHIFT;
-  /* 夹住荒谬的 alignment：n + align_slices 是新建 arena 时要预留的 slice 数，
-   * 不设上界的话它会在 << WAVVIX_MEM_SLICE_SHIFT 时回绕。 */
-  const size_t window_slices = mem_window_size >> WAVVIX_MEM_SLICE_SHIFT;
-  if (align_slices == 0 || align_slices > window_slices ||
-      n == 0 || n > window_slices - align_slices)
-    return NULL;
-
-  bool zeroed = false;
-  mem_arena_t* a = NULL;
-  size_t sidx = mem_arena_alloc_slices_any(t, n, align_slices, &a, &zeroed);
-  if (sidx == (size_t)-1) return NULL;
-
-  mem_page_t* page = mem_desc_at(a->first_slice + sidx);
-  uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
-  page->arena_idx = a->index;
-  mem_page_init(page, t, 0, 0, WAVVIX_MEM_PAGE_LARGE, start, (uint32_t)n, zeroed);
-  page->large_size = n * WAVVIX_MEM_SLICE_SIZE;
-  if (size > WAVVIX_MEM_HUGE_THRESHOLD) page->flags |= WAVVIX_MEM_PAGE_FLAG_HUGE;
-  mem_desc_mark_cont(mem_page_slice_index(page), n);
-  page->used = 1;
-  mem_page_publish(page);
-  return start;
+  return mem_malloc_large_impl(t, size, alignment >> WAVVIX_MEM_SLICE_SHIFT, NULL);
 }
 
 /* large/huge 只有一个合法块首，无需 owner。 */
