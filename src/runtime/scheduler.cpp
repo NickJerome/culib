@@ -589,14 +589,13 @@ remote_waker* scheduler_remote_prepare() {
 
 bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept {
     if (!waker) return false;
-    {
-        std::lock_guard<std::mutex> lock(waker->mutex);
-        token.next = 0;
-        if (waker->tail) waker->tail->next = &token;
-        else waker->head = &token;
-        waker->tail = &token;
-        waker->has_pending.store(true, std::memory_order_release);
-    }
+    std::lock_guard<std::mutex> lock(waker->mutex);
+    token.next = 0;
+    if (waker->tail) waker->tail->next = &token;
+    else waker->head = &token;
+    waker->tail = &token;
+    waker->has_pending.store(true, std::memory_order_release);
+    // 通知完成前不能让所属 vCPU 取走 token 并销毁 waker/engine。
     return io_engine_notify(waker->engine);
 }
 
