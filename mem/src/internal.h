@@ -303,14 +303,8 @@ static inline void mem_secure_check_free(const mem_page_t* page, const void* p) 
 }
 
 /* ============================ tcache 快路径 ============================ */
-/* 每 bin 容量 = 固定字节预算 / 块大小，再夹到 [WAVVIX_MEM_TCACHE_MIN, WAVVIX_MEM_TCACHE_MAX]。
- * 按"条数"分档（旧实现：128/64/32 条）会让滞留字节随块大小线性放大：8KiB 的
- * bin 光自己就扣住 32 x 8KiB = 256KiB，36 个 bin 全满合计 1908KiB/线程，线程
- * 一多这就是纯粹的内存占用。按字节预算分档后，中段每个 bin 的滞留量钉在
- * ~16KiB，全满合计 448KiB/线程（单 bin 上界 32KiB，出现在被 MIN 托住的最大
- * 几个 bin 上），而小块（命中率最高的那批）仍有 64 条可用。两端的夹紧各有用
- * 处：MIN 保证最大的几个 bin 也还有缓存，MAX 让小块不至于囤积到几千条——那
- * 已经超出"线程本地热缓存"的意义。 */
+/* 按字节预算限制每个 bin 的滞留量，再夹到最小/最大条数。
+ * 容量与占用数据见 mem/docs/decisions.md D1。 */
 #define WAVVIX_MEM_TCACHE_BIN_BUDGET ((size_t)16 * 1024)
 #define WAVVIX_MEM_TCACHE_MIN 4
 #define WAVVIX_MEM_TCACHE_MAX 64
@@ -406,11 +400,6 @@ static inline uint8_t* mem_small_block_start(const mem_page_t* page, const void*
  * 只能放在编码域之后（否则每次 pop/push 都会把它冲掉），又必须紧贴用户指针
  * （否则对齐块的头 canary 离用户指针有一个 alignment 那么远，解包时还没找回
  * 块首就没法先验它）。用户指针因此恒落在块首 +16，16 字节对齐保证同样成立。
- *
- * 这个布局顺带补上了一条旧缺陷：头 canary 曾放在 [0,8)，于是 (a) 它把 L1 的
- * 已分配哨兵冲掉、WAVVIX_MEM_DEBUG 下 L1 的 double-free 检测形同虚设，(b) [8,16) 这段
- * 对齐填充在"已分配未释放"期间无人校验，紧贴用户指针的下溢写漏检。现在两段
- * 各司其职，1 字节的下溢写就会撞上头 canary。
  *
  * 不变式：被包装的块 usable >= 32（请求恒为 size + WAVVIX_MEM_L2_OVERHEAD，size >= 1，
  * 经 mem_bin 上取整后最小 32），故 usable - WAVVIX_MEM_L2_OVERHEAD 不会下溢。
@@ -565,15 +554,8 @@ void   mem_debug_leak_report(void);
 /* 每次 malloc 恰调用一次 mem_stat_alloc、每次 free 恰调用一次 mem_stat_free，
  * 记在**调用线程**的 theap 上。字节口径统一为"可用字节"（small = block_size，
  * large = large_size），两侧同口径，相减才有意义。
- *
- * 这条"恰好一次"是硬约束而非风格偏好：原实现把记账撒在 mem_malloc_generic /
- * mem_malloc_large / mem_free_to_page 三处，于是 tcache 命中与 pages_free_direct
- * 命中这两条快路径只减不加，stat_current 一路下溢。修法是把记账点上提到
- * 每条路径必经的汇合处（分配侧 = mem_malloc_internal_with / large 入口，
- * 释放侧 = mem_free_internal），页层与 tcache 冲刷一律不再记账。
- *
- * 代价：快路径多两条对同一条 cache line 的写（计数 + 字节）。这条线在
- * theap 结构里、进程生命期内常驻 L1，实测 bench_single 落在噪声带内。 */
+ * 记账只在分配/释放入口做，页层和 tcache 冲刷不得重复记账。
+ * 修复历史与性能数据见 mem/docs/design.md §5.1。 */
 static inline void mem_stat_alloc(mem_theap_t* t, size_t usable) {
   t->stat_alloc_count++;
   t->stat_alloc_bytes += usable;

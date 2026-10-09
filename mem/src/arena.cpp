@@ -387,18 +387,8 @@ void mem_desc_mark_cont(size_t first_idx, size_t n) {
   }
 }
 
-/* 注销一个页：只清首项 magic，此后该页地址段上的任何 free 都被 L0 抓获。
- *
- * 续页项（CONT）有意不清，代价是 mem_ptr_page 必须替它兜底。那里的三条复核
- * （首项仍活、首项本身不是续页项、本 slice 落在首项的 slice_count 范围内）
- * 缺一不可——尤其第二条：mem_desc_mark_cont 不写 slice_count，所以一个"曾当过
- * 首项、现被征用成别的页的续页项"的描述符会带着上一辈子的 slice_count 亮着
- * magic，只查前一条和后一条会放行它。完整的不变式论证见 internal.h 的
- * mem_ptr_page。
- * 省掉的这一轮 n 次写是 large 路径上最大的一笔额外开销：描述符每项 128B，
- * 逐 slice 写会脏 n 条 cache line，而它取代的旧页映射表每项只有 2B。7 轮配对
- * 实测（bench_large，平均 ~15 slice/块）：逐项清零时相对改造前基线是
- * -10%，只清首项后回到 +3%。 */
+/* 只清首项；续页项可陈旧，mem_ptr_page 的三条复核必须保留。
+ * 不变式见 internal.h，逐项清零的成本见 mem/docs/decisions.md D3。 */
 void mem_desc_clear(size_t first_idx) {
   mem_desc_base[first_idx].magic.store(0, std::memory_order_release);
 }

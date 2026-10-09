@@ -85,19 +85,8 @@ void* mem_l2_unwrap(void* user) {
   if (*(uint64_t*)head != mem_canary(WAVVIX_MEM_CANARY_HEAD, head))
     mem_fatal_ptr("head canary corrupted (underflow / double free / wild free)",
                  user);
-  /* 头 canary 过了，才谈得上"块首"。这个次序不能反，也不能把头 canary 挪回
-   * 块首去"简化"——两者是同一件事的两面：
-   *   块首找回（mem_user_block_start）对**任何页内地址**都给得出一个合法答案
-   *   （LARGE 直接返回那唯一的块，HAS_ALIGNED 小页是一次向下取整）。所以它必须
-   *   排在一个**只依赖用户指针**的校验之后，否则内部指针会被静默纠正成合法块首。
-   * 头 canary 放在 user - 8 并与自身地址异或，就是为了成为那个校验。
-   *
-   * 实测消融（WAVVIX_MEM_DEBUG，把头 canary 改回块首、即"先找回块首再校验"）：
-   *   test_security 的 interior_free_large / underflow_aligned /
-   *   interior_free_aligned_page 三条全部 NOT DETECTED，
-   *   而 test_unit 的 28926 条检查**照样全绿**。
-   * 也就是说：这个位置是承重的，但单元测试对它完全无感，唯一的护栏是那三条
-   * 注入用例。改动这一段之前请先确认它们还会红。 */
+  /* 先校验只依赖用户指针的头 canary，再找块首；否则内部指针可能被
+   * mem_user_block_start 归整为合法块首。消融验证见 mem/docs/decisions.md 教训 B。 */
   uint8_t* b = mem_user_block_start(page, u);
   uint8_t* tail = b + mem_page_usable_size(page) - WAVVIX_MEM_L2_TAIL;
   if (*(uint64_t*)tail != mem_canary(WAVVIX_MEM_CANARY_TAIL, tail))

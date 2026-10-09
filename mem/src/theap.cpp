@@ -98,14 +98,8 @@ void mem_theap_page_to_full(mem_theap_t* t, mem_page_t* page) {
   mem_page_queue_remove(&t->pages[bin - 1], page);
   if (bin < WAVVIX_MEM_DIRECT_MAX && t->pages_free_direct[bin] == page)
     t->pages_free_direct[bin] = NULL;
-  /* 满页隔离即终点，不做"超出 retain 即 abandon"：
-   * 实测（larson 类负载）满页往往仍在高速轮换，abandon 会把其后每次本地
-   * free 变成跨线程 CAS + arena 锁认领，造成 abandon/reclaim 风暴
-   * （5s 内 250 万次往返，吞吐掉到 glibc 的 1/3）。mimalloc 同名选项
-   * （page_full_retain）的语义实为"扫描期容忍的满页数"而非满页队列上限——
-   * 设计文档 §4.2 此处与 mimalloc 实际行为不符，按性能验收数字修正机制，
-   * 本实现因此不提供该选项。
-   * 满页腾出空间经 unfull 自然回流，真正空闲的页由 retire 宽限回收。 */
+  /* 满页留在本地；腾出空间后由 unfull 回流，空页由 retire 回收。
+   * abandon/reclaim 风暴的实测见 mem/docs/design.md §5.2.2。 */
   page->flags |= WAVVIX_MEM_PAGE_FLAG_IN_FULL;
   t->full_count[bin]++;
   mem_page_queue_push(&t->pages[WAVVIX_MEM_BIN_FULL], page);
@@ -292,9 +286,7 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
   t->heartbeat++;
 
   mem_arena_t* arena = mem_arena_get(t->arena_idx);
-  /* 注：purge 到期检查摊销在下方"到达 arena 分配新 slice"的分支里，
-   * 不在每次 generic 调用做——purge_expire 几乎总被 retire 重新武装，
-   * 每次调用都 clock_gettime 实测白付 ~11ns（gprof 占 9%）。 */
+  /* purge 到期检查只在申请新 slice 时做，避免每次慢路径都读时钟。 */
 
   /* 0) 分配驱动兜底：本 bin 的 abandoned 桶非空 → 优先认领一页。
    *    否则满页压力降级产生的被弃页只进不出，内存会随时间膨胀。 */
@@ -307,11 +299,7 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
     /* rp 为 NULL（桶空）或仍全满（已挂 FULL 队列）：继续正常路径 */
   }
 
-  /* 1) next-fit 扫描本 bin 队列（对齐 mimalloc find_free_ex 的实际行为）：
-   *    - 仅在 free==NULL 时才 collect（有空闲块的页零额外代价）；
-   *    - 首个可用页即返回，不再对所有扫描页做全量 collect——
-   *      实测"每页必 collect"会让 larson 类负载慢 3 倍（gprof：collect 42%）。
-   *    - collect 后仍满的页隔离进 FULL 队列；扫描上限防长尾。 */
+  /* next-fit：仅在 free 为空时 collect，首个可用页即返回；满页隔离，扫描有上限。 */
   mem_page_queue_t* q = &t->pages[bin - 1];
   mem_page_t* best = NULL;
   long scanned = 0;
