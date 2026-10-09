@@ -134,6 +134,36 @@ jobs:
         # 该覆盖测试仍在普通 Linux debug/release 作业中执行。
         run: bash .github/report-failure.sh xmake test -v culib_test/default mem_test_guarded/default mem_test_new_override/default mem_test_rss/default mem_test_security/default mem_test_stress/default mem_test_unit/default
 
+  allocator-l2:
+    name: allocator L2 / ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { name: Linux, os: ubuntu-latest, toolchain: gcc, define: '-DWAVVIX_MEM_DEBUG' }
+          - { name: macOS, os: macos-latest, toolchain: clang, define: '-DWAVVIX_MEM_DEBUG' }
+          - { name: Windows, os: windows-latest, toolchain: msvc, define: '/DWAVVIX_MEM_DEBUG' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
+        with:
+          xmake-version: latest
+      - name: configure L2 canaries and UAF checks
+        run: xmake f -m debug --toolchain=${{ matrix.platform.toolchain }} --cxxflags="${{ matrix.platform.define }}" --ccache=n -y
+      - name: build library
+        shell: bash
+        run: bash .github/report-failure.sh xmake -w -y
+      - name: run tests
+        shell: bash
+        run: bash .github/report-failure.sh xmake test -v
+      - name: require all L2 security injections
+        shell: bash
+        run: |
+          xmake run mem_test_security > security.log 2>&1
+          cat security.log
+          grep -Fq '13 cases | PASS 13 | SKIP 0' security.log
+
   build:
     name: ${{ matrix.target.name }} / ${{ matrix.mode }}
     runs-on: ${{ matrix.target.os }}

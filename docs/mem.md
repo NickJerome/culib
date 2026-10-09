@@ -35,6 +35,8 @@ void example() {
 
 Windows MSVC x64、Linux x86_64/arm64 和 macOS arm64/x86_64 的 debug、release 构建已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)，包含分配器单元、压力、安全和 RSS 测试，以及全局 `new/delete` 覆盖测试；Linux 的 `malloc/new` 共享库覆盖也通过了计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论。
 
+`xmake` 的 `debug` 模式本身不启用 L2 canary 与释放后写入检查；这些检查由编译宏 `WAVVIX_MEM_DEBUG` 独立控制。CI 单独在 Linux、macOS、Windows 带该宏构建并运行测试，且要求安全注入用例全部 13/13 检出、0 项跳过。
+
 ## 分配性能基准
 
 `mem_benchmark` 是单独的非默认构建目标，不进入 `culib`。它在同一个进程内交替测量 `mem::alloc/free` 和 `malloc/free`，每组先各预热一轮，再用相同种子的输入跑五轮并报告比值中位数。`small` 使用每线程 128 个槽位、8–8192 字节的随机块；`large` 使用 64 个槽位、64 KiB–4 MiB 的随机块。每次分配写首尾字节，释放前读回；计时包含随机数、访存和工作线程启动成本，**只用于比较这一组负载**。
