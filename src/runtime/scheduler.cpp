@@ -456,6 +456,7 @@ void scheduler_scope_leave(void* owner) noexcept {
         wavvix::run();
     }
     if (self->scope_depth != 0) return;
+    release_thread_stack_pool();
     unregister_runtime_thread_exit(self);
     current_vcpu = 0;
     delete self->remote;

@@ -1,3 +1,4 @@
+#include <culib/coroutine.h>
 #include <culib/detail/fiber.h>
 #include <culib/test.h>
 
@@ -360,6 +361,27 @@ TEST(fiber, keeps_pooled_stacks_usable_after_heavy_churn) {
 }
 
 #if (defined(__linux__) && !WAVVIX_TEST_ASAN) || defined(_WIN32)
+TEST(fiber, releases_cached_stacks_when_runtime_closes) {
+    std::size_t cached = 0;
+    {
+        wavvix::scheduler_scope runtime;
+        wavvix::coroutine worker = wavvix::coroutine::with_stack(
+            7u * 1024 * 1024, [] {});
+        if (!EXPECT(worker.joinable(), ==, true)) return;
+        worker.join();
+        cached = virtual_memory_kb();
+    }
+    const std::size_t after = virtual_memory_kb();
+    EXPECT(cached != 0, ==, true);
+    EXPECT(after != 0, ==, true);
+    EXPECT(cached > after && cached - after >= 4u * 1024, ==, true);
+
+    wavvix::scheduler_scope next_runtime;
+    wavvix::coroutine next([] {});
+    if (!EXPECT(next.joinable(), ==, true)) return;
+    next.join();
+}
+
 TEST(fiber, releases_cached_stacks_when_threads_exit) {
     const std::size_t before = virtual_memory_kb();
     EXPECT(before != 0, ==, true);

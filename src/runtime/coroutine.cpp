@@ -206,6 +206,20 @@ void pooled_release_stack(const stack_memory& memory) noexcept {
     state->bytes += memory.total;
 }
 
+void drain_stack_pool(runtime_thread_state& state) noexcept {
+    for (int bucket = 0; bucket < pool_bucket_count; ++bucket) {
+        pooled_stack* node = state.buckets[bucket];
+        state.buckets[bucket] = 0;
+        while (node) {
+            pooled_stack* const next = node->next;
+            const stack_memory memory = node->memory;
+            release_stack(memory);
+            node = next;
+        }
+    }
+    state.bytes = 0;
+}
+
 void die(const char* what) {
     // 误用的诊断直接写 stderr：不分配内存、不依赖流
     std::fputs(what, stderr);
@@ -246,18 +260,16 @@ void runtime_thread_exit(void* value) noexcept {
     runtime_thread_state* const state = static_cast<runtime_thread_state*>(value);
     if (!state) return;
     if (state->exit_cleanup) state->exit_cleanup(state->exit_owner);
-    for (int bucket = 0; bucket < pool_bucket_count; ++bucket) {
-        pooled_stack* node = state->buckets[bucket];
-        while (node) {
-            pooled_stack* const next = node->next;
-            const stack_memory memory = node->memory;
-            release_stack(memory);
-            node = next;
-        }
-    }
+    drain_stack_pool(*state);
     const stack_memory storage = state->storage;
     state->~runtime_thread_state();
     release_stack(storage);
+}
+
+void release_thread_stack_pool() noexcept {
+    void* const value = runtime_thread_state_current();
+    if (value && value != &runtime_thread_exit_marker)
+        drain_stack_pool(*static_cast<runtime_thread_state*>(value));
 }
 
 bool register_runtime_thread_exit(void* owner, void (*cleanup)(void*)) noexcept {

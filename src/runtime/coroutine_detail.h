@@ -50,6 +50,7 @@ bool runtime_thread_state_set(void* state) noexcept;
 void runtime_thread_exit(void* state) noexcept;
 bool register_runtime_thread_exit(void* owner, void (*cleanup)(void*)) noexcept;
 void unregister_runtime_thread_exit(void* owner) noexcept;
+void release_thread_stack_pool() noexcept;
 
 }  // namespace detail
 }  // namespace wavvix
