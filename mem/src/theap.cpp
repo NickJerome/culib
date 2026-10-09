@@ -335,7 +335,6 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
   if (best == NULL || best->free == NULL) return NULL;
 
   if (bin < WAVVIX_MEM_DIRECT_MAX) t->pages_free_direct[bin] = best;
-  /* 小块统计在 mem_malloc_internal_with 统一记账。 */
   return mem_page_malloc(best);
 }
 
@@ -362,7 +361,6 @@ void* mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed) {
   page->used = 1;
   mem_page_publish(page);   /* 续页项先于首项发布：野指针只会解析到 magic==0 */
 
-  mem_stat_alloc(t, page->large_size);
   if (out_zeroed != NULL) *out_zeroed = zeroed;
   return start;
 }
@@ -396,7 +394,6 @@ void* mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size) {
   mem_desc_mark_cont(mem_page_slice_index(page), n);
   page->used = 1;
   mem_page_publish(page);
-  mem_stat_alloc(t, page->large_size);
   return start;
 }
 
@@ -407,14 +404,11 @@ static void mem_page_free_large(mem_page_t* page, void* p) {
     mem_fatal_page("free of interior pointer (large block)", p, page);
 
   mem_page_release_slices(page);
-  /* 记账在 mem::free（large_size 在那里于归还之前已取出） */
 }
 
 /* 释放路径 */
 
-/* 页归还路径（tcache 未命中/未启用时的完整语义路径）。
- * 不记统计：本函数还会被 mem_tcache_flush_all 调用，而那些块在进 tcache 时
- * 就已经作为一次 wavvix::mem::free 记过账了。统计只记在 mem::free 那一处。 */
+/* 页归还路径（tcache 未命中/未启用时的完整语义路径）。 */
 static void mem_free_to_page(mem_theap_t* t, mem_page_t* page, void* p) {
   /* 先取出后面要用的字段：本地分支里 mem_theap_page_empty 可能退休本页（描述符
    * 失效、slice 归还），跨线程分支里 CAS 一成功块就对 owner 可见、owner 可能
@@ -499,12 +493,7 @@ void wavvix::mem::free(void* p) noexcept {
   if (WAVVIX_MEM_UNLIKELY(page == NULL))
     mem_fatal_ptr("invalid free (address is not a live culib mem block)", p);
   if (WAVVIX_MEM_UNLIKELY(page->kind == WAVVIX_MEM_PAGE_LARGE)) {
-    /* large_size 必须在归还之前取：mem_page_free_large 会清 magic 并把 slice
-     * 还给 arena，之后这个描述符可能已被别的页征用。 */
-    const size_t usable = page->large_size;
     mem_page_free_large(page, p);
-    mem_theap_t* lt = mem_t_theap;
-    if (lt != NULL) mem_stat_free(lt, usable);   /* 口径见 mem_stat_large_alloc */
     return;
   }
   /* 后续 small 路径以 bin 在 1..36 为前提。 */
@@ -535,11 +524,8 @@ void wavvix::mem::free(void* p) noexcept {
   }
 
   mem_theap_t* t = mem_theap_current();
-  /* 小块释放的统计汇合点：无论块进 tcache 还是直接还页，都只记这一次。
-   * block_size 在页可能被退休之前读出（本行之后 mem_free_to_page 可能归还它）。 */
-  mem_stat_free(t, page->block_size);
   /* tcache 快路径（release 与 WAVVIX_MEM_DEBUG 均启用）。
-   * 块在 tcache 期间页视角仍为已分配（used 不变），退休/统计语义不变。 */
+   * 块在 tcache 期间页视角仍为已分配（used 不变）。 */
   {
     int bin = page->bin;
     /* 最小块已是 16B（mem_bin 线性区取偶），tcache 元数据（编码链 + guard）

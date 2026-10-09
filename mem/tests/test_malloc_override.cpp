@@ -1,4 +1,4 @@
-#include <mem_core.h>
+#include <culib/mem.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -30,11 +30,11 @@ int main() {
         std::fprintf(stderr, "malloc override failed before main\n");
         return 1;
     }
-    mem_stats_t before = {};
-    mem_stats_get(&before);
-
     unsigned char* p = static_cast<unsigned char*>(std::malloc(37));
-    if (!p) return 1;
+    if (!p || wavvix::mem::usable_size(p) < 37) {
+        std::fprintf(stderr, "malloc did not use culib allocator\n");
+        return 1;
+    }
     p[0] = 0x31;
     p[36] = 0x79;
     std::printf("malloc block: %p %u %u\n", static_cast<void*>(p),
@@ -42,19 +42,15 @@ int main() {
     std::free(p);
 
     unsigned char* q = new unsigned char[37];
+    if (wavvix::mem::usable_size(q) < 37) {
+        std::fprintf(stderr, "new did not use culib allocator\n");
+        return 1;
+    }
     q[0] = 0x32;
     q[36] = 0x78;
     std::printf("new block: %p %u %u\n", static_cast<void*>(q),
                 static_cast<unsigned>(q[0]), static_cast<unsigned>(q[36]));
     delete[] q;
-
-    mem_stats_t after = {};
-    mem_stats_get(&after);
-    if (after.thread_alloc_count < before.thread_alloc_count + 2 ||
-        after.thread_free_count < before.thread_free_count + 2) {
-        std::fprintf(stderr, "malloc/new did not use culib allocator\n");
-        return 1;
-    }
 
     volatile std::size_t impossible = static_cast<std::size_t>(-1);
     void* (*volatile allocate)(std::size_t) = &std::malloc;

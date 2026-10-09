@@ -81,12 +81,7 @@ WAVVIX_MEM_NORETURN void mem_fatal_page(const char* msg, const void* p, const me
 
 /* ------------------------------ 统计快照 ------------------------------- */
 
-/* 汇总一份 mem_stats_t。进程级字段逐个 arena 加锁读取，因此本函数**不可**在
- * fatal 路径或信号处理函数里调用（那里不能取锁）——头文件已写明这条契约。
- *
- * 线程级字段只读调用线程自己的 theap，无锁也无竞争。mem_t_theap 为 NULL
- * （本线程一次都没分配过）时这些字段留 0，而不是顺手建一个 theap：
- * 观测动作不该改变被观测对象的状态。 */
+/* 进程级字段逐个 arena 加锁读取；不可在 fatal 路径或信号处理函数里调用。 */
 void mem_stats_get(mem_stats_t* out) {
   if (out == NULL) return;
   mem_init_once();
@@ -96,20 +91,6 @@ void mem_stats_get(mem_stats_t* out) {
   out->arena_count       = (size_t)mem_arena_count();
   out->abandoned_pages   = mem_arena_abandoned_count();
   out->process_rss_bytes = mem_os_process_rss();
-
-  mem_theap_t* t = mem_t_theap;
-  if (t == NULL) return;
-  out->thread_alloc_count = (unsigned long long)t->stat_alloc_count;
-  out->thread_free_count  = (unsigned long long)t->stat_free_count;
-  /* 净值可能为负（跨线程释放：分配记在 A、释放记在 B），截断到 0。
-   * 存的是两个单调递增量正是为了让这一步是显式的截断而不是静默的下溢。 */
-  out->thread_current_bytes =
-      t->stat_alloc_bytes > t->stat_free_bytes
-          ? (size_t)(t->stat_alloc_bytes - t->stat_free_bytes)
-          : 0;
-  for (int bin = 1; bin <= WAVVIX_MEM_BIN_FULL; bin++)
-    out->thread_tcache_bytes +=
-        (size_t)t->tcache[bin - 1].count * mem_bin_size(bin);
 }
 
 /* --------------------------- WAVVIX_MEM_DEBUG 泄漏报告 -------------------------- */

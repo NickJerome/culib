@@ -164,11 +164,6 @@ struct mem_theap_s {
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
   mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
   uintptr_t       tcache_key;
-  /* 分配与释放分别累计；跨线程释放时当前线程净值可能为负。 */
-  uint64_t        stat_alloc_count;
-  uint64_t        stat_alloc_bytes;
-  uint64_t        stat_free_count;
-  uint64_t        stat_free_bytes;
   struct mem_theap_s* next_free;                     /* theap 回收链 */
 };
 
@@ -472,26 +467,10 @@ void   mem_secure_page_keys(mem_page_t* page, uint64_t* random_state);
 void   mem_debug_leak_report(void);
 #endif
 
-/* ============================== 统计记账 ============================== */
-/* 每次 malloc 恰调用一次 mem_stat_alloc、每次 free 恰调用一次 mem_stat_free，
- * 记在**调用线程**的 theap 上。字节口径统一为"可用字节"（small = block_size，
- * large = large_size），两侧同口径，相减才有意义。
- * 记账只在分配/释放入口做，页层和 tcache 冲刷不得重复记账。
- * 修复历史与性能数据见 mem/docs/design.md §5.1。 */
-static inline void mem_stat_alloc(mem_theap_t* t, size_t usable) {
-  t->stat_alloc_count++;
-  t->stat_alloc_bytes += usable;
-}
-static inline void mem_stat_free(mem_theap_t* t, size_t usable) {
-  t->stat_free_count++;
-  t->stat_free_bytes += usable;
-}
-
 /* ============================ 分配总入口 ============================== */
 /* api.cpp 的 wavvix::mem::alloc 经此内联展开快路径；t 属于调用线程。 */
 
-/* 小块的三条快路径 + 慢路径兜底。单独拆出来，是为了让记账在调用方只出现
- * 一次——本函数的每一个 return 都是"一次成功分配"，谁也漏不掉。 */
+/* 小块的三条快路径 + 慢路径兜底。 */
 static inline void* mem_malloc_small(mem_theap_t* t, int bin) {
   /* tcache 命中即返回。WAVVIX_MEM_DEBUG 下同样启用：tcache 侧另有一套 L2 填充/校验
    * 区间（见 mem_debug_verify_tcache_block），覆盖不因此出缺口；而"调试构建
@@ -520,14 +499,9 @@ static inline void* mem_malloc_internal_with(mem_theap_t* t, size_t size) {
   if (WAVVIX_MEM_LIKELY(size <= WAVVIX_MEM_SMALL_MAX)) {
     if (WAVVIX_MEM_UNLIKELY(size == 0)) size = 1;
     int bin = mem_bin(size);
-    void* p = mem_malloc_small(t, bin);
-    /* mem_bin_size(bin) 恒等于所在页的 block_size（mem_malloc_generic 就是用它
-     * 建的页），但它是纯 ALU、不碰描述符——tcache 命中路径因此仍然不需要
-     * 任何一次 mem_ptr_page 查找。 */
-    if (WAVVIX_MEM_LIKELY(p != NULL)) mem_stat_alloc(t, mem_bin_size(bin));
-    return p;
+    return mem_malloc_small(t, bin);
   }
-  return mem_malloc_large(t, size);   /* large 路径在 theap.cpp 内自行记账 */
+  return mem_malloc_large(t, size);
 }
 
 /* small 块的可用字节数 */

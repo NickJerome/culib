@@ -1,4 +1,4 @@
-#include <mem_core.h>
+#include <culib/mem.h>
 #include <culib/scheduler.h>
 
 #include <atomic>
@@ -39,23 +39,16 @@ int main() {
         std::fprintf(stderr, "global new failed before main\n");
         return 1;
     }
-    mem_stats_t before = {};
-    mem_stats_get(&before);
-
     unsigned char* p = new unsigned char[37];
+    if (wavvix::mem::usable_size(p) < 37) {
+        std::fprintf(stderr, "global new did not use culib allocator\n");
+        return 1;
+    }
     p[0] = 0x31;
     p[36] = 0x79;
     std::printf("new block: %p %u %u\n", static_cast<void*>(p),
                 static_cast<unsigned>(p[0]), static_cast<unsigned>(p[36]));
     delete[] p;
-
-    mem_stats_t after = {};
-    mem_stats_get(&after);
-    if (after.thread_alloc_count <= before.thread_alloc_count ||
-        after.thread_free_count <= before.thread_free_count) {
-        std::fprintf(stderr, "global new/delete did not use culib allocator\n");
-        return 1;
-    }
 
     const std::size_t impossible = (std::numeric_limits<std::size_t>::max)();
     std::new_handler previous = std::set_new_handler(&release_new_handler);

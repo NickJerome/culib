@@ -12,10 +12,6 @@ struct mem_stats_t {
     std::size_t committed_bytes;
     std::size_t arena_count;
     std::size_t abandoned_pages;
-    std::size_t thread_tcache_bytes;
-    std::size_t thread_current_bytes;
-    unsigned long long thread_alloc_count;
-    unsigned long long thread_free_count;
     std::size_t process_rss_bytes;
 };
 
