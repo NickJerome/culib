@@ -153,6 +153,15 @@ void inject_uaf_write_tcache_body() {
     (void)q;
     child_exit(0);       /* 未检测到 */
 }
+
+void inject_uaf_write_tcache_body_collect() {
+    char* p = (char*)wavvix::mem::alloc(128);
+    if (!p) child_exit(kSetupFail);
+    wavvix::mem::free(p);
+    p[64] = (char)0x5A;                  /* 故意破坏 tcache 中的填充 */
+    wavvix::mem::collect();              /* 冲刷时也必须校验 */
+    child_exit(0);
+}
 #endif /* WAVVIX_MEM_DEBUG */
 
 /* HARD: large 块内部指针释放 —— mem_page_free_large 的等值比较必须拒收 */
@@ -250,6 +259,17 @@ void inject_double_free_cross_thread() {
     child_exit(0);
 }
 
+#ifndef WAVVIX_MEM_DEBUG
+void inject_tcache_guard_corruption_collect() {
+    unsigned char* p = (unsigned char*)wavvix::mem::alloc(128);
+    if (!p) child_exit(kSetupFail);
+    wavvix::mem::free(p);
+    p[sizeof(uintptr_t)] ^= 1;           /* release 下块首就是用户指针 */
+    wavvix::mem::collect();              /* 冲刷不能抹掉损坏的 guard */
+    child_exit(0);
+}
+#endif
+
 /* ---------------- 用例表（父、子进程共用） ---------------- */
 
 enum CaseKind { HARD, SOFT };
@@ -268,6 +288,9 @@ const CaseDef kCases[] = {
     { "invalid_free",      inject_invalid_free,      HARD },
     { "double_free_tcache_full",   inject_double_free_tcache_full,   HARD },
     { "double_free_cross_thread",  inject_double_free_cross_thread,  HARD },
+#ifndef WAVVIX_MEM_DEBUG
+    { "tcache_guard_corruption_collect", inject_tcache_guard_corruption_collect, HARD },
+#endif
     { "uaf_write_detect",  inject_uaf_write_detect,  SOFT },
     { "interior_free_large", inject_interior_free_large, HARD },
     { "interior_free_small", inject_interior_free_small, HARD },
@@ -278,6 +301,7 @@ const CaseDef kCases[] = {
     { "underflow_aligned",  inject_underflow_aligned,  HARD },
     { "overflow_canary",   inject_overflow_canary,   HARD },
     { "uaf_write_tcache_body", inject_uaf_write_tcache_body, HARD },
+    { "uaf_write_tcache_body_collect", inject_uaf_write_tcache_body_collect, HARD },
 #endif
 };
 

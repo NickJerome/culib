@@ -458,15 +458,21 @@ static void mem_tcache_flush_all(mem_theap_t* t) {
     mem_tcache_bin_t* tc = &t->tcache[bin - 1];
     while (tc->head != NULL) {
       uintptr_t* w = (uintptr_t*)tc->head;
+      mem_page_t* page = mem_ptr_page(w);
+      if (WAVVIX_MEM_UNLIKELY(page == NULL))
+        mem_fatal_ptr("tcache flush: block has no live page", w);
+      if (WAVVIX_MEM_UNLIKELY(page->kind != WAVVIX_MEM_PAGE_SMALL || page->bin != bin))
+        mem_fatal_page("tcache flush: block belongs to another bin or page kind", w, page);
+      if (WAVVIX_MEM_UNLIKELY(w[1] != (mem_tcache_guard ^ (uintptr_t)w)))
+        mem_fatal_ptr("use-after-free write or tcache corruption", w);
       uintptr_t next = w[0] ^ t->tcache_key;
+      if (WAVVIX_MEM_UNLIKELY((next & 0xFull) != 0))
+        mem_fatal_ptr("tcache chain corrupted", w);
+#if defined(WAVVIX_MEM_DEBUG)
+      mem_debug_verify_tcache_block(w, page->block_size);
+#endif
       w[1] = 0;
       tc->head = (void*)next;
-      mem_page_t* page = mem_ptr_page(w);
-      if (page == NULL) continue;
-      /* 与 mem::free 同一条护栏：mem_free_to_page 里的 t->pages[bin-1]
-       * 对非 small 页会越界读写 theap 自身。两个调用方必须保持一致。 */
-      if (WAVVIX_MEM_UNLIKELY(page->kind != WAVVIX_MEM_PAGE_SMALL))
-        mem_fatal_page("tcache flush: descriptor is not a live small page", w, page);
       mem_free_to_page(t, page, w);
     }
     tc->count = 0;
