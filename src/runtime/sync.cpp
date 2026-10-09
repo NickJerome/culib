@@ -16,6 +16,8 @@ using detail::park_token;
 
 void enqueue(park_token*& head, park_token*& tail, park_token& token) {
     token.next = 0;
+    token.prev = tail;
+    token.queued = true;
     if (tail) {
         tail->next = &token;
     } else {
@@ -28,26 +30,24 @@ park_token* dequeue(park_token*& head, park_token*& tail) {
     park_token* const token = head;
     if (!token) return 0;
     head = token->next;
-    if (!head) tail = 0;
+    if (head) head->prev = 0;
+    else tail = 0;
     token->next = 0;
+    token->prev = 0;
+    token->queued = false;
     return token;
 }
 
-// 把自己从队列里摘掉。超时的那一方自己来做——它知道自己在哪个队列里。
-// 找不到不算错：交棒那一方可能已经把它摘走了（然后发现它已经走了，又换了下一个）。
+// 超时者自己摘链；交棒者已经摘走时直接返回。
 void withdraw(park_token*& head, park_token*& tail, park_token& token) {
-    park_token* previous = 0;
-    for (park_token* walk = head; walk; previous = walk, walk = walk->next) {
-        if (walk != &token) continue;
-        if (previous) {
-            previous->next = token.next;
-        } else {
-            head = token.next;
-        }
-        if (tail == &token) tail = previous;
-        token.next = 0;
-        return;
-    }
+    if (!token.queued) return;
+    if (token.prev) token.prev->next = token.next;
+    else head = token.next;
+    if (token.next) token.next->prev = token.prev;
+    else tail = token.prev;
+    token.next = 0;
+    token.prev = 0;
+    token.queued = false;
 }
 
 // 交棒给队首。返回 false 表示队列空了（没人接），调用方该把资源真放开。

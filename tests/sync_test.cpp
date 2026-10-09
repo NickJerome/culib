@@ -178,6 +178,24 @@ TEST(semaphore, early_wakes_remove_timers_without_losing_later_timeouts) {
     EXPECT(permits.count(), ==, 0);
 }
 
+TEST(semaphore, a_middle_timeout_keeps_the_remaining_waiters_in_order) {
+    semaphore permits(0);
+    std::string order;
+    bool middle_acquired = true;
+    spawn([&] { if (permits.try_acquire_for(ms(1000))) order += 'A'; }).value();
+    spawn([&] { middle_acquired = permits.try_acquire_for(ms(0)); }).value();
+    spawn([&] { if (permits.try_acquire_for(ms(1000))) order += 'C'; }).value();
+    spawn([&] {
+        sleep_for(ms(10));
+        permits.release(2);
+    }).value();
+
+    EXPECT(run(), ==, 4u);
+    EXPECT(middle_acquired, ==, false);
+    EXPECT(order, ==, "AC");
+    EXPECT(permits.count(), ==, 0);
+}
+
 TEST(semaphore, release_without_waiters_puts_the_permit_back) {
     semaphore permits(0);
     permits.release();

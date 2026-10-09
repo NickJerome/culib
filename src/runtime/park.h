@@ -29,6 +29,8 @@ struct park_token {
     std::size_t heap_index;  // timed 时在定时器堆中的位置
     std::uint64_t order;     // 相同截止时间按挂起顺序唤醒
     park_token* next;        // 给各自的等待队列串用（mutex / semaphore 的 FIFO）
+    park_token* prev;        // 等待队列中超时退出时常数时间摘链
+    bool queued;
 };
 
 }  // namespace detail
