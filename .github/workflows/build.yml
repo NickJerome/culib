@@ -302,8 +302,7 @@ jobs:
               wavvix::string_view ours = "from C++11";
           #endif
 
-              wavvix::coroutine::init();
-              defer { wavvix::coroutine::shutdown(); };
+              wavvix::scheduler_scope runtime;
               int completed = 0;
               wavvix::coroutine worker([&] { ++completed; });
               if (!worker.joinable()) return 1;
