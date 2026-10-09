@@ -29,6 +29,8 @@ void example() {
 
 普通 `culib` 依赖会提供分配器 API，但不会悄悄覆盖进程全局符号，也不会在默认构建中编译两个覆盖目标。全局替换由上述目标显式启用，避免与其他库的分配/释放族混用。
 
+覆盖后的 `new` / `new[]` 遵循 `std::new_handler`：分配失败时先调用已安装的处理器；没有处理器时抛出 `std::bad_alloc`（关闭异常的构建会终止）。`std::nothrow` 形式同样调用处理器，最终失败时返回空指针；处理器抛出的异常不会越过 `noexcept` 入口。
+
 ## 平台与验证
 
 当前实现限 64 位 Linux、macOS 和 Windows；Windows x86 暂无该模块。它预留默认 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于启动时消耗 1 TiB 物理内存。首次分配时读取 `WAVVIX_MEM_WINDOW_SIZE`（默认 `1T`）、`WAVVIX_MEM_ARENA_RESERVE`（`64M`）和 `WAVVIX_MEM_PURGE_DELAY`（`1000` 毫秒）。页密钥始终启用，arena 按需提交物理内存。

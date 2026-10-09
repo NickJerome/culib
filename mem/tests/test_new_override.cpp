@@ -3,9 +3,25 @@
 
 #include <atomic>
 #include <cstdio>
+#include <limits>
+#include <new>
 #include <thread>
 
 namespace {
+int new_handler_calls = 0;
+
+void release_new_handler() {
+    ++new_handler_calls;
+    std::set_new_handler(nullptr);
+}
+
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND) || defined(__EXCEPTIONS)
+void throwing_new_handler() {
+    ++new_handler_calls;
+    throw 1;
+}
+#endif
+
 struct early_allocation {
     unsigned char* block;
     early_allocation() : block(new unsigned char[37]) {
@@ -40,6 +56,35 @@ int main() {
         std::fprintf(stderr, "global new/delete did not use culib allocator\n");
         return 1;
     }
+
+    const std::size_t impossible = (std::numeric_limits<std::size_t>::max)();
+    std::new_handler previous = std::set_new_handler(&release_new_handler);
+    void* failed = ::operator new(impossible, std::nothrow);
+    std::set_new_handler(previous);
+    if (failed != nullptr || new_handler_calls != 1) {
+        std::fprintf(stderr, "nothrow new did not invoke new_handler before failing\n");
+        return 1;
+    }
+
+    new_handler_calls = 0;
+    previous = std::set_new_handler(&release_new_handler);
+    failed = ::operator new[](impossible, std::nothrow);
+    std::set_new_handler(previous);
+    if (failed != nullptr || new_handler_calls != 1) {
+        std::fprintf(stderr, "nothrow new[] did not invoke new_handler before failing\n");
+        return 1;
+    }
+
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND) || defined(__EXCEPTIONS)
+    new_handler_calls = 0;
+    previous = std::set_new_handler(&throwing_new_handler);
+    failed = ::operator new(impossible, std::nothrow);
+    std::set_new_handler(previous);
+    if (failed != nullptr || new_handler_calls != 1) {
+        std::fprintf(stderr, "nothrow new did not absorb a throwing new_handler\n");
+        return 1;
+    }
+#endif
 
     std::atomic<int> completed(0);
     for (int round = 0; round < 4; ++round) {
