@@ -1,12 +1,24 @@
 #include <culib/coroutine.h>
 
+#include <atomic>
+#include <cstdlib>
 #include <new>
 #include <thread>
 #include <utility>
 
 namespace {
 thread_local unsigned fail_after = 0;
+std::atomic<std::size_t> allocations(0);
 }
+
+void* operator new(std::size_t size) {
+    void* const memory = std::malloc(size ? size : 1);
+    if (!memory) std::abort();
+    allocations.fetch_add(1, std::memory_order_relaxed);
+    return memory;
+}
+
+void operator delete(void* memory) noexcept { std::free(memory); }
 
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
     if (fail_after != 0 && --fail_after == 0) return 0;
@@ -35,6 +47,17 @@ int main() {
     if (queued.is_err()) return 9;
     wavvix::run();
     if (spawned != 1) return 10;
+
+    for (int i = 0; i < 16; ++i) {
+        wavvix::spawn([] {}).value();
+        wavvix::run();
+    }
+    const std::size_t before = allocations.load(std::memory_order_relaxed);
+    for (int i = 0; i < 1000; ++i) {
+        wavvix::spawn([] {}).value();
+        wavvix::run();
+    }
+    if (allocations.load(std::memory_order_relaxed) != before) return 11;
 
     wavvix::result<wavvix::scheduler_scope> started =
         wavvix::scheduler_scope::with_workers(1);

@@ -95,10 +95,12 @@ struct scheduler_pool {
 
 struct vcpu {
     std::vector<coroutine_control*> ready;
+    std::vector<coroutine_control*> round;
     std::vector<coroutine_control*> incoming;
     std::vector<park_token*> parked;
     std::vector<park_token*> roused;
     std::vector<park_token*> completed;
+    std::vector<park_token*> expired;
     io_engine* engine;
     coroutine_control* current;
     park_token* park_of_current;
@@ -708,8 +710,9 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
 
     self.running = true;
     std::size_t completed = 0;
-    std::vector<coroutine_control*> round;
-    std::vector<park_token*> expired;    // 本轮到点的，复用缓冲不每轮分配
+    std::vector<coroutine_control*>& round = self.round;
+    std::vector<park_token*>& expired = self.expired;
+    expired.clear();
 
     for (;;) {
         if (target && task_finished(target)) break;
@@ -802,6 +805,9 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         if (once || time_elapsed) break;
     }
 
+    round.clear();
+    expired.clear();
+    if (self.ready.empty()) self.ready.swap(round);
     self.current = 0;
     self.running = false;
     return completed;
