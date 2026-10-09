@@ -63,6 +63,12 @@ public:
     // 栈分配失败时，resume() 返回 false，done() 返回 true。
     bool ok() const noexcept { return control_ != 0; }
 
+    coroutine_control* release() noexcept {
+        coroutine_control* const control = control_;
+        control_ = 0;
+        return control;
+    }
+
     // 运行到 yield() 或入口返回；返回 false 表示已结束。
     bool resume() { return control_ ? coroutine_resume(control_) : false; }
 

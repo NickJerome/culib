@@ -29,9 +29,8 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
         scheduler_task_create(), &scheduler_task_discard);
     if (!task) return 0;
     typedef typename std::decay<F>::type function_type;
-    std::unique_ptr<fiber> worker(new (std::nothrow) fiber(
-        coroutine_body<function_type>(std::forward<F>(body), task.get()), stack_size));
-    if (!worker || !worker->ok()) return 0;
+    fiber worker(coroutine_body<function_type>(std::forward<F>(body), task.get()), stack_size);
+    if (!worker.ok()) return 0;
     scheduler_task_schedule(task.get(), worker.release());
     return task.release();
 }

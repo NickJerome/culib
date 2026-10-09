@@ -8,7 +8,6 @@
 
 #include <chrono>
 #include <cstddef>
-#include <new>
 #include <utility>
 
 namespace wavvix {
@@ -16,7 +15,7 @@ namespace wavvix {
 namespace detail {
 
 // 接管这根协程的所有权；成功后排进当前 vCPU 的运行队列。
-fiber_failure scheduler_spawn(fiber* taken, fiber_failure failure);
+fiber_failure scheduler_spawn(coroutine_control* taken);
 void scheduler_sleep_for(std::chrono::nanoseconds duration);
 void* scheduler_scope_enter();
 result<void*> scheduler_scope_enter_with_workers(unsigned workers);
@@ -27,7 +26,7 @@ struct task_state;
 task_state* scheduler_task_create() noexcept;
 void scheduler_task_discard(task_state* task) noexcept;
 // 接管 body 并提交任务。
-void scheduler_task_schedule(task_state* task, fiber* body);
+void scheduler_task_schedule(task_state* task, coroutine_control* body);
 void scheduler_task_complete(task_state* task) noexcept;
 void scheduler_task_join(task_state* task);
 void scheduler_task_detach(task_state* task) noexcept;
@@ -40,8 +39,8 @@ void scheduler_yield_main();
 template <typename F>
 result<void> spawn_fiber(F&& body, std::size_t stack_size) {
     fiber_failure failure = fiber_failure::resource_exhausted;
-    fiber* const worker = new (std::nothrow) fiber(std::forward<F>(body), stack_size, &failure);
-    failure = scheduler_spawn(worker, failure);
+    fiber worker(std::forward<F>(body), stack_size, &failure);
+    if (worker.ok()) failure = scheduler_spawn(worker.release());
     if (failure == fiber_failure::none) return result<void>();
     return make_error(failure == fiber_failure::invalid_size
         ? error_kind::out_of_range : error_kind::resource_exhausted);

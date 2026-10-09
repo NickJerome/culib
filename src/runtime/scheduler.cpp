@@ -47,7 +47,7 @@ struct task_state {
           prev_next_detached(0), done(false), detached(false),
           remote(0), next_remote(0) {}
     vcpu* owner;
-    fiber* body;
+    coroutine_control* body;
     park_token* waiter;
     task_state* next_detached;
     task_state** prev_next_detached;
@@ -94,13 +94,13 @@ struct scheduler_pool {
 };
 
 struct vcpu {
-    std::vector<fiber*> ready;
-    std::vector<fiber*> incoming;
+    std::vector<coroutine_control*> ready;
+    std::vector<coroutine_control*> incoming;
     std::vector<park_token*> parked;
     std::vector<park_token*> roused;
     std::vector<park_token*> completed;
     io_engine* engine;
-    fiber* current;
+    coroutine_control* current;
     park_token* park_of_current;
     task_state* completed_task;
     bool running;
@@ -127,8 +127,8 @@ bool earlier_deadline(const park_token* left, const park_token* right) {
     return left->deadline < right->deadline;
 }
 
-void reap(std::vector<fiber*>& queue) {
-    for (std::size_t i = 0; i < queue.size(); ++i) delete queue[i];
+void reap(std::vector<coroutine_control*>& queue) {
+    for (std::size_t i = 0; i < queue.size(); ++i) coroutine_destroy(queue[i]);
     queue.clear();
 }
 
@@ -399,12 +399,9 @@ result<void> start_pool(vcpu& self, unsigned workers) {
 
 }  // namespace
 
-fiber_failure scheduler_spawn(fiber* taken, fiber_failure failure) {
-    if (!taken) return fiber_failure::resource_exhausted;
-    std::unique_ptr<fiber> owned(taken);
-    if (!taken->ok()) {
-        return failure == fiber_failure::none ? fiber_failure::resource_exhausted : failure;
-    }
+fiber_failure scheduler_spawn(coroutine_control* taken) {
+    std::unique_ptr<coroutine_control, void (*)(coroutine_control*)> owned(
+        taken, &coroutine_destroy);
 
     vcpu* const self = try_here();
     if (!self) return fiber_failure::resource_exhausted;
@@ -485,12 +482,13 @@ void scheduler_task_discard(task_state* task) noexcept {
     else delete task;
 }
 
-void scheduler_task_schedule(task_state* task, fiber* body) {
-    std::unique_ptr<fiber> owned(body);
+void scheduler_task_schedule(task_state* task, coroutine_control* body) {
+    std::unique_ptr<coroutine_control, void (*)(coroutine_control*)> owned(
+        body, &coroutine_destroy);
     vcpu& self = *task->owner;
     task->body = body;
     if (!self.pool) {
-        if (scheduler_spawn(owned.release(), fiber_failure::none) != fiber_failure::none)
+        if (scheduler_spawn(owned.release()) != fiber_failure::none)
             die("wavvix::coroutine: 已验证的协程无法入队");
         return;
     }
@@ -504,9 +502,9 @@ void scheduler_task_schedule(task_state* task, fiber* body) {
         if (worker.waker->tasks_tail) worker.waker->tasks_tail->next_remote = task;
         else worker.waker->tasks_head = task;
         worker.waker->tasks_tail = task;
+        owned.release();
         worker.waker->has_pending.store(true, std::memory_order_release);
     }
-    owned.release();
     if (!io_engine_notify(worker.waker->engine))
         die("wavvix::coroutine: 不能唤醒工作 vCPU");
 }
@@ -710,7 +708,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
 
     self.running = true;
     std::size_t completed = 0;
-    std::vector<fiber*> round;
+    std::vector<coroutine_control*> round;
     std::vector<park_token*> expired;    // 本轮到点的，复用缓冲不每轮分配
 
     for (;;) {
@@ -784,15 +782,15 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         round.clear();
         round.swap(self.ready);
         for (std::size_t i = 0; i < round.size(); ++i) {
-            fiber* const body = round[i];
+            coroutine_control* const body = round[i];
             self.park_of_current = 0;
             self.completed_task = 0;
             self.current = body;          // park 要知道挂起的是哪根
 
-            const bool alive = body->resume();
+            const bool alive = coroutine_resume(body);
 
             if (!alive) {
-                delete body;
+                coroutine_destroy(body);
                 ++completed;
                 if (self.completed_task) finish_remote_task(self.completed_task);
             } else if (self.park_of_current) {

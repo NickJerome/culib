@@ -350,6 +350,23 @@ TEST(scheduler, detached_remote_tasks_and_worker_children_finish_on_scope_exit) 
     EXPECT(child_finished.load(), ==, true);
 }
 
+TEST(scheduler, many_remote_tasks_finish_after_immediate_detach) {
+    std::atomic<int> completed(0);
+    {
+        wavvix::result<wavvix::scheduler_scope> opened =
+            wavvix::scheduler_scope::with_workers(2);
+        EXPECT(opened.is_ok(), ==, true);
+        if (opened.is_err()) return;
+        wavvix::scheduler_scope runtime = std::move(opened).value();
+        for (int i = 0; i < 256; ++i) {
+            wavvix::coroutine task([&] { completed.fetch_add(1); });
+            EXPECT(task.joinable(), ==, true);
+            task.detach();
+        }
+    }
+    EXPECT(completed.load(), ==, 256);
+}
+
 TEST(scheduler, explicit_worker_init_and_shutdown) {
     wavvix::result<void> started = wavvix::coroutine::init(1);
     EXPECT(started.is_ok(), ==, true);

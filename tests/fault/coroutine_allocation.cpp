@@ -15,27 +15,39 @@ void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
 
 int main() {
     wavvix::scheduler_scope runtime;
-    for (unsigned allocation = 1; allocation <= 2; ++allocation) {
-        fail_after = allocation;
-        wavvix::coroutine worker([] {});
-        fail_after = 0;
-        if (worker.joinable() || wavvix::scheduled() != 0) return 1;
-    }
+    fail_after = 1;
+    wavvix::coroutine rejected_local([] {});
+    fail_after = 0;
+    if (rejected_local.joinable() || wavvix::scheduled() != 0) return 1;
+
+    int local_ran = 0;
+    fail_after = 2;
+    wavvix::coroutine accepted_local([&] { ++local_ran; });
+    fail_after = 0;
+    if (!accepted_local.joinable()) return 7;
+    accepted_local.join();
+    if (local_ran != 1) return 8;
+
+    int spawned = 0;
+    fail_after = 1;
+    wavvix::result<void> queued = wavvix::spawn([&] { ++spawned; });
+    fail_after = 0;
+    if (queued.is_err()) return 9;
+    wavvix::run();
+    if (spawned != 1) return 10;
 
     wavvix::result<wavvix::scheduler_scope> started =
         wavvix::scheduler_scope::with_workers(1);
     if (started.is_err()) return 2;
     wavvix::scheduler_scope workers = std::move(started).value();
 
-    for (unsigned allocation = 1; allocation <= 2; ++allocation) {
-        fail_after = allocation;
-        wavvix::coroutine rejected([] {});
-        fail_after = 0;
-        if (rejected.joinable() || wavvix::scheduled() != 0) return 3;
-    }
+    fail_after = 1;
+    wavvix::coroutine rejected([] {});
+    fail_after = 0;
+    if (rejected.joinable() || wavvix::scheduled() != 0) return 3;
 
     int ran = 0;
-    fail_after = 3;
+    fail_after = 2;
     wavvix::coroutine accepted([&] { ++ran; });
     fail_after = 0;
     if (!accepted.joinable()) return 4;
@@ -44,7 +56,7 @@ int main() {
 
     bool rejected_vcpu = false;
     std::thread carrier([&] {
-        fail_after = 2;
+        fail_after = 1;
         wavvix::result<void> submitted = wavvix::spawn([] {});
         fail_after = 0;
         rejected_vcpu = submitted.is_err() &&

@@ -7,7 +7,7 @@
 namespace wavvix {
 namespace detail {
 
-class fiber;
+struct coroutine_control;
 
 // 挂起用单调时钟，不能用墙上时钟：后者会被改系统时间带着跳，
 // 「最多等 10 毫秒」就可能变成等一小时或者立刻超时。
@@ -15,7 +15,7 @@ typedef std::chrono::steady_clock park_clock;
 typedef park_clock::time_point park_instant;
 
 struct park_token {
-    fiber* owner;            // 挂起的是哪根
+    coroutine_control* owner; // 挂起的是哪根
     park_instant deadline;   // timed 为假时无意义
     bool timed;              // 有时限吗
     bool roused;             // 结果：true = 被叫醒的，false = 到点了
