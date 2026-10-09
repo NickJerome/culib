@@ -33,4 +33,31 @@ void example() {
 
 当前实现限 64 位 Linux、macOS 和 Windows；Windows x86 暂无该模块。它预留默认 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于启动时消耗 1 TiB 物理内存。首次分配时读取 `WAVVIX_MEM_WINDOW_SIZE`（默认 `1T`）、`WAVVIX_MEM_ARENA_RESERVE`（`64M`）、`WAVVIX_MEM_PURGE_DELAY`（`1000` 毫秒）、`WAVVIX_MEM_SECURE`（`1`）、`WAVVIX_MEM_GUARDED_SAMPLE_RATE`（`0`）和 `WAVVIX_MEM_EAGER_COMMIT`（`0`）。
 
-Windows MSVC x64、Linux x86_64/arm64 和 macOS arm64/x86_64 的 debug、release 构建已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)，包含分配器单元、压力、安全和 RSS 测试，以及全局 `new/delete` 覆盖测试；Linux 的 `malloc/new` 共享库覆盖也通过了计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论；性能和占用还需在当前源码与目标平台上重新配对测量。
+Windows MSVC x64、Linux x86_64/arm64 和 macOS arm64/x86_64 的 debug、release 构建已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)，包含分配器单元、压力、安全和 RSS 测试，以及全局 `new/delete` 覆盖测试；Linux 的 `malloc/new` 共享库覆盖也通过了计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论。
+
+## 分配性能基准
+
+`mem_benchmark` 是单独的非默认构建目标，不进入 `culib`。它在同一个进程内交替测量 `mem::alloc/free` 和 `malloc/free`，每组先各预热一轮，再用相同种子的输入跑五轮并报告比值中位数。`small` 使用每线程 128 个槽位、8–8192 字节的随机块；`large` 使用 64 个槽位、64 KiB–4 MiB 的随机块。每次分配写首尾字节，释放前读回；计时包含随机数、访存和工作线程启动成本，**只用于比较这一组负载**。
+
+```bash
+xmake build mem_benchmark
+xmake run mem_benchmark small 1
+xmake run mem_benchmark small 4
+xmake run mem_benchmark large 1
+
+# Linux：用系统安装的实际路径替换下面的示例路径。
+LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+  ./build/linux/x86_64/release/mem_benchmark small 1
+LD_PRELOAD=/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 \
+  ./build/linux/x86_64/release/mem_benchmark small 1
+```
+
+2026-10-09 在 WSL2 / i7-12700 / GCC 11.4 release 上的一次五轮配对测量如下。表中是 `mem` 耗时除以参照分配器耗时，低于 1 表示 `mem` 更快；jemalloc、tcmalloc 通过 `LD_PRELOAD` 替换 `malloc`。
+
+| 负载 | glibc | jemalloc | tcmalloc |
+| --- | ---: | ---: | ---: |
+| small，1 线程 | 0.23× | 0.95× | 2.18× |
+| small，4 线程 | 0.26× | 0.98× | 1.99× |
+| large，1 线程 | 0.36× | 0.25× | 0.63× |
+
+这一负载下的小块路径与 jemalloc 接近，但明显慢于 tcmalloc；后续优化应先定位这段差距。大块数据预热后明显改善，不能用它推断冷启动表现。RSS 与跨线程释放仍需分别测量，不能从这张吞吐表推断。

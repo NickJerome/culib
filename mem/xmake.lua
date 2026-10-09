@@ -1,6 +1,16 @@
 local supported = is_plat("linux", "macosx", "windows", "mingw") and is_arch("x86_64", "x64", "arm64", "arm64-v8a")
 
 if supported then
+    target("mem_benchmark")
+        set_kind("binary")
+        set_default(false)
+        set_group("benchmarks")
+        if not is_plat("windows") then set_languages("c++11") end
+        set_warnings("allextra", "pedantic", "error")
+        add_files("bench_alloc.cpp")
+        add_deps("culib")
+    target_end()
+
     target("culib_new_override")
         set_kind("object")
         if not is_plat("windows") then set_languages("c++11") end
