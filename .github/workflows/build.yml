@@ -21,11 +21,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW32
           install: mingw-w64-i686-gcc
           suppress-deprecation-warnings: msystem-mingw32
+      - name: build 32-bit library and tests with xmake
+        shell: msys2 {0}
+        run: |
+          bash .github/report-failure.sh xmake f -c -p mingw -a i686 -m release --mingw="$(cygpath -w "$MINGW_PREFIX")" -y
+          bash .github/report-failure.sh xmake build -y culib culib_test
       - name: build 32-bit tests and examples, run tests
         shell: msys2 {0}
         run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh i686
