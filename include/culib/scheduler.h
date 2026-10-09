@@ -4,6 +4,7 @@
 
 #include <culib/detail/coroutine_call.h>
 #include <culib/detail/fiber.h>
+#include <culib/result.h>
 
 #include <chrono>
 #include <cstddef>
@@ -17,6 +18,7 @@ namespace detail {
 void scheduler_spawn(fiber* taken);
 void scheduler_sleep_for(std::chrono::nanoseconds duration);
 void* scheduler_scope_enter();
+result<void*> scheduler_scope_enter_with_workers(unsigned workers);
 void scheduler_scope_leave(void* owner) noexcept;
 void scheduler_init();
 void scheduler_shutdown() noexcept;
@@ -40,10 +42,16 @@ void scheduler_yield_main();
 class scheduler_scope {
 public:
     scheduler_scope() : owner_(detail::scheduler_scope_enter()) {}
-    ~scheduler_scope() noexcept { detail::scheduler_scope_leave(owner_); }
+    static result<scheduler_scope> with_workers(unsigned workers);
+    ~scheduler_scope() noexcept { if (owner_) detail::scheduler_scope_leave(owner_); }
+    scheduler_scope(scheduler_scope&& other) noexcept : owner_(other.owner_) {
+        other.owner_ = 0;
+    }
     scheduler_scope(const scheduler_scope&) = delete;
     scheduler_scope& operator=(const scheduler_scope&) = delete;
+    scheduler_scope& operator=(scheduler_scope&&) = delete;
 private:
+    explicit scheduler_scope(void* owner) noexcept : owner_(owner) {}
     void* owner_;
 };
 

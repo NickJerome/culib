@@ -109,3 +109,23 @@ TEST(blocking_pool, wakes_each_call_on_its_own_vcpu) {
     second.join();
     EXPECT(completed.load(), ==, 2);
 }
+
+TEST(blocking_pool, resumes_a_coroutine_dispatched_to_a_worker_vcpu) {
+    wavvix::result<wavvix::blocking_pool> created = wavvix::blocking_pool::create();
+    EXPECT(created.is_ok(), ==, true);
+    if (created.is_err()) return;
+    wavvix::blocking_pool pool = std::move(created).value();
+    wavvix::result<wavvix::scheduler_scope> opened =
+        wavvix::scheduler_scope::with_workers(1);
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) return;
+    wavvix::scheduler_scope runtime = std::move(opened).value();
+    int answer = 0;
+    bool returned = false;
+    wavvix::coroutine task([&] {
+        returned = pool.run([&] { answer = 42; }).is_ok();
+    });
+    task.join();
+    EXPECT(returned, ==, true);
+    EXPECT(answer, ==, 42);
+}

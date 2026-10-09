@@ -10,48 +10,104 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace wavvix {
 namespace detail {
 
-struct task_state;
+struct vcpu;
+struct remote_waker;
+struct remote_task_state;
+struct scheduler_pool;
+
+struct task_state {
+    explicit task_state(vcpu* parent) noexcept
+        : owner(parent), body(0), waiter(0), next_detached(0),
+          prev_next_detached(0), done(false), detached(false),
+          remote(0), next_remote(0) {}
+    vcpu* owner;
+    fiber* body;
+    park_token* waiter;
+    task_state* next_detached;
+    task_state** prev_next_detached;
+    bool done;
+    bool detached;
+    remote_task_state* remote;
+    task_state* next_remote;
+};
 
 struct remote_waker {
     explicit remote_waker(io_engine* target) noexcept
-        : engine(target), head(0), tail(0), has_pending(false) {}
+        : engine(target), head(0), tail(0), tasks_head(0), tasks_tail(0),
+          has_pending(false), pending_tasks(0) {}
     io_engine* engine;
     std::mutex mutex;
     park_token* head;
     park_token* tail;
+    task_state* tasks_head;
+    task_state* tasks_tail;
     std::atomic<bool> has_pending;
+    std::atomic<unsigned> pending_tasks;
+};
+
+struct remote_task_state {
+    explicit remote_task_state(remote_waker* source) noexcept
+        : waker(source), done(false), waiter(0), refs(2) {}
+    remote_waker* waker;
+    std::mutex mutex;
+    std::atomic<bool> done;
+    park_token* waiter;
+    std::atomic<unsigned> refs;
+};
+
+struct worker_entry {
+    worker_entry() : waker(0), ready(false), stopping(false) {}
+    std::thread thread;
+    std::mutex mutex;
+    std::condition_variable changed;
+    remote_waker* waker;
+    bool ready;
+    std::atomic<bool> stopping;
+};
+
+struct scheduler_pool {
+    scheduler_pool() : next(0) {}
+    std::vector<std::unique_ptr<worker_entry> > workers;
+    std::size_t next;
+};
+
+struct vcpu {
+    std::vector<fiber*> ready;
+    std::vector<fiber*> incoming;
+    std::vector<park_token*> parked;
+    std::vector<park_token*> roused;
+    std::vector<park_token*> completed;
+    io_engine* engine;
+    fiber* current;
+    park_token* park_of_current;
+    task_state* completed_task;
+    bool running;
+    std::size_t scope_depth;
+    std::size_t pool_scope_depth;
+    task_state* detached;
+    remote_waker* remote;
+    scheduler_pool* pool;
+    std::atomic<bool>* worker_stop;
 };
 
 namespace {
 
 typedef park_clock clock_type;
 typedef park_instant instant;
-
-// 只由所属线程访问；协程不跨 vCPU 迁移。
-struct vcpu {
-    std::vector<fiber*> ready;      // 本轮或下一轮要跑的
-    std::vector<fiber*> incoming;   // 正在跑的协程 spawn 出来的，下一轮入队
-    std::vector<park_token*> parked;    // 挂起的：等定时器 / 等 I/O / 等同步原语，一视同仁
-    std::vector<park_token*> roused;    // 本轮被叫醒的，**按叫醒次序**（公平性靠它）
-    std::vector<park_token*> completed; // 引擎每轮交回的凭据，复用缓冲不每轮分配
-    io_engine* engine;                  // 首次 I/O 时创建
-    fiber* current;                 // 正在跑的那根，park 要知道挂起的是谁
-    park_token* park_of_current;        // 当前协程挂起了，让出之后由调度器读
-    bool running;                       // run() 是否正在这根线程上跑
-    std::size_t scope_depth;            // 显式 RAII 作用域的嵌套层数
-    task_state* detached;               // 放弃句柄但还没结束的任务
-    remote_waker* remote;                // 用到跨线程任务时才创建
-};
 
 #if defined(_MSC_VER)
 __declspec(thread) vcpu* current_vcpu = 0;
@@ -75,6 +131,10 @@ struct vcpu_reaper {
     ~vcpu_reaper() {
         vcpu* const self = current_vcpu;
         if (!self) return;
+        if (self->pool) {
+            std::fputs("wavvix::scheduler: 工作 vCPU 仍在运行；请先关闭作用域\n", stderr);
+            std::abort();
+        }
         if (!self->parked.empty() || !self->roused.empty() ||
             io_engine_pending(self->engine) != 0) {
             std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
@@ -101,10 +161,14 @@ vcpu& here() {
         current_vcpu->engine = 0;
         current_vcpu->current = 0;
         current_vcpu->park_of_current = 0;
+        current_vcpu->completed_task = 0;
         current_vcpu->running = false;
         current_vcpu->scope_depth = 0;
+        current_vcpu->pool_scope_depth = 0;
         current_vcpu->detached = 0;
         current_vcpu->remote = 0;
+        current_vcpu->pool = 0;
+        current_vcpu->worker_stop = 0;
         static thread_local vcpu_reaper reaper;
         (void)reaper;
     }
@@ -136,11 +200,15 @@ void accept_remote(vcpu& self) {
     remote_waker* const remote = self.remote;
     if (!remote || !remote->has_pending.load(std::memory_order_acquire)) return;
     park_token* pending = 0;
+    task_state* submitted = 0;
     {
         std::lock_guard<std::mutex> lock(remote->mutex);
         pending = remote->head;
         remote->head = 0;
         remote->tail = 0;
+        submitted = remote->tasks_head;
+        remote->tasks_head = 0;
+        remote->tasks_tail = 0;
         remote->has_pending.store(false, std::memory_order_release);
     }
     while (pending) {
@@ -148,6 +216,12 @@ void accept_remote(vcpu& self) {
         pending->next = 0;
         rouse(self, *pending);
         pending = next;
+    }
+    while (submitted) {
+        task_state* const next = submitted->next_remote;
+        submitted->next_remote = 0;
+        self.ready.push_back(submitted->body);
+        submitted = next;
     }
 }
 
@@ -176,19 +250,6 @@ void idle(vcpu& self, bool have_deadline, instant nearest) {
 
 }  // namespace
 
-struct task_state {
-    explicit task_state(vcpu* parent) noexcept
-        : owner(parent), body(0), waiter(0), next_detached(0),
-          prev_next_detached(0), done(false), detached(false) {}
-    vcpu* owner;
-    fiber* body;
-    park_token* waiter;
-    task_state* next_detached;
-    task_state** prev_next_detached;
-    bool done;
-    bool detached;
-};
-
 namespace {
 
 void reap_detached(vcpu& self) noexcept {
@@ -204,6 +265,117 @@ void unlink_detached(task_state* task) noexcept {
     *task->prev_next_detached = task->next_detached;
     if (task->next_detached)
         task->next_detached->prev_next_detached = task->prev_next_detached;
+}
+
+void release_remote(task_state* task) noexcept {
+    remote_task_state* const remote = task->remote;
+    if (remote->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        delete remote;
+        delete task;
+    }
+}
+
+void finish_remote_task(task_state* task) noexcept {
+    remote_task_state* const remote = task->remote;
+    {
+        std::lock_guard<std::mutex> lock(remote->mutex);
+        remote->done.store(true, std::memory_order_release);
+        remote->waker->pending_tasks.fetch_sub(1, std::memory_order_acq_rel);
+        if (remote->waiter) {
+            if (!scheduler_remote_wake(remote->waker, *remote->waiter))
+                die("wavvix::coroutine: 不能唤醒 join 协程");
+        } else if (!io_engine_notify(remote->waker->engine)) {
+            die("wavvix::coroutine: 不能通知创建它的 vCPU");
+        }
+    }
+    release_remote(task);
+}
+
+bool task_finished(const task_state* task) noexcept {
+    return task->remote ? task->remote->done.load(std::memory_order_acquire)
+                        : task->done;
+}
+
+void publish_worker(worker_entry& worker, remote_waker* waker) noexcept {
+    {
+        std::lock_guard<std::mutex> lock(worker.mutex);
+        worker.waker = waker;
+        worker.ready = true;
+    }
+    worker.changed.notify_one();
+}
+
+void worker_main(worker_entry* worker) noexcept {
+    remote_waker* waker = 0;
+#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        waker = scheduler_remote_prepare();
+#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (...) {
+        publish_worker(*worker, 0);
+        return;
+    }
+#endif
+    publish_worker(*worker, waker);
+    if (!waker) return;
+    here().worker_stop = &worker->stopping;
+    wavvix::run();
+    {
+        std::lock_guard<std::mutex> lock(worker->mutex);
+        worker->waker = 0;
+    }
+}
+
+void close_pool(scheduler_pool* pool) noexcept {
+    if (!pool) return;
+    for (std::size_t i = 0; i < pool->workers.size(); ++i) {
+        worker_entry& worker = *pool->workers[i];
+        std::lock_guard<std::mutex> lock(worker.mutex);
+        worker.stopping.store(true, std::memory_order_release);
+        if (worker.waker && !io_engine_notify(worker.waker->engine))
+            die("wavvix::scheduler: 不能停止工作 vCPU");
+    }
+    for (std::size_t i = 0; i < pool->workers.size(); ++i) {
+        if (pool->workers[i]->thread.joinable()) pool->workers[i]->thread.join();
+    }
+}
+
+result<void> start_pool(vcpu& self, unsigned workers) {
+    if (workers == 0)
+        return make_error(error_kind::invalid_argument, "work pool needs at least one vCPU");
+    if (self.pool)
+        return make_error(error_kind::invalid_argument, "work pool is already active");
+    std::unique_ptr<scheduler_pool> pool;
+#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        if (!scheduler_remote_prepare())
+            return make_error(error_kind::io, "cannot enable scheduler wakeup");
+        pool.reset(new scheduler_pool());
+        pool->workers.reserve(workers);
+        for (unsigned i = 0; i < workers; ++i) {
+            pool->workers.emplace_back(new worker_entry());
+            worker_entry& worker = *pool->workers.back();
+            worker.thread = std::thread(&worker_main, &worker);
+            std::unique_lock<std::mutex> lock(worker.mutex);
+            worker.changed.wait(lock, [&worker] { return worker.ready; });
+            if (!worker.waker) {
+                lock.unlock();
+                close_pool(pool.get());
+                return make_error(error_kind::io, "cannot start work vCPU");
+            }
+        }
+#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::exception& failure) {
+        close_pool(pool.get());
+        return make_error(error_kind::io,
+                          std::string("cannot start work vCPU: ") + failure.what());
+    }
+#endif
+    self.pool = pool.release();
+    self.pool_scope_depth = self.scope_depth;
+    return result<void>();
 }
 
 }  // namespace
@@ -237,12 +409,41 @@ void* scheduler_scope_enter() {
     return &self;
 }
 
+result<void*> scheduler_scope_enter_with_workers(unsigned workers) {
+    void* owner = 0;
+#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        owner = scheduler_scope_enter();
+#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (const std::exception& failure) {
+        return make_error(error_kind::io,
+                          std::string("cannot initialize vCPU: ") + failure.what());
+    }
+#endif
+    result<void> started = start_pool(*current_vcpu, workers);
+    if (started.is_err()) {
+        scheduler_scope_leave(owner);
+        return std::move(started).error();
+    }
+    return owner;
+}
+
 void scheduler_scope_leave(void* owner) noexcept {
     vcpu* const self = current_vcpu;
     if (!self || self != owner || self->scope_depth == 0 || self->running)
         die("wavvix::scheduler_scope 必须在创建它的线程上、run() 外析构");
-    if (--self->scope_depth != 0) return;
-    wavvix::run();
+    --self->scope_depth;
+    if (self->pool && self->scope_depth < self->pool_scope_depth) {
+        wavvix::run();
+        close_pool(self->pool);
+        delete self->pool;
+        self->pool = 0;
+        self->pool_scope_depth = 0;
+    } else if (self->scope_depth == 0) {
+        wavvix::run();
+    }
+    if (self->scope_depth != 0) return;
     current_vcpu = 0;
     delete self->remote;
     if (self->engine) io_engine_destroy(self->engine);
@@ -258,11 +459,38 @@ task_state* scheduler_task_create() { return new task_state(&here()); }
 void scheduler_task_discard(task_state* task) noexcept { delete task; }
 
 void scheduler_task_schedule(task_state* task, fiber* body) {
+    std::unique_ptr<fiber> owned(body);
+    vcpu& self = *task->owner;
     task->body = body;
-    scheduler_spawn(body);
+    if (!self.pool) {
+        scheduler_spawn(owned.release());
+        return;
+    }
+
+    std::unique_ptr<remote_task_state> remote(new remote_task_state(self.remote));
+    scheduler_pool& pool = *self.pool;
+    worker_entry& worker = *pool.workers[pool.next++ % pool.workers.size()];
+    task->remote = remote.get();
+    self.remote->pending_tasks.fetch_add(1, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(worker.waker->mutex);
+        task->next_remote = 0;
+        if (worker.waker->tasks_tail) worker.waker->tasks_tail->next_remote = task;
+        else worker.waker->tasks_head = task;
+        worker.waker->tasks_tail = task;
+        worker.waker->has_pending.store(true, std::memory_order_release);
+    }
+    remote.release();
+    owned.release();
+    if (!io_engine_notify(worker.waker->engine))
+        die("wavvix::coroutine: 不能唤醒工作 vCPU");
 }
 
 void scheduler_task_complete(task_state* task) noexcept {
+    if (task->remote) {
+        here().completed_task = task;
+        return;
+    }
     task->done = true;
     if (task->waiter) scheduler_wake(*task->waiter);
     if (task->detached) {
@@ -276,6 +504,29 @@ void scheduler_task_join(task_state* task) {
     vcpu* const self = current_vcpu;
     if (!self || task->owner != self)
         die("wavvix::coroutine::join() 必须在创建它的 vCPU 上调用");
+    if (task->remote) {
+        remote_task_state* const remote = task->remote;
+        if (fiber::inside()) {
+            park_token token;
+            bool wait = false;
+            {
+                std::lock_guard<std::mutex> lock(remote->mutex);
+                if (!remote->done.load(std::memory_order_acquire)) {
+                    remote->waiter = &token;
+                    wait = true;
+                }
+            }
+            if (wait) {
+                scheduler_park(token, std::chrono::nanoseconds(-1));
+                std::lock_guard<std::mutex> lock(remote->mutex);
+                remote->waiter = 0;
+            }
+        } else if (!remote->done.load(std::memory_order_acquire)) {
+            scheduler_run_until(task);
+        }
+        release_remote(task);
+        return;
+    }
     if (task->done) { delete task; return; }
     if (fiber::inside() && self->current == task->body)
         die("wavvix::coroutine 不能 join 自己");
@@ -293,6 +544,10 @@ void scheduler_task_join(task_state* task) {
 void scheduler_task_detach(task_state* task) noexcept {
     if (task->owner != current_vcpu)
         die("wavvix::coroutine::detach() 必须在创建它的 vCPU 上调用");
+    if (task->remote) {
+        release_remote(task);
+        return;
+    }
     if (task->done) { delete task; return; }
     task->detached = true;
     vcpu& self = *task->owner;
@@ -435,7 +690,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
     std::vector<park_token*> expired;    // 本轮到点的，复用缓冲不每轮分配
 
     for (;;) {
-        if (target && target->done) break;
+        if (target && task_finished(target)) break;
         accept_remote(self);
         // 已到期的协程仍须获得一轮运行机会。
         const bool time_elapsed = timed && clock_type::now() >= deadline;
@@ -491,7 +746,12 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         if (self.ready.empty()) {
             if (once || time_elapsed) break;
             // 完成队列也必须清空，才能安全释放协程栈上的 I/O 请求。
-            if (!timed && self.parked.empty() && io_engine_pending(self.engine) == 0) break;
+            const bool remote_tasks = self.remote &&
+                self.remote->pending_tasks.load(std::memory_order_acquire) != 0;
+            const bool worker_alive = self.worker_stop &&
+                !self.worker_stop->load(std::memory_order_acquire);
+            if (!timed && self.parked.empty() && io_engine_pending(self.engine) == 0 &&
+                !remote_tasks && !worker_alive) break;
             idle(self, have_deadline, nearest);
             continue;
         }
@@ -502,6 +762,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         for (std::size_t i = 0; i < round.size(); ++i) {
             fiber* const body = round[i];
             self.park_of_current = 0;
+            self.completed_task = 0;
             self.current = body;          // park 要知道挂起的是哪根
 
             const bool alive = body->resume();
@@ -509,6 +770,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             if (!alive) {
                 delete body;
                 ++completed;
+                if (self.completed_task) finish_remote_task(self.completed_task);
             } else if (self.park_of_current) {
                 self.parked.push_back(self.park_of_current);
             } else {
@@ -537,5 +799,11 @@ void detail::scheduler_yield_main() {
 }
 
 std::size_t run() { return detail::scheduler_run_until(0); }
+
+result<scheduler_scope> scheduler_scope::with_workers(unsigned workers) {
+    result<void*> opened = detail::scheduler_scope_enter_with_workers(workers);
+    if (opened.is_err()) return std::move(opened).error();
+    return scheduler_scope(opened.value());
+}
 
 }  // namespace wavvix

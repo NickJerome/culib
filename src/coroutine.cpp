@@ -198,6 +198,7 @@ void trampoline(context_transfer from) {
     asan_after_switch(self);
     self->resumer = from.context;
     self->invoke(self->body);
+    self->destroy(self->body);
     self->finished = true;
 
     // 跑完了，切回去且**永不返回**。current 不用动：控制一落到 resume() 里
@@ -259,7 +260,7 @@ void coroutine_destroy(coroutine_control* control) noexcept {
         std::fputs("wavvix::coroutine: 协程没跑完就销毁了，栈上的局部对象不会析构\n", stderr);
 #endif
     }
-    // body 还没跑过就析构它；跑完了的话 body 的生命周期由协程体自己结束
+    // 未启动的 body 由销毁路径析构；运行过的 body 已由 trampoline 析构。
     if (control->destroy && !control->started) control->destroy(control->body);
     const stack_memory memory = control->memory;
     pooled_release_stack(memory);

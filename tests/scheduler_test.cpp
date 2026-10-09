@@ -5,11 +5,14 @@
 
 #include "scheduler_detail.h"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -32,6 +35,19 @@ struct move_only_task {
     void operator()() { *result_ = *value_; }
     int* result_;
     std::unique_ptr<int> value_;
+};
+
+struct observable_task {
+    explicit observable_task(std::atomic<bool>& destroyed)
+        : destroyed_(&destroyed), marker_(new int(1)) {}
+    observable_task(observable_task&&) = default;
+    observable_task(const observable_task&) = delete;
+    ~observable_task() {
+        if (marker_) destroyed_->store(true);
+    }
+    void operator()() {}
+    std::atomic<bool>* destroyed_;
+    std::unique_ptr<int> marker_;
 };
 
 }  // namespace
@@ -143,6 +159,154 @@ TEST(scheduler, coroutine_object_accepts_member_function) {
     wavvix::coroutine worker(&counter::add, &target, 5);
     worker.join();
     EXPECT(target.value, ==, 7);
+}
+
+TEST(scheduler, worker_scope_rejects_zero_workers) {
+    wavvix::result<wavvix::scheduler_scope> opened =
+        wavvix::scheduler_scope::with_workers(0);
+    EXPECT(opened.is_err(), ==, true);
+}
+
+TEST(scheduler, nested_worker_scope_stops_its_pool_on_exit) {
+    wavvix::scheduler_scope outer;
+    for (int i = 0; i < 2; ++i) {
+        wavvix::result<wavvix::scheduler_scope> opened =
+            wavvix::scheduler_scope::with_workers(1);
+        EXPECT(opened.is_ok(), ==, true);
+        if (opened.is_err()) return;
+        wavvix::scheduler_scope runtime = std::move(opened).value();
+        wavvix::coroutine task([] {});
+        task.join();
+    }
+}
+
+TEST(scheduler, coroutine_objects_run_in_parallel_vcpus) {
+    wavvix::result<wavvix::scheduler_scope> opened =
+        wavvix::scheduler_scope::with_workers(2);
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) return;
+    wavvix::scheduler_scope runtime = std::move(opened).value();
+    const std::thread::id main_thread = std::this_thread::get_id();
+    std::thread::id threads[2];
+    std::mutex gate;
+    std::condition_variable changed;
+    int entered = 0;
+    bool parallel[2] = {false, false};
+    const auto work = [&](int index) {
+        threads[index] = std::this_thread::get_id();
+        std::unique_lock<std::mutex> lock(gate);
+        ++entered;
+        changed.notify_all();
+        parallel[index] = changed.wait_for(lock, std::chrono::seconds(2),
+                                           [&] { return entered == 2; });
+    };
+    wavvix::coroutine first(work, 0);
+    wavvix::coroutine second(work, 1);
+    first.join();
+    second.join();
+    EXPECT(parallel[0] && parallel[1], ==, true);
+    EXPECT(threads[0] != main_thread && threads[1] != main_thread, ==, true);
+    EXPECT(threads[0] != threads[1], ==, true);
+}
+
+TEST(scheduler, spawn_stays_local_when_coroutines_use_workers) {
+    wavvix::result<wavvix::scheduler_scope> opened =
+        wavvix::scheduler_scope::with_workers(1);
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) return;
+    wavvix::scheduler_scope runtime = std::move(opened).value();
+    const std::thread::id main_thread = std::this_thread::get_id();
+    std::thread::id spawned_thread;
+    spawn([&] { spawned_thread = std::this_thread::get_id(); });
+    EXPECT(run(), ==, 1u);
+    EXPECT(spawned_thread == main_thread, ==, true);
+}
+
+TEST(scheduler, coroutine_created_on_worker_stays_on_that_worker) {
+    wavvix::result<wavvix::scheduler_scope> opened =
+        wavvix::scheduler_scope::with_workers(1);
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) return;
+    wavvix::scheduler_scope runtime = std::move(opened).value();
+    std::thread::id parent_thread;
+    std::thread::id child_thread;
+    wavvix::coroutine parent([&] {
+        parent_thread = std::this_thread::get_id();
+        wavvix::coroutine child([&] { child_thread = std::this_thread::get_id(); });
+        child.join();
+    });
+    parent.join();
+    EXPECT(parent_thread != std::this_thread::get_id(), ==, true);
+    EXPECT(child_thread == parent_thread, ==, true);
+}
+
+TEST(scheduler, remote_join_waits_for_callable_destruction) {
+    std::atomic<bool> destroyed(false);
+    {
+        wavvix::result<wavvix::scheduler_scope> opened =
+            wavvix::scheduler_scope::with_workers(1);
+        EXPECT(opened.is_ok(), ==, true);
+        if (opened.is_err()) return;
+        wavvix::scheduler_scope runtime = std::move(opened).value();
+        wavvix::coroutine worker{observable_task(destroyed)};
+        worker.join();
+        EXPECT(destroyed.load(), ==, true);
+    }
+}
+
+TEST(scheduler, local_join_waits_for_callable_destruction) {
+    std::atomic<bool> destroyed(false);
+    wavvix::coroutine worker{observable_task(destroyed)};
+    worker.join();
+    EXPECT(destroyed.load(), ==, true);
+}
+
+TEST(scheduler, coroutine_join_inside_parent_vcpu_wakes_after_remote_completion) {
+    wavvix::result<wavvix::scheduler_scope> opened =
+        wavvix::scheduler_scope::with_workers(2);
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) return;
+    wavvix::scheduler_scope runtime = std::move(opened).value();
+    int completed = 0;
+    spawn([&] {
+        for (int i = 0; i < 64; ++i) {
+            wavvix::coroutine worker([&] { ++completed; });
+            worker.join();
+        }
+    });
+    EXPECT(run(), ==, 1u);
+    EXPECT(completed, ==, 64);
+}
+
+TEST(scheduler, detached_remote_tasks_and_worker_children_finish_on_scope_exit) {
+    std::atomic<bool> detached_finished(false);
+    std::atomic<bool> child_finished(false);
+    {
+        wavvix::result<wavvix::scheduler_scope> opened =
+            wavvix::scheduler_scope::with_workers(1);
+        EXPECT(opened.is_ok(), ==, true);
+        if (opened.is_err()) return;
+        wavvix::scheduler_scope runtime = std::move(opened).value();
+        wavvix::coroutine detached([&] {
+            wavvix::sleep_for(ms(10));
+            detached_finished.store(true);
+            spawn([&] { child_finished.store(true); });
+        });
+        detached.detach();
+    }
+    EXPECT(detached_finished.load(), ==, true);
+    EXPECT(child_finished.load(), ==, true);
+}
+
+TEST(scheduler, explicit_worker_init_and_shutdown) {
+    wavvix::result<void> started = wavvix::coroutine::init(1);
+    EXPECT(started.is_ok(), ==, true);
+    if (started.is_err()) return;
+    int value = 0;
+    wavvix::coroutine task([&] { value = 42; });
+    task.join();
+    wavvix::coroutine::shutdown();
+    EXPECT(value, ==, 42);
 }
 
 TEST(scheduler, coroutine_object_accepts_size_t_argument_and_explicit_stack) {
