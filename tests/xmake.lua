@@ -31,6 +31,7 @@ target("coroutine_allocation_test")
     set_group("tests")
     if not is_plat("windows") then set_languages("c++11") end
     set_warnings("allextra", "pedantic", "error")
+    add_includedirs("../src")
     add_files("fault/coroutine_allocation.cpp")
     add_deps("culib")
     add_tests("default")

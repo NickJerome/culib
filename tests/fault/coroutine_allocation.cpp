@@ -1,4 +1,10 @@
 #include <culib/coroutine.h>
+#if !defined(_WIN32)
+#  include "runtime/io_engine.h"
+#  include <cerrno>
+#  include <fcntl.h>
+#  include <unistd.h>
+#endif
 
 #include <atomic>
 #include <cstdlib>
@@ -20,12 +26,51 @@ void* operator new(std::size_t size) {
 
 void operator delete(void* memory) noexcept { std::free(memory); }
 
+#if !defined(_WIN32)
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+    if (fail_after != 0 && --fail_after == 0) return 0;
+    return std::malloc(size ? size : 1);
+}
+
+void operator delete[](void* memory) noexcept { std::free(memory); }
+#endif
+
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
     if (fail_after != 0 && --fail_after == 0) return 0;
     return ::operator new(size);
 }
 
 int main() {
+#if !defined(_WIN32)
+    int pipe_fds[2];
+    if (::pipe(pipe_fds) != 0) return 12;
+    const int flags = ::fcntl(pipe_fds[0], F_GETFL, 0);
+    if (flags < 0 || ::fcntl(pipe_fds[0], F_SETFL, flags | O_NONBLOCK) != 0) return 13;
+    wavvix::detail::io_engine* const engine = wavvix::detail::io_engine_create();
+    if (!engine) return 14;
+    char byte = 0;
+    wavvix::detail::io_request request;
+    request.direction = wavvix::detail::io_read;
+    request.operation = wavvix::detail::io_transfer;
+    request.handle = pipe_fds[0];
+    request.buffer = &byte;
+    request.length = 1;
+    request.waiter = 0;
+
+    fail_after = 1;
+    const bool armed_while_failing = wavvix::detail::io_engine_arm(engine, request);
+    fail_after = 0;
+    if (armed_while_failing || request.transferred != -1 || request.failure != ENOMEM ||
+        wavvix::detail::io_engine_pending(engine) != 0) return 15;
+    if (!wavvix::detail::io_engine_arm(engine, request) ||
+        wavvix::detail::io_engine_pending(engine) != 1) return 16;
+    if (!wavvix::detail::io_engine_cancel(engine, request) ||
+        wavvix::detail::io_engine_pending(engine) != 0) return 17;
+    wavvix::detail::io_engine_destroy(engine);
+    ::close(pipe_fds[0]);
+    ::close(pipe_fds[1]);
+#endif
+
     wavvix::scheduler_scope runtime;
     fail_after = 1;
     wavvix::coroutine rejected_local([] {});

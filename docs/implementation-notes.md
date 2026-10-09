@@ -49,6 +49,10 @@ Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGG
 不共享的是 io_engine 本身：epoll 要一个 epoll fd 加合并后的事件掩码，kqueue 要一个
 kq 加两个独立的过滤器，没有值得放进公共基类的东西。
 
+两个后端共用按 fd 索引的等待表。扩容使用不抛异常的分配；若分配失败，`io_engine_arm()`
+在请求入队前返回 `ENOMEM`，原有等待项保持有效。这个保证只针对等待表扩容；完成队列
+仍使用 `std::vector`，不能据此认为事件引擎的所有内存不足路径都可恢复。
+
 ## [`io_engine_linux.cpp`](../src/runtime/io_engine_linux.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。

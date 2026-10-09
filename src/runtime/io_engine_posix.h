@@ -7,6 +7,8 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
+#include <limits>
+#include <new>
 #include <fcntl.h>
 #include <vector>
 
@@ -33,6 +35,37 @@ inline io_fd_slot io_empty_slot() {
     const io_fd_slot empty = {0, 0, 0};
     return empty;
 }
+
+class io_fd_table {
+public:
+    io_fd_table() noexcept : slots_(0), size_(0) {}
+    ~io_fd_table() noexcept { delete[] slots_; }
+    io_fd_table(const io_fd_table&) = delete;
+    io_fd_table& operator=(const io_fd_table&) = delete;
+
+    std::size_t size() const noexcept { return size_; }
+    io_fd_slot& operator[](std::size_t index) noexcept { return slots_[index]; }
+
+    bool ensure(std::size_t index) noexcept {
+        if (index < size_) return true;
+        const std::size_t limit = static_cast<std::size_t>(
+            (std::numeric_limits<std::ptrdiff_t>::max)()) / sizeof(io_fd_slot);
+        if (index > (limit - 2) / 2) return false;
+        const std::size_t capacity = index * 2 + 2;
+        io_fd_slot* const grown = new (std::nothrow) io_fd_slot[capacity];
+        if (!grown) return false;
+        for (std::size_t i = 0; i < size_; ++i) grown[i] = slots_[i];
+        for (std::size_t i = size_; i < capacity; ++i) grown[i] = io_empty_slot();
+        delete[] slots_;
+        slots_ = grown;
+        size_ = capacity;
+        return true;
+    }
+
+private:
+    io_fd_slot* slots_;
+    std::size_t size_;
+};
 
 // 把链头摘下来交还给调度器。结果（transferred / failure）调用方已经填在请求里了。
 inline void io_hand_back(io_request*& head, std::vector<park_token*>& completed,

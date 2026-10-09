@@ -10,6 +10,9 @@
 
 #include "runtime/io_engine.h"
 #include "runtime/scheduler_detail.h"
+#if !defined(_WIN32)
+#  include "runtime/io_engine_posix.h"
+#endif
 
 #include <cerrno>
 #include <chrono>
@@ -254,6 +257,20 @@ std::size_t open_handle_count() {
 #endif
 
 }  // namespace
+
+#if !defined(_WIN32)
+TEST(io_engine, fd_table_growth_preserves_waiters_on_failure) {
+    wavvix::detail::io_fd_table slots;
+    if (!EXPECT(slots.ensure(7), ==, true)) return;
+    EXPECT(slots[7].readers, ==, static_cast<io_request*>(0));
+    io_request waiting;
+    slots[7].readers = &waiting;
+
+    EXPECT(slots.ensure(static_cast<std::size_t>(-1)), ==, false);
+    EXPECT(slots.size(), ==, 16u);
+    EXPECT(slots[7].readers, ==, &waiting);
+}
+#endif
 
 TEST(io_engine, cross_thread_notification_interrupts_wait) {
     wavvix::detail::io_engine* const engine = wavvix::detail::io_engine_create();

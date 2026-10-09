@@ -21,7 +21,7 @@ class io_engine {
 public:
     int kq;
     bool notify_enabled;
-    std::vector<io_fd_slot> slots;
+    io_fd_table slots;
     std::size_t pending;    // 还在等的请求数
 };
 
@@ -133,8 +133,10 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
          !(request.direction == io_read ? engine->slots[index].readers
                                        : engine->slots[index].writers)) &&
         io_try_now(request)) return false;
-    if (index >= engine->slots.size()) {
-        engine->slots.resize(index * 2 + 2, io_empty_slot());  // 乘二留余量，别每个新 fd 搬一次家
+    if (!engine->slots.ensure(index)) {
+        request.transferred = -1;
+        request.failure = ENOMEM;
+        return false;
     }
     io_fd_slot& slot = engine->slots[index];
 
