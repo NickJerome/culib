@@ -371,7 +371,7 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 | `moves_bytes_in_both_directions_over_one_pair` | 一个句柄上读写同时挂。epoll 要把两个方向合并成一个掩码，**解除一个方向时把另一个也带掉**是这里最容易犯的错 |
 | `keeps_run_from_returning_while_a_coroutine_is_blocked_on_io` | 那条跨文件的不变量。IOCP 的 `OVERLAPPED` 生命周期全靠它，所以它该是一条断言而不是一句注释 |
 | `reports_peer_close_as_zero_not_as_a_failure` | 对端关了是 `transferred == 0`，不是错误。三个后端三条不同的路通到同一个结论（POSIX 是 `read()` 返回 0，IOCP 是 0 字节成功完成或者 `ERROR_BROKEN_PIPE`） |
-| `counts_a_coroutine_that_is_blocked_on_io` | `scheduled()` 把引擎手里那些算进去了。顺带钉住一个容易误解的地方：**正在跑的那根不算**，它已经被 swap 到 `run()` 的局部副本里 |
+| `counts_a_coroutine_that_is_blocked_on_io` | `scheduled()` 把引擎手里那些算进去了。**正在跑的那根不算**；同一轮尚未运行的其他协程则会计入 |
 | `fails_a_bad_handle_without_suspending_the_coroutine` | 挂不上去时不能挂起协程，否则它永远醒不过来、`run()` 也永远不返回 |
 | `serves_two_readers_on_one_handle_in_order` | 同一句柄同一方向的等待链是先来先服务 |
 | `carries_many_concurrent_readers` | 五十对句柄各一根读协程：fd 下标表的扩容和等待链在规模上的样子 |

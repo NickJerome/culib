@@ -105,7 +105,7 @@ void sleep_for(std::chrono::nanoseconds duration);
 // 在调度器里再跑一个调度器，而这一期的运行队列是每 vCPU 一个的。
 std::size_t run();
 
-// 当前 vCPU 上还有多少根协程，含在睡的。给「还有活没干完吗」这种判断用。
+// 当前 vCPU 上排队或挂起的协程数，含本轮尚未运行的协程，不含正在执行的这一根。
 std::size_t scheduled() noexcept;
 
 }  // namespace wavvix

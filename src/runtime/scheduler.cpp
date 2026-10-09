@@ -754,9 +754,19 @@ void sleep_for(std::chrono::nanoseconds duration) {
 std::size_t scheduled() noexcept {
     detail::vcpu* const current_vcpu = detail::active_vcpu();
     if (!current_vcpu) return 0;
-    // roused 尚未入 ready 时也算一根待运行协程。
+    std::size_t waiting_in_round = 0;
+    if (current_vcpu->running && current_vcpu->current) {
+        const std::vector<detail::coroutine_control*>& round = current_vcpu->round;
+        // 从尾部查，先遇到当前协程，不比较已完成任务留下的旧指针。
+        for (std::size_t i = round.size(); i != 0; --i) {
+            if (round[i - 1] == current_vcpu->current) {
+                waiting_in_round = round.size() - i;
+                break;
+            }
+        }
+    }
     return current_vcpu->ready.size() + current_vcpu->parked_count +
-           current_vcpu->roused.size();
+           current_vcpu->roused.size() + waiting_in_round;
 }
 
 std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,

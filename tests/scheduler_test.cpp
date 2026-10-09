@@ -122,6 +122,28 @@ TEST(scheduler, nested_scopes_finish_at_the_outer_boundary) {
     EXPECT(scheduled(), ==, 0u);
 }
 
+TEST(scheduler, scheduled_counts_tasks_waiting_in_the_current_round) {
+    std::size_t before_spawn = 0;
+    std::size_t after_spawn = 0;
+    std::size_t second_task = 0;
+    int finished = 0;
+    spawn([&] {
+        before_spawn = scheduled();
+        spawn([&] { ++finished; }).value();
+        after_spawn = scheduled();
+        ++finished;
+    }).value();
+    spawn([&] { second_task = scheduled(); ++finished; }).value();
+    spawn([&] { ++finished; }).value();
+    EXPECT(scheduled(), ==, 3u);
+    EXPECT(run(), ==, 4u);
+    EXPECT(before_spawn, ==, 2u);
+    EXPECT(after_spawn, ==, 3u);
+    EXPECT(second_task, ==, 2u);
+    EXPECT(finished, ==, 4);
+    EXPECT(scheduled(), ==, 0u);
+}
+
 TEST(scheduler, wakes_a_parked_coroutine_from_another_thread) {
     bool resumed = false;
     bool notified = false;
