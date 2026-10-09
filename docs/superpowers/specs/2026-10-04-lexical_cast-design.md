@@ -26,14 +26,16 @@ template <typename T> result<T> lexical_cast(string_view text, int base);   // �
 
 std::string to_string(long long value);
 std::string to_string(unsigned long long value);
+std::string to_string(float value);
 std::string to_string(double value);
 std::string to_string(bool value);
 
 std::size_t to_chars(long long value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(unsigned long long value, char* buffer, std::size_t capacity) noexcept;
+std::size_t to_chars(float value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(double value, char* buffer, std::size_t capacity) noexcept;
 
-// 接住 int / long / unsigned / float 等等，收敛到上面那几个之一，见 3.7
+// 接住 int / long / unsigned 等其余算术类型，收敛到上面几个重载，见 3.7
 template <typename T> std::string to_string(T value);
 template <typename T> std::size_t to_chars(T value, char* buffer, std::size_t capacity) noexcept;
 
@@ -165,6 +167,8 @@ std::string to_string(T value) {
 ### 4.2 往返
 
 `to_string(double)` 依次试 15 / 16 / 17 位有效数字，取第一个能被自己解析回来的，所以 `0.1` 输出 `"0.1"` 而不是 `"0.10000000000000001"`。测试里钉住了 10 个值的往返，包括手算版本曾经错掉的那两个：
+
+`float` 也必须按自己的精度格式化：直接提升到 `double` 会把 `to_string(0.1f)` 写成 `"0.10000000149011612"`。`to_string(float)` 和 `to_chars(float)` 复用同一格式化流程，但尝试 6 至 9 位并用 `strtof` 校验往返；现在该值输出 `"0.1"`。
 
 ```
 0.1  1/3  π  1e-300  1e300  123456789.123456789  2.2250738585072014e-308  DBL_MAX  1e22  1e23

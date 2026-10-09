@@ -40,7 +40,7 @@ struct is_character_type {
         std::is_same<T, char16_t>::value || std::is_same<T, char32_t>::value;
 };
 
-// 把任意算术类型收敛到 to_string / to_chars 真正实现的那三种之一。
+// 把其余算术类型收敛到 to_string / to_chars 实现的基础类型之一。
 // bool 不在这里：它对 to_string(bool) 是精确匹配，走非模板重载。
 template <typename T>
 struct widen {
@@ -151,15 +151,15 @@ result<T> lexical_cast(string_view text, int base) {
 // 另一个方向。不会失败，所以直接返回值，不包 result；名字和 std::to_string 一致。
 std::string to_string(long long value);
 std::string to_string(unsigned long long value);
+std::string to_string(float value);           // 按 float 精度格式化，保证往返
 std::string to_string(double value);          // 不受 locale 影响，保证往返，见设计文档
 std::string to_string(bool value);            // "true" / "false"
 
 // int、long、unsigned、float 等等直接传就行，不用在调用点写 static_cast。
 //
-// 为什么要有这一个：上面四个重载对 int 来说**都是**「需要一次转换」——转成 long long、
-// unsigned long long、double、bool 是同一级别的四条路，所以 to_string(42) 有歧义、
-// 编译不过。这个模板对它们是精确匹配，于是接住那些原本歧义的类型，收敛到其中一条路上；
-// long long / unsigned long long / double / bool 这些精确匹配的类型仍然走上面的非模板
+// 为什么要有这一个：上面的重载对 int 来说**都是**「需要一次转换」，
+// 所以 to_string(42) 有歧义。这个模板对它们是精确匹配，接住那些原本歧义的类型；
+// long long / unsigned long long / float / double / bool 等精确匹配仍走上面的非模板
 // 重载（非模板胜过模板），行为和之前一字不差。
 template <typename T>
 std::string to_string(T value) {
@@ -172,6 +172,7 @@ std::string to_string(T value) {
 // 容量给够就不会返回 0：整数 24 字节、浮点 32 字节足够任何输入。
 std::size_t to_chars(long long value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(unsigned long long value, char* buffer, std::size_t capacity) noexcept;
+std::size_t to_chars(float value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(double value, char* buffer, std::size_t capacity) noexcept;
 
 // 同上，接住 int 之类原本有歧义的类型。

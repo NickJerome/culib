@@ -32,6 +32,11 @@ bool round_trips(double value) {
     return again.is_ok() && again.value() == value;
 }
 
+bool round_trips(float value) {
+    const result<float> again = lexical_cast<float>(to_string(value));
+    return again.is_ok() && again.value() == value;
+}
+
 }  // namespace
 
 TEST(lexical_cast, parses_integers) {
@@ -240,6 +245,21 @@ TEST(lexical_cast, formats_doubles_shortest_and_round_trips) {
     EXPECT(to_string(std::numeric_limits<double>::infinity()), ==, "inf");
     EXPECT(to_string(-std::numeric_limits<double>::infinity()), ==, "-inf");
     EXPECT(to_string(std::numeric_limits<double>::quiet_NaN()), ==, "nan");
+}
+
+TEST(lexical_cast, formats_floats_at_float_precision) {
+    EXPECT(to_string(0.1f), ==, "0.1");
+    EXPECT(to_string(-0.0f), ==, "-0");
+    EXPECT(round_trips(0.1f), ==, true);
+    EXPECT(round_trips((std::numeric_limits<float>::max)()), ==, true);
+    EXPECT(round_trips((std::numeric_limits<float>::min)()), ==, true);
+    EXPECT(round_trips((std::numeric_limits<float>::denorm_min)()), ==, true);
+    EXPECT(to_string(std::numeric_limits<float>::infinity()), ==, "inf");
+    EXPECT(to_string(std::numeric_limits<float>::quiet_NaN()), ==, "nan");
+
+    char buffer[16];
+    const std::size_t written = to_chars(0.1f, buffer, sizeof buffer);
+    EXPECT(std::string(buffer, written), ==, "0.1");
 }
 
 TEST(lexical_cast, writes_into_a_caller_buffer) {

@@ -305,36 +305,47 @@ std::size_t normalize_decimal_point(char* buffer, std::size_t length) {
     return length;
 }
 
-// 依次试 15 / 16 / 17 位有效数字，取第一个能原样解析回来的，这样 0.1 输出 "0.1"
-// 而不是 "0.10000000000000001"，同时保证往返。
-std::size_t format_double(double value, char* buffer, std::size_t capacity) {
+bool parses_as(float value, string_view text) {
+    const result<float> again = detail::parse_float(text);
+    return again.is_ok() && again.value() == value;
+}
+
+bool parses_as(double value, string_view text) {
+    const result<double> again = detail::parse_double(text);
+    return again.is_ok() && again.value() == value;
+}
+
+// 从目标类型的十进制精度开始试，取第一个能按同一类型原样读回的表示。
+template <typename T>
+std::size_t format_floating(T value, char* buffer, std::size_t capacity) {
     if (value != value) {
         if (capacity < 3) return 0;
         std::memcpy(buffer, "nan", 3);
         return 3;
     }
-    if (value == std::numeric_limits<double>::infinity()) {
+    if (value == std::numeric_limits<T>::infinity()) {
         if (capacity < 3) return 0;
         std::memcpy(buffer, "inf", 3);
         return 3;
     }
-    if (value == -std::numeric_limits<double>::infinity()) {
+    if (value == -std::numeric_limits<T>::infinity()) {
         if (capacity < 4) return 0;
         std::memcpy(buffer, "-inf", 4);
         return 4;
     }
     char scratch[40];
-    for (int precision = 15; precision <= 17; ++precision) {
-        const int written = std::snprintf(scratch, sizeof scratch, "%.*g", precision, value);
+    for (int precision = std::numeric_limits<T>::digits10;
+         precision <= std::numeric_limits<T>::max_digits10; ++precision) {
+        const int written = std::snprintf(scratch, sizeof scratch, "%.*g", precision,
+                                          static_cast<double>(value));
         if (written <= 0 || static_cast<std::size_t>(written) >= sizeof scratch) continue;
         const std::size_t length = normalize_decimal_point(scratch, static_cast<std::size_t>(written));
-        if (precision == 17) {
+        if (precision == std::numeric_limits<T>::max_digits10) {
             if (length > capacity) return 0;
             std::memcpy(buffer, scratch, length);
             return length;
         }
-        const result<double> again = detail::parse_double(string_view(scratch, length));
-        if (again.is_ok() && again.value() == value) {
+        if (parses_as(value, string_view(scratch, length))) {
             if (length > capacity) return 0;
             std::memcpy(buffer, scratch, length);
             return length;
@@ -353,6 +364,12 @@ std::string to_string(long long value) {
 
 std::string to_string(unsigned long long value) {
     char buffer[24];
+    const std::size_t length = to_chars(value, buffer, sizeof buffer);
+    return std::string(buffer, length);
+}
+
+std::string to_string(float value) {
+    char buffer[40];
     const std::size_t length = to_chars(value, buffer, sizeof buffer);
     return std::string(buffer, length);
 }
@@ -382,8 +399,12 @@ std::size_t to_chars(unsigned long long value, char* buffer, std::size_t capacit
     return write_unsigned(value, buffer, capacity);
 }
 
+std::size_t to_chars(float value, char* buffer, std::size_t capacity) noexcept {
+    return format_floating(value, buffer, capacity);
+}
+
 std::size_t to_chars(double value, char* buffer, std::size_t capacity) noexcept {
-    return format_double(value, buffer, capacity);
+    return format_floating(value, buffer, capacity);
 }
 
 }  // namespace wavvix
