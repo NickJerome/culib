@@ -577,6 +577,8 @@ thread_local 和异常状态在协程脚下变掉，见 coroutine 设计文档 3
     **调用方必须保证输入活得比结果长**，这是视图的固有约束。
   - 返回 std::string / std::vector 的会分配；需要反复产出时用带 out 参数的重载复用缓冲区。
 
+`to_lower(text, out)` / `to_upper(text, out)` 也可原地转换：`text` 可以引用 `out` 自身或其中一段。
+
 大小写只处理 ASCII，这是明确的范围缩减：Unicode 的大小写映射要内置上千码点的表、
 还有 locale 特例（土耳其语的 i），而三个目标场景没一个需要。
 

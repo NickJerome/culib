@@ -34,9 +34,11 @@ std::string join_parts(const Parts& parts, string_view separator) {
 
 template <typename Transform>
 void map_ascii(string_view text, std::string& out, Transform transform) {
-    out.clear();
-    out.resize(text.size());
-    for (std::size_t i = 0; i < text.size(); ++i) out[i] = transform(text[i]);
+    const std::size_t size = text.size();
+    if (out.size() < size) out.resize(size);
+    // text 可能指向 out 内部；读完后才能缩短 out。
+    for (std::size_t i = 0; i < size; ++i) out[i] = transform(text[i]);
+    out.resize(size);
 }
 
 error bad_utf8(std::size_t offset, const char* why) {

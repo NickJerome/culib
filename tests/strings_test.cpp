@@ -143,6 +143,16 @@ TEST(strings, changes_case_in_ascii_only) {
     EXPECT(buffer, ==, "AB");
 }
 
+TEST(strings, changes_case_when_output_contains_the_input) {
+    std::string whole = "MiXeD";
+    wavvix::to_lower(whole, whole);
+    EXPECT(whole, ==, "mixed");
+
+    std::string slice = "__aBc__";
+    wavvix::to_upper(string_view(slice.data() + 2, 3), slice);
+    EXPECT(slice, ==, "ABC");
+}
+
 TEST(strings, compares_ignoring_case) {
     EXPECT(wavvix::equals_ignore_case("abc", "ABC"), ==, true);
     EXPECT(wavvix::equals_ignore_case("AbC", "aBc"), ==, true);
