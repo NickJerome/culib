@@ -22,6 +22,7 @@ target("culib")
     end
     set_encodings("utf-8")
     add_includedirs("include", {public = true})
+    add_includedirs("src")
     add_headerfiles("include/(culib/**.h)")
     add_files("src/**.cpp")
     -- 平台相关实现按文件名后缀区分：Windows / MinGW 用 *_win.cpp，其他平台用 *_posix.cpp
@@ -32,7 +33,7 @@ target("culib")
     end
     -- 事件引擎的三个后端在 POSIX 内部还要再分一次：Linux 是 epoll、macOS 是 kqueue，
     -- 两边的头文件完全不同，_posix 那一档装不下。没匹配上的平台一个后端都不会进来，
-    -- 由 src/io_engine.cpp 的 #error 在编译期拦住（不是链接期缺符号）。
+    -- 由 src/runtime/io_engine.cpp 的 #error 在编译期拦住（不是链接期缺符号）。
     if not is_plat("linux") then
         remove_files("src/**_linux.cpp")
     end
@@ -54,22 +55,22 @@ target("culib")
     -- 所以这里**不给兜底分支**：没覆盖的目标应该在构建时就失败，而不是链接时缺符号。
     if is_arch("x86_64", "x64") then
         if is_plat("windows") then
-            add_files("src/asm/context_x86_64_pe.asm")    -- MSVC 不支持内联汇编，走 ml64
+            add_files("src/runtime/asm/context_x86_64_pe.asm")    -- MSVC 不支持内联汇编，走 ml64
         elseif is_plat("mingw") then
-            add_files("src/asm/context_x86_64_pe.S")
+            add_files("src/runtime/asm/context_x86_64_pe.S")
         else
-            add_files("src/asm/context_x86_64_sysv.S")    -- Linux 和 macOS 同一套 ABI
+            add_files("src/runtime/asm/context_x86_64_sysv.S")    -- Linux 和 macOS 同一套 ABI
         end
     elseif is_arch("arm64", "arm64-v8a") then
-        add_files("src/asm/context_arm64_aapcs.S")
+        add_files("src/runtime/asm/context_arm64_aapcs.S")
     elseif is_arch("x86", "i386") and is_plat("windows") then
-        add_files("src/asm/context_i386_pe.asm")
+        add_files("src/runtime/asm/context_i386_pe.asm")
     elseif is_arch("x86", "i386") and is_plat("mingw") then
-        add_files("src/asm/context_i386_pe.S")
+        add_files("src/runtime/asm/context_i386_pe.S")
     end
     -- 没匹配上的组合（32 位非 Windows）这里什么都不加，由
-    -- src/coroutine.cpp 的 #error 在编译期报错——比链接期缺符号清楚得多。
-    -- 没匹配上的架构这里什么都不加，由 src/coroutine.cpp 里的 #error 报错——
+    -- src/runtime/coroutine.cpp 的 #error 在编译期报错——比链接期缺符号清楚得多。
+    -- 没匹配上的架构这里什么都不加，由 src/runtime/coroutine.cpp 里的 #error 报错——
     -- xmake 的描述作用域里 raise / assert / error 全是 nil（都报 unknown interface），
     -- 而那个错误会让 xmake f 失败、却让后续的 xmake 沿用上一份还有效的配置继续构建。
     -- 结果是改了配置看不出来、二进制还是旧的，白跑两轮验证。门禁放在 C++ 里更可靠。

@@ -115,7 +115,7 @@ note: candidate: 'std::string wavvix::to_string(bool)'
 
 也就是说**最常见的那个调用从来没能编译过**，`short`、`long`、`unsigned`、`std::size_t`、`float` 同样。这同时违反「简单的事一行完成」和「难以误用」。
 
-**为什么没被发现：测试是照着实现写的，不是照着用法写的。** `formats_integers` 那条测试每一行都写了 `static_cast<long long>(...)`，`src/fs_win.cpp` 里也写的是 `to_string(static_cast<unsigned long long>(code))`。所有调用点都恰好带着 cast，于是歧义永远不出现。真正撞上它的是 `examples/os.cpp` 里一句 `to_string(n)`（`n` 是 `long`）——**一个新示例比整套单元测试更早发现问题，因为它是按用法写的。**
+**为什么没被发现：测试是照着实现写的，不是照着用法写的。** `formats_integers` 那条测试每一行都写了 `static_cast<long long>(...)`，`src/fs/fs_win.cpp` 里也写的是 `to_string(static_cast<unsigned long long>(code))`。所有调用点都恰好带着 cast，于是歧义永远不出现。真正撞上它的是 `examples/os.cpp` 里一句 `to_string(n)`（`n` 是 `long`）——**一个新示例比整套单元测试更早发现问题，因为它是按用法写的。**
 
 修法是加一个模板重载：
 

@@ -1,5 +1,5 @@
 // coroutine 的平台无关部分：控制块、trampoline、每线程状态、ASan 注解。
-// 换栈的汇编在 src/asm/ 下，栈的分配在 coroutine_posix.cpp / coroutine_win.cpp。
+// 换栈的汇编在 src/runtime/asm/ 下，栈的分配在 coroutine_posix.cpp / coroutine_win.cpp。
 
 #include <culib/detail/fiber.h>
 
@@ -17,7 +17,7 @@
 #elif (defined(__i386__) || defined(_M_IX86)) && defined(_WIN32)
 /* 32 位 Windows：MinGW 用 GAS，MSVC 用 MASM。 */
 #else
-#  error "culib 的协程还没有这个 (平台, 架构) 的换栈汇编。已覆盖：x86_64、arm64、Windows x86。缺：32 位非 Windows。见 src/asm/"
+#  error "culib 的协程还没有这个 (平台, 架构) 的换栈汇编。已覆盖：x86_64、arm64、Windows x86。缺：32 位非 Windows。见 src/runtime/asm/"
 #endif
 
 // 换栈需告知 ASan；嵌套 #if 兼容没有 __has_feature 的预处理器。

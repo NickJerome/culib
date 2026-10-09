@@ -1,7 +1,7 @@
 #include "fs_watcher_backend.h"
 #include "fs_watcher_metadata.h"
-#include "io_engine.h"
-#include "scheduler_detail.h"
+#include "runtime/io_engine.h"
+#include "runtime/scheduler_detail.h"
 
 #include <culib/detail/fiber.h>
 

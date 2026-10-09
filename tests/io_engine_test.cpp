@@ -8,10 +8,10 @@
 #include <culib/scheduler.h>
 #include <culib/test.h>
 
-#include "io_engine.h"
-#include "scheduler_detail.h"
+#include "runtime/io_engine.h"
+#include "runtime/scheduler_detail.h"
 #if defined(__linux__)
-#  include "io_engine_uring_linux.h"
+#  include "runtime/io_engine_uring_linux.h"
 #endif
 
 #include <cerrno>

@@ -245,7 +245,10 @@ culib/
 ├── README.md
 ├── include/
 │   └── culib/                  # 公共 API；detail/ 为内部实现
-├── src/                        # 静态库实现、平台后端及 asm/ 换栈代码
+├── src/                        # 小型通用模块的实现
+│   ├── runtime/                # 协程、调度器、I/O 引擎及换栈汇编
+│   ├── fs/                     # 文件系统与目录监听
+│   └── net/                    # 地址、TCP 与 UDP
 ├── tests/                      # culib 单元与平台集成测试
 ├── examples/                   # 每个 .cpp 对应一个可运行示例
 ├── docs/                       # 使用文档、设计记录和实现计划

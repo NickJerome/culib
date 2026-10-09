@@ -3,7 +3,7 @@
 #include <culib/stopwatch.h>
 #include <culib/test.h>
 
-#include "scheduler_detail.h"
+#include "runtime/scheduler_detail.h"
 
 #include <atomic>
 #include <chrono>

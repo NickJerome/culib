@@ -28,7 +28,7 @@
 所以两条并成一条 **park**：
 
 ```cpp
-// src/scheduler_detail.h
+// src/runtime/scheduler_detail.h
 bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout);
 bool scheduler_wake(park_token& token);
 ```
@@ -66,7 +66,7 @@ bool settled;   // 已经交还给调度器了，之后再 wake 无效
 | `condition_variable` | `wait` / `wait_for` / `notify_one` / `notify_all` |
 | `lock_guard<T>` | RAII |
 
-内部的（`src/scheduler_detail.h`）：`scheduler_park` / `scheduler_wake`，加上 `scheduler_io` 多了一个 `timeout` 参数。
+内部的（`src/runtime/scheduler_detail.h`）：`scheduler_park` / `scheduler_wake`，加上 `scheduler_io` 多了一个 `timeout` 参数。
 
 **`scheduler_io` 的 `timeout` 故意不给默认值。** 给了默认值就等于给「永远等下去」开一条默认路，而那正是 7.2 说的那个会把程序挂死的洞。每个调用点自己说等多久，写的时候就得想一下。
 

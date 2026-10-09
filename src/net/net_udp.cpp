@@ -1,5 +1,5 @@
 #include "net_udp_detail.h"
-#include "scheduler_detail.h"
+#include "runtime/scheduler_detail.h"
 
 #include <climits>
 #include <utility>

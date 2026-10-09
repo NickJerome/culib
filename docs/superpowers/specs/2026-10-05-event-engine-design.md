@@ -12,7 +12,7 @@
 
 那条判据本文一开始用得太宽，拿它否掉了两个优化，**其中一个是错的**：它是分期的流程规则，而「零开销」是硬约束，流程规则压不过硬约束；而且被当成「行为」保护的东西（协程有没有让出一轮）本来就不是契约。那一处已经改回来并量了数，见 7.1。另一处（没有超时）的理由跟判据无关，见 7.2。
 
-接入点在源码里已经标好了。`src/scheduler.cpp` 的空闲路径：
+接入点在源码里已经标好了。`src/runtime/scheduler.cpp` 的空闲路径：
 
 ```cpp
 // 没人可跑但有人在睡：睡到最早那个醒的时刻。
@@ -73,7 +73,7 @@ Photon 的 master engine 文档注释里还有一句值得记下来的坑：
 完成形状意味着「帮我读，读完叫我」，所以抽象的中心是**一次操作的请求结构**，而不是「一个 fd 的兴趣集」。
 
 ```cpp
-// src/io_engine.h（内部头文件，不在 include/ 下）
+// src/runtime/io_engine.h（内部头文件，不在 include/ 下）
 struct io_request {
     // ---- 入参，调用方填 ----
     io_direction   direction;     // io_read / io_write
@@ -115,7 +115,7 @@ struct io_request {
 调度器这边加一个内部入口，这是三个后端之上唯一的调用形式：
 
 ```cpp
-// src/scheduler_detail.h
+// src/runtime/scheduler_detail.h
 namespace wavvix { namespace detail {
 // 提交一次 I/O 并挂起当前协程；返回时结果在 req 里。只能在协程里调。
 // timeout 是**第五期加的，而且故意没有默认值**——给了默认值就等于给
@@ -234,7 +234,7 @@ fd 必须是非阻塞的，否则「报了可读、读到一半阻塞住」会�
 
 **本机验证不了**：没有 macOS，也没有 `<sys/event.h>`，真头文件一行都编不过。这是 coroutine 那一期 arm64 汇编和 MASM 的同一种处境（CLAUDE.md 里记着那次「推上 CI 才第一次被验证」）。两件事把未验证面压到最小：
 
-- **最容易写错的那段不是新写的。** `io_complete()`（EINTR、EAGAIN 虚假唤醒、对端关闭、错误码归谁）抽到了 `src/io_engine_posix.h`，两个 POSIX 后端共用同一份，而那一份在 Linux 上被九条测试跑过。kqueue 这边新写的只有「怎么登记兴趣」。
+- **最容易写错的那段不是新写的。** `io_complete()`（EINTR、EAGAIN 虚假唤醒、对端关闭、错误码归谁）抽到了 `src/runtime/io_engine_posix.h`，两个 POSIX 后端共用同一份，而那一份在 Linux 上被九条测试跑过。kqueue 这边新写的只有「怎么登记兴趣」。
 - **拿一份照 macOS SDK 抄的 `<sys/event.h>` 原型做了类型检查**（`struct kevent` 的六个字段、`EV_SET` 的七个参数、`kevent()` 的六个参数和 const 修饰、`EVFILT_*` / `EV_*` 常量），g++ 14.2 和 clang 19 在 `-Wall -Wextra -Wpedantic -Werror` 下都过。这查不到真头文件的怪癖，但它抓的正是「从没编译过的代码」里最常见的那几类错，和 MinGW 对 Windows 起的作用一样。
 
 ### 6.3 IOCP：原生就是完成形状
@@ -257,7 +257,7 @@ fd 必须是非阻塞的，否则「报了可读、读到一半阻塞住」会�
 - **`ReadFile` / `WriteFile` 统一用在套接字和文件上**，不分 `WSARecv` / `ReadFile` 两条路。套接字句柄在 Win32 里就是文件句柄，而 `socket()` 默认就是 overlapped 的（`WSA_FLAG_OVERLAPPED` 隐含）。一条路少一半代码，也少一个「这个句柄是什么」的运行期判断。
 - **`OVERLAPPED` 的生命周期**：必须活到完成包取回来为止。它在 `io_request` 里、`io_request` 在挂起协程的栈上，而 `run()` 不会在 `io_engine_pending()` 不为 0 时返回——所以生命周期是靠结束条件那一项保证的。**这是第 5 节那个改动的隐含承诺，不是巧合**，而且去掉 `blocked` 容器之后它成了唯一的依据，更该盯紧。
 - **`GetQueuedCompletionStatusEx` 要的是毫秒** `DWORD`，`INFINITE` 是 `0xFFFFFFFF`。超时取整和 epoll 一边：不足 1 毫秒的正超时进成 1，否则「睡 100 微秒」会变成忙转。
-- **`OVERLAPPED` 在平台中立的头文件里是一块 `void* overlapped[8]`**，真正的类型在后端里 `reinterpret_cast` 回去——这样 `src/io_engine.h` 不必包含 `<windows.h>`。够不够大用两条 `static_assert` 盯着（Win64 是 64 字节对 32，Win32 是 32 对 20），因为**改那个数组长度的人看不到 Windows 那边**。
+- **`OVERLAPPED` 在平台中立的头文件里是一块 `void* overlapped[8]`**，真正的类型在后端里 `reinterpret_cast` 回去——这样 `src/runtime/io_engine.h` 不必包含 `<windows.h>`。够不够大用两条 `static_assert` 盯着（Win64 是 64 字节对 32，Win32 是 32 对 20），因为**改那个数组长度的人看不到 Windows 那边**。
 
 **本机验证靠 MinGW 交叉编译 + wine**（CLAUDE.md 里那套）。实际结果比预期好：x86_64 和 i686 两个三元组都零警告编译链接通过，**wine 下 8 条 I/O 测试全过**（Windows 上少的那条是用 `/proc` 数句柄的，只在 Linux 跑）。也就是说 wine 的 IOCP 对回环套接字是够用的，连「对端优雅关闭报成 0 字节」和「五十对并发」都对。
 
@@ -314,12 +314,12 @@ Photon 分 master（阻塞 vCPU）和 cascading（不阻塞 vCPU，给「一次�
 
 ### 7.4 这一期不加公共 API
 
-引擎整个在 `wavvix::detail` 里，`src/io_engine.h` 不进 `include/`。理由是公共 API 要定两样东西，而这一期两样都定不好：
+引擎整个在 `wavvix::detail` 里，`src/runtime/io_engine.h` 不进 `include/`。理由是公共 API 要定两样东西，而这一期两样都定不好：
 
 - **句柄类型**。公共接口里出现 `int fd` 还是一个 `native_handle` 包装，是 `net` 的决定（它要管 `WSAStartup`、`O_NONBLOCK`、关闭语义）。现在定下来等于让 `net` 继承一个猜出来的类型。
 - **超时**。见 7.2，没有超时的公共 `read` 是个会把程序挂死的接口，不该放出去。
 
-所以这一期没有 `examples/` 下的新示例——**示例要按用法写，而现在还没有用法**（CLAUDE.md：「示例没法作弊，它必须按用法写」）。测试从 `tests/` 直接包含 `src/io_engine.h` 驱动引擎，这条路本来就通（`tests/` 已经有 `-Isrc`，`coroutine_detail.h` 也是这么被测的）。
+所以这一期没有 `examples/` 下的新示例——**示例要按用法写，而现在还没有用法**（CLAUDE.md：「示例没法作弊，它必须按用法写」）。测试从 `tests/` 直接包含 `src/runtime/io_engine.h` 驱动引擎，这条路本来就通（`tests/` 已经有 `-Isrc`，`coroutine_detail.h` 也是这么被测的）。
 
 公共 API 跟着 `net` 一起定，那时才有真实调用点。
 
@@ -382,7 +382,7 @@ Photon 的 `cancel_wait()` 能从别的 vCPU 把一个睡在引擎上的 vCPU �
 
 没有 macOS，真 `<sys/event.h>` 一行都编不过。两件事把它压到最小：
 
-- **最容易写错的那段不是新写的。** `io_complete()`（`EINTR` 重做、`EAGAIN` 虚假唤醒要留在链上、对端关闭报 0、错误码归谁）抽到了 `src/io_engine_posix.h`，两个 POSIX 后端共用，而那一份在 Linux 上被九条测试跑过。kqueue 独有的只剩「怎么登记兴趣」。
+- **最容易写错的那段不是新写的。** `io_complete()`（`EINTR` 重做、`EAGAIN` 虚假唤醒要留在链上、对端关闭报 0、错误码归谁）抽到了 `src/runtime/io_engine_posix.h`，两个 POSIX 后端共用，而那一份在 Linux 上被九条测试跑过。kqueue 独有的只剩「怎么登记兴趣」。
 - **拿一份照 macOS SDK 原型抄的 `<sys/event.h>` 做了类型检查**：`struct kevent` 的六个字段、`EV_SET` 的七个参数、`kevent()` 的六个参数和 const 修饰、`EVFILT_*` / `EV_*` 常量。g++ 14.2 和 clang 19 在 `-Wall -Wextra -Wpedantic -Werror` 下都过。
 
 查不到的是真头文件的怪癖（宏展开形式、字段的确切类型、平台特有的 `#define`）。这和 MinGW 对 MSVC 的关系一样：**抓得到「API 用错、include 漏了、类型不匹配」，抓不到工具链差异。**

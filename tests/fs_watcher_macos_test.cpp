@@ -1,6 +1,6 @@
 #if defined(__APPLE__)
 
-#include "fs_watcher_backend.h"
+#include "fs/fs_watcher_backend.h"
 
 #include <culib/fs.h>
 #include <culib/scheduler.h>

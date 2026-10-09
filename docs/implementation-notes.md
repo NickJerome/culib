@@ -2,7 +2,7 @@
 
 这里记录实现文件原先写在文件头的结构、设计理由与平台取舍。数据结构旁边仍保留维护局部不变量所需的注释；完整历史与验证记录见各节的设计文档。
 
-## [`io_engine.h`](../src/io_engine.h)
+## [`io_engine.h`](../src/runtime/io_engine.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
@@ -38,7 +38,7 @@ io_engine_linux.cpp 选择 io_uring 或 epoll，具体环在独立实现文件�
 
 Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd，因此把同一个 `eventfd` 作为第二个被等的 fd；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败会返回 `false`，供提交方处理。旧版 glibc 缺少 `<sys/eventfd.h>`，Linux 实现直接调用 `eventfd2`；当旧系统头文件也缺少系统调用号时，使用项目支持的 x86_64 / arm64 Linux 调用号。跨线程唤醒已在本机 MSVC x64、WSL 的强制 epoll 与强制 io_uring 路径及[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37870009886) 验证。调度器现在能接收工作线程完成通知；多 vCPU 的协程分发仍需实现。
 
-## [`io_engine_posix.h`](../src/io_engine_posix.h)
+## [`io_engine_posix.h`](../src/runtime/io_engine_posix.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
@@ -51,7 +51,7 @@ Linux 的 epoll 用非阻塞 `eventfd`，io_uring 已经在 `ppoll` 等 ring fd�
 不共享的是 io_engine 本身：epoll 要一个 epoll fd 加合并后的事件掩码，kqueue 要一个
 kq 加两个独立的过滤器，没有值得放进公共基类的东西。
 
-## [`io_engine_linux.cpp`](../src/io_engine_linux.cpp)
+## [`io_engine_linux.cpp`](../src/runtime/io_engine_linux.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
@@ -67,7 +67,7 @@ superpowers/specs/2026-10-05-event-engine-design.md 6.1：边沿触发要求
 「一个请求一次操作」；EPOLLONESHOT 是按 fd 而不是按方向生效的，同一个 fd 上同时
 挂着读和写时，一边触发会把另一边也解除，于是要补一套重新登记的记账。
 
-## [`io_engine_uring_linux.cpp`](../src/io_engine_uring_linux.cpp)
+## [`io_engine_uring_linux.cpp`](../src/runtime/io_engine_uring_linux.cpp)
 
 完整设计和验证见 [io_uring 设计](superpowers/specs/2026-10-08-io-uring-design.md)。
 
@@ -84,7 +84,7 @@ CQE 到来后再提交下一位，避免多个读者抢同一份数据而打乱�
 建环时还探测这两个操作，不支持就退回 epoll。Linux 本地分别强制 uring 和 epoll
 跑过已就绪收发、等待后收发，以及对端关闭时快路和慢路发送的测试。
 
-## [`io_engine_macos.cpp`](../src/io_engine_macos.cpp)
+## [`io_engine_macos.cpp`](../src/runtime/io_engine_macos.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
@@ -108,7 +108,7 @@ kqueue 可以把变更留到下一次 `kevent()` 一并提交，省掉一次系�
 这项决定不以「三个后端调度次序一致」为理由：调度次序不是接口契约。`kevent()` 的
 `nevents` 传 0 时只提交不收事件，变更失败通过返回值和 `errno` 报告。
 
-## [`io_engine_win.cpp`](../src/io_engine_win.cpp)
+## [`io_engine_win.cpp`](../src/runtime/io_engine_win.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
@@ -124,7 +124,7 @@ API），见 superpowers/specs/2026-10-05-event-engine-design.md 第 2 节。
 写的时候本机只有 MinGW 交叉编译 + wine，真 MSVC 是推上 CI 才第一次编到、跑到的
 （`3a766aa` 那次全绿，`3e8ed8d` 记录）。
 
-## [`park.h`](../src/park.h)
+## [`park.h`](../src/runtime/park.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
 
@@ -152,7 +152,7 @@ API），见 superpowers/specs/2026-10-05-event-engine-design.md 第 2 节。
 动（协程绑 vCPU，见 coroutine 设计 3.13），所以把它的地址交给别人是安全的——
 这正是 `mutex` 的等待队列里能串它的原因。
 
-## [`scheduler.cpp`](../src/scheduler.cpp)
+## [`scheduler.cpp`](../src/runtime/scheduler.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-04-scheduler-design.md)。
 
@@ -190,20 +190,20 @@ OVERLAPPED 生命周期正是靠这条兜住的（它住在挂起协程的栈上
 
 完成路径先减少创建者的远端任务计数，再通知其事件引擎。若先通知、后减计数，主栈 `join()` 可能消费通知并返回，紧接着的作用域收尾看见旧计数再次睡下，却再也收不到第二次通知。作用域退出先等远端计数归零，再停止并 `join()` 所有工作线程，最后才销毁创建者的通知源；所以计数先减时，工作线程尚未发出的通知仍有有效目标。工作 vCPU 在停止后也会跑完它已接收的任务与本地子协程。
 
-## [`blocking_pool.cpp`](../src/blocking_pool.cpp)
+## [`blocking_pool.cpp`](../src/runtime/blocking_pool.cpp)
 
 工作线程池只接收从协程发起的 `run()`。每次调用的可调用对象、队列节点和挂起凭据均活在该协程自己的栈上；节点用 `next` 串起，提交时只对已有队列加锁，没有逐任务堆分配。工作线程执行完函数后，经 `remote_waker` 唤醒原 vCPU；协程恢复后，栈上的对象才析构。互斥锁的释放与获取让工作线程写出的结果在恢复后的协程中可见。
 
 池启动时创建指定数量的系统线程，析构时停止接单、做完已提交任务并等待所有工作线程结束。若内核通知在任务已完成后失败，等待协程已无安全的恢复路径，因此打印诊断并终止进程，避免静默挂死。工作线程不捕获调用方函数的异常，与 `std::thread` 的未捕获异常行为一致。公共用法和生命周期约束见[阻塞任务池](blocking-pool.md)。
 
-## [`sync.cpp`](../src/sync.cpp)
+## [`sync.cpp`](../src/runtime/sync.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
 
 协程感知的同步原语。
 
 三个类型共用一条等待队列：串在挂起凭据的 next 上的侵入式 FIFO。**所以一次等待
-零分配**——凭据活在等待者自己的栈上（见 src/park.h）。
+零分配**——凭据活在等待者自己的栈上（见 src/runtime/park.h）。
 
 ### 交棒，不是放开
 

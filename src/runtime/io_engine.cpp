@@ -6,7 +6,7 @@
 
 // 后端只有三个。没覆盖的平台**在编译期就该失败**，而不是等到链接时缺 io_engine_create
 // 这个符号——那种错误要从一行 undefined reference 倒推回来，比这行字难查得多。
-// 这和 src/coroutine.cpp 用 #error 拦住没有换栈汇编的目标是同一个做法。
+// 这和 src/runtime/coroutine.cpp 用 #error 拦住没有换栈汇编的目标是同一个做法。
 #if !defined(_WIN32) && !defined(__linux__) && !defined(__APPLE__)
 #error "culib 的事件引擎只有 epoll / kqueue / IOCP 三个后端，这个平台没有覆盖"
 #endif

@@ -9,15 +9,15 @@ esac
 build_dir=$(mktemp -d)
 trap 'rm -rf -- "$build_dir"' EXIT
 
-for source in src/*.cpp; do
+while IFS= read -r source; do
     case "$source" in
         *_win.cpp|*_macos.cpp) continue ;;
     esac
     g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
         -Iinclude -Isrc -c "$source" \
-        -o "$build_dir/$(basename "$source" .cpp).o"
-done
-g++ -c src/asm/context_x86_64_sysv.S -o "$build_dir/context.o"
+        -o "$build_dir/${source//\//_}.o"
+done < <(find src -type f -name '*.cpp' | sort)
+g++ -c src/runtime/asm/context_x86_64_sysv.S -o "$build_dir/context.o"
 ar rcs "$build_dir/libculib.a" "$build_dir"/*.o
 
 g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
