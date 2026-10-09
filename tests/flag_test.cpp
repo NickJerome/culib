@@ -245,6 +245,19 @@ TEST(flag, shows_a_single_character_primary_name_as_a_short_option) {
     EXPECT(text.find("--x") == std::string::npos, ==, true);
 }
 
+TEST(flag, uses_the_displayed_spelling_in_short_option_errors) {
+    flag::int64 needed(flag::required, "required value", {"x"});
+    const result<void> missing = run({"app"});
+    if (!EXPECT(missing.is_err(), ==, true)) return;
+    EXPECT(missing.error().message().find("-x") != std::string::npos, ==, true);
+    EXPECT(missing.error().message().find("--x") == std::string::npos, ==, true);
+
+    const result<void> malformed = run({"app", "-x=oops"});
+    if (!EXPECT(malformed.is_err(), ==, true)) return;
+    EXPECT(malformed.error().message().find("-x") != std::string::npos, ==, true);
+    EXPECT(malformed.error().message().find("--x") == std::string::npos, ==, true);
+}
+
 TEST(flag, sets_values_by_name_for_config_files) {
     EXPECT(run({"app"}).is_ok(), ==, true);
 

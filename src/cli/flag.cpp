@@ -79,10 +79,21 @@ entry* find_by_name(registry& self, string_view name) {
     return 0;
 }
 
+void append_spelling(std::string& out, const char* name) {
+    out += name[1] == '\0' ? "-" : "--";
+    out += name;
+}
+
+std::string spelling(const char* name) {
+    std::string out;
+    append_spelling(out, name);
+    return out;
+}
+
 // 在层边界上补上下文：lexical_cast 只知道「"80x" 不是合法整数」，
 // 只有这一层知道那是 --port 的值（见 CLAUDE.md「错误处理」）。
 error prefixed(const entry& which, const error& cause) {
-    return make_error(cause.kind(), std::string("--") + which.name + "：" + cause.message());
+    return make_error(cause.kind(), spelling(which.name) + "：" + cause.message());
 }
 
 // 五种类型只在「转成什么」上不同，用模板把剩下的共享掉。
@@ -106,7 +117,7 @@ result<void> assign(entry& which, string_view text) {
             static_cast<std::string*>(which.storage)->assign(text.data(), text.size());
             return result<void>();
     }
-    return make_error(error_kind::unknown, std::string("--") + which.name + " 的类型标签非法");
+    return make_error(error_kind::unknown, spelling(which.name) + " 的类型标签非法");
 }
 
 const char* type_label(detail::kind which) {
@@ -121,11 +132,6 @@ const char* type_label(detail::kind which) {
         case detail::kind::text: return "<str>";
     }
     return "";
-}
-
-void append_spelling(std::string& out, const char* name) {
-    out += name[1] == '\0' ? "-" : "--";
-    out += name;
 }
 
 // 每次 parse 先把所有选项恢复成默认值，所以重复调用的结果是确定的。
@@ -146,7 +152,7 @@ result<void> check_required(const registry& self) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
         if (self.entries[i].is_required && !self.entries[i].on_command_line) {
             return make_error(error_kind::invalid_argument,
-                              std::string("缺少必填选项 --") + self.entries[i].name);
+                              "缺少必填选项 " + spelling(self.entries[i].name));
         }
     }
     return result<void>();
@@ -173,7 +179,7 @@ namespace detail {
 void reject_bad_name(registry& self, const char* name, const char* owner) {
     // name == owner 时它就是主名字，否则是 owner 的别名
     const std::string whose =
-        (name == owner) ? std::string() : std::string("（--") + owner + " 的别名）";
+        (name == owner) ? std::string() : "（" + spelling(owner) + " 的别名）";
     if (!name || name[0] == '\0') {
         reject("有一个选项的名字或别名是空的" + whose);
     }
@@ -245,9 +251,9 @@ void read_before_parse(const void* storage) noexcept {
         }
     }
     std::fprintf(stderr,
-                 "wavvix::flag: 在 init() / parse() 之前读取了 --%s；"
+                 "wavvix::flag: 在 init() / parse() 之前读取了 %s%s；"
                  "选项的值要等命令行解析完才有意义\n",
-                 name);
+                 name[1] == '\0' ? "-" : "--", name);
     std::fflush(stderr);
     std::abort();
 }
