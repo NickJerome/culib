@@ -6,6 +6,8 @@
 
 macOS 的 `apps/mesh/tests/tunnel_macos.py` 已在 [mesh CI 的 debug/release](https://github.com/NickJerome/culib/actions/runs/37824128701) 上启动两个真实 utun 节点。两个进程经 127.0.0.1 建立受认证的加密 UDP 路径；系统向一端 utun 发出的 ICMP Echo Request，在另一端 utun 的 `tcpdump` 中出现，反方向亦然。双方各主动发包两次后，测试关闭一端并确认旧 utun 消失，以同一身份重启并重新认证，再完成双向各两次转发；退出后检查剩余 utun 消失。两个 utun 处于同一个 macOS 网络栈，测试目标不是另一系统的本地地址，因而 ping 统计为 0/1；这里验收到的是转发到对端虚拟网卡和重连，不是跨机器的 ICMP 往返。真实公网 NAT 和独立 macOS 主机之间的往返仍待现场验证。
 
+[Linux mesh ASan + UBSan CI](https://github.com/NickJerome/culib/actions/runs/37864177640/job/113606844645) 已通过五个协议测试、命令构建，以及本机双进程加密 UDP 探针和 STUN 不可用时的回退。它检查应用层密文解析和报文处理的内存与未定义行为，仍不代替两台独立主机的公网 NAT 和虚拟网卡往返验收。
+
 [macOS Intel debug 的一次 CI](https://github.com/NickJerome/culib/actions/runs/37854976248) 在反方向单包检查时未抓到包，同一提交的失败任务重跑成功。测试原来启动 `tcpdump` 后固定等 0.3 秒就发包，无法保证抓包器已就绪；现在等到它报告正在监听目标 utun 才发包。这消除了测试端的一处时序竞态，但单次重跑不足以证明以后不会再出现转发丢包。
 
 ## 目标与边界
