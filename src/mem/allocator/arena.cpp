@@ -7,6 +7,8 @@
 #include <limits>
 #include <new>
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* 地址窗口与平铺描述符数组（internal.h 声明；mem_ptr_page 内联读取） */
 uint8_t*            mem_window_base = NULL;
 size_t              mem_window_size = 0;
@@ -443,3 +445,5 @@ void mem_arena_reinit_locks_child(void) {
   }
   new (&g_subproc_lock) std::mutex();
 }
+
+} } } // namespace wavvix::mem::detail

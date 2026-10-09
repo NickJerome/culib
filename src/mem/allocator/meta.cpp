@@ -11,6 +11,8 @@
 #include <cstring>
 #include <new>
 
+namespace wavvix { namespace mem { namespace detail {
+
 namespace {
 
 struct mem_meta_chunk_t {
@@ -57,3 +59,5 @@ void mem_meta_unlock(void) { g_meta_lock.unlock(); }
 void mem_meta_reinit_locks_child(void) {
   new (&g_meta_lock) std::mutex();
 }
+
+} } } // namespace wavvix::mem::detail

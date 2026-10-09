@@ -41,7 +41,7 @@ void* aligned_alloc(size_t alignment, size_t size) {
   return result_or_enomem(wavvix::mem::aligned_alloc(alignment, size));
 }
 int posix_memalign(void** memptr, size_t alignment, size_t size) {
-  return mem_posix_memalign(memptr, alignment, size);
+  return wavvix::mem::detail::mem_posix_memalign(memptr, alignment, size);
 }
 void* memalign(size_t alignment, size_t size) {
   if (!valid_alignment(alignment)) {

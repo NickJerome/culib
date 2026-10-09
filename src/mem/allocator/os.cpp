@@ -37,6 +37,8 @@
 #include <chrono>
 #include <cstdlib>
 
+namespace wavvix { namespace mem { namespace detail {
+
 #if defined(_WIN32)
 /* ================================ Windows =============================== */
 
@@ -272,3 +274,5 @@ void mem_os_fatal(const char* line) {
   mem_os_write_stderr("\n");
   std::abort();
 }
+
+} } } // namespace wavvix::mem::detail

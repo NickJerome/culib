@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <mutex>
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* 进程级 tcache guard 与全局随机种子：mem_init_impl 用 OS 熵源初始化一次。
  * guard 必须进程级——跨线程 double-free 要靠它检出（见 internal.h）。 */
 uintptr_t mem_tcache_guard = 0;
@@ -130,7 +132,10 @@ uintptr_t mem_next_thread_id(void) {
   return g_thread_counter.fetch_add(1, std::memory_order_relaxed) << 3;
 }
 
+} } } // namespace wavvix::mem::detail
+
 void wavvix::mem::collect() noexcept {
+  using namespace detail;
   if (mem_t_theap != NULL) mem_theap_collect(mem_t_theap);
   int count = mem_arena_count();
   for (int i = 0; i < count; i++) {

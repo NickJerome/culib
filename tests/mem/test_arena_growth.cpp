@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <thread>
 
+using wavvix::mem::detail::mem_stats_get;
+using wavvix::mem::detail::mem_stats_t;
+
 int main() {
 #if defined(_WIN32)
     CHECK(_putenv_s("WAVVIX_MEM_ARENA_RESERVE", "2M") == 0);

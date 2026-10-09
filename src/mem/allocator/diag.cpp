@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <cstring>
 
+namespace wavvix { namespace mem { namespace detail {
+
 namespace {
 
 /* ------------------------- 无分配的行缓冲拼装 -------------------------- */
@@ -133,3 +135,5 @@ void mem_debug_leak_report(void) {
                  leaked_blocks, leaked_pages);
 }
 #endif /* WAVVIX_MEM_DEBUG */
+
+} } } // namespace wavvix::mem::detail

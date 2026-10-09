@@ -4,6 +4,8 @@
 
 #include <cstddef>
 
+namespace wavvix { namespace mem { namespace detail {
+
 // 分配器实现及其测试共用的接口，不向使用方安装。
 int mem_posix_memalign(void** p, std::size_t alignment, std::size_t size);
 
@@ -16,3 +18,5 @@ struct mem_stats_t {
 };
 
 void mem_stats_get(mem_stats_t* out);
+
+} } } // namespace wavvix::mem::detail

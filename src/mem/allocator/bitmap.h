@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+namespace wavvix { namespace mem { namespace detail {
+
 struct mem_bitmap_t {
   uint64_t* words;     /* 存储（由调用方从 meta 池分配） */
   size_t    nbits;
@@ -49,5 +51,7 @@ void   mem_bbitmap_init(mem_bbitmap_t* bm, uint64_t* storage, size_t nbits);
  * 否则 align > 1 时算出的起点在地址空间里并不对齐。align==1 时二者均被忽略。 */
 size_t mem_bbitmap_alloc(mem_bbitmap_t* bm, size_t n, size_t align, size_t base_phase);
 void   mem_bbitmap_free(mem_bbitmap_t* bm, size_t i, size_t n);
+
+} } } // namespace wavvix::mem::detail
 
 #endif /* WAVVIX_MEM_BITMAP_H */

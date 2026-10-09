@@ -6,6 +6,8 @@
 
 #include <stdint.h>
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* splitmix64：推进状态并返回 64 位伪随机值 */
 static inline uint64_t mem_random_next(uint64_t* state) {
   uint64_t z = (*state += 0x9E3779B97F4A7C15ull);
@@ -19,5 +21,7 @@ static inline uint64_t mem_random_seed(uint64_t x) {
   uint64_t s = x;
   return mem_random_next(&s);
 }
+
+} } } // namespace wavvix::mem::detail
 
 #endif /* WAVVIX_MEM_RANDOM_H */

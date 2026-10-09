@@ -16,6 +16,8 @@
 /* 保留粒度：所有 mem_os_reserve 返回的地址按此对齐（Windows 分配粒度亦为此值）。 */
 #define WAVVIX_MEM_OS_RESERVE_ALIGN ((size_t)64 * 1024)
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* --------------------------- 虚拟内存（契约） ---------------------------
  * reserve   保留地址空间，不占物理内存，页保护为不可访问；成功时 *out 按
  *           WAVVIX_MEM_OS_RESERVE_ALIGN 对齐。失败返回 false 且不修改 *out。
@@ -60,5 +62,7 @@ typedef void (*mem_os_fork_handler_t)(void);
 void  mem_os_atfork_register(mem_os_fork_handler_t prepare,
                             mem_os_fork_handler_t parent,
                             mem_os_fork_handler_t child);
+
+} } } // namespace wavvix::mem::detail
 
 #endif /* WAVVIX_MEM_OS_H */

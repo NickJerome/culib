@@ -31,6 +31,9 @@
 #include <atomic>
 #include <vector>
 
+using wavvix::mem::detail::mem_stats_get;
+using wavvix::mem::detail::mem_stats_t;
+
 namespace {
 
 /* ------------------------------------------------------------------ */

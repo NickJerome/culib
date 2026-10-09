@@ -9,6 +9,10 @@
 #include <climits>
 #include <vector>
 
+using wavvix::mem::detail::mem_posix_memalign;
+using wavvix::mem::detail::mem_stats_get;
+using wavvix::mem::detail::mem_stats_t;
+
 namespace {
 
 /* 填充独特字节模式：由 (种子, 下标) 决定，便于读回校验 */

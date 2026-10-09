@@ -2,6 +2,8 @@
 
 本文记录 `wavvix::mem` 当前实现里跨文件的约束和安全取舍。对外用法见 [分配器用法](mem.md)；导入前的设计推导与测量保存在 `docs/archive/edumalloc/docs/`，那里的名称与当前实现不同。
 
+分配器的内部类型、函数和共享状态位于 `wavvix::mem::detail`；公开分配接口位于 `wavvix::mem`。只有显式启用的 malloc/new 覆盖入口使用进程级全局符号。
+
 ## 页描述符定位
 
 每个 64 KiB slice 在旁路数组里有固定的 `mem_page_t` 位置。建立 arena 时只提交描述符的虚拟页；首次使用 slice 时，才按 64 个描述符一组推进构造水位线并初始化 `magic`。`mem_ptr_page(p)` 先按这个水位线定界，再由 slice 下标定位描述符。这样原子字段有明确的对象生命周期，小程序也不必触碰整个 arena 的描述符。多 slice 页的后续描述符是 `CONT`，存着首页下标 `cont_first`。归还一页时只熄灭首页的 `magic`，不清理所有后续项，因此 `CONT` 可能过时。

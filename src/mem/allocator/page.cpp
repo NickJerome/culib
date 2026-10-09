@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* 队列操作（双向链表） -------------------------------------------------- */
 
 void mem_page_queue_push(mem_page_queue_t* q, mem_page_t* page) {
@@ -172,3 +174,5 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
   /* 发布留给调用方：large 路径还要在 publish 之前补 large_size / flags /
    * used 与续页项登记。 */
 }
+
+} } } // namespace wavvix::mem::detail

@@ -57,6 +57,8 @@
  * 该值非 0、不可能是页内地址（页地址均 64KiB 对齐且远大于它）。 */
 #define WAVVIX_MEM_BLOCK_ALLOCATED ((uintptr_t)0x1ED0C0DE1u)
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* ============================== 尺寸分级 ============================== */
 
 /* size -> bin（2..36）。wsize-- 不可省略：2 的幂必须精确落档。
@@ -509,5 +511,7 @@ static inline size_t mem_page_usable_size(const mem_page_t* page) {
   if (page->kind == WAVVIX_MEM_PAGE_SMALL) return page->block_size;
   return page->large_size;
 }
+
+} } } // namespace wavvix::mem::detail
 
 #endif /* WAVVIX_MEM_INTERNAL_H */

@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <limits>
 
+using wavvix::mem::detail::mem_arena_get;
+using wavvix::mem::detail::mem_init_once;
+using wavvix::mem::detail::mem_options;
+
 namespace {
 void set_option(const char* name, const char* value) {
 #if defined(_WIN32)

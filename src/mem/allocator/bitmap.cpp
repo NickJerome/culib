@@ -6,6 +6,8 @@
 
 #include <cstring>
 
+namespace wavvix { namespace mem { namespace detail {
+
 void mem_bitmap_init(mem_bitmap_t* bm, uint64_t* storage, size_t nbits, bool value) {
   bm->words = storage;
   bm->nbits = nbits;
@@ -115,3 +117,5 @@ void mem_bbitmap_free(mem_bbitmap_t* bm, size_t i, size_t n) {
   mem_bitmap_set_range(&bm->map, i, n);
   if ((i >> 6) < bm->hint) bm->hint = i >> 6;   /* 回收早于游标：回退游标 */
 }
+
+} } } // namespace wavvix::mem::detail

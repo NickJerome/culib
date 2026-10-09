@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* 快路径直接读取的 TLS 指针（internal.h 中 inline） */
 thread_local mem_theap_t* mem_t_theap = NULL;
 
@@ -471,7 +473,10 @@ static void mem_tcache_flush_all(mem_theap_t* t) {
   }
 }
 
+} } } // namespace wavvix::mem::detail
+
 void wavvix::mem::free(void* p) noexcept {
+  using namespace detail;
 #if defined(WAVVIX_MEM_DEBUG)
   p = mem_l2_unwrap(p);   /* 校验首尾 canary，还原块首 */
 #endif

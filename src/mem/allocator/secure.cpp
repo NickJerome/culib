@@ -9,6 +9,8 @@
 
 #include <cstring>
 
+namespace wavvix { namespace mem { namespace detail {
+
 /* L1：页内随机密钥（splitmix64 取自 owner 线程随机源） */
 void mem_secure_page_keys(mem_page_t* page, uint64_t* random_state) {
   page->keys[0] = mem_random_next(random_state) | 1ull;   /* 必须非 0 */
@@ -99,3 +101,5 @@ void mem_debug_verify_free_block(const mem_page_t* page, const void* block) {
   }
 }
 #endif /* WAVVIX_MEM_DEBUG */
+
+} } } // namespace wavvix::mem::detail
