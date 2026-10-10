@@ -1,8 +1,4 @@
-/* ----------------------------------------------------------------------------
- * bitmap.h — 位图与带 rover 提示的连续空闲段查找
- * ------------------------------------------------------------------------- */
-#ifndef WAVVIX_MEM_BITMAP_H
-#define WAVVIX_MEM_BITMAP_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -53,5 +49,3 @@ size_t mem_bbitmap_alloc(mem_bbitmap_t* bm, size_t n, size_t align, size_t base_
 void   mem_bbitmap_free(mem_bbitmap_t* bm, size_t i, size_t n);
 
 } } } // namespace wavvix::mem::detail
-
-#endif /* WAVVIX_MEM_BITMAP_H */

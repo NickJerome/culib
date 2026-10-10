@@ -1,10 +1,4 @@
-/* ----------------------------------------------------------------------------
- * internal.h — culib mem 内部公共头：常量、结构体、内联快路径
- *
- * 平台差异收敛在 os.h/os.cpp。
- * ------------------------------------------------------------------------- */
-#ifndef WAVVIX_MEM_INTERNAL_H
-#define WAVVIX_MEM_INTERNAL_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -18,7 +12,6 @@
 #include "mem_core.h"
 
 /* ============================== 常量表 ================================ */
-#define WAVVIX_MEM_PAGE_SIZE        ((size_t)64 * 1024)        /* page = slice        */
 #define WAVVIX_MEM_SLICE_SIZE       ((size_t)64 * 1024)
 #define WAVVIX_MEM_SLICE_SHIFT      16
 #define WAVVIX_MEM_SMALL_MAX        ((size_t)8 * 1024)         /* small/large 分界    */
@@ -82,19 +75,15 @@ static inline size_t mem_bin_size(int bin) {
 
 /* ============================== 结构体 ================================ */
 
-struct mem_page_s;
-struct mem_theap_s;
-struct mem_arena_s;
-typedef struct mem_page_s  mem_page_t;
-typedef struct mem_theap_s mem_theap_t;
-typedef struct mem_arena_s mem_arena_t;
+struct mem_page_t;
+struct mem_theap_t;
+struct mem_arena_t;
 
 /* --- diag.cpp：无分配的致命错误报告（内联快路径需要，故提前声明） --- */
 WAVVIX_MEM_NORETURN void mem_fatal_ptr(const char* msg, const void* p);
 
 /* 空闲块首 8 字节存编码后的 next 指针 */
 struct mem_block_t { uintptr_t encoded_next; };
-typedef struct mem_block_t mem_block_t;
 
 /* 页队列：双向链表 */
 struct mem_page_queue_t {
@@ -103,11 +92,10 @@ struct mem_page_queue_t {
   size_t     count;
   size_t     block_size;   /* 本队列对应 bin 的块大小（0 = FULL 队列） */
 };
-typedef struct mem_page_queue_t mem_page_queue_t;
 
 /* 每个 64KiB slice 对应一个两条 cache line 的描述符。
  * CONT 发布所写的 kind/cont_first/magic 集中在第一条 cache line。 */
-struct mem_page_s {
+struct mem_page_t {
   /* ---- cache line 0：分配/释放热路径 + CONT 续页项 ---- */
   std::atomic<uintptr_t> xthread_id;  /* owner 线程 id(左移3位) | 低3位标志 */
   mem_block_t*            free;        /* 立即可分配空闲链（仅 owner） */
@@ -155,7 +143,7 @@ struct mem_tcache_bin_t {
   uint32_t _pad;
 };
 
-struct mem_theap_s {
+struct mem_theap_t {
   mem_page_t*      pages_free_direct[WAVVIX_MEM_DIRECT_MAX]; /* 索引 1..24 */
   mem_page_queue_t pages[WAVVIX_MEM_BIN_COUNT];              /* 0..35 每 bin + [WAVVIX_MEM_BIN_FULL] */
   uint64_t        heartbeat;
@@ -166,11 +154,11 @@ struct mem_theap_s {
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
   mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
   uintptr_t       tcache_key;
-  struct mem_theap_s* next_free;                     /* theap 回收链 */
+  mem_theap_t* next_free;                            /* theap 回收链 */
 };
 
 /* arena：窗口内的一段连续 slice，用位图管理。 */
-struct mem_arena_s {
+struct mem_arena_t {
   uint8_t*    base;                 /* = mem_window_base + first_slice*64KiB */
   size_t      slice_count;
   size_t      first_slice;          /* 在窗口/描述符数组中的起始下标 */
@@ -513,5 +501,3 @@ static inline size_t mem_page_usable_size(const mem_page_t* page) {
 }
 
 } } } // namespace wavvix::mem::detail
-
-#endif /* WAVVIX_MEM_INTERNAL_H */

@@ -1,8 +1,4 @@
-/* ----------------------------------------------------------------------------
- * random.h — splitmix64 每线程随机源（L1 密钥生成 / 页内洗牌）
- * ------------------------------------------------------------------------- */
-#ifndef WAVVIX_MEM_RANDOM_H
-#define WAVVIX_MEM_RANDOM_H
+#pragma once
 
 #include <stdint.h>
 
@@ -23,5 +19,3 @@ static inline uint64_t mem_random_seed(uint64_t x) {
 }
 
 } } } // namespace wavvix::mem::detail
-
-#endif /* WAVVIX_MEM_RANDOM_H */

@@ -1,11 +1,4 @@
-/* ----------------------------------------------------------------------------
- * compiler.h — 编译器相关宏与内在函数（唯一允许出现编译器宏的头）
- *
- * 分支预测提示、noreturn 属性、位扫描内在函数全部收敛在本头；
- * 其余源码文件禁止出现 __GNUC__ / _MSC_VER 等编译器宏。
- * ------------------------------------------------------------------------- */
-#ifndef WAVVIX_MEM_COMPILER_H
-#define WAVVIX_MEM_COMPILER_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -55,5 +48,3 @@ static inline int mem_popcount64(uint64_t v) {
 #endif
 
 static_assert(sizeof(void*) == 8, "culib mem supports 64-bit targets only");
-
-#endif /* WAVVIX_MEM_COMPILER_H */

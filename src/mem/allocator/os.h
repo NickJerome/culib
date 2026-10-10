@@ -1,12 +1,4 @@
-/* ----------------------------------------------------------------------------
- * os.h — culib mem OS 抽象层接口（平台差异的唯一出口）
- *
- * 所有平台差异（虚拟内存保留/提交/归还、线程 id、时钟、错误输出、fork 钩子）
- * 都收敛在本层；平台头与平台宏只出现在 os.cpp，其余源码文件禁止出现
- * _WIN32 / __linux__ 等平台宏。编译器差异见 compiler.h。
- * ------------------------------------------------------------------------- */
-#ifndef WAVVIX_MEM_OS_H
-#define WAVVIX_MEM_OS_H
+#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -64,5 +56,3 @@ void  mem_os_atfork_register(mem_os_fork_handler_t prepare,
                             mem_os_fork_handler_t child);
 
 } } } // namespace wavvix::mem::detail
-
-#endif /* WAVVIX_MEM_OS_H */
