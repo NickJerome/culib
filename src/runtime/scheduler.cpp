@@ -30,6 +30,14 @@ struct remote_waker;
 struct task_state;
 struct scheduler_pool;
 
+result<void*> scheduler_scope_enter_with_workers(unsigned workers);
+void scheduler_sleep_for(std::chrono::nanoseconds duration);
+std::size_t scheduler_run_until(task_state* task);
+std::size_t scheduler_drive(task_state* task, bool timed,
+                            std::chrono::steady_clock::time_point deadline, bool once);
+void scheduler_run_for(std::chrono::nanoseconds duration);
+void scheduler_yield_main();
+
 struct remote_task_state {
     explicit remote_task_state(remote_waker* source) noexcept
         : waker(source), done(false), waiter(0), refs(2) {}

@@ -16,9 +16,7 @@ namespace detail {
 
 // 接管这根协程的所有权；成功后排进当前 vCPU 的运行队列。
 fiber_failure scheduler_spawn(coroutine_control* taken);
-void scheduler_sleep_for(std::chrono::nanoseconds duration);
 void* scheduler_scope_enter();
-result<void*> scheduler_scope_enter_with_workers(unsigned workers);
 void scheduler_scope_leave(void* owner) noexcept;
 struct task_state;
 task_state* scheduler_task_create() noexcept;
@@ -28,11 +26,6 @@ void scheduler_task_schedule(task_state* task, coroutine_control* body);
 void scheduler_task_complete(task_state* task) noexcept;
 void scheduler_task_join(task_state* task);
 void scheduler_task_detach(task_state* task) noexcept;
-std::size_t scheduler_run_until(task_state* task);
-std::size_t scheduler_drive(task_state* task, bool timed,
-                            std::chrono::steady_clock::time_point deadline, bool once);
-void scheduler_run_for(std::chrono::nanoseconds duration);
-void scheduler_yield_main();
 
 template <typename F>
 result<void> spawn_fiber(F&& body, std::size_t stack_size) {
