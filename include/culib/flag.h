@@ -15,22 +15,18 @@
 namespace wavvix {
 namespace flag {
 
-// 标记必填项：flag::string input(flag::required, "输入文件", {"input"});
 struct required_t {};
 extern const required_t required;
 
 namespace detail {
 
-// 选项的类型标签。解析时按它决定「要不要吃下一个 token」和怎么转换字符串。
 enum class kind { boolean, signed_integer, unsigned_integer, number, text };
 
-// storage 指向 option<T> 保存的值；default_text 用于恢复默认值和生成用法。
 void register_flag(kind which, void* storage, const char* help,
                    std::initializer_list<const char*> names, bool is_required,
                    std::string default_text);
 void unregister_flag(const void* storage) noexcept;
 
-// init / parse 之前读取是编程错误，打印诊断并终止。
 [[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void read_before_parse(const void* storage) noexcept;
 
 bool was_given(const void* storage) noexcept;
@@ -48,9 +44,7 @@ public:
                   std::is_same<T, std::string>::value,
                   "flag::option supports only bool, int64, uint64, double and string");
 
-    // names 至少有一个；第一个是主名字，其余是别名，都不带前导 '-'。
-    // 帮助文本和错误消息中，单字符名字显示为 -p，多字符名字显示为 --addr。
-    // 名字和 help 须比选项对象活得久；对象销毁时自动注销。
+    // names 与 help 必须比选项对象活得久；至少提供一个不带 '-' 的名字。
     option(T default_value, const char* help, std::initializer_list<const char*> names)
         : stored_(std::move(default_value)) {
         detail::register_flag(tag(), &stored_, help, names, false, default_text(stored_));
@@ -68,10 +62,8 @@ public:
         return stored_;
     }
 
-    // 像普通变量一样用。
     operator const T&() const noexcept { return value(); }
 
-    // 命令行里是否真的给了（而不是用了默认值）。配置文件要据此决定谁覆盖谁。
     bool was_given() const noexcept { return detail::was_given(&stored_); }
 
     option(const option&) = delete;
@@ -84,7 +76,6 @@ private:
     T stored_;
 };
 
-// 五个具体类型对应各自的解析方式和默认值文本。
 template <> inline detail::kind option<bool>::tag() noexcept { return detail::kind::boolean; }
 template <> inline detail::kind option<long long>::tag() noexcept {
     return detail::kind::signed_integer;
@@ -105,30 +96,24 @@ using uint64 = option<unsigned long long>;
 using number = option<double>;
 using string = option<std::string>;
 
-// 解析命令行。**失败时打印用法到 stderr 并退出进程**（退出码 2，和测试框架一致），
-// 这是 CLI 想要的行为。--help 打印用法后退出 0；version 非空时额外提供 --version。
+// 失败时打印用法并退出 2；--help / --version 退出 0。
 void init(int argc, char* argv[], string_view version = string_view());
 
-// 不希望它退出进程时用这个（测试框架自己要控制退出码）。
-// --help / --version 不会退出，而是返回成功并让下面两个查询为真。
-// 可以重复调用：每次先把所有选项恢复成默认值，再处理这一次的 argv。
+// 不退出进程；可重复调用，先恢复默认值再解析。
 result<void> parse(int argc, char* argv[], string_view version = string_view());
 bool help_requested() noexcept;
 bool version_requested() noexcept;
 
-// 位置参数：argv 里既不是程序名、也不是选项、也不是某个选项的值的那些元素，按出现顺序。
-// 视图指向 argv，不拷字符串。init / parse 之前调用或解析失败时返回空。
+// 位置参数的视图指向 argv；解析前或失败后返回空。
 const std::vector<string_view>& args() noexcept;
 
-// 生成的用法文本（纯查询，不打印；测试框架要自己打印时用）。
+// 生成用法文本，不打印。
 std::string usage();
 
-// 按名字设值，给配置文件用；须先成功 parse / init。
-// 不改变 was_given()：它只表示命令行是否给过这个选项。
+// 须先成功解析；不改变命令行来源标记。
 result<void> set(string_view name, string_view text);
 
-// 这个选项在最近一次成功解析的命令行上被给过吗（别名也算）。
-// 没有这个选项或最近一次解析失败时返回 false。
+// 最近一次命令行解析是否给过该选项（别名也算）。
 bool was_given(string_view name) noexcept;
 
 }  // namespace flag
