@@ -134,6 +134,19 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(saved["jobs"][0]["coverage"], "CI excerpts (not full log)")
         self.assertTrue(saved["jobs"][0]["reports"][0]["summaries"])
 
+    def test_pending_jobs_do_not_request_unavailable_log_archives(self):
+        for status in ("queued", "in_progress"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(ci, "pages", return_value=[]) as pages, \
+                    patch.object(ci, "api") as api:
+                job = dict(id=456, status=status,
+                           check_run_url="https://api.github.com/repos/a/b/check-runs/789")
+                record = ci.inspect_job("/repos/a/b", job, Path(directory), full_logs=True)
+                api.assert_not_called()
+                self.assertNotEqual(record["coverage"], "full log")
+                self.assertEqual(record["fetch_errors"], [])
+                self.assertEqual(pages.call_count, 1 if status == "in_progress" else 0)
+
     def test_pagination_reads_all_annotations(self):
         with patch.object(ci, "api", side_effect=[[{}] * 100, [{}] * 2]) as api:
             self.assertEqual(len(ci.pages("/annotations")), 102)

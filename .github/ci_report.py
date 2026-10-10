@@ -195,7 +195,10 @@ def archive_logs(path, output):
 
 def inspect_job(base, job, output, full_logs, archived=None):
     record = dict(job, coverage="unavailable", reports=[], fetch_errors=[])
-    if full_logs:
+    if job["status"] == "queued":
+        record["coverage"] = "pending (job has not started)"
+        return record
+    if full_logs and job["status"] == "completed":
         try:
             name = re.sub(r'[\\/:*?"<>|]', "_", job["name"])
             raw = archived.get(name) if archived else None
@@ -232,6 +235,9 @@ def query(args):
         jobs = [j for j in jobs if args.job.casefold() in j["name"].casefold()]
     if not jobs:
         raise RuntimeError("no matching jobs")
+    completed = sum(j["status"] == "completed" for j in jobs)
+    print("Inspecting {} jobs ({} completed); fetching logs and test output...".format(
+          len(jobs), completed), flush=True)
     output = Path(args.output or "build/ci/{}-{}".format(run["id"], run["run_attempt"]))
     output.mkdir(parents=True, exist_ok=True)
     full_logs = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
@@ -246,6 +252,9 @@ def query(args):
         records = list(pool.map(lambda job: inspect_job(base, job, output, full_logs, archived), jobs))
     lines = [run["html_url"], "commit {} / attempt {} / {} / {}".format(
         run["head_sha"], run["run_attempt"], run["status"], run["conclusion"])]
+    lines.append("Jobs: {}/{} completed, {} successful; full logs: {}/{}.".format(
+        completed, len(jobs), sum(j["conclusion"] == "success" for j in jobs),
+        sum(r["coverage"] == "full log" for r in records), len(jobs)))
     if not full_logs:
         lines.append("No GitHub credential available: full logs unavailable; reading public CI excerpts.")
     if archive_error:
@@ -274,8 +283,12 @@ def query(args):
                 incomplete = True
         lines.extend("  FETCH: " + error for error in record["fetch_errors"])
     code = 1 if bad else 2 if incomplete else 0
-    lines.append("\nResult: {} (exit {}).".format("failure or diagnostics need review" if bad else
-                 "incomplete log coverage / pending" if incomplete else "completed; full logs scanned", code))
+    result = []
+    if bad:
+        result.append("failure or diagnostics need review")
+    if incomplete:
+        result.append("incomplete log coverage / pending")
+    lines.append("\nResult: {} (exit {}).".format("; ".join(result) or "completed; full logs scanned", code))
     report_text = "\n".join(lines) + "\n"
     (output / "report.txt").write_text(report_text, encoding="utf-8")
     (output / "report.json").write_text(json.dumps({"run": run, "jobs": records, "exit_code": code},
