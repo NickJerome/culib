@@ -244,3 +244,26 @@ TEST(bytes, moved_from_buffer_can_be_reused) {
     first.write("y", 1);
     EXPECT(shown(first), ==, "y");
 }
+
+TEST(bytes, copies_only_unread_bytes_and_keeps_the_source_independent) {
+    buffer source(4096);
+    source.write("prefixPAYLOAD", 13);
+    source.consume(6);
+    unsigned char* const pending = source.prepare(1024);
+
+    buffer copied(source);
+    EXPECT(shown(copied), ==, "PAYLOAD");
+    EXPECT(copied.capacity(), ==, 7u);
+
+    buffer assigned(2048);
+    assigned.write("old", 3);
+    assigned = source;
+    EXPECT(shown(assigned), ==, "PAYLOAD");
+    EXPECT(assigned.capacity(), ==, 7u);
+
+    pending[0] = '!';
+    source.commit(1);
+    EXPECT(shown(source), ==, "PAYLOAD!");
+    EXPECT(shown(copied), ==, "PAYLOAD");
+    EXPECT(shown(assigned), ==, "PAYLOAD");
+}

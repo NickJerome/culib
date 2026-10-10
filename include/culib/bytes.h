@@ -23,12 +23,13 @@ class buffer {
 public:
     buffer() : read_at_(0), write_at_(0), prepared_(0) {}
     explicit buffer(std::size_t room) : read_at_(0), write_at_(0), prepared_(0) { reserve(room); }
-    buffer(const buffer&) = default;
-    buffer& operator=(const buffer&) = default;
+    // 复制只保留未读字节，不复制已消费的前缀、闲置容量或未提交的 prepare 额度。
+    buffer(const buffer& other);
+    buffer& operator=(const buffer& other);
     // 移动后源缓冲区为空，仍可继续使用。
     buffer(buffer&& other) noexcept
         : store_(std::move(other.store_)), read_at_(other.read_at_),
-          write_at_(other.write_at_), prepared_(other.prepared_) {
+          write_at_(other.write_at_), prepared_(0) {
         other.clear();
     }
     buffer& operator=(buffer&& other) noexcept {
@@ -36,7 +37,7 @@ public:
             store_ = std::move(other.store_);
             read_at_ = other.read_at_;
             write_at_ = other.write_at_;
-            prepared_ = other.prepared_;
+            prepared_ = 0;
             other.clear();
         }
         return *this;

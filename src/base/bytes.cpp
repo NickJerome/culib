@@ -23,6 +23,19 @@ void bytes_capacity_overflow() {
 
 }  // namespace detail
 
+buffer::buffer(const buffer& other)
+    : read_at_(0), write_at_(other.size()), prepared_(0) {
+    if (write_at_ != 0) store_.assign(other.data(), other.data() + write_at_);
+}
+
+buffer& buffer::operator=(const buffer& other) {
+    if (this != &other) {
+        buffer copied(other);
+        *this = std::move(copied);
+    }
+    return *this;
+}
+
 void buffer::compact() {
     const std::size_t left = size();
     if (left && read_at_) std::memmove(&store_[0], &store_[read_at_], left);
