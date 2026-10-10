@@ -24,13 +24,6 @@ void mem_bitmap_clear_range(mem_bitmap_t* bm, size_t i, size_t n) {
   for (size_t k = 0; k < n; k++) mem_bitmap_clear(bm, i + k);
 }
 
-bool mem_bitmap_any(const mem_bitmap_t* bm) {
-  size_t nw = mem_bitmap_words(bm->nbits);
-  for (size_t w = 0; w < nw; w++)
-    if (bm->words[w] != 0) return true;
-  return false;
-}
-
 // 从头按字查找连续空闲段；跨字保留 run，跳过已占用区间。
 size_t mem_bitmap_alloc(mem_bitmap_t* bm, size_t n, size_t align, size_t base_phase) {
   if (n == 0 || n > bm->nbits) return (size_t)-1;

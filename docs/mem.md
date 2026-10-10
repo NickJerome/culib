@@ -37,8 +37,6 @@ void example() {
 
 当前实现限 64 位 Linux、macOS 和 Windows；Windows x86 暂无该模块。无需配置环境变量。首次分配时尝试保留 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于消耗 1 TiB 物理内存。首个 arena 为 64 MiB，空间不足时自动增长。归还给 arena 的普通页延迟 1 秒后在分配慢路径释放物理内存，`collect()` 主动回收；大于 8 MiB 的块释放时立即归还。页密钥始终启用，arena 按需提交物理内存。
 
-选项接受非负十进制整数，可附 `K`、`M`、`G`、`T` 二进制单位；值不完整、溢出或超出目标整数类型时使用该项默认值。arena 大小向上取整到 2 MiB；窗口大小至少为 4 GiB。
-
 Windows MSVC x64、Linux x86_64/arm64 和 macOS arm64/x86_64 的 debug、release 构建已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)，包含分配器单元、压力、安全和 RSS 测试，以及全局 `new/delete` 覆盖测试；Linux 的 `malloc/new` 共享库覆盖也通过了计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论。
 
 `xmake` 的 `debug` 模式本身不启用 L2 canary 与释放后写入检查；这些检查由编译宏 `WAVVIX_MEM_DEBUG` 独立控制。CI 单独在 Linux、macOS、Windows 带该宏构建并运行测试，且要求全部 14 个安全注入用例检出、0 项跳过。

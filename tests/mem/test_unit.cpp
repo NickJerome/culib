@@ -450,19 +450,14 @@ void test_realloc_shrink() {
     wavvix::mem::free(q);
 }
 
-/* ---- 2d. calloc 跨"脏 slice + 新提交 slice"的混合段必须仍然全零 ----
- * 免清零快路径按 mem_arena_alloc_slices 的 out_zeroed 决定要不要 memset。
- * 那个出参是整段的合取，而"整段"可以同时含已提交的脏 slice 与从未提交的
- * slice——原实现在提交分支里直接 zeroed = true，混合段会被误报成全零，
- * calloc 于是把上一任的数据原样交给调用方。单 slice 的小页碰不到这条
- * （dirty 蕴含 committed），只有多 slice 的 large 段能触发。 */
+// calloc 混合复用旧 slice 和新提交 slice 时，整个用户区都必须清零。
 void test_calloc_mixed_slices() {
     const size_t SL = 64u << 10;
     wavvix::mem::collect();                              /* 空闲 slice 全部回到未提交态 */
-    uint8_t* d = (uint8_t*)wavvix::mem::alloc(3 * SL);  /* 4 slice（WAVVIX_MEM_DEBUG 下 +24 仍是 4） */
+    uint8_t* d = (uint8_t*)wavvix::mem::alloc(3 * SL);
     CHECK(d != NULL);
     memset(d, 0xC7, 3 * SL);
-    wavvix::mem::free(d);        /* 不 collect：这几个 slice 保持 dirty + committed */
+    wavvix::mem::free(d);        /* 不 collect：保留已提交的脏内存 */
 
     const size_t big = 16 * SL - 4096;         /* 更长的一段，尾部延伸到未提交区 */
     uint8_t* q = (uint8_t*)wavvix::mem::calloc(1, big);

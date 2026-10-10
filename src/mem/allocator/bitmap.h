@@ -27,7 +27,6 @@ static inline bool mem_bitmap_test(const mem_bitmap_t* bm, size_t i) {
 }
 void mem_bitmap_set_range(mem_bitmap_t* bm, size_t i, size_t n);
 void mem_bitmap_clear_range(mem_bitmap_t* bm, size_t i, size_t n);
-bool mem_bitmap_any(const mem_bitmap_t* bm);
 
 /* 找连续 n 位并占用，返回起点；失败 (size_t)-1。
  * align/base_phase 以位为单位：起点 idx 满足 (base_phase + idx) % align == 0。

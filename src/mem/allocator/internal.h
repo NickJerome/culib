@@ -129,8 +129,6 @@ struct mem_arena_t {
   size_t      first_slice;          /* 在窗口/描述符数组中的起始下标 */
   struct mem_bitmap_t*  slices_free;      /* 空闲 slice（bitmap.h 定义） */
   struct mem_bitmap_t*  slices_committed;
-  struct mem_bitmap_t*  slices_dirty;     /* 内容脏，calloc 不能省去清零 */
-  struct mem_bitmap_t*  slices_purge;     /* 待归还 OS */
   std::atomic<int64_t> purge_expire;     /* ms 时间戳，0=无待 purge */
   uint16_t    index;                /* 自身在 g_arenas[] 中的下标 */
   allocator_mutex  mutex;                /* arena 唯一锁 */
@@ -302,8 +300,8 @@ size_t      mem_arena_alloc_slices(mem_arena_t* a, size_t n, size_t align_slices
                                   bool* out_zeroed);
 size_t      mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_slices,
                                       mem_arena_t** out_arena, bool* out_zeroed);
-void        mem_arena_free_slices(mem_arena_t* a, size_t idx, size_t n);  /* dirty → 到期 purge */
-void        mem_arena_free_slices_decommitted(mem_arena_t* a, size_t idx, size_t n);
+// immediate 为 true 时立即尝试归还物理页，否则延迟 purge。
+void        mem_arena_free_slices(mem_arena_t* a, size_t idx, size_t n, bool immediate);
 void        mem_arena_purge_check(mem_arena_t* a);   /* 到期才 purge */
 void        mem_arena_purge_force(mem_arena_t* a);   /* wavvix::mem::collect 用 */
 size_t      mem_arena_committed_bytes(void);

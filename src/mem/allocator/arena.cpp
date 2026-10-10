@@ -80,15 +80,10 @@ mem_arena_t* mem_arena_create(size_t size) {
   mem_arena_t*   arena        = (mem_arena_t*)mem_meta_alloc(sizeof(mem_arena_t));
   mem_bitmap_t* bm_free      = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
   mem_bitmap_t*  bm_committed = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
-  mem_bitmap_t*  bm_dirty     = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
-  mem_bitmap_t*  bm_purge     = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
   uint64_t* st_free      = (uint64_t*)mem_meta_alloc(words * 8);
   uint64_t* st_committed = (uint64_t*)mem_meta_alloc(words * 8);
-  uint64_t* st_dirty     = (uint64_t*)mem_meta_alloc(words * 8);
-  uint64_t* st_purge     = (uint64_t*)mem_meta_alloc(words * 8);
   if (arena == NULL || bm_free == NULL || bm_committed == NULL ||
-      bm_dirty == NULL || bm_purge == NULL || st_free == NULL ||
-      st_committed == NULL || st_dirty == NULL || st_purge == NULL)
+      st_free == NULL || st_committed == NULL)
     return NULL;
   new (arena) mem_arena_t;
 
@@ -98,12 +93,8 @@ mem_arena_t* mem_arena_create(size_t size) {
   arena->index       = (uint16_t)count;
   arena->slices_free      = bm_free;
   arena->slices_committed = bm_committed;
-  arena->slices_dirty     = bm_dirty;
-  arena->slices_purge     = bm_purge;
   mem_bitmap_init(bm_free, st_free, n, true);
   mem_bitmap_init(bm_committed, st_committed, n, false);
-  mem_bitmap_init(bm_dirty, st_dirty, n, false);
-  mem_bitmap_init(bm_purge, st_purge, n, false);
   arena->purge_expire.store(0, std::memory_order_relaxed);
 
   g_arenas[count] = arena;
@@ -171,7 +162,7 @@ int mem_arena_pick() {
 
 /* ------------------------------ slice 分配 ----------------------------- */
 
-/* 找空闲段 → 取消待 purge → 按需 commit。返回 arena 内 slice 下标；
+/* 找空闲段 → 按需 commit。返回 arena 内 slice 下标；
  * 失败 (size_t)-1。调用方不持锁。 */
 size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
                              bool* out_zeroed) {
@@ -183,40 +174,21 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
   size_t idx = mem_bitmap_alloc(arena->slices_free, n, align_slices, phase);
   if (idx == (size_t)-1) return (size_t)-1;
 
-  /* *out_zeroed 是整段的**合取**：只要有一个 slice 脏，整段就不算全零。
-   * 逐 slice 先算 dirty、再让"本次新提交"把它压回 false（新提交的物理页由
-   * OS 保证全零），最后才并进 zeroed——顺序颠倒过就会漏：原实现把
-   * `zeroed = true` 直接写在提交分支里，于是"前一个 slice 脏 + 后一个 slice
-   * 未提交"的混合段会被报成全零。单 slice 的小页碰不到（dirty 蕴含
-   * committed，二者在同一个 i 上互斥），多 slice 的 large 段则完全可达——
-   * wavvix::mem::calloc 的免清零快路径正是按这个出参决定要不要 memset 的。 */
+  // 只有整段都在本次提交，才能保证 calloc 无需清零。
   bool zeroed = true;
   for (size_t i = idx; i < idx + n; i++) {
-    if (mem_bitmap_test(arena->slices_purge, i)) {
-      /* 取消待 purge：物理页仍持有 */
-      mem_bitmap_clear(arena->slices_purge, i);
+    if (mem_bitmap_test(arena->slices_committed, i)) {
+      zeroed = false;
+      continue;
     }
-    bool dirty = mem_bitmap_test(arena->slices_dirty, i);
-    if (dirty) mem_bitmap_clear(arena->slices_dirty, i);
-    if (!mem_bitmap_test(arena->slices_committed, i)) {
-      /* 按需提交（v1 简化：整 slice 提交，不再细分更小粒度） */
-      if (!pages::commit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE)) {
-        /* 回滚：本次循环已经把 [idx, i) 的 dirty 位清掉了，直接返回会让那些
-         * 仍然脏的 slice 被标成干净，下一次分配就报 zeroed=true，calloc 的
-         * 免清零快路径于是把上一任的数据交给调用方。保守地把整段重新标脏：
-         * 代价是多几次 memset，换取"绝不把脏内存当零交出去"。 */
-        mem_bitmap_set_range(arena->slices_dirty, idx, n);
-        /* OOM：回滚 */
-        mem_bitmap_set_range(arena->slices_free, idx, n);
-        return (size_t)-1;
-      }
-      mem_bitmap_set(arena->slices_committed, i);
-      dirty = false;   /* 新提交的物理页保证全零 */
+    if (!pages::commit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE)) {
+      mem_bitmap_set_range(arena->slices_free, idx, n);
+      arena->purge_expire.store(mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS,
+                                std::memory_order_release);
+      return (size_t)-1;
     }
-    if (dirty) zeroed = false;
+    mem_bitmap_set(arena->slices_committed, i);
   }
-  if (!mem_bitmap_any(arena->slices_purge))
-    arena->purge_expire.store(0, std::memory_order_relaxed);
   if (out_zeroed != NULL) *out_zeroed = zeroed;
   return idx;
 }
@@ -269,40 +241,31 @@ size_t mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_s
   return s;
 }
 
-/* 归还 slice：置 free/dirty/purge 位图并刷新到期时间戳（SPEC §6.3.2）。
- * 此刻不做 madvise——物理页归还延迟到 purge 到期。 */
-void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
+void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n, bool immediate) {
   std::lock_guard<allocator_mutex> lock(arena->mutex);
   mem_bitmap_set_range(arena->slices_free, slice_idx, n);
-  mem_bitmap_set_range(arena->slices_dirty, slice_idx, n);
-  mem_bitmap_set_range(arena->slices_purge, slice_idx, n);
+  if (immediate && pages::decommit(arena->base + slice_idx * WAVVIX_MEM_SLICE_SIZE,
+                                    n * WAVVIX_MEM_SLICE_SIZE)) {
+    mem_bitmap_clear_range(arena->slices_committed, slice_idx, n);
+    return;
+  }
   arena->purge_expire.store(mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS,
                             std::memory_order_release);
 }
 
-/* 归还已由调用方 decommit 的 slice（huge 页：free 即归还物理页）。 */
-void mem_arena_free_slices_decommitted(mem_arena_t* arena, size_t slice_idx, size_t n) {
-  std::lock_guard<allocator_mutex> lock(arena->mutex);
-  mem_bitmap_set_range(arena->slices_free, slice_idx, n);
-  mem_bitmap_clear_range(arena->slices_committed, slice_idx, n);
-  mem_bitmap_clear_range(arena->slices_dirty, slice_idx, n);
-  mem_bitmap_clear_range(arena->slices_purge, slice_idx, n);
-}
-
 void mem_arena_purge_force(mem_arena_t* arena) {
   std::lock_guard<allocator_mutex> lock(arena->mutex);
-  if (!mem_bitmap_any(arena->slices_purge)) {
-    arena->purge_expire.store(0, std::memory_order_relaxed);
-    return;
-  }
+  int64_t next_expire = 0;
   for (size_t i = 0; i < arena->slice_count; i++) {
-    if (!mem_bitmap_test(arena->slices_purge, i)) continue;
-    pages::decommit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE);
-    mem_bitmap_clear(arena->slices_purge, i);
+    if (!mem_bitmap_test(arena->slices_free, i) ||
+        !mem_bitmap_test(arena->slices_committed, i)) continue;
+    if (!pages::decommit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE)) {
+      next_expire = mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS;
+      continue;
+    }
     mem_bitmap_clear(arena->slices_committed, i);
-    mem_bitmap_clear(arena->slices_dirty, i);   /* 重新提交后内容保证全零 */
   }
-  arena->purge_expire.store(0, std::memory_order_release);
+  arena->purge_expire.store(next_expire, std::memory_order_release);
 }
 
 /* 到期检查：摊销在分配慢路径；purge_expire==0 时只是一次比较 */
