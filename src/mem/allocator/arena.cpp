@@ -5,7 +5,9 @@
 #include "meta.h"
 #include "../pages.h"
 #include "bitmap.h"
+#include "mutex.h"
 
+#include <mutex>
 #include <new>
 
 namespace wavvix { namespace mem { namespace detail {
@@ -14,18 +16,38 @@ namespace wavvix { namespace mem { namespace detail {
 uint8_t*            mem_window_base = NULL;
 size_t              mem_window_size = 0;
 mem_page_t*          mem_desc_base   = NULL;
-std::atomic<size_t> mem_window_used_slices(0);
 std::atomic<size_t> mem_desc_constructed_slices(0);
 
 namespace {
 
+const size_t window_default = (size_t)1 << 40;
+const size_t window_min = (size_t)4 << 30;
+const size_t arena_min = (size_t)2 << 20; // 描述符提交粒度 4 KiB 的最小单位。
+const size_t arena_first = (size_t)64 << 20;
+const size_t arena_max = (size_t)1 << 30;
+const int arena_count_max = 1024;
+const int64_t purge_delay_ms = 1000;
+
+// 区域布局、位图和锁只由本文件持有。
+struct mem_arena_t {
+  uint8_t* base;
+  size_t slice_count;
+  size_t first_slice;
+  mem_bitmap_t* slices_free;
+  mem_bitmap_t* slices_committed;
+  std::atomic<int64_t> purge_expire;
+  uint16_t index;
+  allocator_mutex mutex;
+};
+
 allocator_mutex            g_subproc_lock;                   /* arena 创建/全局 */
-mem_arena_t*           g_arenas[WAVVIX_MEM_ARENA_COUNT_MAX];
+mem_arena_t*           g_arenas[arena_count_max];
 std::atomic<int>      g_arena_count(0);
 std::atomic<uint32_t> g_arena_round_robin(0);
-size_t                g_arena_next_size = WAVVIX_MEM_ARENA_FIRST;
+size_t                g_arena_next_size = arena_first;
 
 size_t g_window_slices  = 0;    /* 窗口总 slice 数 */
+size_t g_window_used_slices = 0; // g_subproc_lock 保护的已切分前缀。
 size_t g_desc_reserve   = 0;    /* 描述符数组保留字节数 */
 size_t g_desc_committed = 0;    /* 描述符数组已提交字节数（单调递增） */
 const size_t desc_init_chunk = 64;
@@ -68,11 +90,11 @@ void mem_desc_construct_upto(size_t end_slice, size_t arena_end) {
 /* 从窗口里顺序切下一段 arena。调用方持 g_subproc_lock；size 已是 2MiB 倍数。 */
 mem_arena_t* mem_arena_create(size_t size) {
   int count = g_arena_count.load(std::memory_order_relaxed);
-  if (count >= WAVVIX_MEM_ARENA_COUNT_MAX) return NULL;
+  if (count >= arena_count_max) return NULL;
   if (mem_window_base == NULL) return NULL;
 
   size_t n = size >> WAVVIX_MEM_SLICE_SHIFT;
-  size_t start = mem_window_used_slices.load(std::memory_order_relaxed);
+  size_t start = g_window_used_slices;
   if (n == 0 || start + n > g_window_slices) return NULL;
   if (!mem_desc_commit_upto(start + n)) return NULL;
 
@@ -97,10 +119,10 @@ mem_arena_t* mem_arena_create(size_t size) {
   mem_bitmap_init(bm_committed, st_committed, n, false);
   arena->purge_expire.store(0, std::memory_order_relaxed);
 
+  g_window_used_slices = start + n;
   g_arenas[count] = arena;
-  g_arena_count.store(count + 1, std::memory_order_release);
   /* arena 完整初始化后再发布；描述符由分配路径按需构造。 */
-  mem_window_used_slices.store(start + n, std::memory_order_release);
+  g_arena_count.store(count + 1, std::memory_order_release);
   return arena;
 }
 
@@ -108,10 +130,10 @@ mem_arena_t* mem_arena_create(size_t size) {
 
 /* ------------------------------ 窗口建立 ------------------------------- */
 
-/* 保留窗口 + 描述符数组；窗口保留失败逐级减半，下限 WAVVIX_MEM_WINDOW_MIN。
+/* 保留窗口 + 描述符数组；窗口保留失败逐级减半，下限 window_min。
  * 描述符数组大小 = 窗口 slice 数 × 128B（1 TiB 窗口 → 2 GiB 保留，仅地址空间）。 */
 bool mem_window_init() {
-  size_t size = WAVVIX_MEM_WINDOW_DEFAULT;
+  size_t size = window_default;
   for (;;) {
     void* base = pages::reserve(size);
     if (base) {
@@ -130,7 +152,7 @@ bool mem_window_init() {
       }
       pages::release(base, size);
     }
-    if (size <= WAVVIX_MEM_WINDOW_MIN) return false;
+    if (size <= window_min) return false;
     size >>= 1;
   }
 }
@@ -139,11 +161,6 @@ bool mem_window_init() {
 
 int mem_arena_count(void) {
   return g_arena_count.load(std::memory_order_acquire);
-}
-
-mem_arena_t* mem_arena_get(int idx) {
-  if (idx < 0 || idx >= mem_arena_count()) return NULL;
-  return g_arenas[idx];
 }
 
 /* 为线程挑选 arena：至少保证存在一个；轮询分摊。 */
@@ -164,8 +181,8 @@ int mem_arena_pick() {
 
 /* 找空闲段 → 按需 commit。返回 arena 内 slice 下标；
  * 失败 (size_t)-1。调用方不持锁。 */
-size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
-                             bool* out_zeroed) {
+static size_t alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
+                          bool* out_zeroed) {
   std::lock_guard<allocator_mutex> lock(arena->mutex);
   /* 位图下标是 arena 相对的；调用方要的是绝对地址对齐，故传入基址相位 */
   size_t phase = (align_slices > 1)
@@ -183,7 +200,7 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
     }
     if (!pages::commit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE)) {
       mem_bitmap_set_range(arena->slices_free, idx, n);
-      arena->purge_expire.store(mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS,
+      arena->purge_expire.store(mem_os_now_ms() + purge_delay_ms,
                                 std::memory_order_release);
       return (size_t)-1;
     }
@@ -194,9 +211,9 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
 }
 
 /* 在任意 arena 中分配 n 个连续 slice；必要时创建新 arena（×4 增长）。
- * 成功返回 arena 内 slice 下标并设置 *out_arena / *out_zeroed；失败 (size_t)-1。 */
-size_t mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_slices,
-                                 mem_arena_t** out_arena, bool* out_zeroed) {
+ * 成功返回窗口内 slice 下标并更新 preferred_arena / *out_zeroed；失败 (size_t)-1。 */
+size_t mem_arena_alloc_slices(int& preferred_arena, size_t n, size_t align_slices,
+                            bool* out_zeroed) {
   std::unique_lock<allocator_mutex> growth_lock(g_subproc_lock, std::defer_lock);
   for (int pass = 0; pass < 2; ++pass) {
     if (pass != 0) growth_lock.lock();
@@ -206,7 +223,7 @@ size_t mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_s
     for (int k = 0; k < count; k++) {
       int idx = (start + k) % count;
       mem_arena_t* a = g_arenas[idx];
-      size_t s = mem_arena_alloc_slices(a, n, align_slices, out_zeroed);
+      size_t s = alloc_slices(a, n, align_slices, out_zeroed);
       if (s != (size_t)-1) {
         const size_t end = a->first_slice + s + n;
         if (end > mem_desc_constructed_slices.load(std::memory_order_acquire)) {
@@ -218,30 +235,30 @@ size_t mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_s
           }
         }
         preferred_arena = idx;
-        *out_arena = a;
-        return s;
+        return a->first_slice + s;
       }
     }
   }
   /* 持锁重查后仍无空位，才开新 arena。 */
   size_t need_slices = n + (align_slices > 1 ? align_slices : 0);
-  size_t need = mem_round_up(need_slices << WAVVIX_MEM_SLICE_SHIFT, WAVVIX_MEM_ARENA_MIN);
+  size_t need = mem_round_up(need_slices << WAVVIX_MEM_SLICE_SHIFT, arena_min);
   size_t size = g_arena_next_size * 4;
-  if (size > WAVVIX_MEM_ARENA_MAX) size = WAVVIX_MEM_ARENA_MAX;
+  if (size > arena_max) size = arena_max;
   if (size < need) size = need;
-  size = mem_round_up(size, WAVVIX_MEM_ARENA_MIN);
+  size = mem_round_up(size, arena_min);
   mem_arena_t* a = mem_arena_create(size);
   if (a == NULL) return (size_t)-1;
   g_arena_next_size = size;
-  size_t s = mem_arena_alloc_slices(a, n, align_slices, out_zeroed);
+  size_t s = alloc_slices(a, n, align_slices, out_zeroed);
   if (s == (size_t)-1) return (size_t)-1;
   mem_desc_construct_upto(a->first_slice + s + n, a->first_slice + a->slice_count);
   preferred_arena = a->index;
-  *out_arena = a;
-  return s;
+  return a->first_slice + s;
 }
 
-void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n, bool immediate) {
+void mem_arena_free_slices(int arena_idx, size_t idx, size_t n, bool immediate) {
+  mem_arena_t* const arena = g_arenas[arena_idx];
+  const size_t slice_idx = idx - arena->first_slice;
   std::lock_guard<allocator_mutex> lock(arena->mutex);
   mem_bitmap_set_range(arena->slices_free, slice_idx, n);
   if (immediate && pages::decommit(arena->base + slice_idx * WAVVIX_MEM_SLICE_SIZE,
@@ -249,18 +266,19 @@ void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n, bool 
     mem_bitmap_clear_range(arena->slices_committed, slice_idx, n);
     return;
   }
-  arena->purge_expire.store(mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS,
+  arena->purge_expire.store(mem_os_now_ms() + purge_delay_ms,
                             std::memory_order_release);
 }
 
-void mem_arena_purge_force(mem_arena_t* arena) {
+void mem_arena_purge_force(int arena_idx) {
+  mem_arena_t* const arena = g_arenas[arena_idx];
   std::lock_guard<allocator_mutex> lock(arena->mutex);
   int64_t next_expire = 0;
   for (size_t i = 0; i < arena->slice_count; i++) {
     if (!mem_bitmap_test(arena->slices_free, i) ||
         !mem_bitmap_test(arena->slices_committed, i)) continue;
     if (!pages::decommit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE)) {
-      next_expire = mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS;
+      next_expire = mem_os_now_ms() + purge_delay_ms;
       continue;
     }
     mem_bitmap_clear(arena->slices_committed, i);
@@ -269,9 +287,10 @@ void mem_arena_purge_force(mem_arena_t* arena) {
 }
 
 /* 到期检查：摊销在分配慢路径；purge_expire==0 时只是一次比较 */
-void mem_arena_purge_check(mem_arena_t* arena) {
+void mem_arena_purge_check(int arena_idx) {
+  mem_arena_t* const arena = g_arenas[arena_idx];
   int64_t expire = arena->purge_expire.load(std::memory_order_acquire);
-  if (expire != 0 && mem_os_now_ms() >= expire) mem_arena_purge_force(arena);
+  if (expire != 0 && mem_os_now_ms() >= expire) mem_arena_purge_force(arena_idx);
 }
 
 /* ------------------------------ 统计 ----------------------------------- */

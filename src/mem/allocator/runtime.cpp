@@ -78,9 +78,5 @@ void wavvix::mem::collect() noexcept {
   if (mem_t_theap != NULL) mem_theap_collect(mem_t_theap);
   mem_collect_abandoned();
   int count = mem_arena_count();
-  for (int i = 0; i < count; i++) {
-    mem_arena_t* a = mem_arena_get(i);
-    if (a == NULL) continue;
-    mem_arena_purge_force(a);
-  }
+  for (int i = 0; i < count; i++) mem_arena_purge_force(i);
 }

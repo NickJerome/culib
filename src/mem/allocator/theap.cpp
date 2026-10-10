@@ -1,8 +1,10 @@
 #include "theap.h"
 #include "abandoned.h"
 #include "meta.h"
+#include "mutex.h"
 
 #include <cstring>
+#include <mutex>
 
 namespace wavvix { namespace mem { namespace detail {
 
@@ -222,13 +224,12 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
   page = mem_page_reclaim(t, bin);
   if (page != NULL) return mem_page_malloc(page);
 
-  mem_arena_t* arena = mem_arena_get(t->arena_idx);
-  if (arena != NULL) mem_arena_purge_check(arena);
-  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, 1, 1, &arena, NULL);
+  mem_arena_purge_check(t->arena_idx);
+  size_t sidx = mem_arena_alloc_slices(t->arena_idx, 1, 1, NULL);
   if (sidx == (size_t)-1) return NULL;
-  page = mem_desc_at(arena->first_slice + sidx);
-  uint8_t* start = arena->base + sidx * WAVVIX_MEM_SLICE_SIZE;
-  page->arena_idx = arena->index;
+  page = mem_desc_at(sidx);
+  uint8_t* start = mem_window_base + sidx * WAVVIX_MEM_SLICE_SIZE;
+  page->arena_idx = (uint16_t)t->arena_idx;
   mem_page_init(page, t->thread_id, t->random_state, bin, start, 1);
   mem_page_publish(page);
   mem_page_queue_push(q, page);
@@ -252,13 +253,12 @@ static void* mem_malloc_large_impl(mem_theap_t* t, size_t size,
       return NULL;
   }
 
-  mem_arena_t* a = NULL;
-  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, n, align_slices, &a, out_zeroed);
+  size_t sidx = mem_arena_alloc_slices(t->arena_idx, n, align_slices, out_zeroed);
   if (sidx == (size_t)-1) return NULL;
 
-  mem_page_t* page = mem_desc_at(a->first_slice + sidx);
-  uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
-  page->arena_idx = a->index;   /* slice 的固有属性，mem_page_init 不碰 */
+  mem_page_t* page = mem_desc_at(sidx);
+  uint8_t* start = mem_window_base + sidx * WAVVIX_MEM_SLICE_SIZE;
+  page->arena_idx = (uint16_t)t->arena_idx;   /* slice 的固有属性，mem_page_init 不碰 */
   mem_page_init(page, t->thread_id, t->random_state, 0, start, (uint32_t)n);
   if (size > WAVVIX_MEM_HUGE_THRESHOLD) page->flags |= WAVVIX_MEM_PAGE_FLAG_HUGE;
   mem_desc_mark_cont(mem_page_slice_index(page), n);

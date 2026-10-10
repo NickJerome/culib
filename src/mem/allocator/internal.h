@@ -4,8 +4,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <atomic>
-#include <mutex>
-#include "mutex.h"
 
 #include "compiler.h"
 #include "os.h"
@@ -20,16 +18,7 @@
 #define WAVVIX_MEM_BIN_COUNT        37                          /* 36 small bin + FULL */
 #define WAVVIX_MEM_BIN_FULL         36                          /* 满页队列索引        */
 
-/* 窗口保留失败时逐级减半。 */
-#define WAVVIX_MEM_WINDOW_DEFAULT   ((size_t)1 << 40)          /* 1 TiB               */
-#define WAVVIX_MEM_WINDOW_MIN       ((size_t)4 << 30)          /* 4 GiB               */
-#define WAVVIX_MEM_ARENA_MIN        ((size_t)2 << 20)          /* 2 MiB：描述符提交粒度 4 KiB 的最小单位 */
-#define WAVVIX_MEM_ARENA_FIRST      ((size_t)64 << 20)
-#define WAVVIX_MEM_ARENA_MAX        ((size_t)1 << 30)
-#define WAVVIX_MEM_ARENA_COUNT_MAX  1024
-
 #define WAVVIX_MEM_PAGE_MAX_CANDIDATES 4
-#define WAVVIX_MEM_PURGE_DELAY_MS   1000
 #define WAVVIX_MEM_PAGE_MAGIC       0xED0CAFE0u
 
 /* 页种类 */
@@ -71,7 +60,6 @@ static inline size_t mem_bin_size(int bin) {
 /* ============================== 结构体 ================================ */
 
 struct mem_page_t;
-struct mem_arena_t;
 
 /* --- diag.cpp：无分配的致命错误报告（内联快路径需要，故提前声明） --- */
 WAVVIX_MEM_NORETURN void mem_fatal_ptr(const char* msg, const void* p);
@@ -122,23 +110,10 @@ static_assert(offsetof(mem_page_t, kind) < 64 && offsetof(mem_page_t, cont_first
 /* --- diag.cpp：带页上下文的致命错误报告 --- */
 WAVVIX_MEM_NORETURN void mem_fatal_page(const char* msg, const void* p, const mem_page_t* page);
 
-/* arena：窗口内的一段连续 slice，用位图管理。 */
-struct mem_arena_t {
-  uint8_t*    base;                 /* = mem_window_base + first_slice*64KiB */
-  size_t      slice_count;
-  size_t      first_slice;          /* 在窗口/描述符数组中的起始下标 */
-  struct mem_bitmap_t*  slices_free;      /* 空闲 slice（bitmap.h 定义） */
-  struct mem_bitmap_t*  slices_committed;
-  std::atomic<int64_t> purge_expire;     /* ms 时间戳，0=无待 purge */
-  uint16_t    index;                /* 自身在 g_arenas[] 中的下标 */
-  allocator_mutex  mutex;                /* arena 唯一锁 */
-};
-
 /* 地址窗口与平铺描述符数组由 arena.cpp 定义。 */
 extern uint8_t*            mem_window_base;
 extern size_t              mem_window_size;
 extern mem_page_t*          mem_desc_base;
-extern std::atomic<size_t> mem_window_used_slices;   /* 已切分给 arena 的 slice 数 */
 extern std::atomic<size_t> mem_desc_constructed_slices; /* 已构造描述符的连续前缀 */
 
 static inline mem_page_t* mem_desc_at(size_t idx) {
@@ -290,20 +265,17 @@ void mem_page_check_invariants(const mem_page_t* page);
 
 /* --- arena.cpp --- */
 bool        mem_window_init();                      /* 保留窗口 + 描述符数组 */
-mem_arena_t* mem_arena_get(int idx);
 int         mem_arena_count(void);
 int         mem_arena_pick();
-/* 分配 n 个连续 slice，返回 arena 内下标（失败 (size_t)-1）。
+/* 分配 n 个连续 slice，返回窗口内下标（失败 (size_t)-1），更新 preferred_arena。
  * align_slices：返回地址须按 align_slices*64KiB 对齐（1 = 无额外约束）。
  * out_zeroed 可为空；否则报告 slice 内容是否保证全零（fresh 或 purge 后）。 */
-size_t      mem_arena_alloc_slices(mem_arena_t* a, size_t n, size_t align_slices,
+size_t      mem_arena_alloc_slices(int& preferred_arena, size_t n, size_t align_slices,
                                   bool* out_zeroed);
-size_t      mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_slices,
-                                      mem_arena_t** out_arena, bool* out_zeroed);
-// immediate 为 true 时立即尝试归还物理页，否则延迟 purge。
-void        mem_arena_free_slices(mem_arena_t* a, size_t idx, size_t n, bool immediate);
-void        mem_arena_purge_check(mem_arena_t* a);   /* 到期才 purge */
-void        mem_arena_purge_force(mem_arena_t* a);   /* wavvix::mem::collect 用 */
+// arena_idx 必须有效；idx 是窗口内下标。immediate 为 true 时立即尝试归还物理页。
+void        mem_arena_free_slices(int arena_idx, size_t idx, size_t n, bool immediate);
+void        mem_arena_purge_check(int arena_idx);   /* 到期才 purge；arena_idx 必须有效 */
+void        mem_arena_purge_force(int arena_idx);   /* wavvix::mem::collect 用 */
 size_t      mem_arena_committed_bytes(void);
 /* 描述符平铺数组的维护：CONT 项登记 / 整段 magic 清零 */
 void        mem_desc_mark_cont(size_t first_idx, size_t n);

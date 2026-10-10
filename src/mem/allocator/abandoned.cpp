@@ -1,6 +1,8 @@
 #include "abandoned.h"
 #include "internal.h"
+#include "mutex.h"
 
+#include <mutex>
 #include <new>
 
 namespace wavvix { namespace mem { namespace detail {

@@ -70,12 +70,10 @@ void mem_page_release_slices(mem_page_t* page) {
   const size_t   idx   = mem_page_slice_index(page);
   const size_t   n     = page->slice_count;
   const uint8_t  flags = page->flags;
-  mem_arena_t* a = mem_arena_get(page->arena_idx);
+  const int arena_idx = page->arena_idx;
 
   mem_desc_clear(idx);
-  if (a == NULL) return;                      /* 不应发生；不再二次归还 */
-  const size_t aidx = idx - a->first_slice;
-  mem_arena_free_slices(a, aidx, n, (flags & WAVVIX_MEM_PAGE_FLAG_HUGE) != 0);
+  mem_arena_free_slices(arena_idx, idx, n, (flags & WAVVIX_MEM_PAGE_FLAG_HUGE) != 0);
 }
 
 void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, int bin,
