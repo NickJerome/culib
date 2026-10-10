@@ -39,7 +39,6 @@ void mem_theap_retire_page(mem_theap_t* t, mem_page_t* page) {
   int bin = page->bin;
   if ((page->flags & WAVVIX_MEM_PAGE_FLAG_IN_FULL) != 0) {
     mem_page_queue_remove(&t->pages[WAVVIX_MEM_BIN_FULL], page);
-    t->full_count[bin]--;
     page->flags &= (uint8_t)~WAVVIX_MEM_PAGE_FLAG_IN_FULL;
   } else {
     mem_page_queue_remove(&t->pages[bin - 1], page);
@@ -50,34 +49,11 @@ void mem_theap_retire_page(mem_theap_t* t, mem_page_t* page) {
   mem_page_release_slices(page);   /* 清 magic + 归还 slice */
 }
 
-/* 心跳驱动的退休宽限扫描：每 16 次本地 free 扫一次本 bin */
-void mem_theap_retire_scan(mem_theap_t* t, int bin) {
-  mem_page_queue_t* q = &t->pages[bin - 1];
-  mem_page_t* page = q->first;
-  while (page != NULL) {
-    mem_page_t* next = page->next;
-    if (page->used == 0 && page->retire_expire > 0) {
-      page->retire_expire--;
-      /* 到期且本 bin 不止这一页 → 真正退休（每 bin 至少留 1 页） */
-      if (page->retire_expire == 0 &&
-          q->count + t->full_count[bin] > 1) {
-        mem_theap_retire_page(t, page);
-      }
-    }
-    page = next;
-  }
-}
-
-/* used==0 的页：立即退休（bin 内还有其它页）或进入宽限 */
+/* 每个 bin 最多留一个空页供复用；collect 和线程退出时全部归还。 */
 void mem_theap_page_empty(mem_theap_t* t, mem_page_t* page) {
-  int bin = page->bin;
-  bool in_full = (page->flags & WAVVIX_MEM_PAGE_FLAG_IN_FULL) != 0;
-  size_t total = t->pages[bin - 1].count + t->full_count[bin];
-  if (total > 1 || in_full) {
-    mem_theap_retire_page(t, page);
-  } else {
-    page->retire_expire = WAVVIX_MEM_RETIRE_EXPIRE;
-  }
+  const mem_page_queue_t& q = t->pages[page->bin - 1];
+  if ((page->flags & WAVVIX_MEM_PAGE_FLAG_IN_FULL) == 0 && q.first == q.last) return;
+  mem_theap_retire_page(t, page);
 }
 
 void mem_theap_page_to_full(mem_theap_t* t, mem_page_t* page) {
@@ -88,7 +64,6 @@ void mem_theap_page_to_full(mem_theap_t* t, mem_page_t* page) {
   /* 满页留在本地；腾出空间后由 unfull 回流，空页由 retire 回收。
    * abandon/reclaim 风暴的实测见 docs/archive/edumalloc/docs/design.md §5.2.2。 */
   page->flags |= WAVVIX_MEM_PAGE_FLAG_IN_FULL;
-  t->full_count[bin]++;
   mem_page_queue_push(&t->pages[WAVVIX_MEM_BIN_FULL], page);
 }
 
@@ -96,7 +71,6 @@ void mem_theap_page_to_full(mem_theap_t* t, mem_page_t* page) {
 void mem_theap_unfull(mem_theap_t* t, mem_page_t* page) {
   int bin = page->bin;
   mem_page_queue_remove(&t->pages[WAVVIX_MEM_BIN_FULL], page);
-  t->full_count[bin]--;
   page->flags &= (uint8_t)~WAVVIX_MEM_PAGE_FLAG_IN_FULL;
   mem_page_queue_push(&t->pages[bin - 1], page);
 }
@@ -136,7 +110,6 @@ mem_page_t* mem_page_fresh(mem_theap_t* t, int bin) {
       /* 只清 IN_FULL；其余标志属于页本身。 */
       page->flags &= (uint8_t)~WAVVIX_MEM_PAGE_FLAG_IN_FULL;
       mem_page_set_owner(page, t);
-      page->retire_expire = 0;
       mem_page_free_collect(page);   /* 收进积压的跨线程释放 */
       if (page->free != NULL) {
         mem_page_queue_push(&t->pages[bin - 1], page);
@@ -147,9 +120,8 @@ mem_page_t* mem_page_fresh(mem_theap_t* t, int bin) {
         mem_page_release_slices(page);
         continue;
       }
-      /* 仍全满：挂进 FULL 队列（可能再度触发 abandon） */
+      /* 仍全满：留给后续的 FULL 队列收集。 */
       page->flags |= WAVVIX_MEM_PAGE_FLAG_IN_FULL;
-      t->full_count[bin]++;
       mem_page_queue_push(&t->pages[WAVVIX_MEM_BIN_FULL], page);
       return page;   /* 让调用方走"再找一页"逻辑 */
     }
@@ -175,9 +147,6 @@ mem_theap_t* mem_theap_create(void) {
   if (t == NULL) t = (mem_theap_t*)mem_meta_alloc(sizeof(mem_theap_t));
   if (t == NULL) return NULL;
   std::memset(t, 0, sizeof(*t));
-  for (int bin = 1; bin <= WAVVIX_MEM_BIN_FULL; bin++)
-    t->pages[bin - 1].block_size = mem_bin_size(bin);
-  t->pages[WAVVIX_MEM_BIN_FULL].block_size = 0;
   t->thread_id = mem_next_thread_id();
   t->random_state = mem_random_seed(mem_global_seed() ^ t->thread_id ^ (uintptr_t)t);
   t->tcache_key   = mem_random_next(&t->random_state);
@@ -204,8 +173,6 @@ void mem_theap_abandon(mem_theap_t* t) {
     while (q->first != NULL) {
       mem_page_t* page = q->first;
       mem_page_queue_remove(q, page);
-      int bin = page->bin;
-      if (qi == WAVVIX_MEM_BIN_FULL && t->full_count[bin] > 0) t->full_count[bin]--;
       page->flags &= (uint8_t)~WAVVIX_MEM_PAGE_FLAG_IN_FULL;
       /* 先收一次：已全空的页直接归还 slice，不必进 abandoned 桶再等 reclaim */
       mem_page_free_collect(page);
@@ -266,8 +233,6 @@ void mem_theap_reinit_locks_child(void) {
 /* 分配慢路径 */
 
 void* mem_malloc_generic(mem_theap_t* t, int bin) {
-  t->heartbeat++;
-
   mem_arena_t* arena = mem_arena_get(t->arena_idx);
   /* purge 到期检查只在申请新 slice 时做，避免每次慢路径都读时钟。 */
 
@@ -401,7 +366,6 @@ static void mem_free_to_page(mem_theap_t* t, mem_page_t* page, void* p) {
   /* 先取出后面要用的字段：本地分支里 mem_theap_page_empty 可能退休本页（描述符
    * 失效、slice 归还），跨线程分支里 CAS 一成功块就对 owner 可见、owner 可能
    * 立刻退休本页——两种情况下再解引用 page 都是读已释放的描述符。 */
-  const int    bin = page->bin;
 #if defined(WAVVIX_MEM_DEBUG)
   const size_t bs  = page->block_size;   /* 只有 L2 的 0xDF 填充还要用它 */
 #endif
@@ -427,8 +391,6 @@ static void mem_free_to_page(mem_theap_t* t, mem_page_t* page, void* p) {
     } else if ((page->flags & WAVVIX_MEM_PAGE_FLAG_IN_FULL) != 0) {
       mem_theap_unfull(t, page);                /* 满页腾空 → 移回本 bin */
     }
-    t->heartbeat++;
-    if ((t->heartbeat & 0xF) == 0) mem_theap_retire_scan(t, bin);
   } else {
     /* 跨线程释放（含 abandoned 页）：恰好一次成功 CAS 压 xthread_free。
      * ABA 安全：本链只允许压入；整链摘走由 owner/reclaimer 用 exchange(0)。 */

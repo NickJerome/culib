@@ -30,7 +30,6 @@
 #define WAVVIX_MEM_ARENA_COUNT_MAX  1024
 
 #define WAVVIX_MEM_PAGE_MAX_CANDIDATES 4
-#define WAVVIX_MEM_RETIRE_EXPIRE    4
 #define WAVVIX_MEM_PURGE_DELAY_MS   1000
 #define WAVVIX_MEM_PAGE_MAGIC       0xED0CAFE0u
 
@@ -89,8 +88,6 @@ struct mem_block_t { uintptr_t encoded_next; };
 struct mem_page_queue_t {
   mem_page_t* first;
   mem_page_t* last;
-  size_t     count;
-  size_t     block_size;   /* 本队列对应 bin 的块大小（0 = FULL 队列） */
 };
 
 /* 每个 64KiB slice 对应一个两条 cache line 的描述符。
@@ -104,7 +101,6 @@ struct mem_page_t {
   uint16_t               capacity;    /* 总块数 */
   uint16_t               block_size;  /* 块字节数（small） */
   uint8_t                kind;        /* SMALL / LARGE / CONT */
-  uint8_t                retire_expire; /* 退休宽限计数（心跳） */
   bool                   free_is_zero;  /* 空闲块内容已清零 */
   uint8_t                flags;
   uint8_t                bin;         /* small bin（1..36）；large 为 0 */
@@ -146,12 +142,10 @@ struct mem_tcache_bin_t {
 struct mem_theap_t {
   mem_page_t*      pages_free_direct[WAVVIX_MEM_DIRECT_MAX]; /* 索引 1..24 */
   mem_page_queue_t pages[WAVVIX_MEM_BIN_COUNT];              /* 0..35 每 bin + [WAVVIX_MEM_BIN_FULL] */
-  uint64_t        heartbeat;
   uint64_t        random_state;                     /* splitmix64 */
   uintptr_t       thread_id;                        /* 唯一 id（非 0，低3位为 0） */
   int             arena_idx;                        /* 当前偏好 arena */
   bool            temporary;                        /* 本次调用后归还，不能依赖退出钩子 */
-  uint32_t        full_count[WAVVIX_MEM_BIN_COUNT];         /* 每 bin 在 FULL 队列中的页数 */
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
   mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
   uintptr_t       tcache_key;

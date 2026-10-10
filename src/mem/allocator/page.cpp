@@ -13,7 +13,6 @@ void mem_page_queue_push(mem_page_queue_t* q, mem_page_t* page) {
   if (q->last != NULL) q->last->next = page;
   else                 q->first = page;
   q->last = page;
-  q->count++;
 }
 
 void mem_page_queue_remove(mem_page_queue_t* q, mem_page_t* page) {
@@ -22,7 +21,6 @@ void mem_page_queue_remove(mem_page_queue_t* q, mem_page_t* page) {
   if (page->next != NULL) page->next->prev = page->prev;
   else                    q->last = page->prev;
   page->next = page->prev = NULL;
-  q->count--;
 }
 
 /* local_free 已扣 used；xthread_free 到 collect 时才扣。 */
@@ -112,7 +110,6 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
   page->local_free = NULL;
   page->used = 0;
   page->kind = (uint8_t)kind;
-  page->retire_expire = 0;
   page->free_is_zero = slice_is_zero;
   page->flags = 0;
   page->bin = (uint8_t)bin;
