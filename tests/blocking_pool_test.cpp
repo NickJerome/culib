@@ -129,3 +129,34 @@ TEST(blocking_pool, resumes_a_coroutine_dispatched_to_a_worker_vcpu) {
     EXPECT(returned, ==, true);
     EXPECT(answer, ==, 42);
 }
+
+TEST(blocking_pool, drains_blocking_and_remote_completions_on_the_same_vcpu) {
+    wavvix::result<wavvix::blocking_pool> created = wavvix::blocking_pool::create(2);
+    if (!EXPECT(created.is_ok(), ==, true)) return;
+    wavvix::blocking_pool pool = std::move(created).value();
+    std::atomic<bool> work_started(false);
+    std::atomic<int> remote_done(0);
+    int local_done = 0;
+    {
+        wavvix::result<wavvix::scheduler_scope> opened =
+            wavvix::scheduler_scope::with_workers(2);
+        if (!EXPECT(opened.is_ok(), ==, true)) return;
+        wavvix::scheduler_scope runtime = std::move(opened).value();
+        for (int i = 0; i < 64; ++i) {
+            wavvix::coroutine remote([&] {
+                while (!work_started.load(std::memory_order_acquire)) wavvix::yield();
+                remote_done.fetch_add(1, std::memory_order_relaxed);
+            });
+            remote.detach();
+            wavvix::spawn([&] {
+                for (int n = 0; n < 8; ++n) {
+                    if (pool.run([&] {
+                        work_started.store(true, std::memory_order_release);
+                    }).is_ok()) ++local_done;
+                }
+            }).value();
+        }
+    }
+    EXPECT(remote_done.load(), ==, 64);
+    EXPECT(local_done, ==, 512);
+}
