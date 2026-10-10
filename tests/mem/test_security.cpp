@@ -2,7 +2,7 @@
  * test_security.cpp — culib mem 安全注入测试（SPEC §9: test_security）
  *
  * 每个注入用例都在**独立子进程**里跑，父进程按子进程的结束方式判定：
- *   - 子进程被信号杀死（SIGABRT 等）或以非 0 码退出 → 分配器检测到了注入
+ *   - 子进程因分配器的 fatal 路径 abort（POSIX SIGABRT / Windows 退出码 3）→ 检出
  *   - 子进程 exit(0) → 未检测
  *   - 子进程以 kSetupFail(90) 退出 → 用例前置条件没满足，判 FAIL 而不是"检出"
  *     （否则一次 malloc 返回 NULL 就能把用例伪装成 PASS）
@@ -14,7 +14,7 @@
  *             abort()    -> 3
  *             访问违例   -> 0xC0000005（转成 int 是 -1073741819）
  *             干净退出   -> 0
- *           所以"非 0 即检出"成立，且干净退出不会被误判。
+ *           其他异常退出一律 FAIL，不能让无关崩溃冒充检出。
  *
  * 用例分级：
  *   HARD  必须检测（double_free / invalid_free / WAVVIX_MEM_DEBUG 下 overflow_canary）
@@ -67,7 +67,7 @@ const int kSetupFail = 90;
  * 这不是理论风险，是实测：release 下 uaf_write_detect 在运行中就被检出并 abort
  * （本该退 3），最终退出码却是 0xC0000005——正是 ExitProcess(3) 之后 FLS 回调
  * 在坏堆上炸掉改写的。反过来同样成立：一条**没被检出**的注入若在拆解时炸了，
- * _exit(0) 会被改写成非 0，父进程就把它记成"检出"——一条永远绿的假用例。
+ * _exit(0) 会被改写成非 0；因此这里绕开 FLS 清理，保留真实退出码。
  *
  * TerminateProcess 不跑 FLS 回调、不跑 DLL_PROCESS_DETACH，退出码只由这里决定，
  * 于是 Windows 的"干净退出 = 0"和 POSIX 一样是可信的。 */
@@ -332,6 +332,13 @@ Verdict verdict_setup_fail() {
  * "Runtime Error!" 对话框，_spawnl(_P_WAIT) 就地挂死，整个 xmake test 永不返回。 */
 void child_prepare() {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    // 父进程运行测试时只显示判定；手工 --case 仍保留原始 fatal 诊断。
+    if (std::getenv("WAVVIX_MEM_TEST_CHILD") != NULL) {
+        HANDLE null_file = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (null_file == INVALID_HANDLE_VALUE || !SetStdHandle(STD_ERROR_HANDLE, null_file) ||
+            std::freopen("NUL", "w", stderr) == NULL) child_exit(kSetupFail);
+    }
 #if defined(_MSC_VER)
     /* MinGW-w64 的头文件声明了 _set_abort_behavior，但 msvcrt 导入库里没有这个
      * 符号（链接期报 undefined reference to __imp__set_abort_behavior），所以只
@@ -398,13 +405,11 @@ Verdict run_case(const CaseDef& c) {
     if (rc == kSetupFail) return verdict_setup_fail();
     if (rc == 0)          return verdict_clean_exit(c);
 
-    /* 退出码一并打出来：3 是 abort（走到了 mem_os_fatal），0xC0000005 是访问
-     * 违例（守护页/野指针当场炸）。两者都算检出，但它们不是一回事，日志里要
-     * 分得清——否则"13 条全 PASS"看不出有没有哪条是靠别的原因死的。 */
-    if (rc == 3)
-        std::printf("DETECTED (abort, exit code 3)  -> PASS\n");
-    else
-        std::printf("DETECTED (exit code 0x%08X)  -> PASS\n", (unsigned)rc);
+    if (rc != 3) {
+        std::printf("UNEXPECTED exit code 0x%08X (expected abort/3)  -> FAIL\n", (unsigned)rc);
+        return V_FAIL;
+    }
+    std::printf("DETECTED (abort, exit code 3)  -> PASS\n");
     return V_PASS;
 }
 
@@ -425,25 +430,35 @@ Verdict run_case(const CaseDef& c) {
         struct rlimit rl;
         rl.rlim_cur = 0; rl.rlim_max = 0;
         setrlimit(RLIMIT_CORE, &rl);
+        if (std::freopen("/dev/null", "w", stderr) == NULL) child_exit(kSetupFail);
         c.fn();
         child_exit(0);
     }
 
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { /* retry */ }
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited != pid) {
+        std::printf("waitpid failed: %s -> FAIL\n", std::strerror(errno));
+        return V_FAIL;
+    }
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == kSetupFail)
         return verdict_setup_fail();
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
         return verdict_clean_exit(c);
 
-    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT)
+    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT) {
         std::printf("DETECTED (SIGABRT)  -> PASS\n");
-    else if (WIFSIGNALED(status))
-        std::printf("terminated by signal %d  -> PASS\n", WTERMSIG(status));
+        return V_PASS;
+    }
+    if (WIFSIGNALED(status))
+        std::printf("UNEXPECTED signal %d (expected SIGABRT)  -> FAIL\n", WTERMSIG(status));
+    else if (WIFEXITED(status))
+        std::printf("UNEXPECTED exit code %d (expected SIGABRT)  -> FAIL\n", WEXITSTATUS(status));
     else
-        std::printf("exit code %d  -> PASS\n", WEXITSTATUS(status));
-    return V_PASS;
+        std::printf("UNEXPECTED child status 0x%X  -> FAIL\n", status);
+    return V_FAIL;
 }
 
 #endif /* _WIN32 */
