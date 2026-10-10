@@ -128,17 +128,18 @@ result<std::string> executable_path() {
 }
 
 result<std::string> hostname() {
-    // HOST_NAME_MAX 在 macOS 上没有，而且 gethostname 在名字刚好填满时
-    // 是否补 '\0' 由实现决定，所以多留一个字节并自己补。
+    // gethostname 成功时也可能截断且不补 NUL，须检查缓冲区。
     std::vector<char> buffer(256);
     for (;;) {
-        if (::gethostname(&buffer[0], buffer.size() - 1) == 0) {
-            buffer[buffer.size() - 1] = '\0';
-            return std::string(&buffer[0]);
-        }
-        if (errno != ENAMETOOLONG || buffer.size() > 4096) {
+        if (::gethostname(&buffer[0], buffer.size()) == 0) {
+            const char* const end = static_cast<const char*>(
+                std::memchr(&buffer[0], '\0', buffer.size()));
+            if (end) return std::string(&buffer[0], static_cast<std::size_t>(end - &buffer[0]));
+        } else if (errno != ENAMETOOLONG && errno != ERANGE) {
             return from_errno("取主机名", errno);
         }
+        if (buffer.size() >= 4096)
+            return make_error(error_kind::out_of_range, "主机名过长");
         buffer.resize(buffer.size() * 2);
     }
 }
