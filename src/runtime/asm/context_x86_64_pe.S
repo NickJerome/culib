@@ -1,6 +1,6 @@
 /* Register layout and context switch adapted from Boost.Context.
- * Copyright Oliver Kowalke 2009. Distributed under the Boost Software
- * License 1.0; see licenses/BOOST-1.0.txt.
+ * Copyright Oliver Kowalke 2009 and Thomas Sailer 2013. Distributed under
+ * the Boost Software License 1.0; see licenses/BOOST-1.0.txt.
  *
  * 上下文切换：x86_64 Windows（MS PE ABI），GAS 语法，给 MinGW-w64 用。
  * MSVC 的那一份是同一套布局但 MASM 语法，在 context_x86_64_pe.asm。

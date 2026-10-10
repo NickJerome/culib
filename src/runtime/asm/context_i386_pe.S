@@ -1,4 +1,8 @@
-/* 上下文切换：32 位 x86 Windows（MS PE），GAS 语法，给 MinGW-w64 i686 用。
+/* Register layout and context switch adapted from Boost.Context.
+ * Copyright Oliver Kowalke 2009 and Thomas Sailer 2013. Distributed under
+ * the Boost Software License 1.0; see licenses/BOOST-1.0.txt.
+ *
+ * 上下文切换：32 位 x86 Windows（MS PE），GAS 语法，给 MinGW-w64 i686 用。
  *
  * 32 位和 64 位的差别**比寄存器名字多**，三条都踩过：
  *

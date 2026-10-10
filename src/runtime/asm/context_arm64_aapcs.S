@@ -1,4 +1,8 @@
-/* 上下文切换：AArch64 AAPCS（Linux arm64 和 macOS arm64 都是这一套）。
+/* Register layout and context switch adapted from Boost.Context.
+ * Copyright Edward Nevill and Oliver Kowalke 2015. Distributed under the
+ * Boost Software License 1.0; see licenses/BOOST-1.0.txt.
+ *
+ * 上下文切换：AArch64 AAPCS（Linux arm64 和 macOS arm64 都是这一套）。
  *
  * 和 x86_64 那边的区别**不只是寄存器名字**：
  *
