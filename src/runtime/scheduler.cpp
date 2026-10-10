@@ -471,8 +471,6 @@ void close_pool(scheduler_pool* pool) noexcept {
 }
 
 result<void> start_pool(vcpu& self, unsigned workers) {
-    if (workers == 0)
-        return make_error(error_kind::invalid_argument, "work pool needs at least one vCPU");
     if (self.pool)
         return make_error(error_kind::invalid_argument, "work pool is already active");
     std::unique_ptr<scheduler_pool> pool;
@@ -530,23 +528,19 @@ void* scheduler_scope_enter() {
 }
 
 result<void*> scheduler_scope_enter_with_workers(unsigned workers) {
-    void* owner = 0;
-#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-    try {
-#endif
-        owner = scheduler_scope_enter();
-#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-    } catch (const std::exception& failure) {
-        return make_error(error_kind::io,
-                          std::string("cannot initialize vCPU: ") + failure.what());
-    }
-#endif
-    result<void> started = start_pool(*current_vcpu, workers);
+    if (fiber::inside()) die("wavvix::scheduler_scope 只能在 vCPU 线程入口创建");
+    if (workers == 0)
+        return make_error(error_kind::invalid_argument, "work pool needs at least one vCPU");
+    vcpu* const self = try_here();
+    if (!self) return make_error(error_kind::resource_exhausted);
+    ++self->scope_depth;
+    result<void> started = start_pool(*self, workers);
     if (started.is_err()) {
-        scheduler_scope_leave(owner);
+        // 只回滚深度；正常 leave 会运行此前已提交的任务。
+        --self->scope_depth;
         return std::move(started).error();
     }
-    return owner;
+    return self;
 }
 
 void scheduler_scope_leave(void* owner) noexcept {

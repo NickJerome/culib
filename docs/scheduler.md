@@ -41,7 +41,7 @@ int main() {
 
 不使用作用域也能直接 `spawn(...)` 后调用 `run()`；第一次提交协程会按需建立 vCPU，线程退出时自动清理。`scheduler_scope` 让生命周期在调用点清楚可见：构造时建立当前线程的 vCPU，析构时调用 `run()` 跑完全部协程，再释放 vCPU 和事件引擎。可嵌套，只有最外层析构时执行收尾；必须在创建它的线程上析构。显式调用 `run()` 后，作用域析构仍会清理资源。
 
-需要多核执行时，调用 `scheduler_scope::with_workers(n)` 并检查返回的 `result`。`n` 是额外工作系统线程的数量，必须大于零；默认的 `scheduler_scope` 只使用当前线程。启用工作池的作用域关闭时会等待任务并停止工作线程，即使外面还有一个普通 `scheduler_scope`；之后可以在同一 vCPU 上再次启用工作池。工作池启用后，`coroutine` 构造函数轮询提交到工作 vCPU，`spawn()` 仍留在调用它的 vCPU；在工作 vCPU 上创建的子协程也留在该线程。完整可运行程序见 [`examples/coroutine_workers.cpp`](../examples/coroutine_workers.cpp)，接口取舍见[多 vCPU 设计](superpowers/specs/2026-10-09-vcpu-pool-design.md)。
+需要多核执行时，调用 `scheduler_scope::with_workers(n)` 并检查返回的 `result`。`n` 是额外工作系统线程的数量，必须大于零；默认的 `scheduler_scope` 只使用当前线程。创建工作池失败不会运行此前提交的协程。启用工作池的作用域关闭时会等待任务并停止工作线程，即使外面还有一个普通 `scheduler_scope`；之后可以在同一 vCPU 上再次启用工作池。工作池启用后，`coroutine` 构造函数轮询提交到工作 vCPU，`spawn()` 仍留在调用它的 vCPU；在工作 vCPU 上创建的子协程也留在该线程。完整可运行程序见 [`examples/coroutine_workers.cpp`](../examples/coroutine_workers.cpp)，接口取舍见[多 vCPU 设计](superpowers/specs/2026-10-09-vcpu-pool-design.md)。
 
 如果用单轮 `yield()`、限时 `sleep_for()` 或只 `join()` 一根协程推进调度器，其他协程可能仍在等待 I/O、定时器或同步原语。退出当前系统线程前必须让这些挂起协程完成；可以调用 `run()`，或在创建协程前建立 `scheduler_scope`。线程退出时若仍有挂起任务，库会打印诊断并终止进程，避免内核继续访问已释放的协程栈。
 

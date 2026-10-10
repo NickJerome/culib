@@ -237,9 +237,15 @@ TEST(scheduler, coroutine_object_accepts_member_function) {
 }
 
 TEST(scheduler, worker_scope_rejects_zero_workers) {
+    int ran = 0;
+    wavvix::spawn([&] { ++ran; }).value();
     wavvix::result<wavvix::scheduler_scope> opened =
         wavvix::scheduler_scope::with_workers(0);
     EXPECT(opened.is_err(), ==, true);
+    EXPECT(ran, ==, 0);
+    EXPECT(wavvix::scheduled(), ==, 1u);
+    EXPECT(wavvix::run(), ==, 1u);
+    EXPECT(ran, ==, 1);
 }
 
 TEST(scheduler, nested_worker_scope_stops_its_pool_on_exit) {
