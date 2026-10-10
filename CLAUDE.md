@@ -180,7 +180,7 @@
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
 | 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/37877826017) **22/22 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64/x86 × debug/release，加 GCC 4.8、MinGW x64/i686、公共头文件及源码依赖检查。VS2015 尚未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与两种 MinGW 架构都编译全部 29 个示例 |
-| CI 失败能诊断 | `.github/report-failure.sh`，把失败命令的输出发成 `::error::` annotation | 编译 / 测试 / 示例四个步骤全经过它，**编译器诊断和测试失败两种式样都认**。**不这么做的话从公开 API 看只有「exit code 1」**——job 日志要仓库 admin 权限，而 `run:` 步骤里编译器的原始诊断不会自动变成 annotation。**测试失败那一半原先是漏的**，代价是 macOS 红了五个提交没人知道原因，见下 |
+| CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
@@ -189,7 +189,7 @@
 | Windows 代码能编译并通过测试 | 本机交叉编译 + wine，以及 Windows CI | MinGW-w64 x86_64 和 i686 各运行 362 项测试并编译 29 个示例。**MinGW 不能代替 MSVC**（头文件和警告集都不同），后者由独立 CI 任务覆盖 |
 | macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
 
-**CI 的结果只在看过那次运行之后才写进文档，并写上是哪个提交。** 推上去不等于绿：README 里「272 个测试在三平台 CI 上全绿」是在 `8bee9ac` 里写下的，而那时前两个提交的 CI 都已经跑完、都是红的（原因见下面 C4996 那张表）。没看过就写的「全绿」比不写更坏——它让下一个人不再去看。查法不用登录：GitHub 公开 API 的 `actions/runs` → 那次运行的 `jobs` → 失败 job 的 check-run `annotations`，`report-failure.sh` 发出来的编译器和测试输出就在那里。
+**CI 的结果只在看过那次运行之后才写进文档，并写上是哪个提交。** 运行 `python .github/ci_report.py`，检查测试汇总、SKIP 原因和诊断，不能只看 job conclusion。没有完整日志时，只能报告已取得的摘要；不要把“状态通过”写成“日志已完整核验”。历史上曾在两个 CI 都已失败时写下“全绿”，也曾因只发布失败日志而漏看成功作业中的异常输出。
 
 **本机验证 Windows 代码的办法**（在 CI 之前就能用，不必等 runner）：
 

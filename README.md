@@ -341,7 +341,10 @@ xmake                       # 构建库
 xmake test                  # 跑测试
 xmake build -g examples     # 编译全部示例
 xmake run example_result    # 运行一个示例
+python .github/ci_report.py # 检查当前提交的 CI 状态和测试输出
 ```
+
+CI 报告支持指定运行链接、筛选 job，并区分完整日志与公开摘要，见 [检查 CI 输出](docs/ci.md)。
 
 三个平台都是警告即错误（MSVC 上是 `/W4` 加 `/WX`）；[CI](https://github.com/NickJerome/culib/actions/runs/37877826017) 覆盖 Linux GCC、Linux Clang、macOS Clang、Windows MSVC 各 debug / release 两种模式，以及 MinGW-w64 x86_64/i686、GCC 4.8、公共头文件和源码依赖引入场景。MinGW 两种架构均运行测试并编译全部示例。
 

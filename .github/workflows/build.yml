@@ -20,12 +20,12 @@ jobs:
     name: MinGW i686 C++11
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW32
-          install: mingw-w64-i686-gcc
+          install: mingw-w64-i686-gcc python
           suppress-deprecation-warnings: msystem-mingw32
       - name: locate MinGW
         id: mingw
@@ -54,11 +54,11 @@ jobs:
     name: MinGW x86_64 C++11
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          install: mingw-w64-x86_64-gcc
+          install: mingw-w64-x86_64-gcc python
       - name: build 64-bit tests and examples, run tests
         shell: msys2 {0}
         run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh x86_64
@@ -67,7 +67,7 @@ jobs:
     name: GCC 4.8 C++11
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: build and test with GCC 4.8
         shell: bash
         run: bash .github/report-failure.sh docker run --rm -v "$PWD:/workspace" -w /workspace quay.io/pypa/manylinux1_x86_64@sha256:506d34897aa3e6f41297bb05e721f92b6cebd23966b5c3a36b015ec7ba5c764d bash tests/legacy_gcc48.sh
@@ -78,7 +78,10 @@ jobs:
     name: public headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - name: test CI output reporting
+        run: bash .github/report-failure.sh python3 -m unittest discover -s tests -p ci_report_test.py
 
       # 头文件里有中文注释。使用方在非 UTF-8 代码页（如中文 Windows 的 936）下不加 /utf-8
       # 编译时，MSVC 会对每个头文件报 C4819，开了 /WX 就是编译失败。BOM 让文件自己说明编码，
@@ -116,7 +119,7 @@ jobs:
       matrix:
         toolchain: [gcc, clang]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
@@ -136,7 +139,7 @@ jobs:
     name: Linux GCC ASan + UBSan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
@@ -165,7 +168,7 @@ jobs:
           - { name: macOS, os: macos-latest, toolchain: clang, define: '-DWAVVIX_MEM_DEBUG' }
           - { name: Windows, os: windows-latest, toolchain: msvc, define: '/DWAVVIX_MEM_DEBUG' }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
         with:
           xmake-version: latest
@@ -180,9 +183,10 @@ jobs:
       - name: require all L2 security injections
         shell: bash
         run: |
-          xmake run mem_test_security > security.log 2>&1
-          cat security.log
-          grep -Fxq '== summary: 14 cases | PASS 14 | SKIP 0 | FAIL 0 ==' security.log
+          bash .github/report-failure.sh bash -e -o pipefail -c '
+            xmake run mem_test_security 2>&1 | tee security.log
+            grep -Fxq "== summary: 14 cases | PASS 14 | SKIP 0 | FAIL 0 ==" security.log
+          '
 
   build:
     name: ${{ matrix.target.name }} / ${{ matrix.mode }}
@@ -202,7 +206,7 @@ jobs:
           - { name: windows-msvc-x86, os: windows-latest, toolchain: msvc, arch_arg: '-a x86' }
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 注意仓库名是 github-action-setup-xmake，不是 setup-xmake（后者不存在）
       - uses: xmake-io/github-action-setup-xmake@v1.2.5
@@ -212,9 +216,7 @@ jobs:
       - name: configure
         run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} ${{ matrix.target.arch_arg }} -y
 
-      # 下面五步都经过 report-failure.sh：失败时把完整输出发成 annotation，否则从公开
-      # API 那边看只有「exit code 1」，连哪个文件哪一行都不知道。原因写在那个脚本里。
-      # 分成五步而不是合成一步，是因为「哪一步红的」本身就是诊断信息。
+      # 命令输出由 report-failure.sh 提取并发布，查询方式见 docs/ci.md。
 
       # -w 显示警告。xmake.lua 已把警告设为错误（三个平台都是），所以这同时是零警告检查。
       - name: build library
@@ -223,7 +225,7 @@ jobs:
 
       - name: run tests
         shell: bash
-        # 有失败时 -v 打印完整报告
+        # 成功和失败都打印测试输出，供报告脚本提取。
         run: bash .github/report-failure.sh xmake test -v
 
       # 示例默认不参与构建，这里显式编译：接口改了而示例没跟着改时就会在这一步失败。
@@ -251,7 +253,7 @@ jobs:
           - { name: Windows, os: windows-latest, toolchain: msvc }
         standard: [c++11, c++17]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: culib
 
