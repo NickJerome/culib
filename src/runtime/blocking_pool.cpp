@@ -110,7 +110,7 @@ void blocking_pool::worker_loop(impl* state) noexcept {
             if (!state->head) state->tail = 0;
         }
         job->invoke(job->body);
-        if (!detail::scheduler_remote_wake(job->waker, *job->token)) {
+        if (!detail::scheduler_external_wake(job->waker, *job->token)) {
             std::fputs("wavvix::blocking_pool: cannot wake owning vCPU\n", stderr);
             std::abort();
         }
@@ -133,6 +133,7 @@ result<void> blocking_pool::run_erased(void (*invoke)(void*), void* body) {
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (state_->closing)
             return make_error(error_kind::invalid_argument, "blocking pool is closing");
+        detail::scheduler_external_wait_begin(waker);
         if (state_->tail) state_->tail->next = &job;
         else state_->head = &job;
         state_->tail = &job;

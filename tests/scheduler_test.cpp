@@ -154,9 +154,10 @@ TEST(scheduler, wakes_a_parked_coroutine_from_another_thread) {
         EXPECT(waker != 0, ==, true);
         if (!waker) return;
         wavvix::detail::park_token token;
+        wavvix::detail::scheduler_external_wait_begin(waker);
         std::thread worker([&] {
             std::this_thread::sleep_for(ms(20));
-            notified = wavvix::detail::scheduler_remote_wake(waker, token);
+            notified = wavvix::detail::scheduler_external_wake(waker, token);
         });
         resumed = wavvix::detail::scheduler_park(
             token, std::chrono::nanoseconds(-1));

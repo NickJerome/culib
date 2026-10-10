@@ -23,7 +23,11 @@ struct remote_waker;
 // 在所属 vCPU 上启用跨线程唤醒；失败返回空指针。
 remote_waker* scheduler_remote_prepare();
 
-// 从工作线程交还凭据；调用方须保证它活到协程被唤醒。
+// 从其他系统线程唤醒协程时，先在所属 vCPU 登记；通知被接收后才不再算唤醒来源。
+void scheduler_external_wait_begin(remote_waker* waker) noexcept;
+bool scheduler_external_wake(remote_waker* waker, park_token& token) noexcept;
+
+// 已由远端 coroutine 任务计数的完成通知；调用方须保证 token 活到协程被唤醒。
 // 返回 false 表示通知失败。
 bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept;
 

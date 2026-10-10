@@ -73,7 +73,7 @@ struct remote_task : task_state {
 struct remote_waker {
     explicit remote_waker(io_engine* target) noexcept
         : engine(target), head(0), tail(0), tasks_head(0), tasks_tail(0),
-          has_pending(false), pending_tasks(0) {}
+          has_pending(false), pending_tasks(0), pending_external(0), completed_external(0) {}
     io_engine* engine;
     std::mutex mutex;
     park_token* head;
@@ -82,6 +82,9 @@ struct remote_waker {
     task_state* tasks_tail;
     std::atomic<bool> has_pending;
     std::atomic<unsigned> pending_tasks;
+    // 所属 vCPU 修改 pending_external；工作线程在 mutex 下累计 completed_external。
+    std::size_t pending_external;
+    std::size_t completed_external;
 };
 
 struct worker_entry {
@@ -333,6 +336,7 @@ void accept_remote(vcpu& self) {
     if (!remote || !remote->has_pending.load(std::memory_order_acquire)) return;
     park_token* pending = 0;
     task_state* submitted = 0;
+    std::size_t completed_external = 0;
     {
         std::lock_guard<std::mutex> lock(remote->mutex);
         pending = remote->head;
@@ -341,8 +345,13 @@ void accept_remote(vcpu& self) {
         submitted = remote->tasks_head;
         remote->tasks_head = 0;
         remote->tasks_tail = 0;
+        completed_external = remote->completed_external;
+        remote->completed_external = 0;
         remote->has_pending.store(false, std::memory_order_release);
     }
+    if (completed_external > remote->pending_external)
+        die("wavvix::scheduler: blocking_pool 完成数超出已提交数");
+    remote->pending_external -= completed_external;
     while (pending) {
         park_token* const next = pending->next;
         pending->next = 0;
@@ -714,16 +723,33 @@ remote_waker* scheduler_remote_prepare() {
     return self.remote;
 }
 
-bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept {
+void scheduler_external_wait_begin(remote_waker* waker) noexcept {
+    ++waker->pending_external;
+}
+
+namespace {
+
+bool remote_wake(remote_waker* waker, park_token& token, bool external) noexcept {
     if (!waker) return false;
     std::lock_guard<std::mutex> lock(waker->mutex);
     token.next = 0;
     if (waker->tail) waker->tail->next = &token;
     else waker->head = &token;
     waker->tail = &token;
+    if (external) ++waker->completed_external;
     waker->has_pending.store(true, std::memory_order_release);
     // 通知完成前不能让所属 vCPU 取走 token 并销毁 waker/engine。
     return io_engine_notify(waker->engine);
+}
+
+}  // namespace
+
+bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept {
+    return remote_wake(waker, token, false);
+}
+
+bool scheduler_external_wake(remote_waker* waker, park_token& token) noexcept {
+    return remote_wake(waker, token, true);
 }
 
 void scheduler_sleep_for(std::chrono::nanoseconds duration) {
@@ -852,7 +878,8 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
                 !remote_tasks && !worker_alive) break;
             // 没有待完成 I/O、计时器或跨线程通知时，剩余的本地等待无法被唤醒。
             if (!have_deadline && self.parked_count != 0 && pending_io == 0 &&
-                !self.remote && !worker_alive)
+                !remote_tasks && !worker_alive &&
+                (!self.remote || self.remote->pending_external == 0))
                 die("wavvix::scheduler: 无时限等待的协程已无唤醒来源");
             idle(self, have_deadline, nearest);
             continue;
