@@ -511,8 +511,9 @@ int main(int argc, char** argv) {
     ++nskip;
 #endif
 
-    std::printf("== summary: %zu cases | PASS %d | SKIP %d | FAIL %d ==\n",
-                kNumCases, npass, nskip, nfail);
+    const int total = npass + nskip + nfail;
+    std::printf("== summary: %d cases | PASS %d | SKIP %d | FAIL %d ==\n",
+                total, npass, nskip, nfail);
     if (nfail == 0) {
         std::printf("[PASS] test_security: all hard injection cases detected\n");
         return 0;
