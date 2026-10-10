@@ -58,7 +58,7 @@ public:
 
     option(required_t, const char* help, std::initializer_list<const char*> names)
         : stored_() {
-        detail::register_flag(tag(), &stored_, help, names, true, std::string());
+        detail::register_flag(tag(), &stored_, help, names, true, default_text(stored_));
     }
 
     ~option() noexcept { detail::unregister_flag(&stored_); }

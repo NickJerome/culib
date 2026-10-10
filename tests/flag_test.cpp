@@ -215,10 +215,14 @@ TEST(flag, handles_help_and_version_without_exiting_in_parse) {
 TEST(flag, help_and_version_work_without_required_values) {
     flag::int64 input(flag::required, "required value", {"required-value"});
 
+    EXPECT(run({"app", "--required-value=42"}).is_ok(), ==, true);
+    EXPECT(input.value(), ==, 42);
     EXPECT(run({"app", "--help"}).is_ok(), ==, true);
     EXPECT(flag::help_requested(), ==, true);
+    EXPECT(input.value(), ==, 0);
     EXPECT(run({"app", "--version"}).is_ok(), ==, true);
     EXPECT(flag::version_requested(), ==, true);
+    EXPECT(input.value(), ==, 0);
 
     EXPECT(run({"app"}).is_err(), ==, true);
     EXPECT(run({"app", "--required-value=42"}).is_ok(), ==, true);

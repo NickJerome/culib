@@ -126,7 +126,6 @@ const char* type_label(detail::kind which) {
 result<void> apply_defaults(registry& self) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
         self.entries[i].on_command_line = false;
-        if (self.entries[i].is_required) continue;
         const result<void> applied = assign(self.entries[i], self.entries[i].default_text);
         if (applied.is_err()) return applied;   // 默认值自己都转换不了，是编程错误
     }
