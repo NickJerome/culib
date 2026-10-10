@@ -348,8 +348,10 @@ result<void> parse(int argc, char* argv[], string_view version) {
         which->on_command_line = true;
     }
 
-    const result<void> missing = check_required(self);
-    if (missing.is_err()) return missing;
+    if (!self.help_requested && !self.version_requested) {
+        const result<void> missing = check_required(self);
+        if (missing.is_err()) return missing;
+    }
     self.parsed = true;
     attempt.complete = true;
     return result<void>();
