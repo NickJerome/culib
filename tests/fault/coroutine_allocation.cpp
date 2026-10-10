@@ -21,6 +21,9 @@
 namespace {
 thread_local unsigned fail_after = 0;
 std::atomic<std::size_t> allocations(0);
+const std::thread::id main_thread = std::this_thread::get_id();
+std::atomic<unsigned> worker_allocations(0);
+unsigned fail_worker_at = 0;  // 只在工作线程启动前修改，全部 join 后再重置。
 }
 
 void* operator new(std::size_t size) {
@@ -43,6 +46,9 @@ void operator delete[](void* memory) noexcept { std::free(memory); }
 
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
     if (fail_after != 0 && --fail_after == 0) return 0;
+    if (std::this_thread::get_id() != main_thread &&
+        worker_allocations.fetch_add(1, std::memory_order_relaxed) + 1 == fail_worker_at)
+        return 0;
     return ::operator new(size);
 }
 
@@ -149,6 +155,32 @@ int main() {
     gate.release(64);
     if (allocations.load(std::memory_order_relaxed) != before_wake) return 25;
     if (wavvix::run() != 64 || wavvix::scheduled() != 0) return 26;
+
+    // 按一次实际启动的分配数逐点注入，覆盖第二个 worker 失败时第一个已在运行。
+    worker_allocations.store(0, std::memory_order_relaxed);
+    {
+        wavvix::result<wavvix::scheduler_scope> probe =
+            wavvix::scheduler_scope::with_workers(1);
+        if (probe.is_err()) return 27;
+    }
+    const unsigned per_worker = worker_allocations.load(std::memory_order_relaxed);
+    if (per_worker == 0) return 28;
+    for (unsigned failure = 1; failure <= 2 * per_worker; ++failure) {
+        int queued_runs = 0;
+        wavvix::spawn([&] { ++queued_runs; }).value();
+        worker_allocations.store(0, std::memory_order_relaxed);
+        fail_worker_at = failure;
+        {
+            wavvix::result<wavvix::scheduler_scope> rejected =
+                wavvix::scheduler_scope::with_workers(2);
+            if (!rejected.is_err()) return 29;
+        }
+        fail_worker_at = 0;
+        if (worker_allocations.load(std::memory_order_relaxed) < failure ||
+            queued_runs != 0 || wavvix::scheduled() != 1) return 30;
+        wavvix::run();
+        if (queued_runs != 1) return 31;
+    }
 
     wavvix::result<wavvix::scheduler_scope> started =
         wavvix::scheduler_scope::with_workers(1);

@@ -99,6 +99,7 @@ struct worker_entry {
 
 struct scheduler_pool {
     scheduler_pool() : count(0), next(0) {}
+    ~scheduler_pool();
     std::unique_ptr<worker_entry[]> workers;
     unsigned count;
     std::size_t next;
@@ -152,7 +153,7 @@ struct vcpu {
     std::size_t pool_scope_depth;
     task_state* detached;
     remote_waker* remote;
-    scheduler_pool* pool;
+    std::unique_ptr<scheduler_pool> pool;
     std::atomic<bool>* worker_stop;
 };
 
@@ -212,26 +213,10 @@ void die(const char* what);
 vcpu* try_here() noexcept {
     if (runtime_thread_state_current() == &runtime_thread_exit_marker)
         die("wavvix::scheduler: 线程正在退出，不能再创建协程");
-    if (!current_vcpu) {
-        vcpu* const self = new (std::nothrow) vcpu();
-        if (!self) return 0;
-        self->engine = 0;
-        self->current = 0;
-        self->park_of_current = 0;
-        self->completed_task = 0;
-        self->running = false;
-        self->scope_depth = 0;
-        self->pool_scope_depth = 0;
-        self->detached = 0;
-        self->remote = 0;
-        self->pool = 0;
-        self->worker_stop = 0;
-        if (!register_runtime_thread_exit(self, &reap_vcpu)) {
-            delete self;
-            return 0;
-        }
-        current_vcpu = self;
-    }
+    if (current_vcpu) return current_vcpu;
+    std::unique_ptr<vcpu> self(new (std::nothrow) vcpu());
+    if (!self || !register_runtime_thread_exit(self.get(), &reap_vcpu)) return 0;
+    current_vcpu = self.release();
     return current_vcpu;
 }
 
@@ -409,19 +394,22 @@ void worker_main(worker_entry* worker) noexcept {
     }
 }
 
-void close_pool(scheduler_pool* pool) noexcept {
-    if (!pool) return;
-    for (unsigned i = 0; i < pool->count; ++i) {
-        worker_entry& worker = pool->workers[i];
+}  // namespace
+
+scheduler_pool::~scheduler_pool() {
+    for (unsigned i = 0; i < count; ++i) {
+        worker_entry& worker = workers[i];
         std::lock_guard<std::mutex> lock(worker.mutex);
         worker.stopping.store(true, std::memory_order_release);
         if (worker.waker && !io_engine_notify(worker.waker->engine))
             die("wavvix::scheduler: 不能停止工作 vCPU");
     }
-    for (unsigned i = 0; i < pool->count; ++i) {
-        if (pool->workers[i].thread.joinable()) pool->workers[i].thread.join();
+    for (unsigned i = 0; i < count; ++i) {
+        if (workers[i].thread.joinable()) workers[i].thread.join();
     }
 }
+
+namespace {
 
 result<void> start_pool(vcpu& self, unsigned workers) {
     if (self.pool)
@@ -442,20 +430,16 @@ result<void> start_pool(vcpu& self, unsigned workers) {
             worker.thread = std::thread(&worker_main, &worker);
             std::unique_lock<std::mutex> lock(worker.mutex);
             worker.changed.wait(lock, [&worker] { return worker.ready; });
-            if (!worker.waker) {
-                lock.unlock();
-                close_pool(pool.get());
+            if (!worker.waker)
                 return make_error(error_kind::io, "cannot start work vCPU");
-            }
         }
 #if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
     } catch (const std::exception& failure) {
-        close_pool(pool.get());
         return make_error(error_kind::io,
                           std::string("cannot start work vCPU: ") + failure.what());
     }
 #endif
-    self.pool = pool.release();
+    self.pool = std::move(pool);
     self.pool_scope_depth = self.scope_depth;
     return result<void>();
 }
@@ -503,9 +487,7 @@ void scheduler_scope_leave(void* owner) noexcept {
     --self->scope_depth;
     if (self->pool && self->scope_depth < self->pool_scope_depth) {
         wavvix::run();
-        close_pool(self->pool);
-        delete self->pool;
-        self->pool = 0;
+        self->pool.reset();
         self->pool_scope_depth = 0;
     } else if (self->scope_depth == 0) {
         wavvix::run();
@@ -653,18 +635,15 @@ bool scheduler_wake(park_token& token) {
 }
 
 remote_waker* scheduler_remote_prepare() {
-    vcpu& self = here();
-    if (self.remote) return self.remote;
-    io_engine* const engine = engine_here(self);
+    vcpu* const self = try_here();
+    if (!self) return 0;
+    if (self->remote) return self->remote;
+    io_engine* const engine = engine_here(*self);
     if (!engine) return 0;
-    remote_waker* const remote = new (std::nothrow) remote_waker(engine);
-    if (!remote) return 0;
-    if (!io_engine_enable_notify(engine)) {
-        delete remote;
-        return 0;
-    }
-    self.remote = remote;
-    return self.remote;
+    std::unique_ptr<remote_waker> remote(new (std::nothrow) remote_waker(engine));
+    if (!remote || !io_engine_enable_notify(engine)) return 0;
+    self->remote = remote.release();
+    return self->remote;
 }
 
 void scheduler_external_wait_begin(remote_waker* waker) noexcept {
