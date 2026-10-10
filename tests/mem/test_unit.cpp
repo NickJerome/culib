@@ -7,6 +7,8 @@
 #include <cstring>
 #include <cerrno>
 #include <climits>
+#include <set>
+#include <thread>
 #include <vector>
 
 using wavvix::mem::detail::mem_posix_memalign;
@@ -493,6 +495,37 @@ void test_tcache_page_handoff() {
     wavvix::mem::collect();
 }
 
+void test_reuses_remote_frees_behind_live_pages() {
+    wavvix::mem::collect();
+    const size_t count = 2048;
+    std::vector<void*> blocks(count);
+    for (size_t i = 0; i < count; ++i) {
+        blocks[i] = wavvix::mem::alloc(1024);
+        CHECK(blocks[i] != NULL);
+        memset(blocks[i], 0x3C, 1024);
+    }
+    const std::set<void*> released(blocks.begin() + count / 2, blocks.end());
+    std::thread consumer([&] {
+        for (size_t i = count / 2; i < count; ++i) wavvix::mem::free(blocks[i]);
+    });
+    consumer.join();
+
+    size_t reused = 0;
+    for (size_t i = count / 2; i < count; ++i) {
+        blocks[i] = wavvix::mem::alloc(1024);
+        CHECK(blocks[i] != NULL);
+        if (released.count(blocks[i]) != 0) ++reused;
+    }
+    std::printf("    reused remote frees behind live pages: %zu / %zu\n", reused, count / 2);
+    CHECK_MSG(reused >= count / 4, "live pages at the front prevented reuse of later remote frees");
+    for (size_t i = 0; i < count / 2; ++i) {
+        CHECK(((unsigned char*)blocks[i])[0] == 0x3C);
+        CHECK(((unsigned char*)blocks[i])[1023] == 0x3C);
+    }
+    for (size_t i = 0; i < count; ++i) wavvix::mem::free(blocks[i]);
+    wavvix::mem::collect();
+}
+
 } /* namespace */
 
 int main() {
@@ -533,5 +566,7 @@ int main() {
     std::printf("  collect with live blocks OK\n");
     test_tcache_page_handoff();
     std::printf("  tcache/page fill handoff OK\n");
+    test_reuses_remote_frees_behind_live_pages();
+    std::printf("  remote frees behind live pages OK\n");
     return memtest::summary("test_unit");
 }

@@ -19,7 +19,6 @@
 #define WAVVIX_MEM_HUGE_THRESHOLD   ((size_t)8 * 1024 * 1024)  /* 超过则 free 即归还 OS */
 #define WAVVIX_MEM_BIN_COUNT        37                          /* 36 small bin + FULL */
 #define WAVVIX_MEM_BIN_FULL         36                          /* 满页队列索引        */
-#define WAVVIX_MEM_DIRECT_MAX       25                          /* direct 直达 bin 1..24 */
 
 /* 窗口保留失败时逐级减半。 */
 #define WAVVIX_MEM_WINDOW_DEFAULT   ((size_t)1 << 40)          /* 1 TiB               */
@@ -140,7 +139,6 @@ struct mem_tcache_bin_t {
 };
 
 struct mem_theap_t {
-  mem_page_t*      pages_free_direct[WAVVIX_MEM_DIRECT_MAX]; /* 索引 1..24 */
   mem_page_queue_t pages[WAVVIX_MEM_BIN_COUNT];              /* 0..35 每 bin + [WAVVIX_MEM_BIN_FULL] */
   uint64_t        random_state;                     /* splitmix64 */
   uintptr_t       thread_id;                        /* 唯一 id（非 0，低3位为 0） */
@@ -165,7 +163,6 @@ struct mem_arena_t {
   uint16_t    index;                /* 自身在 g_arenas[] 中的下标 */
   allocator_mutex  mutex;                /* arena 唯一锁 */
   mem_page_t*  abandoned[WAVVIX_MEM_BIN_COUNT];  /* abandoned 页桶：bin b -> [b-1] */
-  std::atomic<uint64_t> abandoned_nonempty;      /* 无锁读的非空桶提示 */
 };
 
 /* 运行时选项（runtime.cpp，启动解析一次，之后只读） */
@@ -461,7 +458,7 @@ void   mem_secure_page_keys(mem_page_t* page, uint64_t* random_state);
 /* ============================ 分配总入口 ============================== */
 /* api.cpp 的 wavvix::mem::alloc 经此内联展开快路径；t 属于调用线程。 */
 
-/* 小块的三条快路径 + 慢路径兜底。 */
+/* 小块先取线程缓存，再取所属 bin 的队首页。 */
 static inline void* mem_malloc_small(mem_theap_t* t, int bin) {
   /* tcache 命中即返回。WAVVIX_MEM_DEBUG 下同样启用：tcache 侧另有一套 L2 填充/校验
    * 区间（见 mem_debug_verify_tcache_block），覆盖不因此出缺口；而"调试构建
@@ -469,19 +466,10 @@ static inline void* mem_malloc_small(mem_theap_t* t, int bin) {
    * 将永远得不到 canary 与 UAF 填充的复核。 */
   void* tcp = mem_tcache_pop(t, bin);
   if (WAVVIX_MEM_LIKELY(tcp != NULL)) return tcp;
-  mem_page_t* page;
-  if (bin < WAVVIX_MEM_DIRECT_MAX) {
-    page = t->pages_free_direct[bin];
-    if (WAVVIX_MEM_LIKELY(page != NULL)) {
-      void* p = mem_page_malloc(page);
-      if (WAVVIX_MEM_LIKELY(p != NULL)) return p;
-    }
-  } else {
-    page = t->pages[bin - 1].first;
-    if (page != NULL) {
-      void* p = mem_page_malloc(page);
-      if (p != NULL) return p;
-    }
+  mem_page_t* page = t->pages[bin - 1].first;
+  if (page != NULL) {
+    void* p = mem_page_malloc(page);
+    if (p != NULL) return p;
   }
   return mem_malloc_generic(t, bin);
 }

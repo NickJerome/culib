@@ -107,7 +107,6 @@ mem_arena_t* mem_arena_create(size_t size) {
   mem_bitmap_init(bm_purge, st_purge, n, false);
   arena->purge_expire.store(0, std::memory_order_relaxed);
   for (int i = 0; i < WAVVIX_MEM_BIN_COUNT; i++) arena->abandoned[i] = NULL;
-  arena->abandoned_nonempty.store(0, std::memory_order_relaxed);
 
   g_arenas[count] = arena;
   g_arena_count.store(count + 1, std::memory_order_release);
@@ -336,9 +335,6 @@ void mem_arena_abandon_page(mem_arena_t* arena, mem_page_t* page) {
     mem_fatal_page("abandon of a page with an out-of-range bin", NULL, page);
   page->next = arena->abandoned[b - 1];
   arena->abandoned[b - 1] = page;
-  arena->abandoned_nonempty.store(
-      arena->abandoned_nonempty.load(std::memory_order_relaxed) | (uint64_t(1) << (b - 1)),
-      std::memory_order_relaxed);
 }
 
 mem_page_t* mem_arena_reclaim_page(mem_arena_t* arena, int bin) {
@@ -348,10 +344,6 @@ mem_page_t* mem_arena_reclaim_page(mem_arena_t* arena, int bin) {
   if (page != NULL) {
     arena->abandoned[bin - 1] = page->next;
     page->next = NULL;
-    if (arena->abandoned[bin - 1] == NULL)
-      arena->abandoned_nonempty.store(
-          arena->abandoned_nonempty.load(std::memory_order_relaxed) &
-              ~(uint64_t(1) << (bin - 1)), std::memory_order_relaxed);
   }
   return page;
 }
@@ -362,7 +354,6 @@ mem_page_t* mem_arena_reclaim_page(mem_arena_t* arena, int bin) {
 mem_page_t* mem_arena_take_abandoned_empty(mem_arena_t* arena) {
   std::lock_guard<allocator_mutex> lock(arena->mutex);
   mem_page_t* head = NULL;
-  uint64_t nonempty = 0;
   for (int b = 0; b < WAVVIX_MEM_BIN_COUNT; b++) {
     mem_page_t** pp = &arena->abandoned[b];
     while (*pp != NULL) {
@@ -376,9 +367,7 @@ mem_page_t* mem_arena_take_abandoned_empty(mem_arena_t* arena) {
         pp = &pg->next;
       }
     }
-    if (arena->abandoned[b] != NULL) nonempty |= uint64_t(1) << b;
   }
-  arena->abandoned_nonempty.store(nonempty, std::memory_order_relaxed);
   return head;
 }
 
