@@ -9,9 +9,9 @@
 #include <iosfwd>
 #include <string>
 
-#if defined(__has_include)
-#  if __has_include(<string_view>) && defined(__cpp_lib_string_view)
-#    include <string_view>
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+#  include <string_view>
+#  if defined(__cpp_lib_string_view)
 #    define WAVVIX_DETAIL_HAS_STD_STRING_VIEW 1
 #  endif
 #endif
@@ -42,7 +42,7 @@ public:
     string_view(const char* text, size_type size) noexcept
         : data_(size ? text : ""), size_(size) {}
 
-    // 隐式，让已有的调用点零改动
+    // 隐式接收 std::string，不分配。
     string_view(const std::string& text) noexcept : data_(text.data()), size_(text.size()) {}
 
 #if defined(WAVVIX_DETAIL_HAS_STD_STRING_VIEW)
