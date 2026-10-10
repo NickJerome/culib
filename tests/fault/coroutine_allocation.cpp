@@ -1,7 +1,9 @@
 #include <culib/blocking_pool.h>
 #include <culib/coroutine.h>
 #include <culib/sync.h>
-#include "runtime/scheduler_detail.h"
+#include "runtime/park.h"
+#include "runtime/remote_wake.h"
+#include "runtime/scheduler_io.h"
 #if !defined(_WIN32)
 #  include "runtime/io_engine.h"
 #  include <cerrno>

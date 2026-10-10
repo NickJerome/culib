@@ -3,9 +3,10 @@
 #include <culib/scheduler.h>
 
 #include "coroutine_detail.h"
-#include "io_engine.h"
+#include "scheduler_io.h"
 #include "park.h"
-#include "scheduler_detail.h"
+#include "remote_wake.h"
+#include "wait_set.h"
 
 #include <atomic>
 #include <cerrno>
@@ -20,7 +21,6 @@
 #include <string>
 #include <thread>
 #include <utility>
-#include <vector>
 
 namespace wavvix {
 namespace detail {
@@ -142,9 +142,7 @@ struct ready_queue {
 struct vcpu {
     ready_queue ready;
     ready_queue round;
-    std::vector<park_token*> timers;
-    std::size_t parked_count;
-    std::uint64_t timer_order;
+    wait_set waiting;
     io_engine* engine;
     coroutine_control* current;
     park_token* park_of_current;
@@ -190,7 +188,7 @@ void reap_vcpu(void* owner) noexcept {
         std::fputs("wavvix::scheduler: 工作 vCPU 仍在运行；请先关闭作用域\n", stderr);
         std::abort();
     }
-    if (self->parked_count != 0 || !self->timers.empty() ||
+    if (!self->waiting.empty() ||
         io_engine_pending(self->engine) != 0) {
         std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
         std::abort();
@@ -228,8 +226,6 @@ vcpu* try_here() noexcept {
         self->remote = 0;
         self->pool = 0;
         self->worker_stop = 0;
-        self->parked_count = 0;
-        self->timer_order = 0;
         if (!register_runtime_thread_exit(self, &reap_vcpu)) {
             delete self;
             return 0;
@@ -251,76 +247,12 @@ void die(const char* what) {
     std::abort();
 }
 
-bool timer_less(const park_token* left, const park_token* right) {
-    return left->deadline < right->deadline ||
-           (left->deadline == right->deadline && left->order < right->order);
-}
-
-void timer_swap(vcpu& self, std::size_t a, std::size_t b) {
-    std::swap(self.timers[a], self.timers[b]);
-    self.timers[a]->heap_index = a;
-    self.timers[b]->heap_index = b;
-}
-
-void timer_sift_up(vcpu& self, std::size_t index) {
-    while (index != 0) {
-        const std::size_t parent = (index - 1) / 2;
-        if (!timer_less(self.timers[index], self.timers[parent])) break;
-        timer_swap(self, index, parent);
-        index = parent;
-    }
-}
-
-void timer_sift_down(vcpu& self, std::size_t index) {
-    const std::size_t size = self.timers.size();
-    for (;;) {
-        const std::size_t left = index * 2 + 1;
-        if (left >= size) break;
-        const std::size_t right = left + 1;
-        const std::size_t child = right < size &&
-            timer_less(self.timers[right], self.timers[left]) ? right : left;
-        if (!timer_less(self.timers[child], self.timers[index])) break;
-        timer_swap(self, index, child);
-        index = child;
-    }
-}
-
-void timer_remove(vcpu& self, park_token& token) {
-    const std::size_t index = token.heap_index;
-    const std::size_t last = self.timers.size() - 1;
-    if (index != last) timer_swap(self, index, last);
-    self.timers.pop_back();
-    if (index == last) return;
-    if (index != 0 && timer_less(self.timers[index], self.timers[(index - 1) / 2]))
-        timer_sift_up(self, index);
-    else
-        timer_sift_down(self, index);
-}
-
-void unpark(vcpu& self, park_token& token) {
-    if (!token.parked) return;
-    if (token.timed) timer_remove(self, token);
-    token.parked = false;
-    --self.parked_count;
-}
-
-void park(vcpu& self, park_token& token) {
-    if (token.settled) return;
-    token.parked = true;
-    ++self.parked_count;
-    if (!token.timed) return;
-    token.order = self.timer_order++;
-    token.heap_index = self.timers.size();
-    self.timers.push_back(&token);
-    timer_sift_up(self, token.heap_index);
-}
-
 // settled 阻止超时与通知在同一轮重复入队。
 bool rouse(vcpu& self, park_token& token) {
     if (token.settled) return false;
     token.settled = true;
     token.roused = true;
-    unpark(self, token);
+    self.waiting.remove(token);
     self.ready.push(token.owner);
     return true;
 }
@@ -821,7 +753,7 @@ std::size_t scheduled() noexcept {
     detail::vcpu* const current_vcpu = detail::active_vcpu();
     if (!current_vcpu) return 0;
     return current_vcpu->ready.size() + current_vcpu->round.size() +
-           current_vcpu->parked_count;
+           current_vcpu->waiting.size();
 }
 
 std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
@@ -844,17 +776,17 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
         // 只有带时限的凭据进入堆；普通让出无需扫描所有挂起协程。
         bool have_deadline = false;
         instant nearest = instant();
-        if (!self.timers.empty()) {
+        if (self.waiting.next() != 0) {
             const instant now = clock_type::now();
-            while (!self.timers.empty() && self.timers.front()->deadline <= now) {
-                park_token* const token = self.timers.front();
-                unpark(self, *token);
+            while (self.waiting.next() != 0 && self.waiting.next()->deadline <= now) {
+                park_token* const token = self.waiting.next();
+                self.waiting.remove(*token);
                 token->settled = true;
                 token->roused = false;
                 self.ready.push(token->owner);
             }
-            if (!self.timers.empty()) {
-                nearest = self.timers.front()->deadline;
+            if (self.waiting.next() != 0) {
+                nearest = self.waiting.next()->deadline;
                 have_deadline = true;
             }
         }
@@ -871,10 +803,10 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             const bool worker_alive = self.worker_stop &&
                 !self.worker_stop->load(std::memory_order_acquire);
             const std::size_t pending_io = io_engine_pending(self.engine);
-            if (!timed && self.parked_count == 0 && pending_io == 0 &&
+            if (!timed && self.waiting.empty() && pending_io == 0 &&
                 !remote_tasks && !worker_alive) break;
             // 没有待完成 I/O、计时器或跨线程通知时，剩余的本地等待无法被唤醒。
-            if (!have_deadline && self.parked_count != 0 && pending_io == 0 &&
+            if (!have_deadline && !self.waiting.empty() && pending_io == 0 &&
                 !remote_tasks && !worker_alive &&
                 (!self.remote || (self.remote->pending_external == 0 &&
                                   !self.remote->has_pending.load(std::memory_order_acquire))))
@@ -897,7 +829,7 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
                 ++completed;
                 if (self.completed_task) finish_remote_task(self.completed_task);
             } else if (self.park_of_current) {
-                park(self, *self.park_of_current);
+                self.waiting.add(*self.park_of_current);
             } else {
                 self.ready.push(body);        // 让出了，下一轮继续
             }

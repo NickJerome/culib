@@ -1,7 +1,8 @@
 #include <culib/blocking_pool.h>
 #include <culib/scheduler.h>
 
-#include "scheduler_detail.h"
+#include "park.h"
+#include "remote_wake.h"
 
 #include <chrono>
 #include <condition_variable>

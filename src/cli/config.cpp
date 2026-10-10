@@ -2,8 +2,6 @@
 
 #include <culib/config.h>
 
-#include <culib/flag.h>
-#include <culib/fs.h>
 #include <culib/lexical_cast.h>
 
 #include <cstddef>
@@ -33,8 +31,7 @@ string_view value_of(string_view text, bool& bad) {
             bad = true;    // 引号没闭上
             return string_view();
         }
-        // **闭引号后面只允许空白或者注释。** `x = "a" junk` 里的 junk 静默丢掉的话，
-        // 一个手误就变成了「值莫名其妙少了一截」，而这个模块的原则是写错了要报出来。
+        // 闭引号后只允许空白或注释。
         const string_view rest = trimmed(body.substr(closing + 1));
         if (!rest.empty() && rest[0] != '#' && rest[0] != ';') {
             bad = true;
@@ -109,8 +106,7 @@ result<config> config::parse(string_view text) {
         }
         key.append(name.data(), name.size());
 
-        // **重复的键后面覆盖前面**，和别的 ini 解析器一样。报错也是一种选择，但
-        // 「和大家一样」在这里更重要——配置文件的读者未必读过本库的文档。
+        // 重复键覆盖旧值，保持首次出现的位置。
         bool replaced = false;
         for (std::size_t i = 0; i < built.entries_.size(); ++i) {
             if (built.entries_[i].first == key) {
@@ -128,19 +124,6 @@ result<config> config::parse(string_view text) {
     }
 
     return result<config>(std::move(built));
-}
-
-result<config> config::load(string_view path) {
-    result<std::string> text = fs::read_file(path);
-    if (!text.is_ok()) return result<config>(std::move(text).error());
-    result<config> parsed = parse(text.value());
-    if (!parsed.is_ok()) {
-        // 在错误里补上文件名——底层只知道「第 7 行」，不知道是哪个文件的第 7 行。
-        // 开发约定：跨层传播时在层边界上补上下文。
-        return result<config>(make_error(parsed.error().kind(),
-                                         path.to_string() + " " + parsed.error().message()));
-    }
-    return parsed;
 }
 
 const std::string* config::find(string_view key) const {
@@ -176,9 +159,7 @@ result<std::string> config::get_string(string_view key, string_view fallback) co
 
 namespace {
 
-// 「键不在就用默认值，在但解析不了就报错」这段逻辑三个类型一样，抽出来。
-// 错误消息里带上键名和原始文本——不然 main 拿到的是一句没有主语的话
-// （开发约定：跨层传播时在层边界上补上下文）。
+// 缺失时用默认值；转换失败时补上键名与原始值。
 template <typename T>
 result<T> typed(const std::string* found, string_view key, T fallback) {
     if (!found) return result<T>(fallback);
@@ -204,24 +185,5 @@ result<bool> config::get_bool(string_view key, bool fallback) const {
     return typed<bool>(find(key), key, fallback);
 }
 
-result<void> config::apply_to_flags() const {
-    for (std::size_t i = 0; i < entries_.size(); ++i) {
-        const string_view name(entries_[i].first.data(), entries_[i].first.size());
-        const string_view value(entries_[i].second.data(), entries_[i].second.size());
-
-        // **命令行优先**：已经在命令行上给过的跳过，不让配置文件盖掉它。
-        if (flag::was_given(name)) continue;
-
-        const result<void> applied = flag::set(name, value);
-        if (applied.is_ok()) continue;
-
-        // **flag 里没定义这个键不算错。** 配置文件通常比命令行多（日志路径那些不走
-        // 命令行），所以只是跳过。真正该报的是「定义了但值不对」，而那种
-        // flag::set 会报成别的 kind。
-        if (applied.error().kind() == error_kind::not_found) continue;
-        return applied;
-    }
-    return result<void>();
-}
 
 }  // namespace wavvix

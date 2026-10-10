@@ -3,7 +3,8 @@
 #include <culib/stopwatch.h>
 #include <culib/test.h>
 
-#include "runtime/scheduler_detail.h"
+#include "runtime/park.h"
+#include "runtime/remote_wake.h"
 
 #include <atomic>
 #include <chrono>

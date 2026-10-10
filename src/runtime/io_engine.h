@@ -2,13 +2,13 @@
 
 // 事件引擎的内部接口。
 
-#include "park.h"
-
 #include <chrono>
 #include <cstddef>
 
 namespace wavvix {
 namespace detail {
+
+struct park_token;
 
 // 原生句柄。POSIX 是 fd；Windows 上 SOCKET 和 HANDLE 都是指针宽，统一成 void*，
 // 这样这个头文件不必包含 <windows.h>。

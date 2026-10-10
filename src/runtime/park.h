@@ -33,5 +33,13 @@ struct park_token {
     bool queued;
 };
 
+// 仅在协程内调用；调用方先将 token 入队，并保持它活到返回。
+// 负 timeout 表示无限等待；返回 true 表示被唤醒，false 表示超时。
+// 不修改 token.next。
+bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout);
+
+// 必须在同一 vCPU 调用；token 已因超时交还时返回 false。
+bool scheduler_wake(park_token& token);
+
 }  // namespace detail
 }  // namespace wavvix

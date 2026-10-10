@@ -3,7 +3,6 @@
 #include <culib/sync.h>
 
 #include "park.h"
-#include "scheduler_detail.h"
 
 #include <cstdio>
 #include <cstdlib>

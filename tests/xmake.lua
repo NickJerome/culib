@@ -1,5 +1,27 @@
 -- 普通单元测试编译成 culib_test；进程级状态和故障测试使用独立程序。
 -- 在终端里查看完整报告：xmake run culib_test
+target("layers_test")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests")
+    if not is_plat("windows") then set_languages("c++11") end
+    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
+    add_includedirs("../include", "../src")
+    add_files("process/layers.cpp", "../src/cli/config.cpp", "../src/cli/flag.cpp",
+              "../src/fs/path.cpp", "../src/base/lexical_cast.cpp",
+              "../src/base/string_view.cpp", "../src/base/result.cpp", "../src/base/optional.cpp")
+    add_files("../src/mem/allocator/meta.cpp")
+    if is_plat("windows", "mingw") then
+        add_files("../src/mem/pages_win.cpp")
+        add_defines("_WIN32_WINNT=0x0A00", "WINVER=0x0A00")
+    else
+        add_files("../src/mem/pages_posix.cpp")
+        add_syslinks("pthread")
+    end
+    add_tests("default")
+target_end()
+
 target("culib_test")
     set_kind("binary")
     set_default(false)
