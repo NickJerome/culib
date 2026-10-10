@@ -7,18 +7,16 @@
 #include "park.h"
 #include "remote_wake.h"
 #include "wait_set.h"
+#include "vcpu_pool.h"
 
 #include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
-#include <exception>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <string>
 #include <thread>
 #include <utility>
 
@@ -28,7 +26,6 @@ namespace detail {
 struct vcpu;
 struct remote_waker;
 struct task_state;
-struct scheduler_pool;
 
 result<void*> scheduler_scope_enter_with_workers(unsigned workers);
 void scheduler_sleep_for(std::chrono::nanoseconds duration);
@@ -84,24 +81,6 @@ struct remote_waker {
     std::atomic<std::size_t> outstanding;
 };
 
-struct worker_entry {
-    worker_entry() : waker(0), ready(false), stopping(false) {}
-    std::thread thread;
-    std::mutex mutex;
-    std::condition_variable changed;
-    remote_waker* waker;
-    bool ready;
-    std::atomic<bool> stopping;
-};
-
-struct scheduler_pool {
-    scheduler_pool() : count(0), next(0) {}
-    ~scheduler_pool();
-    std::unique_ptr<worker_entry[]> workers;
-    unsigned count;
-    std::size_t next;
-};
-
 struct ready_queue {
     ready_queue() noexcept : head(0), tail(0), count(0) {}
 
@@ -149,7 +128,7 @@ struct vcpu {
     std::size_t pool_scope_depth;
     task_state* detached;
     remote_waker* remote;
-    std::unique_ptr<scheduler_pool> pool;
+    std::unique_ptr<vcpu_pool> pool;
     std::atomic<bool>* worker_stop;
 };
 
@@ -349,86 +328,6 @@ bool task_finished(const task_state* task) noexcept {
                         : task->done;
 }
 
-void publish_worker(worker_entry& worker, remote_waker* waker) noexcept {
-    {
-        std::lock_guard<std::mutex> lock(worker.mutex);
-        worker.waker = waker;
-        worker.ready = true;
-    }
-    worker.changed.notify_one();
-}
-
-void worker_main(worker_entry* worker) noexcept {
-    remote_waker* waker = 0;
-#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-    try {
-#endif
-        waker = scheduler_remote_prepare();
-#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-    } catch (...) {
-        publish_worker(*worker, 0);
-        return;
-    }
-#endif
-    publish_worker(*worker, waker);
-    if (!waker) return;
-    here().worker_stop = &worker->stopping;
-    wavvix::run();
-    {
-        std::lock_guard<std::mutex> lock(worker->mutex);
-        worker->waker = 0;
-    }
-}
-
-}  // namespace
-
-scheduler_pool::~scheduler_pool() {
-    for (unsigned i = 0; i < count; ++i) {
-        worker_entry& worker = workers[i];
-        std::lock_guard<std::mutex> lock(worker.mutex);
-        worker.stopping.store(true, std::memory_order_release);
-        if (worker.waker && !io_engine_notify(worker.waker->engine))
-            die("wavvix::scheduler: 不能停止工作 vCPU");
-    }
-    for (unsigned i = 0; i < count; ++i) {
-        if (workers[i].thread.joinable()) workers[i].thread.join();
-    }
-}
-
-namespace {
-
-result<void> start_pool(vcpu& self, unsigned workers) {
-    if (self.pool)
-        return make_error(error_kind::invalid_argument, "work pool is already active");
-    std::unique_ptr<scheduler_pool> pool;
-#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-    try {
-#endif
-        if (!scheduler_remote_prepare())
-            return make_error(error_kind::io, "cannot enable scheduler wakeup");
-        pool.reset(new (std::nothrow) scheduler_pool());
-        if (!pool) return make_error(error_kind::resource_exhausted);
-        pool->workers.reset(new (std::nothrow) worker_entry[workers]);
-        if (!pool->workers) return make_error(error_kind::resource_exhausted);
-        pool->count = workers;
-        for (unsigned i = 0; i < workers; ++i) {
-            worker_entry& worker = pool->workers[i];
-            worker.thread = std::thread(&worker_main, &worker);
-            std::unique_lock<std::mutex> lock(worker.mutex);
-            worker.changed.wait(lock, [&worker] { return worker.ready; });
-            if (!worker.waker)
-                return make_error(error_kind::io, "cannot start work vCPU");
-        }
-#if defined(__EXCEPTIONS) || defined(_CPPUNWIND)
-    } catch (const std::exception& failure) {
-        return make_error(error_kind::io,
-                          std::string("cannot start work vCPU: ") + failure.what());
-    }
-#endif
-    self.pool = std::move(pool);
-    return result<void>();
-}
-
 }  // namespace
 
 fiber_failure scheduler_spawn(coroutine_control* taken) {
@@ -454,8 +353,11 @@ result<void*> scheduler_scope_enter_with_workers(unsigned workers) {
         return make_error(error_kind::invalid_argument, "work pool needs at least one vCPU");
     vcpu* const self = try_here();
     if (!self) return make_error(error_kind::resource_exhausted);
-    result<void> started = start_pool(*self, workers);
+    if (self->pool)
+        return make_error(error_kind::invalid_argument, "work pool is already active");
+    result<std::unique_ptr<vcpu_pool>> started = vcpu_pool::create(workers);
     if (started.is_err()) return std::move(started).error();
+    self->pool = std::move(started).value();
     self->pool_scope_depth = ++self->scope_depth;
     return self;
 }
@@ -501,19 +403,18 @@ void scheduler_task_schedule(task_state* task, coroutine_control* body) {
         return;
     }
 
-    scheduler_pool& pool = *self.pool;
-    worker_entry& worker = pool.workers[pool.next++ % pool.count];
+    remote_waker* const worker = self.pool->next();
     self.remote->outstanding.fetch_add(1, std::memory_order_release);
     {
-        std::lock_guard<std::mutex> lock(worker.waker->mutex);
+        std::lock_guard<std::mutex> lock(worker->mutex);
         task->next_remote = 0;
-        if (worker.waker->tasks_tail) worker.waker->tasks_tail->next_remote = task;
-        else worker.waker->tasks_head = task;
-        worker.waker->tasks_tail = task;
+        if (worker->tasks_tail) worker->tasks_tail->next_remote = task;
+        else worker->tasks_head = task;
+        worker->tasks_tail = task;
         owned.release();
-        worker.waker->has_pending.store(true, std::memory_order_release);
+        worker->has_pending.store(true, std::memory_order_release);
     }
-    if (!io_engine_notify(worker.waker->engine))
+    if (!io_engine_notify(worker->engine))
         die("wavvix::coroutine: 不能唤醒工作 vCPU");
 }
 
@@ -620,6 +521,15 @@ remote_waker* scheduler_remote_prepare() {
     if (!remote || !io_engine_enable_notify(engine)) return 0;
     self->remote = remote.release();
     return self->remote;
+}
+
+bool scheduler_remote_notify(remote_waker* waker) noexcept {
+    return io_engine_notify(waker->engine);
+}
+
+void scheduler_worker_run(std::atomic<bool>& stopping) {
+    here().worker_stop = &stopping;
+    wavvix::run();
 }
 
 void scheduler_external_wait_begin(remote_waker* waker) noexcept {
