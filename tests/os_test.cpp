@@ -54,6 +54,27 @@ TEST(os, rejects_malformed_environment_variable_names) {
     EXPECT(os::setenv("a=b", "x").error().message().find("'='") != std::string::npos, ==, true);
 }
 
+TEST(os, rejects_embedded_nul_without_touching_another_variable) {
+    const char name[] = "CULIB_EMBEDDED_NUL_TEST\0suffix";
+    const wavvix::string_view hidden_name(name, sizeof name - 1);
+    const char value[] = {'x', '\0', 'y'};
+    const wavvix::string_view hidden_value(value, sizeof value);
+    const char* const prefix = "CULIB_EMBEDDED_NUL_TEST";
+
+    EXPECT(os::setenv(prefix, "original").is_ok(), ==, true);
+    EXPECT(os::getenv(hidden_name) == nullopt, ==, true);
+    EXPECT(os::setenv(hidden_name, "changed").is_err(), ==, true);
+    wavvix::optional<std::string> current = os::getenv(prefix);
+    EXPECT(current.has_value() && current.value() == "original", ==, true);
+    EXPECT(os::unsetenv(hidden_name).is_err(), ==, true);
+    current = os::getenv(prefix);
+    EXPECT(current.has_value() && current.value() == "original", ==, true);
+    EXPECT(os::setenv(prefix, hidden_value).is_err(), ==, true);
+    current = os::getenv(prefix);
+    EXPECT(current.has_value() && current.value() == "original", ==, true);
+    EXPECT(os::unsetenv(prefix).is_ok(), ==, true);
+}
+
 TEST(os, reports_its_own_executable_path) {
     const wavvix::result<std::string> path = os::executable_path();
     EXPECT(path.is_ok(), ==, true);

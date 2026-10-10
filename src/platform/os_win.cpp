@@ -60,6 +60,9 @@ result<void> check_name(string_view name) {
     if (name.empty()) {
         return make_error(error_kind::invalid_argument, "环境变量名不能为空");
     }
+    if (name.find('\0') != string_view::npos) {
+        return make_error(error_kind::invalid_argument, "环境变量名不能含 NUL");
+    }
     if (name.find('=') != string_view::npos) {
         return make_error(error_kind::invalid_argument,
                           "环境变量名不能含 '='：" + name.to_string());
@@ -72,6 +75,8 @@ result<void> check_name(string_view name) {
 // --- 环境变量 -----------------------------------------------------------------
 
 optional<std::string> getenv(string_view name) {
+    if (name.empty() || name.find('\0') != string_view::npos ||
+        name.find('=') != string_view::npos) return nullopt;
     const result<std::wstring> wide_name = utf8_to_wide(name);
     if (wide_name.is_err()) return nullopt;
 
@@ -95,6 +100,9 @@ optional<std::string> getenv(string_view name) {
 result<void> setenv(string_view name, string_view value) {
     const result<void> valid = check_name(name);
     if (valid.is_err()) return valid;
+    if (value.find('\0') != string_view::npos) {
+        return make_error(error_kind::invalid_argument, "环境变量值不能含 NUL");
+    }
     const result<std::wstring> wide_name = utf8_to_wide(name);
     if (wide_name.is_err()) return std::move(wide_name).error();
     const result<std::wstring> wide_value = utf8_to_wide(value);

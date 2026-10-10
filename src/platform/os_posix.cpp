@@ -42,10 +42,13 @@ error from_errno(string_view what, int code) {
 // 不要在这里加任何别的代码——printf / malloc / 加锁都不是 async-signal-safe 的。
 void raise_stop_flag(int) { detail::stop_flag = 1; }
 
-// 环境变量名的合法性：空名字和含 '=' 的名字 setenv 会拒绝，先给出清楚的消息。
+// C API 会在 NUL 处截断；必须先验证完整的 string_view。
 result<void> check_name(string_view name) {
     if (name.empty()) {
         return make_error(error_kind::invalid_argument, "环境变量名不能为空");
+    }
+    if (name.find('\0') != string_view::npos) {
+        return make_error(error_kind::invalid_argument, "环境变量名不能含 NUL");
     }
     if (name.find('=') != string_view::npos) {
         return make_error(error_kind::invalid_argument,
@@ -59,6 +62,8 @@ result<void> check_name(string_view name) {
 // --- 环境变量 -----------------------------------------------------------------
 
 optional<std::string> getenv(string_view name) {
+    if (name.empty() || name.find('\0') != string_view::npos ||
+        name.find('=') != string_view::npos) return nullopt;
     const std::string key = name.to_string();
     const char* value = std::getenv(key.c_str());
     if (!value) return nullopt;
@@ -68,6 +73,9 @@ optional<std::string> getenv(string_view name) {
 result<void> setenv(string_view name, string_view value) {
     const result<void> valid = check_name(name);
     if (valid.is_err()) return valid;
+    if (value.find('\0') != string_view::npos) {
+        return make_error(error_kind::invalid_argument, "环境变量值不能含 NUL");
+    }
     const std::string key = name.to_string();
     const std::string text = value.to_string();
     if (::setenv(key.c_str(), text.c_str(), 1) != 0) {

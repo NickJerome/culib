@@ -422,6 +422,15 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
 这个模块的核心是**优雅退出**——让长期运行的进程被 Ctrl-C 或 kill 时能把手上的活
 做完再停。其余几项是顺带的，因为它们同样是「一件事三个平台 API 名字不同」。
 
+### 环境变量
+
+`getenv(name)` 返回 `optional<std::string>`：未设置或名称无效时是 `nullopt`，
+已设置的空值是空字符串。`setenv(name, value)` 和 `unsetenv(name)` 返回 `result<void>`；
+名称不能为空或包含 `=`、NUL，值不能包含 NUL。拒绝带内嵌 NUL 的输入可以避免
+底层 C/Windows API 在 NUL 处截断后误读、修改另一个变量。删除不存在的变量也算成功。
+
+环境变量的并发读写没有同步保护；运行期间要同时读写时，调用方需自行加锁。
+
 ### 优雅退出：唯一安全的形状
 
     int main() {

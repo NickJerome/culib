@@ -14,15 +14,10 @@ namespace os {
 
 // --- 环境变量 -----------------------------------------------------------------
 
-// 「没设置」是正常结果，不是失败，所以是 optional 而不是 result。
-// 值可能是空字符串（设置了但为空），那和「没设置」是两回事。
+// 无效名称（空、含 '=' 或 NUL）和未设置均返回 nullopt；空值返回空字符串。
 optional<std::string> getenv(string_view name);
 
-// name 不能为空、不能含 '='。值为空字符串是允许的。
-//
-// **不是线程安全的。** POSIX 的 setenv 和并发的 getenv 一起用是数据竞争，
-// Windows 侧同样没有保护。预期用法是「启动时读一次、必要时改一次」；真要在
-// 运行期并发改环境变量，锁要由调用方加。
+// 名称不能空或含 '='、NUL；值不能含 NUL，允许空值。
 result<void> setenv(string_view name, string_view value);
 result<void> unsetenv(string_view name);
 
