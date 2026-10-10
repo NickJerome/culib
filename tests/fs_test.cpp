@@ -1,4 +1,5 @@
 #include <culib/fs.h>
+#include <culib/defer.h>
 #include <culib/strings.h>
 #include <culib/test.h>
 
@@ -6,6 +7,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -219,6 +221,89 @@ TEST(fs, reads_and_writes_whole_files) {
     EXPECT(fs::read_file(path, buffer).is_ok(), ==, true);
     EXPECT(buffer, ==, "fresh");
 }
+
+TEST(fs, appends_at_the_current_end_across_open_handles) {
+    const scratch area("append_handles");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string path = area.at("data.bin");
+    if (!EXPECT(fs::write_file(path, "start").is_ok(), ==, true)) return;
+    fs::output_file first;
+    fs::output_file second;
+    if (!EXPECT(first.open(path).is_ok(), ==, true)) return;
+    if (!EXPECT(second.open(path).is_ok(), ==, true)) return;
+    EXPECT(first.write("A").is_ok(), ==, true);
+    EXPECT(fs::append_file(path, "BC").is_ok(), ==, true);
+    EXPECT(second.write("D").is_ok(), ==, true);
+    EXPECT(first.write("EF").is_ok(), ==, true);
+    EXPECT(first.size(), ==, 8u);
+    EXPECT(second.size(), ==, 6u);
+    EXPECT(fs::read_file(path).value_or(""), ==, "startABCDEF");
+}
+
+TEST(fs, reads_a_pipe_until_the_writer_closes) {
+    std::string payload(32771, 'x');
+    for (std::size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<char>(i % 127);
+    bool written = false;
+#ifdef _WIN32
+    const char* path = "\\\\.\\pipe\\culib_fs_read_test";
+    const HANDLE pipe = ::CreateNamedPipeW(L"\\\\.\\pipe\\culib_fs_read_test",
+        PIPE_ACCESS_OUTBOUND, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 4096, 4096, 0, 0);
+    if (!EXPECT(pipe != INVALID_HANDLE_VALUE, ==, true)) return;
+    std::thread writer([&] {
+        WAVVIX_DEFER { ::CloseHandle(pipe); };
+        if (!::ConnectNamedPipe(pipe, 0) && ::GetLastError() != ERROR_PIPE_CONNECTED) return;
+        std::size_t offset = 0;
+        while (offset < payload.size()) {
+            const DWORD chunk = static_cast<DWORD>((std::min)(payload.size() - offset, std::size_t(997)));
+            DWORD moved = 0;
+            if (!::WriteFile(pipe, payload.data() + offset, chunk, &moved, 0) || moved == 0) return;
+            offset += moved;
+        }
+        written = ::FlushFileBuffers(pipe) != 0;
+    });
+#else
+    const scratch area("pipe_read");
+    if (!EXPECT(area.ok(), ==, true)) return;
+    const std::string path = area.at("pipe");
+    if (!EXPECT(::mkfifo(path.c_str(), 0600), ==, 0)) return;
+    std::thread writer([&] {
+        fs::output_file pipe;
+        if (pipe.open(path).is_err()) return;
+        for (std::size_t offset = 0; offset < payload.size(); offset += 997) {
+            const std::size_t chunk = (std::min)(payload.size() - offset, std::size_t(997));
+            if (pipe.write(string_view(payload.data() + offset, chunk)).is_err()) return;
+        }
+        written = true;
+    });
+#endif
+    result<std::string> read = fs::read_file(path);
+    writer.join();
+    EXPECT(written, ==, true);
+    EXPECT(read.is_err() ? read.error().to_string() : "", ==, "");
+    if (read.is_ok()) EXPECT(read.value(), ==, payload);
+}
+
+#ifdef __linux__
+TEST(fs, reads_proc_files_with_a_zero_size_hint) {
+    EXPECT(fs::file_size("/proc/self/status").value_or(1), ==, 0u);
+    const result<std::string> read = fs::read_file("/proc/self/status");
+    if (!EXPECT(read.is_ok(), ==, true)) return;
+    EXPECT(read.value().find("Name:\t") == 0, ==, true);
+    EXPECT(read.value().find("\nPid:\t") != std::string::npos, ==, true);
+}
+
+TEST(fs, reports_write_errors_for_whole_files_and_open_handles) {
+    const result<void> write = fs::write_file("/dev/full", "data");
+    if (!EXPECT(write.is_err(), ==, true)) return;
+    EXPECT(write.error().kind(), ==, error_kind::io);
+    EXPECT(write.error().message().find("/dev/full") != std::string::npos, ==, true);
+    EXPECT(fs::append_file("/dev/full", "data").is_err(), ==, true);
+    fs::output_file file;
+    if (!EXPECT(file.open("/dev/full").is_ok(), ==, true)) return;
+    EXPECT(file.write("data").is_err(), ==, true);
+    EXPECT(file.size(), ==, 0u);
+}
+#endif
 
 #if defined(_WIN32) && !defined(_WIN64)
 TEST(fs, rejects_files_larger_than_the_32_bit_address_space) {

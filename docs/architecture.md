@@ -41,6 +41,7 @@
 - `runtime/park.h`、`remote_wake.h`、`scheduler_io.h`：分别向同步原语、跨线程任务和网络提供需要的接口，删掉聚合的 scheduler_detail.h。I/O 引擎无需知道 park_token 布局。
 - `cli/config.cpp`：纯文本解析和配置查询；`config_file.cpp` 组合文件读取并补路径上下文；`config_flags.cpp` 组合命令行优先策略。没有新增公共包装接口。
 - `fs/path.cpp`：路径运算只依赖字符串；`fs.cpp` 组合平台文件操作。flag 为提取程序名调用 filename 时不再连带需要磁盘 I/O 实现。
+- `fs/file.h`：私有的打开、关闭、大小提示与单次读写操作。整文件读写和常开追加句柄共用一份循环；临时句柄由 `defer` 清理，平台层不维护上层缓冲或写入计数。
 
 `layers_test` 直接编译这些底层文件，不链接 culib、不加入调度器、汇编、socket 或文件 I/O 后端。它验证配置与命令行解析、路径运算、等待的任意取消与同截止时间排序，以及独立的页和元数据分配。若这些底层重新依赖上层，测试会在链接阶段失败，而不只是靠约定提醒。
 

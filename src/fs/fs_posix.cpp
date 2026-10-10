@@ -1,6 +1,7 @@
 // fs 的 POSIX 实现（Linux + macOS）。
 
 #include <culib/fs.h>
+#include "file.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -91,23 +92,6 @@ bool stat_path(string_view path, struct stat& info) {
     return ::stat(native.get(), &info) == 0;   // stat 跟随符号链接，见头文件约定
 }
 
-result<void> write_with_mode(string_view path, string_view content, const char* mode) {
-    const c_path native(path);
-    if (!native.valid()) return invalid_path();
-    std::FILE* file = std::fopen(native.get(), mode);
-    if (!file) return from_errno("打开", path, errno);
-    if (!content.empty()) {
-        const std::size_t written = std::fwrite(content.data(), 1, content.size(), file);
-        if (written != content.size()) {
-            const int code = errno;
-            std::fclose(file);
-            return from_errno("写入", path, code ? code : EIO);
-        }
-    }
-    if (std::fclose(file) != 0) return from_errno("关闭", path, errno);
-    return result<void>();
-}
-
 }  // namespace
 
 // --- 查询 ---------------------------------------------------------------------
@@ -144,79 +128,23 @@ result<timestamp> last_write_time(string_view path) {
     return timestamp::from_unix_seconds(static_cast<std::int64_t>(info.st_mtime));
 }
 
-// --- 整文件读写 ---------------------------------------------------------------
+namespace detail {
 
-result<void> read_file(string_view path, std::string& out) {
+error file_error(string_view operation, string_view path, unsigned long code) {
+    return from_errno(operation, path, static_cast<int>(code));
+}
+
+result<std::intptr_t> open_file(string_view path, file_mode mode) {
     const c_path native(path);
     if (!native.valid()) return invalid_path();
-    std::FILE* file = std::fopen(native.get(), "rb");
-    if (!file) return from_errno("打开", path, errno);
-
-    // 先问大小好一次读完。拿不到大小（管道、/proc 这类）就退回分块读。
-    struct stat info;
-    out.clear();
-    if (::fstat(::fileno(file), &info) == 0 && S_ISREG(info.st_mode) && info.st_size > 0) {
-        if (static_cast<unsigned long long>(info.st_size) > out.max_size()) {
-            std::fclose(file);
-            return make_error(error_kind::out_of_range,
-                              path.to_string() + " 文件过大，无法一次读入内存");
-        }
-        out.resize(static_cast<std::size_t>(info.st_size));
-        const std::size_t got = std::fread(&out[0], 1, out.size(), file);
-        out.resize(got);          // 读的过程中文件变短了也不算错，只是短一些
-        if (got != static_cast<std::size_t>(info.st_size) && std::ferror(file)) {
-            const int code = errno;
-            std::fclose(file);
-            return from_errno("读取", path, code ? code : EIO);
-        }
-    } else {
-        char chunk[8192];
-        for (;;) {
-            const std::size_t got = std::fread(chunk, 1, sizeof chunk, file);
-            out.append(chunk, got);
-            if (got < sizeof chunk) {
-                if (std::ferror(file)) {
-                    const int code = errno;
-                    std::fclose(file);
-                    return from_errno("读取", path, code ? code : EIO);
-                }
-                break;
-            }
-        }
-    }
-    std::fclose(file);
-    return result<void>();
-}
-
-result<void> write_file(string_view path, string_view content) {
-    return write_with_mode(path, content, "wb");
-}
-
-result<void> append_file(string_view path, string_view content) {
-    return write_with_mode(path, content, "ab");
-}
-
-// --- 一直开着的追加写句柄 -----------------------------------------------------
-//
-// 用裸 open / write，避免 stdio 的用户态缓冲滞留已写出的日志。
-
-bool output_file::is_open() const noexcept { return handle_ >= 0; }
-
-void output_file::close() noexcept {
-    if (handle_ >= 0) ::close(static_cast<int>(handle_));
-    handle_ = -1;
-    written_ = 0;
-}
-
-result<void> output_file::open(string_view path) {
-    close();
-    const c_path native(path);
-    if (!native.valid()) return invalid_path();
-    int flags = O_WRONLY | O_CREAT | O_APPEND;
+    int flags = mode == file_mode::read ? O_RDONLY : O_WRONLY | O_CREAT;
+    if (mode == file_mode::truncate) flags |= O_TRUNC;
+    if (mode == file_mode::append) flags |= O_APPEND;
 #ifdef O_CLOEXEC
-    flags |= O_CLOEXEC;   // 别让子进程继承一个它用不上的日志句柄
+    flags |= O_CLOEXEC;
 #endif
-    const int fd = ::open(native.get(), flags, 0644);
+    int fd;
+    do { fd = ::open(native.get(), flags, 0666); } while (fd < 0 && errno == EINTR);
     if (fd < 0) return from_errno("打开", path, errno);
 #ifndef O_CLOEXEC
     if (::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
@@ -225,33 +153,43 @@ result<void> output_file::open(string_view path) {
         return from_errno("设置文件句柄", path, code);
     }
 #endif
+    return static_cast<std::intptr_t>(fd);
+}
 
-    // 记下已有的长度，这样 size() 不用每次去 stat。
+unsigned long close_file(std::intptr_t& handle) noexcept {
+    if (handle == -1) return 0;
+    const int fd = static_cast<int>(handle);
+    handle = -1;
+    // Retrying close after EINTR can close a descriptor reused by another thread.
+    return ::close(fd) == 0 ? 0 : static_cast<unsigned long>(errno);
+}
+
+std::uint64_t file_size_hint(std::intptr_t handle) noexcept {
     struct stat info;
-    handle_ = fd;
-    written_ = (::fstat(fd, &info) == 0 && info.st_size > 0)
-                   ? static_cast<std::uint64_t>(info.st_size)
-                   : 0;
-    return result<void>();
+    if (::fstat(static_cast<int>(handle), &info) != 0 ||
+        !S_ISREG(info.st_mode) || info.st_size <= 0) return 0;
+    return static_cast<std::uint64_t>(info.st_size);
 }
 
-result<void> output_file::write(string_view content) {
-    if (handle_ < 0) return make_error(error_kind::invalid_argument, "写入前要先 open");
-    const char* at = content.data();
-    std::size_t left = content.size();
-    while (left) {
-        const ssize_t moved = ::write(static_cast<int>(handle_), at, left);
-        if (moved < 0) {
-            if (errno == EINTR) continue;   // 信号打断，接着写
-            return from_errno("写入", "", errno);
-        }
-        if (moved == 0) return make_error(error_kind::io, "写入未前进");
-        at += moved;
-        left -= static_cast<std::size_t>(moved);
-        written_ += static_cast<std::uint64_t>(moved);
-    }
-    return result<void>();
+result<std::size_t> read_some(std::intptr_t handle, char* data, std::size_t size,
+                             string_view path) {
+    const std::size_t chunk = size > 0x40000000u ? 0x40000000u : size;
+    ssize_t got;
+    do { got = ::read(static_cast<int>(handle), data, chunk); } while (got < 0 && errno == EINTR);
+    if (got < 0) return from_errno("读取", path, errno);
+    return static_cast<std::size_t>(got);
 }
+
+result<std::size_t> write_some(std::intptr_t handle, const char* data, std::size_t size,
+                              string_view path) {
+    const std::size_t chunk = size > 0x40000000u ? 0x40000000u : size;
+    ssize_t moved;
+    do { moved = ::write(static_cast<int>(handle), data, chunk); } while (moved < 0 && errno == EINTR);
+    if (moved < 0) return from_errno("写入", path, errno);
+    return static_cast<std::size_t>(moved);
+}
+
+}  // namespace detail
 
 // --- 目录与文件操作 -----------------------------------------------------------
 

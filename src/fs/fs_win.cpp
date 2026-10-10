@@ -2,6 +2,7 @@
 // 一律走 W 系列 API：路径是 UTF-8，先转 UTF-16 再调。
 
 #include <culib/fs.h>
+#include "file.h"
 #include <culib/lexical_cast.h>   // to_string
 #include <culib/strings.h>
 
@@ -133,37 +134,6 @@ std::int64_t to_unix_seconds(const FILETIME& time) {
     return static_cast<std::int64_t>((ticks.QuadPart - kTicksTo1970) / 10000000ull);
 }
 
-result<void> write_with_disposition(string_view path, string_view content, bool append) {
-    const result<std::wstring> wide = wide_path(path);
-    if (wide.is_err()) return std::move(wide).error();
-    // 同上：共享模式给 0 的话，写的过程中别人连读都不行。POSIX 没有这种限制。
-    const HANDLE file = ::CreateFileW(wide.value().c_str(),
-                                      append ? FILE_APPEND_DATA : GENERIC_WRITE,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
-                                      append ? OPEN_ALWAYS : CREATE_ALWAYS,
-                                      FILE_ATTRIBUTE_NORMAL, 0);
-    if (file == INVALID_HANDLE_VALUE) return from_last_error("打开", path, ::GetLastError());
-    std::size_t offset = 0;
-    while (offset < content.size()) {
-        // WriteFile 一次最多 DWORD 能表示的字节数，大文件要分几次
-        const DWORD chunk = static_cast<DWORD>(
-            (content.size() - offset) > 0x40000000u ? 0x40000000u : (content.size() - offset));
-        DWORD written = 0;
-        if (!::WriteFile(file, content.data() + offset, chunk, &written, 0)) {
-            const DWORD code = ::GetLastError();
-            ::CloseHandle(file);
-            return from_last_error("写入", path, code);
-        }
-        if (written == 0) {
-            ::CloseHandle(file);
-            return make_error(error_kind::io, path.to_string() + " 写入未前进");
-        }
-        offset += written;
-    }
-    ::CloseHandle(file);
-    return result<void>();
-}
-
 }  // namespace
 
 // --- 查询 ---------------------------------------------------------------------
@@ -209,119 +179,60 @@ result<timestamp> last_write_time(string_view path) {
     return timestamp::from_unix_seconds(to_unix_seconds(data.ftLastWriteTime));
 }
 
-// --- 整文件读写 ---------------------------------------------------------------
+namespace detail {
 
-result<void> read_file(string_view path, std::string& out) {
-    const result<std::wstring> wide = wide_path(path);
+error file_error(string_view operation, string_view path, unsigned long code) {
+    return from_last_error(operation, path, code);
+}
+
+result<std::intptr_t> open_file(string_view path, file_mode mode) {
+    result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) return std::move(wide).error();
-    // 允许读取仍由日志等写入方打开的文件。
-    const HANDLE file = ::CreateFileW(wide.value().c_str(), GENERIC_READ,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
-                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-    if (file == INVALID_HANDLE_VALUE) return from_last_error("打开", path, ::GetLastError());
-
-    out.clear();
-    LARGE_INTEGER size;
-    if (::GetFileSizeEx(file, &size) && size.QuadPart > 0) {
-        if (static_cast<unsigned long long>(size.QuadPart) > out.max_size()) {
-            ::CloseHandle(file);
-            return make_error(error_kind::out_of_range,
-                              path.to_string() + " 文件过大，无法一次读入内存");
-        }
-        out.resize(static_cast<std::size_t>(size.QuadPart));
-        std::size_t offset = 0;
-        while (offset < out.size()) {
-            const DWORD chunk = static_cast<DWORD>(
-                (out.size() - offset) > 0x40000000u ? 0x40000000u : (out.size() - offset));
-            DWORD got = 0;
-            if (!::ReadFile(file, &out[offset], chunk, &got, 0)) {
-                const DWORD code = ::GetLastError();
-                ::CloseHandle(file);
-                return from_last_error("读取", path, code);
-            }
-            if (got == 0) break;           // 读的过程中文件变短了
-            offset += got;
-        }
-        out.resize(offset);
-    } else {
-        char chunk[8192];
-        for (;;) {
-            DWORD got = 0;
-            if (!::ReadFile(file, chunk, sizeof chunk, &got, 0)) {
-                const DWORD code = ::GetLastError();
-                ::CloseHandle(file);
-                return from_last_error("读取", path, code);
-            }
-            if (got == 0) break;
-            out.append(chunk, got);
-        }
-    }
-    ::CloseHandle(file);
-    return result<void>();
-}
-
-result<void> write_file(string_view path, string_view content) {
-    return write_with_disposition(path, content, false);
-}
-
-result<void> append_file(string_view path, string_view content) {
-    return write_with_disposition(path, content, true);
-}
-
-// --- 一直开着的追加写句柄 -----------------------------------------------------
-//
-// FILE_APPEND_DATA 让每次 WriteFile 都落到文件末尾，不需要自己 seek——多个进程
-// 写同一个日志文件时也不会互相盖。不开用户态缓冲，理由见 fs_posix.cpp 那边。
-
-bool output_file::is_open() const noexcept {
-    return reinterpret_cast<HANDLE>(handle_) != INVALID_HANDLE_VALUE;
-}
-
-void output_file::close() noexcept {
-    const HANDLE file = reinterpret_cast<HANDLE>(handle_);
-    if (file != INVALID_HANDLE_VALUE) ::CloseHandle(file);
-    handle_ = -1;
-    written_ = 0;
-}
-
-result<void> output_file::open(string_view path) {
-    close();
-    const result<std::wstring> wide = wide_path(path);
-    if (!wide.is_ok()) return result<void>(wide.error());
-
-    // FILE_SHARE_READ | FILE_SHARE_WRITE：让别人能同时 tail 这个日志。
-    const HANDLE file = ::CreateFileW(wide.value().c_str(), FILE_APPEND_DATA,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS,
+    const DWORD access = mode == file_mode::read ? GENERIC_READ :
+                         mode == file_mode::append ? FILE_APPEND_DATA : GENERIC_WRITE;
+    const DWORD disposition = mode == file_mode::read ? OPEN_EXISTING :
+                              mode == file_mode::append ? OPEN_ALWAYS : CREATE_ALWAYS;
+    const HANDLE file = ::CreateFileW(wide.value().c_str(), access,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, 0, disposition,
                                       FILE_ATTRIBUTE_NORMAL, 0);
     if (file == INVALID_HANDLE_VALUE) return from_last_error("打开", path, ::GetLastError());
-
-    LARGE_INTEGER had;
-    had.QuadPart = 0;
-    handle_ = reinterpret_cast<std::intptr_t>(file);
-    written_ = ::GetFileSizeEx(file, &had) ? static_cast<std::uint64_t>(had.QuadPart) : 0;
-    return result<void>();
+    return reinterpret_cast<std::intptr_t>(file);
 }
 
-result<void> output_file::write(string_view content) {
-    const HANDLE file = reinterpret_cast<HANDLE>(handle_);
-    if (file == INVALID_HANDLE_VALUE) {
-        return make_error(error_kind::invalid_argument, "写入前要先 open");
-    }
-    const char* at = content.data();
-    std::size_t left = content.size();
-    while (left) {
-        const DWORD chunk = (left > 0x40000000u) ? 0x40000000u : static_cast<DWORD>(left);
-        DWORD moved = 0;
-        if (!::WriteFile(file, at, chunk, &moved, 0)) {
-            return from_last_error("写入", "", ::GetLastError());
-        }
-        if (moved == 0) return make_error(error_kind::io, "写入未前进");
-        at += moved;
-        left -= moved;
-        written_ += moved;
-    }
-    return result<void>();
+unsigned long close_file(std::intptr_t& handle) noexcept {
+    if (handle == -1) return 0;
+    const HANDLE file = reinterpret_cast<HANDLE>(handle);
+    handle = -1;
+    return ::CloseHandle(file) ? 0 : ::GetLastError();
 }
+
+std::uint64_t file_size_hint(std::intptr_t handle) noexcept {
+    LARGE_INTEGER size;
+    if (!::GetFileSizeEx(reinterpret_cast<HANDLE>(handle), &size) || size.QuadPart <= 0) return 0;
+    return static_cast<std::uint64_t>(size.QuadPart);
+}
+
+result<std::size_t> read_some(std::intptr_t handle, char* data, std::size_t size,
+                             string_view path) {
+    const DWORD chunk = static_cast<DWORD>(size > 0x40000000u ? 0x40000000u : size);
+    DWORD got = 0;
+    if (::ReadFile(reinterpret_cast<HANDLE>(handle), data, chunk, &got, 0))
+        return static_cast<std::size_t>(got);
+    const DWORD code = ::GetLastError();
+    if (code == ERROR_BROKEN_PIPE) return std::size_t(0);
+    return from_last_error("读取", path, code);
+}
+
+result<std::size_t> write_some(std::intptr_t handle, const char* data, std::size_t size,
+                              string_view path) {
+    const DWORD chunk = static_cast<DWORD>(size > 0x40000000u ? 0x40000000u : size);
+    DWORD moved = 0;
+    if (!::WriteFile(reinterpret_cast<HANDLE>(handle), data, chunk, &moved, 0))
+        return from_last_error("写入", path, ::GetLastError());
+    return static_cast<std::size_t>(moved);
+}
+
+}  // namespace detail
 
 // --- 目录与文件操作 -----------------------------------------------------------
 
