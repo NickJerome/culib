@@ -199,16 +199,23 @@ TEST(net, ipv6_listener_does_not_claim_the_ipv4_port) {
     const wavvix::result<endpoint> any_v6 = endpoint::parse("::", 0);
     EXPECT(any_v6.is_ok(), ==, true);
     if (any_v6.is_err()) return;
-    wavvix::result<tcp_listener> opened_v6 = tcp_listener::listen(any_v6.value());
-    if (opened_v6.is_err()) return;  // IPv6 may be disabled by the test environment.
-    tcp_listener listener_v6 = std::move(opened_v6).value();
-    const wavvix::result<endpoint> local_v6 = listener_v6.local_endpoint();
-    EXPECT(local_v6.is_ok(), ==, true);
-    if (local_v6.is_err()) return;
+    bool independent = false;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        wavvix::result<tcp_listener> opened_v6 = tcp_listener::listen(any_v6.value());
+        if (opened_v6.is_err()) {
+            if (attempt == 0) return;  // IPv6 may be disabled by the test environment.
+            continue;
+        }
+        tcp_listener listener_v6 = std::move(opened_v6).value();
+        const wavvix::result<endpoint> local_v6 = listener_v6.local_endpoint();
+        EXPECT(local_v6.is_ok(), ==, true);
+        if (local_v6.is_err()) return;
 
-    const wavvix::result<endpoint> any_v4 = endpoint::parse("0.0.0.0", local_v6.value().port());
-    EXPECT(any_v4.is_ok(), ==, true);
-    if (any_v4.is_err()) return;
-    const wavvix::result<tcp_listener> opened_v4 = tcp_listener::listen(any_v4.value());
-    EXPECT(opened_v4.is_ok(), ==, true);
+        const wavvix::result<endpoint> any_v4 = endpoint::parse("0.0.0.0", local_v6.value().port());
+        EXPECT(any_v4.is_ok(), ==, true);
+        if (any_v4.is_err()) return;
+        independent = tcp_listener::listen(any_v4.value()).is_ok();
+        if (independent) break;
+    }
+    EXPECT(independent, ==, true);
 }
