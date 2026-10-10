@@ -35,7 +35,7 @@ void example() {
 
 ## 平台与验证
 
-当前实现限 64 位 Linux、macOS 和 Windows；Windows x86 暂无该模块。它预留默认 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于启动时消耗 1 TiB 物理内存。首次分配时读取 `WAVVIX_MEM_WINDOW_SIZE`（默认 `1T`）、`WAVVIX_MEM_ARENA_RESERVE`（`64M`）和 `WAVVIX_MEM_PURGE_DELAY`（`1000` 毫秒）。页密钥始终启用，arena 按需提交物理内存。
+当前实现限 64 位 Linux、macOS 和 Windows；Windows x86 暂无该模块。无需配置环境变量。首次分配时尝试保留 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于消耗 1 TiB 物理内存。首个 arena 为 64 MiB，空间不足时自动增长。归还给 arena 的普通页延迟 1 秒后在分配慢路径释放物理内存，`collect()` 主动回收；大于 8 MiB 的块释放时立即归还。页密钥始终启用，arena 按需提交物理内存。
 
 选项接受非负十进制整数，可附 `K`、`M`、`G`、`T` 二进制单位；值不完整、溢出或超出目标整数类型时使用该项默认值。arena 大小向上取整到 2 MiB；窗口大小至少为 4 GiB。
 

@@ -1,13 +1,9 @@
 /* ----------------------------------------------------------------------------
- * runtime.cpp — 分配器运行时选项、初始化与主动回收
+ * runtime.cpp — 分配器初始化与主动回收
  * ------------------------------------------------------------------------- */
 #include "theap.h"
 #include "meta.h"
 
-#include <cctype>
-#include <cerrno>
-#include <climits>
-#include <cstdlib>
 #include <mutex>
 
 namespace wavvix { namespace mem { namespace detail {
@@ -18,66 +14,10 @@ uintptr_t mem_tcache_guard = 0;
 static uint64_t g_global_seed = 0;
 uint64_t mem_global_seed(void) { return g_global_seed; }
 
-/* 选项：静态零初始化，mem_init_once 解析一次，之后只读 */
-mem_options_t mem_options;
-
 namespace {
 
 std::once_flag         g_init_once;
 std::atomic<uintptr_t> g_thread_counter(1);
-
-bool mem_parse_scaled(const char* name, unsigned long long* out) {
-  const char* s = std::getenv(name);
-  if (s == NULL) return false;
-  while (std::isspace(static_cast<unsigned char>(*s))) ++s;
-  if (*s == '-') return false;
-  errno = 0;
-  char* end = NULL;
-  unsigned long long v = std::strtoull(s, &end, 10);
-  if (end == s || errno != 0) return false;
-  unsigned shift = 0;
-  switch (*end) {
-    case 'K': case 'k': shift = 10; ++end; break;
-    case 'M': case 'm': shift = 20; ++end; break;
-    case 'G': case 'g': shift = 30; ++end; break;
-    case 'T': case 't': shift = 40; ++end; break;
-    default: break;
-  }
-  if (*end != '\0' || v > (ULLONG_MAX >> shift)) return false;
-  *out = v << shift;
-  return true;
-}
-
-long mem_parse_long(const char* name, long def) {
-  unsigned long long v = 0;
-  if (!mem_parse_scaled(name, &v) || v > static_cast<unsigned long long>(LONG_MAX))
-    return def;
-  return static_cast<long>(v);
-}
-
-/* 窗口默认 1 TiB；MSVC 的 long 只有 32 位，所以尺寸单独转换到 size_t。 */
-size_t mem_parse_size(const char* name, size_t def) {
-  unsigned long long v = 0;
-  if (!mem_parse_scaled(name, &v) || v > static_cast<unsigned long long>(SIZE_MAX))
-    return def;
-  return static_cast<size_t>(v);
-}
-
-void mem_options_parse(void) {
-  mem_options.purge_delay_ms = mem_parse_long("WAVVIX_MEM_PURGE_DELAY", WAVVIX_MEM_PURGE_DELAY_MS);
-  mem_options.window_size    = mem_parse_size("WAVVIX_MEM_WINDOW_SIZE", WAVVIX_MEM_WINDOW_DEFAULT);
-  mem_options.arena_reserve  = mem_parse_size("WAVVIX_MEM_ARENA_RESERVE", WAVVIX_MEM_ARENA_FIRST);
-
-  if (mem_options.window_size < WAVVIX_MEM_WINDOW_MIN) mem_options.window_size = WAVVIX_MEM_WINDOW_MIN;
-  /* arena 必须是 2 MiB 的整数倍：描述符按 arena 提交，2 MiB = 32 slice
-   * 恰好对应 4 KiB 描述符，正好是最小的提交粒度。 */
-  if (mem_options.arena_reserve > SIZE_MAX - WAVVIX_MEM_ARENA_MIN)
-    mem_options.arena_reserve = SIZE_MAX - WAVVIX_MEM_ARENA_MIN;
-  mem_options.arena_reserve =
-      (mem_options.arena_reserve + WAVVIX_MEM_ARENA_MIN - 1) / WAVVIX_MEM_ARENA_MIN * WAVVIX_MEM_ARENA_MIN;
-  if (mem_options.arena_reserve < WAVVIX_MEM_ARENA_MIN)
-    mem_options.arena_reserve = WAVVIX_MEM_ARENA_MIN;
-}
 
 /* fork 钩子（Linux）：prepare 按固定顺序上锁（arena → meta → theap 回收链），
  * parent 逆序解锁，child 重建这四类锁（持锁的线程在子进程里已不存在）。 */
@@ -98,7 +38,6 @@ void mem_fork_child(void) {
 }
 
 void mem_init_impl(void) {
-  mem_options_parse();
   /* 熵：必须早于任何 theap 创建——线程密钥与页密钥都由它派生。
    * OS 熵源不可用时退化为时间 + 栈地址 + 常数，可预测性上升但不致崩溃。 */
   uint64_t seed[4];
@@ -111,7 +50,7 @@ void mem_init_impl(void) {
   mem_tcache_guard = (uintptr_t)(seed[0] | 1ull);
   g_global_seed   = seed[1] ^ (seed[2] << 1) ^ seed[3];
   /* 地址窗口必须在任何 arena/页之前建立：mem_ptr_page 以它为坐标系。 */
-  if (!mem_window_init(mem_options.window_size))
+  if (!mem_window_init())
     mem_os_fatal("cannot reserve address window "
                 "(need >= 4 GiB of virtual address space)");
   /* 线程退出回调必须早于任何 theap 创建：mem_theap_create 末尾会 set 值。 */

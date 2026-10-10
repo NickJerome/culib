@@ -3,22 +3,16 @@
 #include <mem_core.h>
 
 #include <atomic>
-#include <cstdlib>
 #include <thread>
 
 using wavvix::mem::detail::mem_stats_get;
 using wavvix::mem::detail::mem_stats_t;
 
 int main() {
-#if defined(_WIN32)
-    CHECK(_putenv_s("WAVVIX_MEM_ARENA_RESERVE", "2M") == 0);
-#else
-    CHECK(setenv("WAVVIX_MEM_ARENA_RESERVE", "2M", 1) == 0);
-#endif
-
-    // 2 MiB arena 恰有 32 个 64 KiB slice，先全部占住再同时触发扩容。
-    void* initial[32];
-    for (int i = 0; i < 32; ++i) {
+    // 默认首个 arena 为 64 MiB；先占住全部 slice，再并发触发扩容。
+    const int initial_count = 1024;
+    void* initial[initial_count];
+    for (int i = 0; i < initial_count; ++i) {
         initial[i] = wavvix::mem::alloc(60000);
         CHECK(initial[i] != NULL);
     }
@@ -47,6 +41,9 @@ int main() {
     CHECK_MSG(stats.arena_count == 2, "concurrent growth created redundant arenas");
 
     for (int i = 0; i < threads; ++i) wavvix::mem::free(grown[i]);
-    for (int i = 0; i < 32; ++i) wavvix::mem::free(initial[i]);
+    for (int i = 0; i < initial_count; ++i) wavvix::mem::free(initial[i]);
+    wavvix::mem::collect();
+    mem_stats_get(&stats);
+    CHECK(stats.committed_bytes == 0);
     return memtest::summary("test_arena_growth");
 }

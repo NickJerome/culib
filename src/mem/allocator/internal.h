@@ -142,14 +142,6 @@ struct mem_arena_t {
   mem_page_t*  abandoned[WAVVIX_MEM_BIN_COUNT];  /* abandoned 页桶：bin b -> [b-1] */
 };
 
-/* 运行时选项（runtime.cpp，启动解析一次，之后只读） */
-struct mem_options_t {
-  long    purge_delay_ms;        /* WAVVIX_MEM_PURGE_DELAY        默认 1000 */
-  size_t  window_size;           /* WAVVIX_MEM_WINDOW_SIZE        默认 1TiB */
-  size_t  arena_reserve;         /* WAVVIX_MEM_ARENA_RESERVE      默认 64MiB */
-};
-extern mem_options_t mem_options;
-
 /* 地址窗口与平铺描述符数组由 arena.cpp 定义。 */
 extern uint8_t*            mem_window_base;
 extern size_t              mem_window_size;
@@ -305,7 +297,7 @@ void mem_page_check_invariants(const mem_page_t* page);
 #endif
 
 /* --- arena.cpp --- */
-bool        mem_window_init(size_t want_size);       /* 保留窗口 + 描述符数组 */
+bool        mem_window_init();                      /* 保留窗口 + 描述符数组 */
 mem_arena_t* mem_arena_get(int idx);
 int         mem_arena_count(void);
 int         mem_arena_pick();

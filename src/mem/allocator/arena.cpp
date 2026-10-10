@@ -6,7 +6,6 @@
 #include "../pages.h"
 #include "bitmap.h"
 
-#include <limits>
 #include <new>
 
 namespace wavvix { namespace mem { namespace detail {
@@ -24,7 +23,7 @@ allocator_mutex            g_subproc_lock;                   /* arena 创建/全
 mem_arena_t*           g_arenas[WAVVIX_MEM_ARENA_COUNT_MAX];
 std::atomic<int>      g_arena_count(0);
 std::atomic<uint32_t> g_arena_round_robin(0);
-size_t                g_arena_next_size = 0;            /* 下一个 arena 的保留大小 */
+size_t                g_arena_next_size = WAVVIX_MEM_ARENA_FIRST;
 
 size_t g_window_slices  = 0;    /* 窗口总 slice 数 */
 size_t g_desc_reserve   = 0;    /* 描述符数组保留字节数 */
@@ -121,9 +120,8 @@ mem_arena_t* mem_arena_create(size_t size) {
 
 /* 保留窗口 + 描述符数组；窗口保留失败逐级减半，下限 WAVVIX_MEM_WINDOW_MIN。
  * 描述符数组大小 = 窗口 slice 数 × 128B（1 TiB 窗口 → 2 GiB 保留，仅地址空间）。 */
-bool mem_window_init(size_t want) {
-  size_t size = want < WAVVIX_MEM_WINDOW_MIN ? WAVVIX_MEM_WINDOW_MIN
-                                     : (want & ~(WAVVIX_MEM_ARENA_MIN - 1));
+bool mem_window_init() {
+  size_t size = WAVVIX_MEM_WINDOW_DEFAULT;
   for (;;) {
     void* base = pages::reserve(size);
     if (base) {
@@ -164,8 +162,6 @@ int mem_arena_pick() {
   if (count == 0) {
     std::lock_guard<allocator_mutex> lock(g_subproc_lock);
     if (mem_arena_count() == 0) {
-      g_arena_next_size = mem_options.arena_reserve;
-      if (g_arena_next_size == 0) g_arena_next_size = WAVVIX_MEM_ARENA_FIRST;
       if (mem_arena_create(g_arena_next_size) == NULL) return -1;
     }
     count = mem_arena_count();
@@ -261,7 +257,6 @@ size_t mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_s
   size_t need = mem_round_up(need_slices << WAVVIX_MEM_SLICE_SHIFT, WAVVIX_MEM_ARENA_MIN);
   size_t size = g_arena_next_size * 4;
   if (size > WAVVIX_MEM_ARENA_MAX) size = WAVVIX_MEM_ARENA_MAX;
-  if (size < WAVVIX_MEM_ARENA_FIRST) size = WAVVIX_MEM_ARENA_FIRST;
   if (size < need) size = need;
   size = mem_round_up(size, WAVVIX_MEM_ARENA_MIN);
   mem_arena_t* a = mem_arena_create(size);
@@ -282,11 +277,8 @@ void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
   mem_bbitmap_free(arena->slices_free, slice_idx, n);
   mem_bitmap_set_range(arena->slices_dirty, slice_idx, n);
   mem_bitmap_set_range(arena->slices_purge, slice_idx, n);
-  const int64_t now = mem_os_now_ms();
-  const int64_t delay = static_cast<int64_t>(mem_options.purge_delay_ms);
-  const int64_t max = (std::numeric_limits<int64_t>::max)();
-  const int64_t expire = now > max - delay ? max : now + delay;
-  arena->purge_expire.store(expire, std::memory_order_release);
+  arena->purge_expire.store(mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS,
+                            std::memory_order_release);
 }
 
 /* 归还已由调用方 decommit 的 slice（huge 页：free 即归还物理页）。 */
