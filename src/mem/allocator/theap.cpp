@@ -1,4 +1,5 @@
 #include "theap.h"
+#include "abandoned.h"
 #include "meta.h"
 
 #include <cstring>
@@ -100,9 +101,7 @@ mem_page_t* mem_theap_unfull_scan(mem_theap_t* t, int bin) {
 /* abandoned 页接管 */
 
 mem_page_t* mem_page_reclaim(mem_theap_t* t, int bin) {
-  mem_arena_t* arena = mem_arena_get(t->arena_idx);
-  if (arena == NULL) return NULL;
-  mem_page_t* page = mem_arena_reclaim_page(arena, bin);
+  mem_page_t* page = mem_reclaim_page(bin);
   if (page == NULL) return NULL;
   page->xthread_id.store(t->thread_id, std::memory_order_release);
   mem_page_free_collect(page);
@@ -163,8 +162,7 @@ void mem_theap_release(mem_theap_t* t) {
       }
       page->xthread_id.fetch_or(WAVVIX_MEM_PAGE_XTHREAD_ABANDONED,
                                 std::memory_order_acq_rel);
-      mem_arena_t* arena = mem_arena_get(page->arena_idx);
-      if (arena != NULL) mem_arena_abandon_page(arena, page);
+      mem_abandon_page(page);
     }
   }
   /* large 页不在队列中，free 路径直接处理。 */

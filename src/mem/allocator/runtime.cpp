@@ -2,6 +2,7 @@
  * runtime.cpp — 分配器初始化与主动回收
  * ------------------------------------------------------------------------- */
 #include "theap.h"
+#include "abandoned.h"
 #include "meta.h"
 
 #include <mutex>
@@ -19,19 +20,21 @@ namespace {
 std::once_flag         g_init_once;
 std::atomic<uintptr_t> g_thread_counter(1);
 
-/* fork 钩子（Linux）：prepare 按固定顺序上锁（arena → meta → theap 回收链），
- * parent 逆序解锁，child 重建这四类锁（持锁的线程在子进程里已不存在）。 */
+/* fork：arena → meta → theap 回收链 → abandoned 池；parent 逆序解锁。 */
 void mem_fork_prepare(void) {
   mem_arena_lock_all();          /* g_subproc_lock + 每个 arena 的 mutex */
   mem_meta_lock();
   mem_theap_recycle_lock();
+  mem_abandoned_lock();
 }
 void mem_fork_parent(void) {
+  mem_abandoned_unlock();
   mem_theap_recycle_unlock();
   mem_meta_unlock();
   mem_arena_unlock_all();
 }
 void mem_fork_child(void) {
+  mem_abandoned_reinit_lock_child();
   mem_theap_reinit_locks_child();
   mem_meta_reinit_locks_child();
   mem_arena_reinit_locks_child();
@@ -74,17 +77,11 @@ uintptr_t mem_next_thread_id(void) {
 void wavvix::mem::collect() noexcept {
   using namespace detail;
   if (mem_t_theap != NULL) mem_theap_collect(mem_t_theap);
+  mem_collect_abandoned();
   int count = mem_arena_count();
   for (int i = 0; i < count; i++) {
     mem_arena_t* a = mem_arena_get(i);
     if (a == NULL) continue;
-    /* 被弃页里已经全空的：摘出来（锁内）再逐个归还 slice（锁外） */
-    mem_page_t* pg = mem_arena_take_abandoned_empty(a);
-    while (pg != NULL) {
-      mem_page_t* nx = pg->next;
-      mem_page_release_slices(pg);
-      pg = nx;
-    }
     mem_arena_purge_force(a);
   }
 }

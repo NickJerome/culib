@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
- * arena.cpp — 地址窗口、平铺描述符、slice 回收和 abandoned 页
+ * arena.cpp — 地址窗口、平铺描述符与 slice 回收
  * ------------------------------------------------------------------------- */
 #include "internal.h"
 #include "meta.h"
@@ -105,7 +105,6 @@ mem_arena_t* mem_arena_create(size_t size) {
   mem_bitmap_init(bm_dirty, st_dirty, n, false);
   mem_bitmap_init(bm_purge, st_purge, n, false);
   arena->purge_expire.store(0, std::memory_order_relaxed);
-  for (int i = 0; i < WAVVIX_MEM_BIN_COUNT; i++) arena->abandoned[i] = NULL;
 
   g_arenas[count] = arena;
   g_arena_count.store(count + 1, std::memory_order_release);
@@ -312,55 +311,6 @@ void mem_arena_purge_check(mem_arena_t* arena) {
   if (expire != 0 && mem_os_now_ms() >= expire) mem_arena_purge_force(arena);
 }
 
-/* --------------------------- abandoned 桶 ------------------------------ */
-/* （bin b -> bucket[b-1]，仅 small 页） */
-
-void mem_arena_abandon_page(mem_arena_t* arena, mem_page_t* page) {
-  std::lock_guard<allocator_mutex> lock(arena->mutex);
-  int b = page->bin;
-  /* 与读侧 mem_arena_reclaim_page 同样两端校验，且不夹取：夹到 1 比中止更糟——
-   * bin==0 的 large 页会被静默归进 bin 1 的桶，之后当 bin-1 的小页发出去。
-   * 目前不可达（只有小页队列会走到这里），这是把契约写在使用点上。 */
-  if (WAVVIX_MEM_UNLIKELY(b < 1 || b > WAVVIX_MEM_BIN_FULL))
-    mem_fatal_page("abandon of a page with an out-of-range bin", NULL, page);
-  page->next = arena->abandoned[b - 1];
-  arena->abandoned[b - 1] = page;
-}
-
-mem_page_t* mem_arena_reclaim_page(mem_arena_t* arena, int bin) {
-  if (bin < 1 || bin > WAVVIX_MEM_BIN_FULL) return NULL;
-  std::lock_guard<allocator_mutex> lock(arena->mutex);
-  mem_page_t* page = arena->abandoned[bin - 1];
-  if (page != NULL) {
-    arena->abandoned[bin - 1] = page->next;
-    page->next = NULL;
-  }
-  return page;
-}
-
-/* wavvix::mem::collect 用：遍历全部 37 个桶，collect 每页，把 used==0 的摘链并用 next
- * 串成一条返回链交给调用方归还 slice（归还必须在锁外做——mem_page_release_slices
- * 自身还要取同一把 arena 锁）。 */
-mem_page_t* mem_arena_take_abandoned_empty(mem_arena_t* arena) {
-  std::lock_guard<allocator_mutex> lock(arena->mutex);
-  mem_page_t* head = NULL;
-  for (int b = 0; b < WAVVIX_MEM_BIN_COUNT; b++) {
-    mem_page_t** pp = &arena->abandoned[b];
-    while (*pp != NULL) {
-      mem_page_t* pg = *pp;
-      mem_page_free_collect(pg);
-      if (pg->used == 0) {
-        *pp = pg->next;
-        pg->next = head;
-        head = pg;
-      } else {
-        pp = &pg->next;
-      }
-    }
-  }
-  return head;
-}
-
 /* ------------------------------ 统计 ----------------------------------- */
 
 size_t mem_arena_committed_bytes(void) {
@@ -374,18 +324,6 @@ size_t mem_arena_committed_bytes(void) {
       total += (size_t)mem_popcount64(a->slices_committed->words[w]);
   }
   return total * WAVVIX_MEM_SLICE_SIZE;
-}
-
-size_t mem_arena_abandoned_count(void) {
-  size_t total = 0;
-  int count = mem_arena_count();
-  for (int i = 0; i < count; i++) {
-    mem_arena_t* a = g_arenas[i];
-    std::lock_guard<allocator_mutex> lock(a->mutex);
-    for (int b = 0; b < WAVVIX_MEM_BIN_COUNT; b++)
-      for (mem_page_t* pg = a->abandoned[b]; pg != NULL; pg = pg->next) total++;
-  }
-  return total;
 }
 
 /* ------------------------ 平铺描述符数组的维护 ------------------------- */

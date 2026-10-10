@@ -37,6 +37,7 @@
 ## 已落实的独立单元
 
 - `mem/pages`：分配器和协程栈共用 OS 内存页操作；`allocator/meta` 只在其上组合原生锁和 bump 分配。
+- `mem/allocator/abandoned`：拥有退出线程留下的小页，按大小供所有 arena 的线程复用。arena 不再管理这些链表；主动回收在池锁内摘页、锁外归还 slice。线程堆只调用移交和接管接口。
 - `runtime/wait_set`：拥有挂起计数、定时堆和同截止时间的顺序；只管理等待，不执行协程、不访问 vCPU 或 I/O。调度器处理通知和到期事件后决定谁进入就绪队列。
 - `runtime/park.h`、`remote_wake.h`、`scheduler_io.h`：分别向同步原语、跨线程任务和网络提供需要的接口，删掉聚合的 scheduler_detail.h。I/O 引擎无需知道 park_token 布局。
 - `cli/config.cpp`：纯文本解析和配置查询；`config_file.cpp` 组合文件读取并补路径上下文；`config_flags.cpp` 组合命令行优先策略。没有新增公共包装接口。

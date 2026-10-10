@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "abandoned.h"
 
 #include <cstring>
 
@@ -83,7 +84,7 @@ void mem_stats_get(mem_stats_t* out) {
   out->reserved_bytes    = mem_window_size;
   out->committed_bytes   = mem_arena_committed_bytes();
   out->arena_count       = (size_t)mem_arena_count();
-  out->abandoned_pages   = mem_arena_abandoned_count();
+  out->abandoned_pages   = mem_abandoned_count();
   out->process_rss_bytes = mem_os_process_rss();
 }
 

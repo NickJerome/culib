@@ -139,7 +139,6 @@ struct mem_arena_t {
   std::atomic<int64_t> purge_expire;     /* ms 时间戳，0=无待 purge */
   uint16_t    index;                /* 自身在 g_arenas[] 中的下标 */
   allocator_mutex  mutex;                /* arena 唯一锁 */
-  mem_page_t*  abandoned[WAVVIX_MEM_BIN_COUNT];  /* abandoned 页桶：bin b -> [b-1] */
 };
 
 /* 地址窗口与平铺描述符数组由 arena.cpp 定义。 */
@@ -312,12 +311,7 @@ void        mem_arena_free_slices(mem_arena_t* a, size_t idx, size_t n);  /* dir
 void        mem_arena_free_slices_decommitted(mem_arena_t* a, size_t idx, size_t n);
 void        mem_arena_purge_check(mem_arena_t* a);   /* 到期才 purge */
 void        mem_arena_purge_force(mem_arena_t* a);   /* wavvix::mem::collect 用 */
-void        mem_arena_abandon_page(mem_arena_t* a, mem_page_t* page);
-mem_page_t*  mem_arena_reclaim_page(mem_arena_t* a, int bin);
-/* collect 全桶，摘出 used==0 的页链（next 串接），调用方负责归还 slice */
-mem_page_t*  mem_arena_take_abandoned_empty(mem_arena_t* a);
 size_t      mem_arena_committed_bytes(void);
-size_t      mem_arena_abandoned_count(void);
 /* 描述符平铺数组的维护：CONT 项登记 / 整段 magic 清零 */
 void        mem_desc_mark_cont(size_t first_idx, size_t n);
 void        mem_desc_clear(size_t first_idx);
