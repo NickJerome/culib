@@ -58,6 +58,13 @@ done
 "$output/os_stop_test.exe" ctrl-c
 "$output/os_stop_test.exe" ctrl-break
 
+if [[ "$arch" == x86_64 ]]; then
+    "$compiler" "${flags[@]}" -Isrc/mem/allocator -static \
+        tests/mem/test_stress.cpp "${library_objects[@]}" -lws2_32 \
+        -o "$output/mem_test_stress.exe"
+    "$output/mem_test_stress.exe"
+fi
+
 for source in examples/*.cpp; do
     example="$output/example_$(basename "$source" .cpp).exe"
     "$compiler" "${flags[@]}" -static -o "$example" \

@@ -7,7 +7,6 @@ namespace wavvix { namespace mem { namespace detail {
 
 /* 快路径直接读取的 TLS 指针（internal.h 中 inline） */
 thread_local mem_theap_t* mem_t_theap = NULL;
-static thread_local bool thread_exiting = false;
 
 static void mem_tcache_flush_all(mem_theap_t* t);
 
@@ -18,7 +17,6 @@ namespace {
 static void mem_thread_exit_cb(void* value) {
   mem_theap_t* t = (mem_theap_t*)value;
   if (t == NULL) return;
-  if (mem_t_theap == t) thread_exiting = true;
   mem_theap_release(t);
 }
 
@@ -187,7 +185,7 @@ mem_theap_t* mem_theap_create(void) {
   mem_t_theap = t;
   /* 线程退出钩子登记。放在最后一步：上面任何一个失败返回都不该留下一个
    * "登记了却没建成"的 theap。 */
-  t->temporary = thread_exiting || !mem_os_thread_exit_set(t);
+  t->temporary = !mem_os_thread_exit_set(t);
   return t;
 }
 

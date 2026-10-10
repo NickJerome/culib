@@ -62,16 +62,30 @@ void mem_os_write_stderr(const char* msg) {
 }
 
 static DWORD g_fls_index = FLS_OUT_OF_INDEXES;
+static DWORD g_exiting_index = TLS_OUT_OF_INDEXES;
+static mem_os_thread_exit_fn g_exit_callback = NULL;
+
+static VOID CALLBACK mem_thread_exit(PVOID value) {
+  // MinGW may already have destroyed emulated C++ TLS; use native OS storage.
+  if (!TlsSetValue(g_exiting_index, reinterpret_cast<void*>(1))) std::abort();
+  g_exit_callback(value);
+}
 
 bool mem_os_thread_exit_init(mem_os_thread_exit_fn fn) {
-  /* FLS 回调在线程退出时执行，对 std::thread 创建的线程同样有效——这正是
-   * DllMain 的 TLS 回调（静态库里根本没有）和 thread_local 析构做不到的。 */
-  g_fls_index = FlsAlloc((PFLS_CALLBACK_FUNCTION)fn);
+  g_exiting_index = TlsAlloc();
+  if (g_exiting_index == TLS_OUT_OF_INDEXES) return false;
+  g_exit_callback = fn;
+  g_fls_index = FlsAlloc(&mem_thread_exit);
+  if (g_fls_index == FLS_OUT_OF_INDEXES) {
+    TlsFree(g_exiting_index);
+    g_exiting_index = TLS_OUT_OF_INDEXES;
+  }
   return g_fls_index != FLS_OUT_OF_INDEXES;
 }
 
 bool mem_os_thread_exit_set(void* value) {
   if (g_fls_index == FLS_OUT_OF_INDEXES) return false;
+  if (value != NULL && TlsGetValue(g_exiting_index) != NULL) return false;
   return FlsSetValue(g_fls_index, value) != 0;
 }
 
@@ -147,15 +161,24 @@ void mem_os_write_stderr(const char* msg) {
 
 static pthread_key_t g_texit_key;
 static bool          g_texit_ready = false;
+static thread_local bool g_thread_exiting = false;
+static mem_os_thread_exit_fn g_exit_callback = NULL;
+
+static void mem_thread_exit(void* value) {
+  g_thread_exiting = true;
+  g_exit_callback(value);
+}
 
 bool mem_os_thread_exit_init(mem_os_thread_exit_fn fn) {
-  if (pthread_key_create(&g_texit_key, fn) != 0) return false;
+  g_exit_callback = fn;
+  if (pthread_key_create(&g_texit_key, mem_thread_exit) != 0) return false;
   g_texit_ready = true;
   return true;
 }
 
 bool mem_os_thread_exit_set(void* value) {
   if (!g_texit_ready) return false;
+  if (value != NULL && g_thread_exiting) return false;
   return pthread_setspecific(g_texit_key, value) == 0;
 }
 

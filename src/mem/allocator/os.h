@@ -29,6 +29,7 @@ WAVVIX_MEM_NORETURN void mem_os_fatal(const char* line);
  * Windows 用 FlsAlloc，POSIX 用 pthread_key_create。 */
 typedef void (*mem_os_thread_exit_fn)(void* value);
 bool  mem_os_thread_exit_init(mem_os_thread_exit_fn fn);
+// Returns false when registration fails or this thread's exit callback already ran.
 bool  mem_os_thread_exit_set(void* value);
 
 /* fork 钩子注册；Windows 无 fork，此接口为空实现。 */
