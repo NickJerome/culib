@@ -112,9 +112,6 @@ result<tcp_stream> tcp_listener::accept(std::chrono::nanoseconds timeout) {
         return detail::tcp_error("accept context", failed);
     }
     tcp_stream stream(static_cast<std::uintptr_t>(accepted));
-    if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(stream.native_)))
-        return make_error(error_kind::io, "cannot adopt accepted TCP stream");
-    stream.adopted_ = true;
     return result<tcp_stream>(std::move(stream));
 }
 

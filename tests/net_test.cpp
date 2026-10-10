@@ -1,3 +1,4 @@
+#include <culib/coroutine.h>
 #include <culib/net.h>
 #include <culib/scheduler.h>
 #include <culib/test.h>
@@ -5,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -137,6 +139,64 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
         EXPECT(std::string(answer, received), ==, std::string("pong"));
     }).value();
     EXPECT(wavvix::run(), ==, std::size_t(2));
+}
+
+TEST(net, accepted_tcp_stream_can_move_to_worker_vcpu) {
+    const wavvix::result<endpoint> address = endpoint::parse("127.0.0.1", 0);
+    EXPECT(address.is_ok(), ==, true);
+    if (address.is_err()) return;
+    wavvix::result<tcp_listener> opened_listener = tcp_listener::listen(address.value());
+    EXPECT(opened_listener.is_ok(), ==, true);
+    if (opened_listener.is_err()) return;
+    tcp_listener listener = std::move(opened_listener).value();
+    const wavvix::result<endpoint> local = listener.local_endpoint();
+    EXPECT(local.is_ok(), ==, true);
+    if (local.is_err()) return;
+
+    wavvix::result<wavvix::scheduler_scope> opened_runtime =
+        wavvix::scheduler_scope::with_workers(1);
+    EXPECT(opened_runtime.is_ok(), ==, true);
+    if (opened_runtime.is_err()) return;
+    wavvix::scheduler_scope runtime = std::move(opened_runtime).value();
+
+    std::thread::id accept_thread;
+    std::thread::id handler_thread;
+    bool server_ok = false;
+    bool handler_ok = false;
+    bool client_ok = false;
+    wavvix::result<void> server = wavvix::spawn([&] {
+        accept_thread = std::this_thread::get_id();
+        wavvix::result<tcp_stream> accepted = listener.accept(ms(1000));
+        if (accepted.is_err()) return;
+        wavvix::coroutine handler([&](tcp_stream stream) {
+            handler_thread = std::this_thread::get_id();
+            char request = 0;
+            wavvix::result<std::size_t> received = stream.read(&request, 1, ms(1000));
+            if (received.is_err() || received.value() != 1 || request != 'q') return;
+            const char reply = 'r';
+            wavvix::result<std::size_t> sent = stream.write(&reply, 1, ms(1000));
+            handler_ok = sent.is_ok() && sent.value() == 1;
+        }, std::move(accepted).value());
+        handler.join();
+        server_ok = true;
+    });
+    EXPECT(server.is_ok(), ==, true);
+    if (server.is_err()) return;
+
+    wavvix::coroutine client([&] {
+        wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
+        if (connected.is_err()) return;
+        const char request = 'q';
+        wavvix::result<std::size_t> sent = connected.value().write(&request, 1, ms(1000));
+        if (sent.is_err() || sent.value() != 1) return;
+        char reply = 0;
+        wavvix::result<std::size_t> received = connected.value().read(&reply, 1, ms(1000));
+        client_ok = received.is_ok() && received.value() == 1 && reply == 'r';
+    });
+    wavvix::run();
+    client.join();
+    EXPECT(server_ok && handler_ok && client_ok, ==, true);
+    EXPECT(handler_thread != accept_thread, ==, true);
 }
 
 TEST(net, tcp_accept_recovers_after_timeout) {
