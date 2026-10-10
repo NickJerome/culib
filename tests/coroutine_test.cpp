@@ -403,6 +403,31 @@ TEST(fiber, releases_cached_stacks_when_threads_exit) {
 #endif
 
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
+TEST(fiber, restores_resumer_stack_for_exceptions) {
+    int caught = 0;
+    const auto throw_and_catch = [&] {
+        try { throw 7; }
+        catch (int) { ++caught; }
+    };
+    fiber outer([&] {
+        fiber inner([&] {
+            throw_and_catch();
+            fiber::yield();
+            throw_and_catch();
+        });
+        EXPECT(inner.resume(), ==, true);
+        throw_and_catch();
+        fiber::yield();
+        EXPECT(inner.resume(), ==, false);
+        throw_and_catch();
+    });
+    EXPECT(outer.resume(), ==, true);
+    throw_and_catch();
+    EXPECT(outer.resume(), ==, false);
+    throw_and_catch();
+    EXPECT(caught, ==, 6);
+}
+
 TEST(fiber, lets_exceptions_throw_and_catch_inside) {
     // 协程栈内抛接是正常的（gdb 回溯也正常）。穿出协程不行，那条不测——
     // 它会 std::terminate，测不了。

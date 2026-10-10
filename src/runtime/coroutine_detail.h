@@ -6,6 +6,17 @@
 
 #include "../mem/stack_pool.h"
 
+#define WAVVIX_DETAIL_ASAN_FIBERS 0
+#if defined(__SANITIZE_ADDRESS__)
+#  undef WAVVIX_DETAIL_ASAN_FIBERS
+#  define WAVVIX_DETAIL_ASAN_FIBERS 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    undef WAVVIX_DETAIL_ASAN_FIBERS
+#    define WAVVIX_DETAIL_ASAN_FIBERS 1
+#  endif
+#endif
+
 namespace wavvix {
 namespace detail {
 
@@ -44,7 +55,11 @@ struct coroutine_control {
     unsigned long long owner;
     bool started;
     bool finished;
+#if WAVVIX_DETAIL_ASAN_FIBERS
     void* fake_stack;
+    const void* resumer_stack_bottom;
+    std::size_t resumer_stack_size;
+#endif
     coroutine_control* next_ready;
 };
 

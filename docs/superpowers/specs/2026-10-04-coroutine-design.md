@@ -361,6 +361,14 @@ Windows 贵一截是应该的：多存 160 字节的 xmm6–15 和四个 TIB 字
 | 有注解 | 一声不响 |
 | 没注解 | `WARNING: ASan is ignoring requested __asan_handle_no_return: ... size: 255196848128` 加 `False positive error reports may follow` |
 
+2026-10-10 的完整 CI 日志检查发现，旧注解只在协程栈上正确，切回调用者时错误地把
+`bottom/size` 设为 `0/0`；ASan 不会据此自动恢复主栈。在其后主栈抛异常时，
+`__asan_handle_no_return` 警告栈顶为零，并提示后续可能出现误报，测试退出码仍是 0。
+现在用 `finish_switch_fiber` 返回的旧栈范围记录实际调用者，yield/结束时传回该范围，
+同时支持嵌套协程；永久结束时按 sanitizer 协议传空的 fake-stack 保存地址以释放它。
+相关状态仅在 ASan 构建中存在。新增测试在内层、外层和主栈切换后分别抛接异常，
+sanitizer CI 对成功退出但有诊断的情况也报失败。本机 GCC ASan/UBSan 已验证警告消失。
+
 ### 4.4 保护页
 
 64 KB 的栈上每帧 4 KB 递归，退出码 **139**（128+11，SIGSEGV），不是静默踩内存。

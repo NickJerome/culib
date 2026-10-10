@@ -21,18 +21,6 @@
 #  error "culib 的协程还没有这个 (平台, 架构) 的换栈汇编。已覆盖：x86_64、arm64、Windows x86。缺：32 位非 Windows。见 src/runtime/asm/"
 #endif
 
-// 换栈需告知 ASan；嵌套 #if 兼容没有 __has_feature 的预处理器。
-#define WAVVIX_DETAIL_ASAN_FIBERS 0
-#if defined(__SANITIZE_ADDRESS__)
-#  undef WAVVIX_DETAIL_ASAN_FIBERS
-#  define WAVVIX_DETAIL_ASAN_FIBERS 1
-#elif defined(__has_feature)
-#  if __has_feature(address_sanitizer)
-#    undef WAVVIX_DETAIL_ASAN_FIBERS
-#    define WAVVIX_DETAIL_ASAN_FIBERS 1
-#  endif
-#endif
-
 #if WAVVIX_DETAIL_ASAN_FIBERS
 extern "C" {
 void __sanitizer_start_switch_fiber(void** fake_stack_save, const void* bottom, std::size_t size);
@@ -63,16 +51,17 @@ __thread void* main_fake_stack_slot = 0;
 inline void*& main_fake_stack() { return main_fake_stack_slot; }
 #endif
 
-// 这一侧的栈范围，交给 ASan。主栈那边我们不知道范围，传 0 让它自己查。
 inline void asan_before_switch(coroutine_control* leaving, const coroutine_control* entering) {
 #if WAVVIX_DETAIL_ASAN_FIBERS
     void** const save = leaving ? &leaving->fake_stack : &main_fake_stack();
+    void** const keep = leaving && leaving->finished ? 0 : save;
     if (entering) {
-        __sanitizer_start_switch_fiber(save, entering->memory.base + entering->memory.guard,
+        __sanitizer_start_switch_fiber(keep, entering->memory.base + entering->memory.guard,
                                        entering->usable);
     } else {
-        // 切回主栈：范围传 0，ASan 会恢复它自己记下的那一份
-        __sanitizer_start_switch_fiber(save, 0, 0);
+        // 返回主栈或外层协程，使用进入时取得的实际栈范围。
+        __sanitizer_start_switch_fiber(keep, leaving->resumer_stack_bottom,
+                                       leaving->resumer_stack_size);
     }
 #else
     (void)leaving;
@@ -80,11 +69,14 @@ inline void asan_before_switch(coroutine_control* leaving, const coroutine_contr
 #endif
 }
 
-inline void asan_after_switch(coroutine_control* arrived) {
+inline void asan_after_switch(coroutine_control* arrived, bool from_resumer = false) {
 #if WAVVIX_DETAIL_ASAN_FIBERS
-    __sanitizer_finish_switch_fiber(arrived ? arrived->fake_stack : main_fake_stack(), 0, 0);
+    __sanitizer_finish_switch_fiber(arrived ? arrived->fake_stack : main_fake_stack(),
+        from_resumer ? &arrived->resumer_stack_bottom : 0,
+        from_resumer ? &arrived->resumer_stack_size : 0);
 #else
     (void)arrived;
+    (void)from_resumer;
 #endif
 }
 
@@ -155,7 +147,7 @@ char* align_down(char* pointer, std::size_t align) {
 // 新栈的第一帧。入口函数返回就落到 finish（见汇编），所以这里只负责跑 body。
 void trampoline(context_transfer from) {
     coroutine_control* const self = current;
-    asan_after_switch(self);
+    asan_after_switch(self, true);
     self->resumer = from.context;
     self->invoke(self->body);
     self->destroy(self->body);
@@ -242,7 +234,11 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
     control->owner = 0;   // 第一次 resume 才绑线程
     control->started = false;
     control->finished = false;
+#if WAVVIX_DETAIL_ASAN_FIBERS
     control->fake_stack = 0;
+    control->resumer_stack_bottom = 0;
+    control->resumer_stack_size = 0;
+#endif
     control->next_ready = 0;
     return control;
 }
@@ -319,7 +315,7 @@ void coroutine_yield() noexcept {
     asan_before_switch(self, 0);
     const context_transfer back = wavvix_jump_context(self->resumer, 0);
     // 被 resume 回来了。current 已经由 resume() 设成我们，不用自己动
-    asan_after_switch(self);
+    asan_after_switch(self, true);
     self->resumer = back.context;
 }
 
