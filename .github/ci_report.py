@@ -86,6 +86,7 @@ def publish(path, code, command):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
             body = "{}\nexit={} / scanned={} lines\n{}".format(command, code, result["lines"], excerpt(result))
             out.write("\n### Command output\n\n" + "\n".join("    " + s for s in body.splitlines()) + "\n")
+    return 1 if result["diagnostics"] and os.environ.get("CULIB_CI_STRICT") == "1" else 0
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -128,6 +129,20 @@ def pages(path, key=None):
 
 def git(*args):
     return subprocess.check_output(["git"] + list(args), text=True, stderr=subprocess.PIPE).strip()
+
+
+def use_git_credentials():
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        return
+    try:
+        result = subprocess.run(["git", "credential", "fill"],
+            input="protocol=https\nhost=github.com\n\n", text=True, capture_output=True,
+            env=dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never"), timeout=10)
+        fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        if result.returncode == 0 and fields.get("password"):
+            os.environ["GH_TOKEN"] = fields["password"]
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def select_run(args):
@@ -204,7 +219,7 @@ def query(args):
     lines = [run["html_url"], "commit {} / attempt {} / {} / {}".format(
         run["head_sha"], run["run_attempt"], run["status"], run["conclusion"])]
     if not full_logs:
-        lines.append("No GH_TOKEN/GITHUB_TOKEN: full logs unavailable; reading public CI excerpts.")
+        lines.append("No GitHub credential available: full logs unavailable; reading public CI excerpts.")
     bad = run["conclusion"] not in (None, "success")
     incomplete = run["status"] != "completed"
     for record in records:
@@ -255,8 +270,8 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     try:
         if args.publish:
-            publish(args.publish, args.exit_code, args.command)
-            return 0
+            return publish(args.publish, args.exit_code, args.command)
+        use_git_credentials()
         return query(args)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
         print("ci_report: " + str(error), file=sys.stderr)

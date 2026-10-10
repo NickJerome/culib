@@ -51,6 +51,24 @@ class ReportTests(unittest.TestCase):
     def test_runner_annotations_remain_visible_in_full_logs(self):
         self.assertTrue(ci.scan("##[warning]Node.js 20 is deprecated")['diagnostics'])
 
+    def test_strict_ci_rejects_diagnostics_despite_zero_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "test.log"
+            path.write_text("WARNING: ASan is ignoring requested __asan_handle_no_return\n", encoding="utf-8")
+            with patch.dict(ci.os.environ, {"CULIB_CI_STRICT": "1"}, clear=True), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci.publish(path, 0, "xmake test"), 1)
+
+    def test_git_credentials_are_noninteractive_and_not_printed(self):
+        process = SimpleNamespace(returncode=0, stdout="username=example\npassword=example-token\n")
+        with patch.dict(ci.os.environ, {}, clear=True), \
+                patch.object(ci.subprocess, "run", return_value=process) as run, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            ci.use_git_credentials()
+            self.assertEqual(ci.os.environ["GH_TOKEN"], "example-token")
+            self.assertEqual(run.call_args.kwargs["env"]["GCM_INTERACTIVE"], "never")
+            self.assertEqual(out.getvalue(), "")
+
     def test_published_output_escapes_workflow_commands(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "test.log"

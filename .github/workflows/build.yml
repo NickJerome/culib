@@ -57,8 +57,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
-          install: mingw-w64-x86_64-gcc python
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc python
       - name: build 64-bit tests and examples, run tests
         shell: msys2 {0}
         run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh x86_64
@@ -127,13 +127,13 @@ jobs:
         run: xmake f -m release --toolchain=${{ matrix.toolchain }} --cxxflags="-fno-exceptions -fno-rtti" --ccache=n -y
       - name: build library
         shell: bash
-        run: bash .github/report-failure.sh xmake -w -y
+        run: bash .github/report-failure.sh xmake -y
       - name: run tests
         shell: bash
         run: bash .github/report-failure.sh xmake test -v
       - name: build examples
         shell: bash
-        run: bash .github/report-failure.sh xmake build -w -y -g examples
+        run: bash .github/report-failure.sh xmake build -y -g examples
 
   sanitizers:
     name: Linux GCC ASan + UBSan
@@ -147,12 +147,13 @@ jobs:
         run: xmake f -m debug --toolchain=gcc --cxxflags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" --ldflags="-fsanitize=address,undefined" --ccache=n -y
       - name: build library and tests
         shell: bash
-        run: bash .github/report-failure.sh xmake build -w -y culib_test
+        run: bash .github/report-failure.sh xmake build -y culib_test
       - name: run tests under ASan and UBSan
         shell: bash
         env:
           ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          CULIB_CI_STRICT: '1'
         # ASan 自己接管 malloc/new；全局覆盖计数测试在此配置下无法观察 culib 的入口。
         # 该覆盖测试仍在普通 Linux debug/release 作业中执行。
         run: bash .github/report-failure.sh xmake test -v culib_test/default mem_test_new_override/default mem_test_rss/default mem_test_security/default mem_test_stress/default mem_test_unit/default
@@ -176,7 +177,7 @@ jobs:
         run: xmake f -m debug --toolchain=${{ matrix.platform.toolchain }} --cxxflags="${{ matrix.platform.define }}" --ccache=n -y
       - name: build library
         shell: bash
-        run: bash .github/report-failure.sh xmake -w -y
+        run: bash .github/report-failure.sh xmake -y
       - name: run tests
         shell: bash
         run: bash .github/report-failure.sh xmake test -v
@@ -218,10 +219,10 @@ jobs:
 
       # 命令输出由 report-failure.sh 提取并发布，查询方式见 docs/ci.md。
 
-      # -w 显示警告。xmake.lua 已把警告设为错误（三个平台都是），所以这同时是零警告检查。
+      # xmake 默认显示警告；xmake.lua 将三平台编译警告视为错误。
       - name: build library
         shell: bash
-        run: bash .github/report-failure.sh xmake -w -y
+        run: bash .github/report-failure.sh xmake -y
 
       - name: run tests
         shell: bash
@@ -232,7 +233,7 @@ jobs:
       # 这一步抓到过 examples/os.cpp 的 std::fopen 在 MSVC 上是 C4996。
       - name: build examples
         shell: bash
-        run: bash .github/report-failure.sh xmake build -w -y -g examples
+        run: bash .github/report-failure.sh xmake build -y -g examples
 
       - name: run examples
         shell: bash

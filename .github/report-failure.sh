@@ -10,7 +10,7 @@ status=$?
 python3 "$(dirname "$0")/ci_report.py" --publish "$log" --exit-code "$status" --command "$*"
 report_status=$?
 if [ "$report_status" -ne 0 ]; then
-    echo "::error::CI output reporting failed (exit $report_status)"
+    echo "::error::CI output check failed (exit $report_status)"
     if [ "$status" -eq 0 ]; then status=$report_status; fi
 fi
 exit "$status"

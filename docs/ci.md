@@ -20,9 +20,11 @@ python .github/ci_report.py 38025351576 --job "allocator L2"
 
 ## 日志权限与覆盖范围
 
-提供有该仓库 Actions 读取权限的 `GH_TOKEN` 或 `GITHUB_TOKEN` 后，脚本下载并扫描
-每个 job 的完整日志。令牌只通过环境变量传入，不写进报告；日志下载重定向时不向
-其他域名转发认证头。2026-10-10 实测公开仓库匿名下载 job 日志返回 HTTP 403。
+脚本优先使用 `GH_TOKEN` 或 `GITHUB_TOKEN`；未设置时，通过 `git credential fill`
+复用已有的 GitHub 登录，禁用交互提示。有该仓库 Actions 读取权限时，下载并扫描
+每个 job 的完整日志。令牌只留在当前进程环境中，不打印、不写进报告；日志下载
+重定向时不向其他域名转发认证头。2026-10-10 实测匿名下载 job 日志返回 HTTP 403，
+本机现有的 GitHub Git 凭据能够读取完整日志。
 
 没有令牌或下载失败时，脚本读取公开的 check-run annotations。
 CI 的 `.github/report-failure.sh` 在命令成功和失败时都会扫描 stdout/stderr，
@@ -54,3 +56,6 @@ bash .github/report-failure.sh xmake test -v
 
 包装脚本保留被执行命令的非零退出码；报告生成失败也会让原本成功的命令返回失败，
 避免 CI 在没有发布输出时悄悄通过。脚本测试随 `public headers` job 执行。
+
+ASan/UBSan job 设置 `CULIB_CI_STRICT=1`：即使测试进程返回 0，扫描到诊断也让该步骤失败。
+这会拦住 sanitizer 自身降级检测的警告，不能只靠 `halt_on_error=1`。
