@@ -45,7 +45,7 @@ registry& table() {
 }
 
 struct parse_attempt {
-    explicit parse_attempt(registry& value) : state(value), complete(false) {
+    explicit parse_attempt(registry& value) : state(value) {
         state.parsed = false;
         state.positional.clear();
         state.help_requested = false;
@@ -53,7 +53,7 @@ struct parse_attempt {
     }
 
     ~parse_attempt() {
-        if (complete) return;
+        if (state.parsed) return;
         state.positional.clear();
         state.help_requested = false;
         state.version_requested = false;
@@ -62,7 +62,6 @@ struct parse_attempt {
     }
 
     registry& state;
-    bool complete;
 };
 
 entry* find_by_name(registry& self, string_view name) {
@@ -333,7 +332,6 @@ result<void> parse(int argc, char* argv[], string_view version) {
     const result<void> missing = check_required(self);
     if (missing.is_err()) return missing;
     self.parsed = true;
-    attempt.complete = true;
     return result<void>();
 }
 
