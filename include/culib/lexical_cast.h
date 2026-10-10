@@ -24,11 +24,6 @@ result<bool> parse_bool(string_view text);
 error signed_out_of_range(string_view text, long long low, long long high);
 error unsigned_out_of_range(string_view text, unsigned long long high);
 
-struct bool_tag {};
-struct signed_tag {};
-struct unsigned_tag {};
-struct float_tag {};
-
 template <typename T>
 struct is_character_type {
     static const bool value =
@@ -53,26 +48,17 @@ struct widen {
                                   unsigned long long>::type>::type;
 };
 
-template <typename T>
-struct cast_tag {
-    using type = typename std::conditional<
-        std::is_same<T, bool>::value, bool_tag,
-        typename std::conditional<
-            std::is_floating_point<T>::value, float_tag,
-            typename std::conditional<std::is_signed<T>::value, signed_tag,
-                                      unsigned_tag>::type>::type>::type;
-};
-
-template <typename T, typename Tag>
+template <typename T, typename Enable = void>
 struct caster;
 
 template <typename T>
-struct caster<T, bool_tag> {
+struct caster<T, typename std::enable_if<std::is_same<T, bool>::value>::type> {
     static result<T> cast(string_view text, int) { return parse_bool(text); }
 };
 
 template <typename T>
-struct caster<T, signed_tag> {
+struct caster<T, typename std::enable_if<std::is_integral<T>::value &&
+                                         std::is_signed<T>::value>::type> {
     static result<T> cast(string_view text, int base) {
         result<long long> wide = parse_signed(text, base);
         if (wide.is_err()) return std::move(wide).error();
@@ -87,7 +73,9 @@ struct caster<T, signed_tag> {
 };
 
 template <typename T>
-struct caster<T, unsigned_tag> {
+struct caster<T, typename std::enable_if<std::is_integral<T>::value &&
+                                         std::is_unsigned<T>::value &&
+                                         !std::is_same<T, bool>::value>::type> {
     static result<T> cast(string_view text, int base) {
         result<unsigned long long> wide = parse_unsigned(text, base);
         if (wide.is_err()) return std::move(wide).error();
@@ -100,22 +88,13 @@ struct caster<T, unsigned_tag> {
     }
 };
 
-template <typename T>
-struct caster<T, float_tag> {
-    static result<T> cast(string_view text, int) {
-        static_assert(!std::is_same<T, T>::value,
-                      "lexical_cast supports float and double, not long double");
-        return make_error(error_kind::invalid_argument, text.to_string());
-    }
-};
-
 template <>
-struct caster<float, float_tag> {
+struct caster<float> {
     static result<float> cast(string_view text, int) { return parse_float(text); }
 };
 
 template <>
-struct caster<double, float_tag> {
+struct caster<double> {
     static result<double> cast(string_view text, int) { return parse_double(text); }
 };
 
@@ -129,7 +108,9 @@ result<T> lexical_cast(string_view text) {
     static_assert(!detail::is_character_type<T>::value,
                   "lexical_cast refuses char-like types: casting \"65\" to char is ambiguous "
                   "(the number 65, or the character '6'?). Use int instead, or index the text");
-    return detail::caster<T, typename detail::cast_tag<T>::type>::cast(text, 10);
+    static_assert(!std::is_same<T, long double>::value,
+                  "lexical_cast supports float and double, not long double");
+    return detail::caster<T>::cast(text, 10);
 }
 
 // 整数专用，指定进制。base 为 0 时按前缀判断：0x / 0X 十六进制，0b / 0B 二进制，
@@ -140,7 +121,7 @@ result<T> lexical_cast(string_view text, int base) {
                   "the base overload of lexical_cast is for integral types other than bool");
     static_assert(!detail::is_character_type<T>::value,
                   "lexical_cast refuses char-like types; use int instead");
-    return detail::caster<T, typename detail::cast_tag<T>::type>::cast(text, base);
+    return detail::caster<T>::cast(text, base);
 }
 
 // 另一个方向。不会失败，所以直接返回值，不包 result；名字和 std::to_string 一致。
