@@ -4,7 +4,14 @@
 
 分配器的内部类型、函数和共享状态位于 `wavvix::mem::detail`；公开分配接口位于 `wavvix::mem`。只有显式启用的 malloc/new 覆盖入口使用进程级全局符号。
 
-编译器差异集中在 `src/mem/allocator/compiler.h`，系统虚拟内存、随机源、线程退出和 fork 钩子集中在 `os.h` / `os.cpp`；其余分配器文件不直接依赖平台头文件。
+编译器差异集中在 `src/mem/allocator/compiler.h`，系统虚拟内存、随机源、线程退出和 fork 钩子集中在 `os.h` / `os.cpp`，原生锁集中在 `mutex.h`；其余分配器文件不直接包含平台头文件。
+
+## 退出阶段的锁
+
+线程退出回调和静态对象析构都可能归还内存，分配器锁必须在整个进程收尾期间有效。
+`allocator_mutex` 使用 Windows SRWLOCK 或 POSIX pthread mutex，常量初始化且不登记析构，
+不依赖 C++ 运行库锁的退出顺序；不会为了延长生命周期而额外堆分配。编译期检查其析构平凡性。
+fork 子进程沿用原有协议，按固定顺序重新初始化锁；arena 锁与全局锁使用同一个类型。
 
 ## 页描述符定位
 

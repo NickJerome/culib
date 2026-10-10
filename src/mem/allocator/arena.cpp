@@ -18,7 +18,7 @@ std::atomic<size_t> mem_desc_constructed_slices(0);
 
 namespace {
 
-std::mutex            g_subproc_lock;                   /* arena 创建/全局 */
+allocator_mutex            g_subproc_lock;                   /* arena 创建/全局 */
 mem_arena_t*           g_arenas[WAVVIX_MEM_ARENA_COUNT_MAX];
 std::atomic<int>      g_arena_count(0);
 std::atomic<uint32_t> g_arena_round_robin(0);
@@ -161,7 +161,7 @@ mem_arena_t* mem_arena_get(int idx) {
 int mem_arena_pick_for_thread(mem_theap_t* t) {
   int count = mem_arena_count();
   if (count == 0) {
-    std::lock_guard<std::mutex> lock(g_subproc_lock);
+    std::lock_guard<allocator_mutex> lock(g_subproc_lock);
     if (mem_arena_count() == 0) {
       g_arena_next_size = mem_options.arena_reserve;
       if (g_arena_next_size == 0) g_arena_next_size = WAVVIX_MEM_ARENA_FIRST;
@@ -181,7 +181,7 @@ int mem_arena_pick_for_thread(mem_theap_t* t) {
  * 失败 (size_t)-1。调用方不持锁。 */
 size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
                              bool* out_zeroed) {
-  std::lock_guard<std::mutex> lock(arena->mutex);
+  std::lock_guard<allocator_mutex> lock(arena->mutex);
   /* 位图下标是 arena 相对的；调用方要的是绝对地址对齐，故传入基址相位 */
   size_t phase = (align_slices > 1)
                      ? (((uintptr_t)arena->base >> WAVVIX_MEM_SLICE_SHIFT) % align_slices)
@@ -231,7 +231,7 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
  * 成功返回 arena 内 slice 下标并设置 *out_arena / *out_zeroed；失败 (size_t)-1。 */
 size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
                                  mem_arena_t** out_arena, bool* out_zeroed) {
-  std::unique_lock<std::mutex> growth_lock(g_subproc_lock, std::defer_lock);
+  std::unique_lock<allocator_mutex> growth_lock(g_subproc_lock, std::defer_lock);
   for (int pass = 0; pass < 2; ++pass) {
     if (pass != 0) growth_lock.lock();
     int count = mem_arena_count();
@@ -247,7 +247,7 @@ size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
           if (growth_lock.owns_lock()) {
             mem_desc_construct_upto(end, a->first_slice + a->slice_count);
           } else {
-            std::lock_guard<std::mutex> lock(g_subproc_lock);
+            std::lock_guard<allocator_mutex> lock(g_subproc_lock);
             mem_desc_construct_upto(end, a->first_slice + a->slice_count);
           }
         }
@@ -279,7 +279,7 @@ size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
 /* 归还 slice：置 free/dirty/purge 位图并刷新到期时间戳（SPEC §6.3.2）。
  * 此刻不做 madvise——物理页归还延迟到 purge 到期。 */
 void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
-  std::lock_guard<std::mutex> lock(arena->mutex);
+  std::lock_guard<allocator_mutex> lock(arena->mutex);
   mem_bbitmap_free(arena->slices_free, slice_idx, n);
   mem_bitmap_set_range(arena->slices_dirty, slice_idx, n);
   mem_bitmap_set_range(arena->slices_purge, slice_idx, n);
@@ -292,7 +292,7 @@ void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
 
 /* 归还已由调用方 decommit 的 slice（huge 页：free 即归还物理页）。 */
 void mem_arena_free_slices_decommitted(mem_arena_t* arena, size_t slice_idx, size_t n) {
-  std::lock_guard<std::mutex> lock(arena->mutex);
+  std::lock_guard<allocator_mutex> lock(arena->mutex);
   mem_bbitmap_free(arena->slices_free, slice_idx, n);
   mem_bitmap_clear_range(arena->slices_committed, slice_idx, n);
   mem_bitmap_clear_range(arena->slices_dirty, slice_idx, n);
@@ -300,7 +300,7 @@ void mem_arena_free_slices_decommitted(mem_arena_t* arena, size_t slice_idx, siz
 }
 
 void mem_arena_purge_force(mem_arena_t* arena) {
-  std::lock_guard<std::mutex> lock(arena->mutex);
+  std::lock_guard<allocator_mutex> lock(arena->mutex);
   if (!mem_bitmap_any(arena->slices_purge)) {
     arena->purge_expire.store(0, std::memory_order_relaxed);
     return;
@@ -325,7 +325,7 @@ void mem_arena_purge_check(mem_arena_t* arena) {
 /* （bin b -> bucket[b-1]，仅 small 页） */
 
 void mem_arena_abandon_page(mem_arena_t* arena, mem_page_t* page) {
-  std::lock_guard<std::mutex> lock(arena->mutex);
+  std::lock_guard<allocator_mutex> lock(arena->mutex);
   int b = page->bin;
   /* 与读侧 mem_arena_reclaim_page 同样两端校验，且不夹取：夹到 1 比中止更糟——
    * bin==0 的 large 页会被静默归进 bin 1 的桶，之后当 bin-1 的小页发出去。
@@ -341,7 +341,7 @@ void mem_arena_abandon_page(mem_arena_t* arena, mem_page_t* page) {
 
 mem_page_t* mem_arena_reclaim_page(mem_arena_t* arena, int bin) {
   if (bin < 1 || bin > WAVVIX_MEM_BIN_FULL) return NULL;
-  std::lock_guard<std::mutex> lock(arena->mutex);
+  std::lock_guard<allocator_mutex> lock(arena->mutex);
   mem_page_t* page = arena->abandoned[bin - 1];
   if (page != NULL) {
     arena->abandoned[bin - 1] = page->next;
@@ -358,7 +358,7 @@ mem_page_t* mem_arena_reclaim_page(mem_arena_t* arena, int bin) {
  * 串成一条返回链交给调用方归还 slice（归还必须在锁外做——mem_page_release_slices
  * 自身还要取同一把 arena 锁）。 */
 mem_page_t* mem_arena_take_abandoned_empty(mem_arena_t* arena) {
-  std::lock_guard<std::mutex> lock(arena->mutex);
+  std::lock_guard<allocator_mutex> lock(arena->mutex);
   mem_page_t* head = NULL;
   uint64_t nonempty = 0;
   for (int b = 0; b < WAVVIX_MEM_BIN_COUNT; b++) {
@@ -387,7 +387,7 @@ size_t mem_arena_committed_bytes(void) {
   int count = mem_arena_count();
   for (int i = 0; i < count; i++) {
     mem_arena_t* a = g_arenas[i];
-    std::lock_guard<std::mutex> lock(a->mutex);
+    std::lock_guard<allocator_mutex> lock(a->mutex);
     size_t nw = mem_bitmap_words(a->slice_count);
     for (size_t w = 0; w < nw; w++)
       total += (size_t)mem_popcount64(a->slices_committed->words[w]);
@@ -400,7 +400,7 @@ size_t mem_arena_abandoned_count(void) {
   int count = mem_arena_count();
   for (int i = 0; i < count; i++) {
     mem_arena_t* a = g_arenas[i];
-    std::lock_guard<std::mutex> lock(a->mutex);
+    std::lock_guard<allocator_mutex> lock(a->mutex);
     for (int b = 0; b < WAVVIX_MEM_BIN_COUNT; b++)
       for (mem_page_t* pg = a->abandoned[b]; pg != NULL; pg = pg->next) total++;
   }
@@ -441,9 +441,9 @@ void mem_arena_unlock_all(void) {
 void mem_arena_reinit_locks_child(void) {
   int count = mem_arena_count();
   for (int i = 0; i < count; i++) {
-    new (&g_arenas[i]->mutex) std::mutex();
+    new (&g_arenas[i]->mutex) allocator_mutex();
   }
-  new (&g_subproc_lock) std::mutex();
+  new (&g_subproc_lock) allocator_mutex();
 }
 
 } } } // namespace wavvix::mem::detail

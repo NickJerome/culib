@@ -21,14 +21,14 @@ struct mem_meta_chunk_t {
   size_t           used;      /* 已 bump 字节数 */
 };
 
-std::mutex        g_meta_lock;
+allocator_mutex        g_meta_lock;
 mem_meta_chunk_t*  g_meta_head = NULL;   /* 元数据 chunk 链（最新在前） */
 
 } /* anonymous namespace */
 
 void* mem_meta_alloc(size_t size) {
   size = (size + 15) & ~(size_t)15;
-  std::lock_guard<std::mutex> lock(g_meta_lock);
+  std::lock_guard<allocator_mutex> lock(g_meta_lock);
   mem_meta_chunk_t* c = g_meta_head;
   if (c == NULL || c->used + size > c->size) {
     size_t cap = WAVVIX_MEM_META_CHUNK;
@@ -57,7 +57,7 @@ void mem_meta_lock(void)   { g_meta_lock.lock(); }
 void mem_meta_unlock(void) { g_meta_lock.unlock(); }
 
 void mem_meta_reinit_locks_child(void) {
-  new (&g_meta_lock) std::mutex();
+  new (&g_meta_lock) allocator_mutex();
 }
 
 } } } // namespace wavvix::mem::detail

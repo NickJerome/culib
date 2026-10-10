@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <atomic>
 #include <mutex>
+#include "mutex.h"
 
 #include "compiler.h"
 #include "os.h"
@@ -168,7 +169,7 @@ struct mem_arena_t {
   struct mem_bitmap_t*  slices_purge;     /* 待归还 OS */
   std::atomic<int64_t> purge_expire;     /* ms 时间戳，0=无待 purge */
   uint16_t    index;                /* 自身在 g_arenas[] 中的下标 */
-  std::mutex  mutex;                /* arena 唯一锁 */
+  allocator_mutex  mutex;                /* arena 唯一锁 */
   mem_page_t*  abandoned[WAVVIX_MEM_BIN_COUNT];  /* abandoned 页桶：bin b -> [b-1] */
   std::atomic<uint64_t> abandoned_nonempty;      /* 无锁读的非空桶提示 */
 };

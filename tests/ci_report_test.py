@@ -31,6 +31,8 @@ class ReportTests(unittest.TestCase):
                         "ERROR: AddressSanitizer: heap-use-after-free", "x.cpp:3: Failure",
                         "[  FAILED  ] scheduler.join", "error C2039: broken",
                         "runtime error: signed integer overflow",
+                        "terminate called after throwing an instance of 'std::system_error'",
+                        "  what(): Invalid argument",
                         "== summary: 10 cases | PASS 9 | SKIP 0 | FAIL 1 =="):
             with self.subTest(message=message):
                 self.assertTrue(ci.scan(message + "\n[PASS] test_security")['diagnostics'])

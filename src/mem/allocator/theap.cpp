@@ -32,7 +32,7 @@ void mem_theap_exit_hook_init(void) {
 namespace {
 
 /* theap 结构回收链（线程 churn 不泄漏元数据） */
-std::mutex   g_theap_recycle_lock;
+allocator_mutex   g_theap_recycle_lock;
 mem_theap_t*  g_theap_recycle = NULL;
 
 /* 页退休 */
@@ -168,7 +168,7 @@ mem_theap_t* mem_theap_create(void) {
 
   mem_theap_t* t = NULL;
   {
-    std::lock_guard<std::mutex> lock(g_theap_recycle_lock);
+    std::lock_guard<allocator_mutex> lock(g_theap_recycle_lock);
     if (g_theap_recycle != NULL) {
       t = g_theap_recycle;
       g_theap_recycle = t->next_free;
@@ -224,7 +224,7 @@ void mem_theap_abandon(mem_theap_t* t) {
   }
   /* large 页不在队列中，free 路径直接处理。 */
   /* 回收 theap 结构本身（线程 churn 不泄漏元数据） */
-  std::lock_guard<std::mutex> lock(g_theap_recycle_lock);
+  std::lock_guard<allocator_mutex> lock(g_theap_recycle_lock);
   t->next_free = g_theap_recycle;
   g_theap_recycle = t;
 }
@@ -262,7 +262,7 @@ void mem_theap_recycle_lock(void)   { g_theap_recycle_lock.lock(); }
 void mem_theap_recycle_unlock(void) { g_theap_recycle_lock.unlock(); }
 
 void mem_theap_reinit_locks_child(void) {
-  new (&g_theap_recycle_lock) std::mutex();
+  new (&g_theap_recycle_lock) allocator_mutex();
 }
 
 /* 分配慢路径 */
