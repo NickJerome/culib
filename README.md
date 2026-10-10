@@ -326,6 +326,7 @@ wavvix::result<config> load(const std::string& path) {
 
 ## 文档
 
+- [全部公共 API 与用法](api.md)：按模块列出当前接口、参数与返回值、生命周期约束和可运行示例。
 - [公共 API 用法与设计说明](docs/api-guide.md)：各模块的示例、行为边界和接口取舍。
 - [实现说明](docs/implementation-notes.md)：调度器、事件引擎等实现文件的结构与平台决策。
 - [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)：模块顺序、已完成范围与后续工作。
