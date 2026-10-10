@@ -202,7 +202,7 @@ std::string to_string(T value) {
 
 ### 4.5 后续验证与范围
 
-- 2026-10-10：布尔值及 `inf` / `nan` 特殊值改为按 `string_view` 的长度比较。此前短输入经 `strcmp` 会接受 `true\0x`、`inf\0x` 的合法前缀；新增回归在旧实现上失败。八种布尔词和带符号、混合大小写的浮点特殊值均验证 NUL 与其后缀必须被拒绝，非 NUL 结尾的四字节 `TRUE` 视图仍可解析。Windows MSVC debug + L2、Linux GCC 11.4 C++11 release 的常规测试各 373 项及独立底层测试通过，完整日志无异常诊断。
+- 2026-10-10：布尔值及 `inf` / `nan` 特殊值改为按 `string_view` 的长度比较。此前短输入经 `strcmp` 会接受 `true\0x`、`inf\0x` 的合法前缀；新增回归在旧实现上失败。八种布尔词和带符号、混合大小写的浮点特殊值均验证 NUL 与其后缀必须被拒绝，非 NUL 结尾的四字节 `TRUE` 视图仍可解析。Windows MSVC debug + L2 的 365 项、Linux GCC 11.4 C++11 release 的 373 项常规测试及两平台独立底层测试通过，完整日志无异常诊断。
 
 - 2026-10-09 补测：Linux GCC 和 Windows MSVC 的常规测试通过。本机 Linux 生成 `ps_AF.UTF-8` locale（小数点为多字节的 `٫`），显式 `setlocale(LC_NUMERIC, "ps_AF.UTF-8")` 后，`float` / `double` 解析 `"1.5"` 与 `to_string(1.5)` 均通过。`float` 的最大值往返、溢出、特殊值与下溢已纳入单元测试。
 - `long double` 没有对应的解析和格式化实现，现会给出编译期错误，不再悄悄经 `double` 损失精度。
