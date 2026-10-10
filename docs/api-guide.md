@@ -580,8 +580,9 @@ thread_local 和异常状态在协程脚下变掉，见 coroutine 设计文档 3
    release 同样检查。那是编程错误，和 result::value() 取错分支一样 fail fast。
 
 不要把它在 C++17 下别名到 std::string_view：culib 自己按 C++11 编译而使用方可以用更高
-标准，别名会让同一个名字在两边是不同类型，以它为参数的公共函数链接不上。C++17 下额外提供
-一个从 std::string_view 的转换构造函数，那是纯增量。
+标准，别名会让同一个名字在两边是不同类型，以它为参数的公共函数链接不上。
+转换构造函数是跨标准定义一致的受约束模板；C++17 的 `std::string_view` 满足约束，
+可以隐式传入。若只在 C++17 编译单元给类增加成员，类定义本身会不同，违反 ODR。
 
 ## [`strings.h`](../include/culib/strings.h)
 

@@ -43,7 +43,10 @@ public:
     string_view(const char* text) noexcept;                  // 走一次 strlen；空指针得到空视图
     string_view(const char* text, size_type size) noexcept;
     string_view(const std::string& text) noexcept;           // 隐式，让已有调用点零改动
-    string_view(std::string_view text) noexcept;             // 仅 C++17 及以上，条件编译
+    template <typename String>
+    string_view(const String& text, typename std::enable_if<
+        std::is_same<typename String::traits_type, std::char_traits<char>>::value
+    >::type* = 0) noexcept;                                 // 包含 C++17 std::string_view
 
     const char* data() const noexcept;                       // 不保证 '\0' 结尾
     size_type size() const noexcept;
@@ -82,7 +85,10 @@ std::ostream& operator<<(std::ostream& os, string_view value);
 
 很多库（abseil 就是）会写 `using string_view = std::string_view;`。culib 不行：它自己按 C++11 编译，而 README 允许使用方用更高标准（CI 的 `consumed-as-dependency` 这一格正是 culib C++11 + 使用方 C++17）。别名会让 `wavvix::string_view` 在两边是**不同的类型**，任何以它为参数的公共函数都签名不匹配、链接失败。
 
-所以始终用自己的类型，再加一个条件编译的转换构造函数让 C++17 使用方能把 `std::string_view` 传进来。那是纯增量，不改类型身份和内存布局。测试里有一条 `static_assert` 把这件事钉住：
+所以始终用自己的类型。原先只在 C++17 下增加 `std::string_view` 构造函数，虽不改布局，
+却让不同语言标准的翻译单元看到不同的类定义，违反 ODR。现在用两边定义完全相同的
+受约束构造模板接收 `char_traits<char>` 字符串类型；C++17 的 `std::string_view` 满足该约束，
+C++11 无需知道它的名字。测试里有一条 `static_assert` 确保类型不是别名：
 
 ```cpp
 static_assert(!std::is_same<string_view, std::string_view>::value,
@@ -167,6 +173,6 @@ string_view().back()            wavvix::string_view::back() out of range: index 
 ### 5.4 没覆盖
 
 - **Clang、MSVC、macOS、最低版本编译器（GCC 4.8.1 / VS2015）都没跑过**，本机只有 GCC 14.2，CI 还没有真正运行过（待 Push Mirror）。
-- `__has_include(<string_view>)` 那段条件编译只在 C++11 下验证过「不启用」，C++17 下的那个转换构造函数本机编译通过但没有在真实的 C++17 使用方工程里试过（CI 的 `consumed-as-dependency` 会覆盖，同样待运行）。
+- 原先的 C++17 专用构造函数在这次历史验证时还没有经过真实使用方工程；现行代码已改为跨标准同定义的受约束模板，并由 CI 的 `consumed-as-dependency` 任务验证 C++17 使用方。
 - 悬垂视图没有任何检测手段，由 [API 指南](../../api-guide.md) 和示例说明。这是 `string_view` 的固有风险，`std::string_view` 也一样。
 - `find(string_view)` 的性能没有和 `std::string::find` 或 `std::search` 做对比，只论证了「不比朴素循环差」。真有热点再测。

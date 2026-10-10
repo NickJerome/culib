@@ -6,6 +6,10 @@
 #include <string>
 #include <type_traits>
 
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+#  include <string_view>
+#endif
+
 namespace {
 
 using wavvix::string_view;
@@ -17,9 +21,11 @@ static_assert(sizeof(string_view) == sizeof(const char*) + sizeof(std::size_t),
               "string_view must be just a pointer and a size");
 static_assert(wavvix_test::is_trivially_copyable<string_view>::value,
               "string_view must be trivially copyable so passing it by value is free");
+static_assert(!std::is_constructible<string_view, std::wstring>::value,
+              "string_view must not accept wide-character strings");
 
 // 身份不能随语言标准变化，否则 culib（C++11）和使用方（C++17）的签名对不上。
-#if defined(WAVVIX_DETAIL_HAS_STD_STRING_VIEW)
+#if defined(__cpp_lib_string_view)
 static_assert(!std::is_same<string_view, std::string_view>::value,
               "wavvix::string_view must never be an alias for std::string_view");
 #endif
@@ -191,11 +197,12 @@ TEST(string_view, converts_to_string_and_streams) {
     EXPECT(raw.str().size(), ==, 3u);
 }
 
-#if defined(WAVVIX_DETAIL_HAS_STD_STRING_VIEW)
+#if defined(__cpp_lib_string_view)
 TEST(string_view, accepts_std_string_view_on_newer_standards) {
     const std::string_view standard = "hello";
     const string_view ours = standard;
     EXPECT(ours, ==, "hello");
     EXPECT(ours.size(), ==, standard.size());
+    EXPECT(string_view(std::string_view()).data() != 0, ==, true);
 }
 #endif

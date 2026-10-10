@@ -8,13 +8,7 @@
 #include <cstring>
 #include <iosfwd>
 #include <string>
-
-#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
-#  include <string_view>
-#  if defined(__cpp_lib_string_view)
-#    define WAVVIX_DETAIL_HAS_STD_STRING_VIEW 1
-#  endif
-#endif
+#include <type_traits>
 
 namespace wavvix {
 
@@ -45,11 +39,12 @@ public:
     // 隐式接收 std::string，不分配。
     string_view(const std::string& text) noexcept : data_(text.data()), size_(text.size()) {}
 
-#if defined(WAVVIX_DETAIL_HAS_STD_STRING_VIEW)
-    // 默认构造的标准视图可持有 nullptr；本类的空视图始终持有非空指针。
-    string_view(std::string_view text) noexcept
+    // 类定义须跨语言标准一致；C++17 的 std::string_view 也有 char_traits<char>。
+    template <typename String>
+    string_view(const String& text, typename std::enable_if<
+        std::is_same<typename String::traits_type, std::char_traits<char>>::value
+    >::type* = 0) noexcept
         : data_(text.empty() ? "" : text.data()), size_(text.size()) {}
-#endif
 
     const char* data() const noexcept { return data_; }
     size_type size() const noexcept { return size_; }
