@@ -216,9 +216,7 @@ bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
         sync_interest(engine, fd, slot, armed);
     }
 
-    // 不管摘到没摘到都返回 true：**这边撤销是同步的，不会再有任何通知。**
-    // 没摘到只有一种情形——它已经被完成掉了，而那次完成已经把凭据交回去了；
-    // 调用方那边 token 已经 settled，所以那次交回也不会让它重复入队。
+    // 撤销是同步的；无论已完成还是刚摘除，都不会再有通知。
     return true;
 }
 

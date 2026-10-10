@@ -21,11 +21,7 @@ struct park_token {
     park_instant deadline;   // timed 为假时无意义
     bool timed;              // 有时限吗
     bool roused;             // 结果：true = 被叫醒的，false = 到点了
-    // **已经交还给调度器了。** 之后再 wake 无效——不设这一位的话，一个刚因为超时被
-    // 排回 ready、但还没来得及把自己从等待队列里摘掉的协程，会被同一轮里的 wake
-    // 再排一次，于是同一根协程在 ready 里出现两次、被 resume 两次。
-    bool settled;
-    bool parked;             // 已计入所属 vCPU 的挂起数量
+    bool parked;             // 在挂起集合中；移除后重复通知不再唤醒
     std::size_t heap_index;  // timed 时在定时器堆中的位置
     std::uint64_t order;     // 相同截止时间按挂起顺序唤醒
     park_token* next;        // 给各自的等待队列串用（mutex / semaphore 的 FIFO）

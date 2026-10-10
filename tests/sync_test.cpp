@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -218,6 +219,25 @@ TEST(semaphore, release_without_waiters_puts_the_permit_back) {
     EXPECT(permits.count(), ==, 3);
     EXPECT(permits.try_acquire(), ==, true);
     EXPECT(permits.count(), ==, 2);
+}
+
+TEST(semaphore, release_skips_an_expired_waiter_before_it_resumes) {
+    semaphore permits(0);
+    bool expired_acquired = true;
+    bool next_acquired = false;
+    spawn([&] {
+        wavvix::yield();
+        permits.release();
+    }).value();
+    spawn([&] { expired_acquired = permits.try_acquire_for(ms(1)); }).value();
+    spawn([&] { permits.acquire(); next_acquired = true; }).value();
+    // Hold the vCPU until the first wait expires. Release runs before it resumes.
+    spawn([] { std::this_thread::sleep_for(ms(5)); }).value();
+
+    EXPECT(run(), ==, 4u);
+    EXPECT(expired_acquired, ==, false);
+    EXPECT(next_acquired, ==, true);
+    EXPECT(permits.try_acquire(), ==, false);
 }
 
 TEST(semaphore, batch_release_wakes_waiters_and_keeps_the_rest) {

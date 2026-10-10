@@ -20,7 +20,6 @@ public:
     park_token* next() const noexcept { return timers_.empty() ? 0 : timers_.front(); }
 
     void add(park_token& token) {
-        if (token.settled) return;
         if (token.timed) {
             token.order = order_++;
             token.heap_index = timers_.size();

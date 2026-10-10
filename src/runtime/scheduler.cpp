@@ -225,10 +225,9 @@ void die(const char* what) {
     std::abort();
 }
 
-// settled 阻止超时与通知在同一轮重复入队。
+// 只有仍在挂起集合中的凭据可以被唤醒，避免超时与通知重复入队。
 bool rouse(vcpu& self, park_token& token) {
-    if (token.settled) return false;
-    token.settled = true;
+    if (!token.parked) return false;
     token.roused = true;
     self.waiting.remove(token);
     self.ready.push(token.owner);
@@ -596,7 +595,6 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
 
     token.owner = self.current;
     token.roused = false;
-    token.settled = false;
     token.parked = false;
     token.timed = timeout.count() >= 0;
     if (token.timed) token.deadline = deadline_after(timeout);
@@ -736,7 +734,6 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             while (self.waiting.next() != 0 && self.waiting.next()->deadline <= now) {
                 park_token* const token = self.waiting.next();
                 self.waiting.remove(*token);
-                token->settled = true;
                 token->roused = false;
                 self.ready.push(token->owner);
             }
