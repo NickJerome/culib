@@ -9,6 +9,7 @@
 #  include "runtime/io_engine_posix.h"
 #endif
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -29,6 +30,8 @@
 #  include <windows.h>
 #else
 #  include <fcntl.h>
+#  include <pthread.h>
+#  include <signal.h>
 #  include <sys/socket.h>
 #  include <unistd.h>
 #endif
@@ -248,6 +251,14 @@ std::size_t open_handle_count() {
 }
 #endif
 
+#if !defined(_WIN32)
+volatile sig_atomic_t interrupted_wait_signals = 0;
+
+void count_wait_signal(int) {
+    ++interrupted_wait_signals;
+}
+#endif
+
 }  // namespace
 
 #if !defined(_WIN32)
@@ -293,6 +304,48 @@ TEST(io_engine, cross_thread_notification_interrupts_wait) {
     EXPECT(wavvix::detail::io_engine_pending(engine), ==, 0u);
     wavvix::detail::io_engine_destroy(engine);
 }
+
+#if !defined(_WIN32)
+TEST(io_engine, signals_do_not_restart_the_entire_timeout) {
+    wavvix::detail::io_engine* const engine = wavvix::detail::io_engine_create();
+    if (!EXPECT(engine != 0, ==, true)) return;
+
+    struct sigaction action;
+    std::memset(&action, 0, sizeof action);
+    action.sa_handler = &count_wait_signal;
+    ::sigemptyset(&action.sa_mask);
+    struct sigaction previous;
+    if (!EXPECT(::sigaction(SIGUSR1, &action, &previous), ==, 0)) {
+        wavvix::detail::io_engine_destroy(engine);
+        return;
+    }
+
+    interrupted_wait_signals = 0;
+    const pthread_t waiting_thread = ::pthread_self();
+    std::atomic<bool> sender_ready(false);
+    std::thread sender([waiting_thread, &sender_ready] {
+        sender_ready.store(true, std::memory_order_release);
+        for (int i = 0; i < 20; ++i) {
+            std::this_thread::sleep_for(ms(10));
+            ::pthread_kill(waiting_thread, SIGUSR1);
+        }
+    });
+    while (!sender_ready.load(std::memory_order_acquire)) std::this_thread::yield();
+    wavvix::detail::io_completion_batch completed;
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    wavvix::detail::io_engine_wait(engine, ms(80), completed);
+    const std::chrono::steady_clock::duration elapsed =
+        std::chrono::steady_clock::now() - start;
+    const sig_atomic_t seen_during_wait = interrupted_wait_signals;
+    sender.join();
+    ::sigaction(SIGUSR1, &previous, 0);
+    wavvix::detail::io_engine_destroy(engine);
+
+    EXPECT(seen_during_wait > 0, ==, true);
+    EXPECT(completed.empty(), ==, true);
+    EXPECT(elapsed < ms(160), ==, true);
+}
+#endif
 
 #if defined(_WIN32)
 TEST(io_engine, cancel_keeps_completed_overlapped_alive_until_packet_is_taken) {

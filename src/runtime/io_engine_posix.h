@@ -5,6 +5,7 @@
 #include "io_engine.h"
 
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -95,6 +96,18 @@ inline bool io_would_block(int code) {
 #else
     return code == EAGAIN;
 #endif
+}
+
+inline bool io_retry_timeout(std::chrono::nanoseconds original,
+                             std::chrono::steady_clock::time_point started,
+                             std::chrono::nanoseconds& remaining) {
+    if (original.count() < 0) return true;
+    const std::chrono::nanoseconds elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started);
+    if (elapsed >= original) return false;
+    remaining = original - elapsed;
+    return true;
 }
 
 inline bool io_try_datagram_now(io_request& request) {

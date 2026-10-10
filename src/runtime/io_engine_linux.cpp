@@ -172,17 +172,22 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept {
     if (!engine) return;
-    const long milliseconds = io_timeout_ms(timeout);
+    const bool finite = timeout.count() >= 0;
+    const std::chrono::steady_clock::time_point started = finite
+        ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    std::chrono::nanoseconds remaining = timeout;
 
     epoll_event events[64];
     const int capacity = static_cast<int>(sizeof events / sizeof events[0]);
     int ready;
     for (;;) {
-        ready = ::epoll_wait(engine->epoll_fd, events, capacity, static_cast<int>(milliseconds));
+        ready = ::epoll_wait(engine->epoll_fd, events, capacity,
+                             static_cast<int>(io_timeout_ms(remaining)));
         if (ready >= 0) break;
-        // 信号来了不算失败。当成失败的话程序在有信号的环境里会随机抽风——
-        // Photon 的 epoll 后端也是这么接的（io/epoll.cpp:215）。
-        if (errno == EINTR) continue;
+        if (errno == EINTR) {
+            if (!io_retry_timeout(timeout, started, remaining)) return;
+            continue;
+        }
         return;
     }
 

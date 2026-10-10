@@ -177,22 +177,27 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
     // epoll_wait 拿到 0 立刻返回变成忙转，而真给 100 微秒的 timespec 就是真等
     // 100 微秒。精度上三个平台因此不同，但那是**性能差异不是语义差异**——
     // 三边的承诺都是「至少睡够这么久」。
-    const std::chrono::nanoseconds::rep nanoseconds = timeout.count();
+    const bool finite = timeout.count() >= 0;
+    const std::chrono::steady_clock::time_point started = finite
+        ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    std::chrono::nanoseconds remaining = timeout;
     struct timespec span;
-    const struct timespec* limit = 0;    // 空指针就是无限等
-    if (nanoseconds >= 0) {
-        span.tv_sec = static_cast<time_t>(nanoseconds / 1000000000);
-        span.tv_nsec = static_cast<long>(nanoseconds % 1000000000);
-        limit = &span;
-    }
-
     struct kevent events[64];
     const int capacity = static_cast<int>(sizeof events / sizeof events[0]);
     int ready;
     for (;;) {
+        const struct timespec* limit = 0;    // 空指针就是无限等
+        if (finite) {
+            span.tv_sec = static_cast<time_t>(remaining.count() / 1000000000);
+            span.tv_nsec = static_cast<long>(remaining.count() % 1000000000);
+            limit = &span;
+        }
         ready = ::kevent(engine->kq, 0, 0, events, capacity, limit);
         if (ready >= 0) break;
-        if (errno == EINTR) continue;    // 信号来了不算失败
+        if (errno == EINTR) {
+            if (!io_retry_timeout(timeout, started, remaining)) return;
+            continue;
+        }
         return;
     }
 
