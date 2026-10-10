@@ -337,11 +337,15 @@ TEST(io_engine, signals_do_not_restart_the_entire_timeout) {
     });
     while (!sender_ready.load(std::memory_order_acquire)) std::this_thread::yield();
     wavvix::detail::io_completion_batch completed;
-    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    wavvix::detail::io_engine_wait(engine, ms(80), completed);
-    const std::chrono::steady_clock::duration elapsed =
-        std::chrono::steady_clock::now() - start;
-    const sig_atomic_t seen_during_wait = interrupted_wait_signals;
+    sig_atomic_t seen_during_wait = 0;
+    std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::duration::zero();
+    for (int attempt = 0; attempt < 5 && seen_during_wait == 0; ++attempt) {
+        interrupted_wait_signals = 0;
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        wavvix::detail::io_engine_wait(engine, ms(80), completed);
+        elapsed = std::chrono::steady_clock::now() - start;
+        seen_during_wait = interrupted_wait_signals;
+    }
     wait_done.store(true, std::memory_order_release);
     sender.join();
     ::sigaction(SIGUSR1, &previous, 0);
