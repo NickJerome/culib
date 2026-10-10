@@ -7,13 +7,12 @@
 
 `coroutine` 保持线程式句柄：构造时提交，调用方在创建它的 vCPU 上 `join()` 或 `detach()`。启动工作 vCPU 后，新构造的 `coroutine` 轮流提交到工作线程；`spawn()` 仍只提交到当前 vCPU。协程首次运行后不再迁移，避免 TLS、异常状态与已关联 I/O 句柄跨线程变化。没有启用工作 vCPU 时，现有单线程调用不创建系统线程，也不走跨线程队列。
 
-PhotonLibOS 的 [`photon_std::thread`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/std-compat.h) 构造即提交任务；只有额外调用 `work_pool_init()` 后，它才从 `do_migrate()` 把任务交给其他 vCPU。这里同样显式启用工作 vCPU，但把启用入口放在已经存在的 `coroutine::init()` 和 `scheduler_scope` 上，不引入另一套持有型任务句柄。
+PhotonLibOS 的 [`photon_std::thread`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/std-compat.h) 构造即提交任务；只有额外调用 `work_pool_init()` 后，它才从 `do_migrate()` 把任务交给其他 vCPU。这里同样显式启用工作 vCPU，但只由 `scheduler_scope` 管理其生命周期，不引入另一套初始化和关闭接口。
 
 | 用途 | 接口 | 行为 |
 | --- | --- | --- |
-| 当前线程运行时 | `coroutine::init()` / `scheduler_scope runtime;` | 只初始化当前 vCPU |
-| 显式启动工作 vCPU | `result<void> coroutine::init(unsigned workers)` | `workers` 是额外的系统线程数；失败返回错误，成功后由 `shutdown()` 收尾 |
-| RAII 启动工作 vCPU | `result<scheduler_scope> scheduler_scope::with_workers(unsigned workers)` | 成功后移动出作用域对象；析构等待任务并停止工作线程 |
+| 显式管理当前 vCPU | `scheduler_scope runtime;` | 作用域析构时跑完任务并释放当前 vCPU；不建作用域时首次提交按需初始化 |
+| 启动工作 vCPU | `result<scheduler_scope> scheduler_scope::with_workers(unsigned workers)` | `workers` 是额外的系统线程数；成功后移动出作用域对象，析构时等待任务并停止工作线程 |
 | 提交可等待任务 | `coroutine task(function, args...)` | 有工作 vCPU 时轮询分发；否则在当前 vCPU 排队 |
 | 提交本地任务 | `spawn(function, args...)` | 始终留在当前 vCPU，适合使用当前线程 I/O 句柄的任务 |
 
