@@ -8,8 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <utility>
-#include <vector>
 
 namespace wavvix {
 
@@ -21,23 +21,28 @@ void bytes_capacity_overflow();
 
 class buffer {
 public:
-    buffer() : read_at_(0), write_at_(0), prepared_(0) {}
-    explicit buffer(std::size_t room) : read_at_(0), write_at_(0), prepared_(0) { reserve(room); }
+    buffer() : capacity_(0), read_at_(0), write_at_(0), prepared_(0) {}
+    explicit buffer(std::size_t room) : capacity_(0), read_at_(0), write_at_(0), prepared_(0) {
+        reserve(room);
+    }
     // 复制只保留未读字节，不复制已消费的前缀、闲置容量或未提交的 prepare 额度。
     buffer(const buffer& other);
     buffer& operator=(const buffer& other);
     // 移动后源缓冲区为空，仍可继续使用。
     buffer(buffer&& other) noexcept
-        : store_(std::move(other.store_)), read_at_(other.read_at_),
+        : store_(std::move(other.store_)), capacity_(other.capacity_), read_at_(other.read_at_),
           write_at_(other.write_at_), prepared_(0) {
+        other.capacity_ = 0;
         other.clear();
     }
     buffer& operator=(buffer&& other) noexcept {
         if (this != &other) {
             store_ = std::move(other.store_);
+            capacity_ = other.capacity_;
             read_at_ = other.read_at_;
             write_at_ = other.write_at_;
             prepared_ = 0;
+            other.capacity_ = 0;
             other.clear();
         }
         return *this;
@@ -45,10 +50,10 @@ public:
 
     // ---- 状态 ----
     // 还没被读走的那些字节。data() 指向它们的开头。
-    const unsigned char* data() const { return store_.empty() ? 0 : &store_[read_at_]; }
+    const unsigned char* data() const { return store_ ? store_.get() + read_at_ : 0; }
     std::size_t size() const { return write_at_ - read_at_; }
     bool empty() const { return write_at_ == read_at_; }
-    std::size_t capacity() const { return store_.size(); }
+    std::size_t capacity() const { return capacity_; }
 
     // 读游标和写游标一起回到起点，**容量留着**（下一轮不用重新分配）。
     void clear() {
@@ -81,11 +86,11 @@ public:
     // 可以复制本缓冲区中尚未消费的字节；此时源区间须完整落在有效数据内。
     void write(const void* from, std::size_t length) {
         if (!length) return;
-        if (store_.size() - write_at_ < length) {
+        if (capacity_ - write_at_ < length) {
             write_slow(from, length);
             return;
         }
-        std::memcpy(store_.data() + write_at_, from, length);
+        std::memcpy(store_.get() + write_at_, from, length);
         write_at_ += length;
         prepared_ = 0;
     }
@@ -208,9 +213,11 @@ public:
 private:
     // 读游标跑太靠前时，把剩下的挪回开头。prepare 里按需调用。
     void compact();
+    void grow(std::size_t capacity);
     void write_slow(const void* from, std::size_t length);
 
-    std::vector<unsigned char> store_;   // store_.size() 就是容量
+    std::unique_ptr<unsigned char[]> store_;
+    std::size_t capacity_;
     std::size_t read_at_;
     std::size_t write_at_;
     std::size_t prepared_;

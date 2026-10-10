@@ -65,6 +65,8 @@
 
 `commit()` 可分次调用，但累计字节数不能超过最近一次 `prepare(n)` 的 `n`；超出时即使底层还留有容量也会终止进程。再次调用 `prepare()`、`reserve()`、`consume()` 或 `clear()` 会使前一次取得的可写空间失效。`prepare(0)` 不分配内存，空缓冲区返回空指针。
 
+`prepare()` 返回的空间内容未初始化，只能 `commit()` 已写入的字节。扩容只复制未读数据，不会清零新增容量。
+
 ## [`config.h`](../include/culib/config.h)
 
 完整背景见 [设计文档](superpowers/specs/2026-10-05-config-design.md)。

@@ -213,6 +213,18 @@ TEST(bytes, keeps_the_bytes_that_were_not_read_when_it_has_to_grow) {
     EXPECT(std::string(reinterpret_cast<const char*>(one.data()), 3), ==, " me");
 }
 
+TEST(bytes, reserve_grows_without_losing_unread_bytes) {
+    buffer one(8);
+    one.write("abcdefgh", 8);
+    one.consume(3);
+    one.reserve(16);
+
+    EXPECT(shown(one), ==, "defgh");
+    EXPECT(one.capacity() >= one.size() + 16, ==, true);
+    one.write("0123456789abcdef", 16);
+    EXPECT(shown(one), ==, "defgh0123456789abcdef");
+}
+
 TEST(bytes, can_append_its_own_unread_bytes_after_compaction) {
     buffer one(8);
     one.write("abcdefgh", 8);
