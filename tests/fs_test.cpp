@@ -52,9 +52,7 @@ public:
     explicit scratch(const char* name) {
         const result<std::string> base = fs::temp_directory();
         root_ = fs::join(base.value_or("/tmp"), std::string("culib_fs_test_") + name);
-        // 上次跑崩了留下的残骸。清理是尽力而为，失败了也没别的办法，所以显式丢弃
-        // 返回值——result 带 nodiscard，裸调用在 clang 下是编译错误（GCC 的 C++11
-        // 模式没有这个警告，所以本机测不出来，是 CI 第一次跑才抓到的）。
+        // 清理上次残留的目录是尽力而为；显式丢弃结果。
         (void)fs::remove_directory(root_, fs::recursive::yes);
         ok_ = fs::create_directory(root_, fs::recursive::yes).is_ok();
     }

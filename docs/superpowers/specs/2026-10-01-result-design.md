@@ -183,7 +183,7 @@ result<config> load(const std::string& path) {
   ```
 
   诊断打印 `error` 的种类和说明；直接写 stderr，不临时创建字符串。
-- **忽略返回值的警告**：类上标注 `WAVVIX_NODISCARD`，在 C++17 编译器上展开为 `[[nodiscard]]`，在 Clang 的 C++11 模式下展开为 `warn_unused_result` 属性，其他情况为空。因此 GCC 在 C++11 模式下没有这个警告。Clang 能否把该属性用在类上，实现时先验证，不支持则同样为空。
+- **忽略返回值的警告**：`WAVVIX_NODISCARD` 按编译器能力展开，不按 C++ 语言标准分支。Clang 使用 `warn_unused_result`；GCC 7+ 和 MSVC 1911+ 在 C++11/14 模式下也接受 `[[nodiscard]]`。较旧编译器上为空。同一编译器的 C++11 与 C++17 翻译单元因此看到相同的 `result<T>`、`result<void>` 和 `optional<T>` 类定义，不会因属性展开不同而违反 ODR。
 - **右值版本**：`value()`、`error()`、`value_or()` 对右值 result 都有移动版本，例如 `auto text = read_file(path).value();` 不会复制字符串。
 
 ## 6. 性能
@@ -242,7 +242,7 @@ result<config> load(const std::string& path) {
 
 - release（`-O2`）与 debug（`-O0 -g`），C++11：65 个测试通过，其中 result 11 个。
 - ASan + UBSan，并关闭复制消除（`-fno-elide-constructors`）：65 个测试通过。
-- C++17：65 个测试通过；忽略 result 返回值会触发 nodiscard 警告（GCC 的 C++11 模式下该宏为空，确认无警告）。
+- C++17：65 个测试通过；忽略 result 返回值会触发 nodiscard 警告。当时 GCC 的 C++11 模式下该宏为空；现行 GCC 7+ 在 C++11 模式下也会提示，见上面的属性规则。
 - `-fno-exceptions -fno-rtti`：61 个测试通过。3 个异常专用测试按条件编译排除；另排除 1 个已知的 stopwatch 自定义 locale 测试，其崩溃已在不含 culib 的标准库程序中复现，与 result 无关。
 - `result.h`、`detail/result_storage.h`、`culib.h` 均可独立包含。
 - 单独编译并链接 `examples/result.cpp`，运行输出符合预期。

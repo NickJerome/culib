@@ -34,11 +34,13 @@
 #define WAVVIX_DETAIL_NOINLINE_COLD
 #endif
 
-// 返回值应当检查；不支持类级别属性的编译器保持兼容。
-#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
-#define WAVVIX_NODISCARD [[nodiscard]]
-#elif defined(__clang__)
+// 按编译器而非语言标准选择，保证 C++11/17 看到相同的类定义。
+#if defined(__clang__)
 #define WAVVIX_NODISCARD __attribute__((warn_unused_result))
+#elif defined(__GNUC__) && __GNUC__ >= 7
+#define WAVVIX_NODISCARD [[nodiscard]]
+#elif defined(_MSC_VER) && _MSC_VER >= 1911
+#define WAVVIX_NODISCARD [[nodiscard]]
 #else
 #define WAVVIX_NODISCARD
 #endif
