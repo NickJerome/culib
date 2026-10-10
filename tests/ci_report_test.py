@@ -110,10 +110,12 @@ class ReportTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 code = ci.query(args)
             saved = json.loads((Path(directory) / "report.json").read_text(encoding="utf-8"))
+            if isinstance(log, str):
+                self.assertEqual((Path(directory) / "456.log").read_bytes(), log.encode("utf-8"))
             return code, saved
 
     def test_full_log_success_and_success_with_fatal(self):
-        self.assertEqual(self.query_fixture(log="[  PASSED  ] 3 tests.")[0], 0)
+        self.assertEqual(self.query_fixture(log="[  PASSED  ] 3 tests.\r\n")[0], 0)
         self.assertEqual(self.query_fixture(log="[  PASSED  ] 3 tests.\nculib mem: fatal: invalid free")[0], 1)
 
     def test_no_logs_or_no_test_summary_never_claims_verified(self):

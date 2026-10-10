@@ -180,7 +180,7 @@ def inspect_job(base, job, output, full_logs):
     if full_logs:
         try:
             raw = api(base + "/actions/jobs/{}/logs".format(job["id"]), raw=True)
-            (output / (str(job["id"]) + ".log")).write_text(raw, encoding="utf-8")
+            (output / (str(job["id"]) + ".log")).write_bytes(raw.encode("utf-8"))
             record.update(coverage="full log", reports=[scan(raw)])
             return record
         except (RuntimeError, OSError) as error:
