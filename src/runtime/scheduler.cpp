@@ -51,15 +51,14 @@ struct remote_task_state {
 struct task_state {
     explicit task_state(vcpu* parent) noexcept
         : owner(parent), body(0), waiter(0), next_detached(0),
-          prev_next_detached(0), done(false), detached(false),
+          prev_next_detached(0), done(false),
           remote(0), next_remote(0) {}
     vcpu* owner;
     coroutine_control* body;
     park_token* waiter;
     task_state* next_detached;
-    task_state** prev_next_detached;
+    task_state** prev_next_detached;  // 非空即已加入 detached 链。
     bool done;
-    bool detached;
     remote_task_state* remote;
     task_state* next_remote;
 };
@@ -139,6 +138,12 @@ struct ready_queue {
 };
 
 struct vcpu {
+    ~vcpu() {
+        pool.reset();
+        delete remote;
+        if (engine) io_engine_destroy(engine);
+    }
+
     ready_queue ready;
     ready_queue round;
     wait_set waiting;
@@ -196,9 +201,6 @@ void reap_vcpu(void* owner) noexcept {
     reap(self->ready);
     reap_detached(*self);
 
-    delete self->remote;
-
-    if (self->engine) io_engine_destroy(self->engine);
     delete self;
 }
 
@@ -432,7 +434,6 @@ result<void> start_pool(vcpu& self, unsigned workers) {
     }
 #endif
     self.pool = std::move(pool);
-    self.pool_scope_depth = self.scope_depth;
     return result<void>();
 }
 
@@ -462,13 +463,9 @@ result<void*> scheduler_scope_enter_with_workers(unsigned workers) {
         return make_error(error_kind::invalid_argument, "work pool needs at least one vCPU");
     vcpu* const self = try_here();
     if (!self) return make_error(error_kind::resource_exhausted);
-    ++self->scope_depth;
     result<void> started = start_pool(*self, workers);
-    if (started.is_err()) {
-        // 只回滚深度；正常 leave 会运行此前已提交的任务。
-        --self->scope_depth;
-        return std::move(started).error();
-    }
+    if (started.is_err()) return std::move(started).error();
+    self->pool_scope_depth = ++self->scope_depth;
     return self;
 }
 
@@ -488,8 +485,6 @@ void scheduler_scope_leave(void* owner) noexcept {
     release_thread_stack_pool();
     unregister_runtime_thread_exit(self);
     current_vcpu = 0;
-    delete self->remote;
-    if (self->engine) io_engine_destroy(self->engine);
     delete self;
 }
 
@@ -538,7 +533,7 @@ void scheduler_task_complete(task_state* task) noexcept {
     }
     task->done = true;
     if (task->waiter) scheduler_wake(*task->waiter);
-    if (task->detached) {
+    if (task->prev_next_detached) {
         unlink_detached(task);
         delete task;
     }
@@ -596,7 +591,6 @@ void scheduler_task_detach(task_state* task) noexcept {
         return;
     }
     if (task->done) { delete task; return; }
-    task->detached = true;
     vcpu& self = *task->owner;
     task->next_detached = self.detached;
     task->prev_next_detached = &self.detached;
