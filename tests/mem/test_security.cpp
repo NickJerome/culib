@@ -1,26 +1,4 @@
-/* ----------------------------------------------------------------------------
- * test_security.cpp — culib mem 安全注入测试（SPEC §9: test_security）
- *
- * 每个注入用例都在**独立子进程**里跑，父进程按子进程的结束方式判定：
- *   - 子进程因分配器的 fatal 路径 abort（POSIX SIGABRT / Windows 退出码 3）→ 检出
- *   - 子进程 exit(0) → 未检测
- *   - 子进程以 kSetupFail(90) 退出 → 用例前置条件没满足，判 FAIL 而不是"检出"
- *     （否则一次 malloc 返回 NULL 就能把用例伪装成 PASS）
- *
- * 取得子进程的方式两平台不同，判定逻辑共用：
- *   POSIX   fork()，父进程 waitpid 看 WIFSIGNALED / WEXITSTATUS。
- *   Windows 没有 fork，改为带 --case <name> 用 _spawnl 重新拉起自身；子进程的
- *           退出码即判定依据。实测（MinGW-w64 15.2 与 MSVC 19.4x 完全一致）：
- *             abort()    -> 3
- *             访问违例   -> 0xC0000005（转成 int 是 -1073741819）
- *             干净退出   -> 0
- *           其他异常退出一律 FAIL，不能让无关崩溃冒充检出。
- *
- * 用例分级：
- *   HARD  必须检测（double_free / invalid_free / WAVVIX_MEM_DEBUG 下 overflow_canary）
- *   SOFT  允许实现不检测（uaf_write_detect：SPEC 只要求"写后重分配检测"，
- *         若实现选择不检测该形态，子进程正常退出，父进程记 SKIP）
- * ------------------------------------------------------------------------- */
+// 分配器故障注入；判定规则见 docs/mem.md。
 #include "test_util.h"
 
 #include <mem_core.h>
@@ -35,6 +13,7 @@
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#  include <io.h>
 #  include <process.h>          /* _spawnl / _P_WAIT / _exit */
 #else
 #  include <unistd.h>
@@ -326,19 +305,21 @@ Verdict verdict_setup_fail() {
     return V_FAIL;
 }
 
+bool allocator_reported(FILE* output) {
+    if (std::fseek(output, 0, SEEK_SET) != 0) return false;
+    char message[512];
+    const size_t length = std::fread(message, 1, sizeof(message) - 1, output);
+    message[length] = '\0';
+    return std::strstr(message, "culib mem: fatal: ") != NULL &&
+           std::strstr(message, " ptr=") != NULL;
+}
+
 #if defined(_WIN32)
 
 /* 子进程侧准备：关掉所有崩溃弹窗。少了这一步，abort 与访问违例会弹出 WER /
  * "Runtime Error!" 对话框，_spawnl(_P_WAIT) 就地挂死，整个 xmake test 永不返回。 */
 void child_prepare() {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-    // 父进程运行测试时只显示判定；手工 --case 仍保留原始 fatal 诊断。
-    if (std::getenv("WAVVIX_MEM_TEST_CHILD") != NULL) {
-        HANDLE null_file = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                       NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (null_file == INVALID_HANDLE_VALUE || !SetStdHandle(STD_ERROR_HANDLE, null_file) ||
-            std::freopen("NUL", "w", stderr) == NULL) child_exit(kSetupFail);
-    }
 #if defined(_MSC_VER)
     /* MinGW-w64 的头文件声明了 _set_abort_behavior，但 msvcrt 导入库里没有这个
      * 符号（链接期报 undefined reference to __imp__set_abort_behavior），所以只
@@ -347,40 +328,47 @@ void child_prepare() {
 #endif
 }
 
-/* 带 --case <name> 重新拉起自身并等它结束。
- * 成功时把子进程退出码写入 *rc_out 并返回 true；_spawnl 自身失败返回 false。
- *
- * 不能简单地拿"rc == -1"当失败判据：_spawnl 失败返回 -1，而访问违例的退出码
- * 0xC0000005 转成 int 也是负数（-1073741819）。真正要防的是把 spawn 失败记成
- * 一次"检出"，所以调用前清 errno，用 errno 把两者分开。 */
-bool spawn_case(const char* name, int* rc_out) {
+// -1 也可能是子进程的异常退出码；仅 errno 非零时判定为 _spawnl 失败。
+bool spawn_case(const char* name, int* rc_out, bool* reported) {
     char exe[MAX_PATH];
     if (GetModuleFileNameA(NULL, exe, MAX_PATH) == 0) return false;
 
-    /* argv[0] 必须自带引号。_spawnl 把可变参数用空格拼成一条命令行交给
-     * CreateProcess，中间不做任何加引号处理；于是可执行文件路径含空格时
-     * （例如 "C:/sp ace/test_security.exe"）子进程的 argv 会在空格处被拆散，
-     * argv[0] 只剩 "C:/sp"，argv[1] 变成 "ace/test_security.exe"。
-     *
-     * 注意第二个实参 exe（对应 CreateProcess 的 lpApplicationName）不能加引号
-     * ——那一路是文件路径不是命令行，加了引号反而 ENOENT。 */
+    // _spawnl 的 argv[0] 要加引号，路径实参 exe 则不能加。
     char qexe[MAX_PATH + 2];
     std::snprintf(qexe, sizeof(qexe), "\"%s\"", exe);
 
-    /* 递归哨兵，三层防护的最后一层。
-     *   1) 上面的引号让 argv 不被拆散；
-     *   2) main 扫描全部 argv 找 --case，拆散了也还能认出来；
-     *   3) 这一层：即便前两层都失效、子进程解析不出用例名，它也会因为看见
-     *      WAVVIX_MEM_TEST_CHILD 而立即退出，而不是回退到父进程分支再 spawn 一整轮。
-     * 缺了第 3 层的后果不是"少一道保险"而是无限自我 spawn——审查实测 3 秒内
-     * 涨到 114 个进程。上一版把 main 里的 getenv 检查写了、却漏了这一行，
-     * 于是那个检查永远为假：没人设置的哨兵等于没有哨兵。 */
+    // 子进程若解析不出 --case，哨兵使它失败退出，避免再次生成整轮子进程。
     _putenv_s("WAVVIX_MEM_TEST_CHILD", "1");
+
+    FILE* const output = std::tmpfile();
+    if (!output) { _putenv_s("WAVVIX_MEM_TEST_CHILD", ""); return false; }
+    std::fflush(stderr);
+    const int saved_fd = _dup(_fileno(stderr));
+    if (saved_fd < 0 || _dup2(_fileno(output), _fileno(stderr)) != 0) {
+        if (saved_fd >= 0) _close(saved_fd);
+        std::fclose(output);
+        _putenv_s("WAVVIX_MEM_TEST_CHILD", "");
+        return false;
+    }
+    const HANDLE saved_handle = GetStdHandle(STD_ERROR_HANDLE);
+    if (!SetStdHandle(STD_ERROR_HANDLE,
+                      reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stderr))))) {
+        _dup2(saved_fd, _fileno(stderr));
+        _close(saved_fd);
+        std::fclose(output);
+        _putenv_s("WAVVIX_MEM_TEST_CHILD", "");
+        return false;
+    }
 
     errno = 0;
     intptr_t rc = _spawnl(_P_WAIT, exe, qexe, "--case", name, (char*)NULL);
     int saved_errno = errno;
+    SetStdHandle(STD_ERROR_HANDLE, saved_handle);
+    _dup2(saved_fd, _fileno(stderr));
+    _close(saved_fd);
     _putenv_s("WAVVIX_MEM_TEST_CHILD", "");   /* 立刻撤掉：父进程自己不该带着它 */
+    *reported = allocator_reported(output);
+    std::fclose(output);
     errno = saved_errno;             /* _putenv_s 会覆盖 errno，先存后取 */
 
     if (rc == -1 && errno != 0) return false;
@@ -393,11 +381,9 @@ Verdict run_case(const CaseDef& c) {
     std::fflush(stdout);        /* 子进程共用这个句柄，先把前缀冲出去 */
 
     int rc = 0;
-    if (!spawn_case(c.name, &rc)) {
-        /* 必须是 FAIL 不是 SKIP：SKIP 不计入 nfail，于是"一条用例都没跑"会
-         * 打印 "all hard injection cases detected" 并退出 0——和本文件专门要堵的
-         * 那个假 PASS 是同一类。触发路径真实存在：GetModuleFileNameA 是 ANSI 版，
-         * 路径含当前代码页无法表示的字符时会返回 '?' 导致 ENOENT。 */
+    bool reported = false;
+    if (!spawn_case(c.name, &rc, &reported)) {
+        // 子进程未运行就是 FAIL，不能把整轮失败报成全部检出。
         std::printf("spawn failed: %s -> FAIL\n", std::strerror(errno));
         return V_FAIL;
     }
@@ -407,6 +393,10 @@ Verdict run_case(const CaseDef& c) {
 
     if (rc != 3) {
         std::printf("UNEXPECTED exit code 0x%08X (expected abort/3)  -> FAIL\n", (unsigned)rc);
+        return V_FAIL;
+    }
+    if (!reported) {
+        std::printf("UNEXPECTED abort without allocator fatal diagnostic  -> FAIL\n");
         return V_FAIL;
     }
     std::printf("DETECTED (abort, exit code 3)  -> PASS\n");
@@ -419,8 +409,14 @@ Verdict run_case(const CaseDef& c) {
     std::printf("  [RUN ] %-28s ... ", c.name);
     std::fflush(stdout);
 
+    FILE* const output = std::tmpfile();
+    if (!output) {
+        std::printf("cannot capture child diagnostic: %s -> FAIL\n", std::strerror(errno));
+        return V_FAIL;
+    }
     pid_t pid = fork();
     if (pid < 0) {       /* fork 失败不算用例失败，但无法判定 */
+        std::fclose(output);
         /* 同 Windows 侧：SKIP 不计入 nfail，会让"一条都没跑"打印成全部检出。 */
         std::printf("fork failed: %s -> FAIL\n", std::strerror(errno));
         return V_FAIL;
@@ -430,7 +426,8 @@ Verdict run_case(const CaseDef& c) {
         struct rlimit rl;
         rl.rlim_cur = 0; rl.rlim_max = 0;
         setrlimit(RLIMIT_CORE, &rl);
-        if (std::freopen("/dev/null", "w", stderr) == NULL) child_exit(kSetupFail);
+        if (dup2(fileno(output), STDERR_FILENO) < 0) child_exit(kSetupFail);
+        std::fclose(output);
         c.fn();
         child_exit(0);
     }
@@ -438,6 +435,8 @@ Verdict run_case(const CaseDef& c) {
     int status = 0;
     pid_t waited;
     do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    const bool reported = allocator_reported(output);
+    std::fclose(output);
     if (waited != pid) {
         std::printf("waitpid failed: %s -> FAIL\n", std::strerror(errno));
         return V_FAIL;
@@ -449,6 +448,10 @@ Verdict run_case(const CaseDef& c) {
         return verdict_clean_exit(c);
 
     if (WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT) {
+        if (!reported) {
+            std::printf("UNEXPECTED SIGABRT without allocator fatal diagnostic  -> FAIL\n");
+            return V_FAIL;
+        }
         std::printf("DETECTED (SIGABRT)  -> PASS\n");
         return V_PASS;
     }
@@ -466,11 +469,7 @@ Verdict run_case(const CaseDef& c) {
 } /* namespace */
 
 int main(int argc, char** argv) {
-    /* 子进程入口。Windows 靠它代替 fork；POSIX 的 fork 路径用不到，但两平台都
-     * 保留，便于手工单跑一条用例排查：test_security --case double_free */
-    /* 扫描全部 argv 而非固定 argv[1]：路径含空格时 argv 会被拆散（见 spawn_case
-     * 的注释）。配合 WAVVIX_MEM_TEST_CHILD 哨兵，把"解析不出用例名"从无限递归变成一次
-     * 可见的失败退出。 */
+    // 手工 --case 可单独查看故障；扫描全部 argv 兼容带空格的可执行文件路径。
     const char* case_name = NULL;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--case") == 0) { case_name = argv[i + 1]; break; }

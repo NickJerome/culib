@@ -41,7 +41,9 @@ void example() {
 
 Windows MSVC x64、Linux x86_64/arm64 和 macOS arm64/x86_64 的 debug、release 构建已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)，包含分配器单元、压力、安全和 RSS 测试，以及全局 `new/delete` 覆盖测试；Linux 的 `malloc/new` 共享库覆盖也通过了计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论。
 
-`xmake` 的 `debug` 模式本身不启用 L2 canary 与释放后写入检查；这些检查由编译宏 `WAVVIX_MEM_DEBUG` 独立控制。CI 单独在 Linux、macOS、Windows 带该宏构建并运行测试，且要求安全注入用例全部检出、0 项跳过。`test_security` 把每条非法操作放进独立子进程；只有预期的 `SIGABRT`（Windows 为退出码 3）才算检出，其他异常退出判失败。正常测试只打印判定，手工执行 `mem_test_security --case double_free` 可查看分配器原始诊断。
+`xmake` 的 `debug` 模式本身不启用 L2 canary 与释放后写入检查；这些检查由编译宏 `WAVVIX_MEM_DEBUG` 独立控制。CI 单独在 Linux、macOS、Windows 带该宏构建并运行测试，且要求全部 14 个安全注入用例检出、0 项跳过。
+
+`test_security` 把每条非法操作放进独立子进程（POSIX 用 `fork`，Windows 重新启动测试程序）。父进程同时要求预期的 `SIGABRT`（Windows 为退出码 3）和带指针的 `culib mem: fatal:` 诊断；其他崩溃、正常退出或分配前置条件失败都判 FAIL，不能冒充检出。普通构建未启用的 canary 用例记 SKIP；只有写后重分配检测用例允许实现不检测时记 SKIP。常规测试只显示判定，手工执行 `mem_test_security --case double_free` 可查看原始诊断。
 
 ## 分配性能基准
 
