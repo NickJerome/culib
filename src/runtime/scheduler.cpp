@@ -366,16 +366,7 @@ void accept_remote(vcpu& self) {
     }
 }
 
-// 等到最早的时限或 I/O 完成。
-void idle(vcpu& self, bool have_deadline, instant nearest) {
-    std::chrono::nanoseconds timeout(-1);   // 负数 = 无限等
-    if (have_deadline) {
-        const instant now = clock_type::now();
-        timeout = (nearest > now)
-                      ? std::chrono::duration_cast<std::chrono::nanoseconds>(nearest - now)
-                      : std::chrono::nanoseconds(0);
-    }
-
+void wait_io(vcpu& self, std::chrono::nanoseconds timeout) {
     if (!self.engine) {
         if (timeout.count() > 0) std::this_thread::sleep_for(timeout);
         return;
@@ -385,6 +376,18 @@ void idle(vcpu& self, bool have_deadline, instant nearest) {
     io_engine_wait(self.engine, timeout, completed);
     // 引擎交回请求，入队由调度器处理。
     while (io_request* const request = completed.pop()) rouse(self, *request->waiter);
+}
+
+// 等到最早的时限或 I/O 完成。
+void idle(vcpu& self, bool have_deadline, instant nearest) {
+    std::chrono::nanoseconds timeout(-1);   // 负数 = 无限等
+    if (have_deadline) {
+        const instant now = clock_type::now();
+        timeout = (nearest > now)
+                      ? std::chrono::duration_cast<std::chrono::nanoseconds>(nearest - now)
+                      : std::chrono::nanoseconds(0);
+    }
+    wait_io(self, timeout);
 }
 
 }  // namespace
@@ -406,6 +409,14 @@ void unlink_detached(task_state* task) noexcept {
         task->next_detached->prev_next_detached = task->prev_next_detached;
 }
 
+// 调用方持有 waker.mutex。
+void queue_remote_token(remote_waker& waker, park_token& token) noexcept {
+    token.next = 0;
+    if (waker.tail) waker.tail->next = &token;
+    else waker.head = &token;
+    waker.tail = &token;
+}
+
 void release_remote(task_state* task) noexcept {
     remote_task_state* const remote = task->remote;
     if (remote->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -418,13 +429,14 @@ void finish_remote_task(task_state* task) noexcept {
     {
         std::lock_guard<std::mutex> lock(remote->mutex);
         remote->done.store(true, std::memory_order_release);
-        remote->waker->pending_tasks.fetch_sub(1, std::memory_order_acq_rel);
-        if (remote->waiter) {
-            if (!scheduler_remote_wake(remote->waker, *remote->waiter))
-                die("wavvix::coroutine: 不能唤醒 join 协程");
-        } else if (!io_engine_notify(remote->waker->engine)) {
+        remote_waker& waker = *remote->waker;
+        std::lock_guard<std::mutex> wake_lock(waker.mutex);
+        if (remote->waiter) queue_remote_token(waker, *remote->waiter);
+        // 先发布完成事件，再扣待完成数；创建者不能在两者之间误判死锁。
+        waker.has_pending.store(true, std::memory_order_release);
+        waker.pending_tasks.fetch_sub(1, std::memory_order_acq_rel);
+        if (!io_engine_notify(waker.engine))
             die("wavvix::coroutine: 不能通知创建它的 vCPU");
-        }
     }
     release_remote(task);
 }
@@ -727,29 +739,14 @@ void scheduler_external_wait_begin(remote_waker* waker) noexcept {
     ++waker->pending_external;
 }
 
-namespace {
-
-bool remote_wake(remote_waker* waker, park_token& token, bool external) noexcept {
+bool scheduler_external_wake(remote_waker* waker, park_token& token) noexcept {
     if (!waker) return false;
     std::lock_guard<std::mutex> lock(waker->mutex);
-    token.next = 0;
-    if (waker->tail) waker->tail->next = &token;
-    else waker->head = &token;
-    waker->tail = &token;
-    if (external) ++waker->completed_external;
+    queue_remote_token(*waker, token);
+    ++waker->completed_external;
     waker->has_pending.store(true, std::memory_order_release);
     // 通知完成前不能让所属 vCPU 取走 token 并销毁 waker/engine。
     return io_engine_notify(waker->engine);
-}
-
-}  // namespace
-
-bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept {
-    return remote_wake(waker, token, false);
-}
-
-bool scheduler_external_wake(remote_waker* waker, park_token& token) noexcept {
-    return remote_wake(waker, token, true);
 }
 
 void scheduler_sleep_for(std::chrono::nanoseconds duration) {
@@ -879,7 +876,8 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             // 没有待完成 I/O、计时器或跨线程通知时，剩余的本地等待无法被唤醒。
             if (!have_deadline && self.parked_count != 0 && pending_io == 0 &&
                 !remote_tasks && !worker_alive &&
-                (!self.remote || self.remote->pending_external == 0))
+                (!self.remote || (self.remote->pending_external == 0 &&
+                                  !self.remote->has_pending.load(std::memory_order_acquire))))
                 die("wavvix::scheduler: 无时限等待的协程已无唤醒来源");
             idle(self, have_deadline, nearest);
             continue;
@@ -904,6 +902,9 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
                 self.ready.push(body);        // 让出了，下一轮继续
             }
         }
+        // 就绪协程持续让出时队列不会清空；仍需领取已完成的 I/O。
+        if (!self.ready.empty() && io_engine_pending(self.engine) != 0)
+            wait_io(self, std::chrono::nanoseconds(0));
         if (once || time_elapsed) break;
     }
 

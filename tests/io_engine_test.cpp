@@ -476,6 +476,28 @@ TEST(io_engine, socket_transfer_uses_the_same_completion_contract) {
     EXPECT(std::string(got, 5), ==, "hello");
 }
 
+TEST(io_engine, yielding_task_does_not_starve_completed_io) {
+    linked_pair pair;
+    if (!EXPECT(pair.ok(), ==, true)) return;
+
+    char received = 0;
+    bool read_done = false;
+    bool write_done = false;
+    bool read_before_spinner_stopped = false;
+    spawn([&] { read_done = socket_read_now(pair.right, &received, 1) == 1; }).value();
+    spawn([&] { write_done = socket_write_now(pair.left, "x", 1) == 1; }).value();
+    spawn([&] {
+        for (int i = 0; i < 50000 && !read_done; ++i) wavvix::yield();
+        read_before_spinner_stopped = read_done;
+    }).value();
+
+    EXPECT(run(), ==, 3u);
+    EXPECT(write_done, ==, true);
+    EXPECT(read_done, ==, true);
+    EXPECT(received, ==, 'x');
+    EXPECT(read_before_spinner_stopped, ==, true);
+}
+
 #if defined(__linux__)
 TEST(io_engine, socket_write_after_peer_close_does_not_raise_sigpipe) {
     linked_pair pair;

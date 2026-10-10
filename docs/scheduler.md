@@ -47,6 +47,10 @@ int main() {
 
 如果只剩无时限等待的本地协程，且没有 I/O 或正在执行的跨线程工作，`run()` 会报告死锁并终止；这种状态没有任何任务能发出下一次唤醒。曾使用过 `blocking_pool` 但池中已无未完成工作，不算唤醒源。应在退出前安排通知，或给等待设置时限。
 
+就绪队列持续有协程 `yield()` 时，每轮结束仍会非阻塞领取待完成的 I/O，避免网络读写被持续让出的协程饿死。没有待完成 I/O 时不增加轮询系统调用。
+
+远端任务完成时，先在唤醒队列锁内发布完成事件，再减少待完成任务数，并在释放锁前通知事件引擎。死锁判定同时检查待消费的完成事件，避免把“工作已完成、join 尚未恢复”的窗口误认为死锁。
+
 析构会等待所有提交的协程结束，并停止额外工作 vCPU；有无限等待或持续接受连接的协程时，应先用应用自己的停止信号让它们退出。`scheduler_scope` 只管理调度器生命周期，不取消协程。协程第一次运行后固定在该 vCPU 上；已经关联某个 vCPU 事件引擎的 I/O 句柄不应捕获后交给另一个 vCPU 使用。
 
 PhotonLibOS 的原生 [`thread_create11()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/thread11.h) / [`go()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/go.h) 创建后只把协程放进运行队列，默认不要求等待；需要等待时才启用 join。[`photon_std::thread`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/std-compat.h) 则是 `std::thread` 风格的持有型句柄，构造即入队，随后 `join()` 或 `detach()`；仍可 `join` 时析构会 `terminate`。culib 的 `spawn()` 和 `coroutine` 分别对应这两种用法。Photon 的 [`init()` / `fini()`](https://github.com/alibaba/PhotonLibOS/blob/main/photon.h) 在这里由 `scheduler_scope` 管理。Photon 另行启用 WorkPool 后才把新任务交给其他 vCPU；culib 用 `with_workers(n)` 显式启用同类分发。

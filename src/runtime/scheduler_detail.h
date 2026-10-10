@@ -27,10 +27,6 @@ remote_waker* scheduler_remote_prepare();
 void scheduler_external_wait_begin(remote_waker* waker) noexcept;
 bool scheduler_external_wake(remote_waker* waker, park_token& token) noexcept;
 
-// 已由远端 coroutine 任务计数的完成通知；调用方须保证 token 活到协程被唤醒。
-// 返回 false 表示通知失败。
-bool scheduler_remote_wake(remote_waker* waker, park_token& token) noexcept;
-
 // 仅在协程内调用；返回时 request 已含结果。负 timeout 表示无限等待。
 // 超时返回 transferred=-1、failure=ETIMEDOUT。
 void scheduler_io(io_request& request, std::chrono::nanoseconds timeout);
