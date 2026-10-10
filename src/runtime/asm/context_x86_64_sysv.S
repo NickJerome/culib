@@ -1,4 +1,8 @@
-/* 上下文切换：x86_64 System V ABI（Linux 和 macOS 都是这一套）。
+/* Register layout and context switch adapted from Boost.Context.
+ * Copyright Oliver Kowalke 2009. Distributed under the Boost Software
+ * License 1.0; see licenses/BOOST-1.0.txt.
+ *
+ * 上下文切换：x86_64 System V ABI（Linux 和 macOS 都是这一套）。
  *
  * 寄存器块压在**被切走的那个栈上**，句柄就是那一刻的 rsp —— boost.context 的做法，
  * 比「另开一个 struct 存寄存器」省一次间接寻址，也省掉「这个 struct 谁分配」的问题。
