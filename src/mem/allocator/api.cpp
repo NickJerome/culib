@@ -2,9 +2,9 @@
  * api.cpp — mem API 入口与参数校验
  *
  * 分层锚点：L0 溢出检查 / L2 canary 包装都挂在本层，
- * 快路径本身（internal.h 内联）不含任何安全开销分支（L1 除外：1 次 XOR）。
+ * 线程堆与缓存快路径见 theap.h，页内操作见 internal.h。
  * ------------------------------------------------------------------------- */
-#include "internal.h"
+#include "theap.h"
 
 #include <cerrno>
 #include <cstring>

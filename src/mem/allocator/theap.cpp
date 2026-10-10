@@ -1,11 +1,11 @@
-#include "internal.h"
+#include "theap.h"
 #include "meta.h"
 
 #include <cstring>
 
 namespace wavvix { namespace mem { namespace detail {
 
-/* 快路径直接读取的 TLS 指针（internal.h 中 inline） */
+/* 快路径直接读取的 TLS 指针（theap.h 中 inline） */
 thread_local mem_theap_t* mem_t_theap = NULL;
 
 static void mem_tcache_flush_all(mem_theap_t* t);
@@ -104,7 +104,7 @@ mem_page_t* mem_page_reclaim(mem_theap_t* t, int bin) {
   if (arena == NULL) return NULL;
   mem_page_t* page = mem_arena_reclaim_page(arena, bin);
   if (page == NULL) return NULL;
-  mem_page_set_owner(page, t);
+  page->xthread_id.store(t->thread_id, std::memory_order_release);
   mem_page_free_collect(page);
   if (page->free != NULL) {
     mem_page_queue_push(&t->pages[bin - 1], page);
@@ -121,6 +121,8 @@ mem_page_t* mem_page_reclaim(mem_theap_t* t, int bin) {
 
 mem_theap_t* mem_theap_create(void) {
   mem_init_once();
+  const int arena_idx = mem_arena_pick();
+  if (arena_idx < 0) return NULL;
 
   mem_theap_t* t = NULL;
   {
@@ -136,7 +138,7 @@ mem_theap_t* mem_theap_create(void) {
   t->thread_id = mem_next_thread_id();
   t->random_state = mem_random_seed(mem_global_seed() ^ t->thread_id ^ (uintptr_t)t);
   t->tcache_key   = mem_random_next(&t->random_state);
-  if (mem_arena_pick_for_thread(t) < 0) return NULL;   /* 确保至少一个 arena */
+  t->arena_idx = arena_idx;
   mem_t_theap = t;
   /* 线程退出钩子登记。放在最后一步：上面任何一个失败返回都不该留下一个
    * "登记了却没建成"的 theap。 */
@@ -147,11 +149,6 @@ mem_theap_t* mem_theap_create(void) {
 void mem_theap_release(mem_theap_t* t) {
   if (mem_t_theap == t) mem_t_theap = NULL;
   mem_tcache_flush_all(t);
-  mem_theap_abandon(t);
-}
-
-/* 线程退出时摘出所持小页并登记 abandoned 桶。 */
-void mem_theap_abandon(mem_theap_t* t) {
   for (int qi = 0; qi < WAVVIX_MEM_BIN_COUNT; qi++) {
     mem_page_queue_t* q = &t->pages[qi];
     while (q->first != NULL) {
@@ -164,7 +161,6 @@ void mem_theap_abandon(mem_theap_t* t) {
         mem_page_release_slices(page);
         continue;
       }
-      page->theap = NULL;
       page->xthread_id.fetch_or(WAVVIX_MEM_PAGE_XTHREAD_ABANDONED,
                                 std::memory_order_acq_rel);
       mem_arena_t* arena = mem_arena_get(page->arena_idx);
@@ -232,12 +228,12 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
   mem_arena_t* arena = mem_arena_get(t->arena_idx);
   if (arena != NULL) mem_arena_purge_check(arena);
   bool zeroed = false;
-  size_t sidx = mem_arena_alloc_slices_any(t, 1, 1, &arena, &zeroed);
+  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, 1, 1, &arena, &zeroed);
   if (sidx == (size_t)-1) return NULL;
   page = mem_desc_at(arena->first_slice + sidx);
   uint8_t* start = arena->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = arena->index;
-  mem_page_init(page, t, bin, mem_bin_size(bin), WAVVIX_MEM_PAGE_SMALL, start, 1, zeroed);
+  mem_page_init(page, t->thread_id, t->random_state, bin, start, 1, zeroed);
   mem_page_publish(page);
   mem_page_queue_push(q, page);
   return mem_page_malloc(page);
@@ -262,13 +258,13 @@ static void* mem_malloc_large_impl(mem_theap_t* t, size_t size,
 
   bool zeroed = false;
   mem_arena_t* a = NULL;
-  size_t sidx = mem_arena_alloc_slices_any(t, n, align_slices, &a, &zeroed);
+  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, n, align_slices, &a, &zeroed);
   if (sidx == (size_t)-1) return NULL;
 
   mem_page_t* page = mem_desc_at(a->first_slice + sidx);
   uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = a->index;   /* slice 的固有属性，mem_page_init 不碰 */
-  mem_page_init(page, t, 0, 0, WAVVIX_MEM_PAGE_LARGE, start, (uint32_t)n, zeroed);
+  mem_page_init(page, t->thread_id, t->random_state, 0, start, (uint32_t)n, zeroed);
   page->large_size = n * WAVVIX_MEM_SLICE_SIZE;
   if (size > WAVVIX_MEM_HUGE_THRESHOLD) page->flags |= WAVVIX_MEM_PAGE_FLAG_HUGE;
   mem_desc_mark_cont(mem_page_slice_index(page), n);

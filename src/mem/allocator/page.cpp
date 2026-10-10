@@ -65,13 +65,6 @@ void mem_page_check_invariants(const mem_page_t* page) {
 }
 #endif /* WAVVIX_MEM_DEBUG */
 
-/* 初始化与 abandoned 页接管共用的 owner 更新。 */
-void mem_page_set_owner(mem_page_t* page, mem_theap_t* t) {
-  page->theap = t;
-  /* 页字段由 magic 发布，xthread_id 不承担该职责。 */
-  page->xthread_id.store(t != NULL ? t->thread_id : 0, std::memory_order_release);
-}
-
 /* 先熄灭 magic，再归还 slice。 */
 void mem_page_release_slices(mem_page_t* page) {
   /* 先取出全部需要的字段：mem_desc_clear 之后描述符即视为无主 */
@@ -92,9 +85,8 @@ void mem_page_release_slices(mem_page_t* page) {
   }
 }
 
-void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_size,
-                  int kind, uint8_t* slice_start, uint32_t slice_count,
-                  bool slice_is_zero) {
+void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, int bin,
+                  uint8_t* slice_start, uint32_t slice_count, bool slice_is_zero) {
   /* 先熄灭 magic：本 slice 可能残留上一任 CONT 项的 magic（页归还时只清首项，
    * 见 mem_desc_clear），不先清就存在"半初始化的描述符被并发 mem_ptr_page 认成
    * 活页"的窗口。清零之后本页对外不可见，直到调用方显式 mem_page_publish。
@@ -109,7 +101,7 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
   page->free = NULL;
   page->local_free = NULL;
   page->used = 0;
-  page->kind = (uint8_t)kind;
+  page->kind = bin == 0 ? WAVVIX_MEM_PAGE_LARGE : WAVVIX_MEM_PAGE_SMALL;
   page->free_is_zero = slice_is_zero;
   page->flags = 0;
   page->bin = (uint8_t)bin;
@@ -118,13 +110,14 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
   page->slice_count = slice_count;
   page->cont_first = 0;
   page->next = page->prev = NULL;
-  mem_page_set_owner(page, owner);
+  page->xthread_id.store(owner, std::memory_order_relaxed);
   page->xthread_free.store(0, std::memory_order_relaxed);
   page->large_size = 0;
 
-  mem_secure_page_keys(page, &owner->random_state);
+  mem_secure_page_keys(page, &random_state);
 
-  if (kind == WAVVIX_MEM_PAGE_SMALL) {
+  if (bin != 0) {
+    const size_t block_size = mem_bin_size(bin);
     size_t capacity = ((size_t)slice_count * WAVVIX_MEM_SLICE_SIZE) / block_size;
     page->capacity = (uint16_t)capacity;
     page->block_size = (uint16_t)block_size;
@@ -137,7 +130,7 @@ void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_s
       uint16_t order[4096];   /* 最小块 16B，capacity ≤ 64KiB/16B */
       for (size_t i = 0; i < capacity; i++) order[i] = (uint16_t)i;
       for (size_t i = capacity - 1; i > 0; i--) {
-        size_t j = (size_t)(mem_random_next(&owner->random_state) % (i + 1));
+        size_t j = (size_t)(mem_random_next(&random_state) % (i + 1));
         uint16_t tmp = order[i]; order[i] = order[j]; order[j] = tmp;
       }
       for (size_t i = 0; i + 1 < capacity; i++) {

@@ -74,7 +74,6 @@ static inline size_t mem_bin_size(int bin) {
 /* ============================== 结构体 ================================ */
 
 struct mem_page_t;
-struct mem_theap_t;
 struct mem_arena_t;
 
 /* --- diag.cpp：无分配的致命错误报告（内联快路径需要，故提前声明） --- */
@@ -109,16 +108,14 @@ struct mem_page_t {
   uint32_t               slice_count; /* 连续 slice 数（small=1） */
   uint32_t               cont_first;  /* CONT 项：首 slice 的窗口下标 */
   std::atomic<uint32_t>  magic;       /* WAVVIX_MEM_PAGE_MAGIC（L0 校验 + 发布屏障） */
-  uint8_t                _pad1[4];
 
   /* ---- cache line 1：跨线程、队列、冷字段 ---- */
   std::atomic<uintptr_t> xthread_free; /* 他线程释放链头（裸指针，0=空） */
-  mem_theap_t*            theap;        /* owner theap（abandoned 页为 NULL） */
   mem_page_t*             next;
   mem_page_t*             prev;
   uintptr_t              keys[2];      /* L1：空闲链 XOR 密钥 */
   size_t                 large_size;   /* large/huge：可用字节数 */
-  uint8_t                _pad2[8];
+  uint8_t                reserved[16]; // 描述符数组保持 128 字节步长。
 };
 static_assert(sizeof(mem_page_t) == 128, "mem_page_t must be exactly two cache lines");
 static_assert(ATOMIC_CHAR_LOCK_FREE == 2, "page alignment marker must be lock-free");
@@ -129,26 +126,6 @@ static_assert(offsetof(mem_page_t, kind) < 64 && offsetof(mem_page_t, cont_first
 
 /* --- diag.cpp：带页上下文的致命错误报告 --- */
 WAVVIX_MEM_NORETURN void mem_fatal_page(const char* msg, const void* p, const mem_page_t* page);
-
-/* 线程本地堆（thread_local 持有） */
-/* tcache 中的块仍计入 page->used；跨线程检查需要进程级驻留标记。 */
-struct mem_tcache_bin_t {
-  void*    head;
-  uint32_t count;
-  uint32_t _pad;
-};
-
-struct mem_theap_t {
-  mem_page_queue_t pages[WAVVIX_MEM_BIN_COUNT];              /* 0..35 每 bin + [WAVVIX_MEM_BIN_FULL] */
-  uint64_t        random_state;                     /* splitmix64 */
-  uintptr_t       thread_id;                        /* 唯一 id（非 0，低3位为 0） */
-  int             arena_idx;                        /* 当前偏好 arena */
-  bool            temporary;                        /* 本次调用后归还，不能依赖退出钩子 */
-  /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
-  mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
-  uintptr_t       tcache_key;
-  mem_theap_t* next_free;                            /* theap 回收链 */
-};
 
 /* arena：窗口内的一段连续 slice，用位图管理。 */
 struct mem_arena_t {
@@ -242,25 +219,12 @@ static inline void mem_secure_check_free(const mem_page_t* page, const void* p) 
   /* 其余情况视为用户数据，放行 */
 }
 
-/* ============================ tcache 快路径 ============================ */
-/* 按字节预算限制每个 bin 的滞留量，再夹到最小/最大条数。
- * 容量与占用数据见 docs/archive/edumalloc/docs/decisions.md D1。 */
-#define WAVVIX_MEM_TCACHE_BIN_BUDGET ((size_t)16 * 1024)
-#define WAVVIX_MEM_TCACHE_MIN 4
-#define WAVVIX_MEM_TCACHE_MAX 64
-static inline uint32_t mem_tcache_cap(size_t block_size) {
-  size_t n = WAVVIX_MEM_TCACHE_BIN_BUDGET / block_size;
-  if (n < WAVVIX_MEM_TCACHE_MIN) n = WAVVIX_MEM_TCACHE_MIN;
-  if (n > WAVVIX_MEM_TCACHE_MAX) n = WAVVIX_MEM_TCACHE_MAX;
-  return (uint32_t)n;
-}
-
 #if defined(WAVVIX_MEM_DEBUG)
 /* L2 在 tcache 侧的填充起点：块首两个机器字是 tcache 自己的元数据
  * （w[0] = 编码后的链指针，w[1] = 驻留 guard），只能从其后开始填与校。
  * 与页空闲链那套（从 WAVVIX_MEM_L2_LINK 起、保留尾部 WAVVIX_MEM_L2_TAIL）区间不同，
  * 理由见 secure.cpp 的 mem_debug_verify_tcache_block。
- * 声明必须先于 mem_tcache_pop（下方内联快路径要用）。 */
+ * 校验由 theap.h 的缓存读取路径调用。 */
 #define WAVVIX_MEM_L2_TCACHE_META (2 * sizeof(uintptr_t))
 void mem_debug_verify_tcache_block(const void* block, size_t block_size);
 #endif
@@ -271,39 +235,6 @@ extern uintptr_t mem_tcache_guard;
 /* release 对齐块在用户指针前保存定位标记；调试构建使用头 canary。 */
 static inline uintptr_t mem_aligned_cookie(const void* user) {
   return mem_tcache_guard ^ (uintptr_t)user;
-}
-
-/* tcache 驻留标记：w[1] == guard ^ 块地址。任何线程都能校验，
- * 因此跨线程 double-free 与 bin 满时走页路径的 double-free 都检得出。 */
-static inline void mem_tcache_check_guard(const void* p) {
-  const uintptr_t* w = (const uintptr_t*)p;
-  if (WAVVIX_MEM_UNLIKELY(w[1] == (mem_tcache_guard ^ (uintptr_t)w)))
-    mem_fatal_ptr("double free detected (block is resident in a thread cache)", p);
-}
-
-/* tcache 弹出：无锁、无页查找、无统计。
- * 校验 guard（检出 UAF 写/二次入链）与链指针对齐（检出链污染）。
- * 注意：弹出的块 encoded_next 域保持 tcache 编码残值——页密钥解码为随机值，
- * mem_secure_check_free 视为用户数据放行，不会误判 double-free。 */
-static inline void* mem_tcache_pop(mem_theap_t* t, int bin) {
-  mem_tcache_bin_t* tc = &t->tcache[bin - 1];
-  uintptr_t* w = (uintptr_t*)tc->head;
-  if (WAVVIX_MEM_LIKELY(w != NULL)) {
-    if (WAVVIX_MEM_UNLIKELY(w[1] != (mem_tcache_guard ^ (uintptr_t)w)))
-      mem_fatal_ptr("use-after-free write or tcache corruption", w);
-    uintptr_t next = w[0] ^ t->tcache_key;
-    /* 所有块大小都是 16 的倍数、页 64KiB 对齐 → 块地址恒 16 字节对齐 */
-    if (WAVVIX_MEM_UNLIKELY((next & 0xFull) != 0))
-      mem_fatal_ptr("tcache chain corrupted", w);
-#if defined(WAVVIX_MEM_DEBUG)
-    mem_debug_verify_tcache_block(w, mem_bin_size(bin));   /* L2: UAF 写校验 */
-#endif
-    w[1] = 0;
-    tc->head = (void*)next;
-    tc->count--;
-    return w;
-  }
-  return NULL;
 }
 
 /* 对齐分配可能返回块内指针；找回块首统一走 mem_user_block_start。 */
@@ -344,33 +275,26 @@ static inline uint8_t* mem_user_block_start(const mem_page_t* page, const void* 
 
 static inline void* mem_page_malloc(mem_page_t* page) {
   mem_block_t* b = page->free;
-  if (WAVVIX_MEM_LIKELY(b != NULL)) {
-    page->free = mem_block_next(page, b);              /* L1: 解 XOR */
+  if (WAVVIX_MEM_UNLIKELY(b == NULL)) return NULL;
+  page->free = mem_block_next(page, b);              /* L1: 解 XOR */
 #if defined(WAVVIX_MEM_DEBUG)
-    mem_debug_verify_free_block(page, b);              /* L2: UAF 写校验 */
+  mem_debug_verify_free_block(page, b);              /* L2: UAF 写校验 */
 #endif
-    b->encoded_next = mem_encode(page, (const void*)WAVVIX_MEM_BLOCK_ALLOCATED);
-    page->used++;
-    return b;
-  }
-  return NULL;
+  b->encoded_next = mem_encode(page, (const void*)WAVVIX_MEM_BLOCK_ALLOCATED);
+  page->used++;
+  return b;
 }
 
 /* ============================ 模块接口 ================================ */
 
-/* --- meta.cpp：元数据 bump 分配器（与用户数据物理分离） --- */
-
-
 /* --- page.cpp --- */
 /* 先 init 并填好全部字段，最后 publish 点亮 magic。 */
-void mem_page_init(mem_page_t* page, mem_theap_t* owner, int bin, size_t block_size,
-                  int kind, uint8_t* slice_start, uint32_t slice_count,
-                  bool slice_is_zero);
+void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, int bin,
+                  uint8_t* slice_start, uint32_t slice_count, bool slice_is_zero);
 static inline void mem_page_publish(mem_page_t* page) {
   page->magic.store(WAVVIX_MEM_PAGE_MAGIC, std::memory_order_release);
 }
 bool mem_page_free_collect(mem_page_t* page);         /* 返回是否腾出空间 */
-void mem_page_set_owner(mem_page_t* page, mem_theap_t* t);
 void mem_page_release_slices(mem_page_t* page);       /* magic 清零 + 归还 slice */
 void mem_page_queue_push(mem_page_queue_t* q, mem_page_t* page);
 void mem_page_queue_remove(mem_page_queue_t* q, mem_page_t* page);
@@ -380,52 +304,17 @@ void mem_page_queue_remove(mem_page_queue_t* q, mem_page_t* page);
 void mem_page_check_invariants(const mem_page_t* page);
 #endif
 
-/* --- theap.cpp --- */
-void mem_theap_exit_hook_init(void);   /* 注册线程退出回调（init 调一次） */
-mem_theap_t* mem_theap_create(void);
-void        mem_theap_release(mem_theap_t* t);
-void*       mem_malloc_generic(mem_theap_t* t, int bin);
-void*       mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed = NULL);
-void*       mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size);
-void        mem_theap_abandon(mem_theap_t* t);
-void        mem_theap_collect(mem_theap_t* t);               /* wavvix::mem::collect 用 */
-void        mem_theap_recycle_lock(void);                   /* fork 钩子用 */
-void        mem_theap_recycle_unlock(void);
-void        mem_theap_reinit_locks_child(void);
-
-/* 快路径直接读取的 TLS 指针（定义在 theap.cpp） */
-extern thread_local mem_theap_t* mem_t_theap;
-static inline mem_theap_t* mem_theap_fast(void) {
-  mem_theap_t* t = mem_t_theap;
-  if (WAVVIX_MEM_UNLIKELY(t == NULL)) t = mem_theap_create();
-  return t;
-}
-
-// Normal threads retain their heap; teardown/failing exit registration gets a lease.
-class heap_scope {
-public:
-  heap_scope() : heap_(mem_theap_fast()) {}
-  ~heap_scope() {
-    if (heap_ != NULL && WAVVIX_MEM_UNLIKELY(heap_->temporary)) mem_theap_release(heap_);
-  }
-  mem_theap_t* get() const { return heap_; }
-  heap_scope(const heap_scope&) = delete;
-  heap_scope& operator=(const heap_scope&) = delete;
-private:
-  mem_theap_t* heap_;
-};
-
 /* --- arena.cpp --- */
 bool        mem_window_init(size_t want_size);       /* 保留窗口 + 描述符数组 */
 mem_arena_t* mem_arena_get(int idx);
 int         mem_arena_count(void);
-int         mem_arena_pick_for_thread(mem_theap_t* t);
+int         mem_arena_pick();
 /* 分配 n 个连续 slice，返回 arena 内下标（失败 (size_t)-1）。
  * align_slices：返回地址须按 align_slices*64KiB 对齐（1 = 无额外约束）。
  * *out_zeroed：slice 内容是否保证全零（fresh 或 purge 后）。 */
 size_t      mem_arena_alloc_slices(mem_arena_t* a, size_t n, size_t align_slices,
                                   bool* out_zeroed);
-size_t      mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
+size_t      mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_slices,
                                       mem_arena_t** out_arena, bool* out_zeroed);
 void        mem_arena_free_slices(mem_arena_t* a, size_t idx, size_t n);  /* dirty → 到期 purge */
 void        mem_arena_free_slices_decommitted(mem_arena_t* a, size_t idx, size_t n);
@@ -454,34 +343,6 @@ uintptr_t   mem_next_thread_id(void);                /* 全局自增，左移3�
 void   mem_secure_page_keys(mem_page_t* page, uint64_t* random_state);
 /* L2 声明（mem_l2_wrap / mem_l2_unwrap / mem_debug_verify_free_block）见上文
  * "页内快路径"一节——mem_page_malloc 内联需要先行声明。 */
-
-/* ============================ 分配总入口 ============================== */
-/* api.cpp 的 wavvix::mem::alloc 经此内联展开快路径；t 属于调用线程。 */
-
-/* 小块先取线程缓存，再取所属 bin 的队首页。 */
-static inline void* mem_malloc_small(mem_theap_t* t, int bin) {
-  /* tcache 命中即返回。WAVVIX_MEM_DEBUG 下同样启用：tcache 侧另有一套 L2 填充/校验
-   * 区间（见 mem_debug_verify_tcache_block），覆盖不因此出缺口；而"调试构建
-   * 走的是另一条分配路径"本身才是更大的风险——真正跑在生产里的那条快路径
-   * 将永远得不到 canary 与 UAF 填充的复核。 */
-  void* tcp = mem_tcache_pop(t, bin);
-  if (WAVVIX_MEM_LIKELY(tcp != NULL)) return tcp;
-  mem_page_t* page = t->pages[bin - 1].first;
-  if (page != NULL) {
-    void* p = mem_page_malloc(page);
-    if (p != NULL) return p;
-  }
-  return mem_malloc_generic(t, bin);
-}
-
-static inline void* mem_malloc_internal_with(mem_theap_t* t, size_t size) {
-  if (WAVVIX_MEM_LIKELY(size <= WAVVIX_MEM_SMALL_MAX)) {
-    if (WAVVIX_MEM_UNLIKELY(size == 0)) size = 1;
-    int bin = mem_bin(size);
-    return mem_malloc_small(t, bin);
-  }
-  return mem_malloc_large(t, size);
-}
 
 /* small 块的可用字节数 */
 static inline size_t mem_page_usable_size(const mem_page_t* page) {

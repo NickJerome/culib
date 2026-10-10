@@ -159,7 +159,7 @@ mem_arena_t* mem_arena_get(int idx) {
 }
 
 /* 为线程挑选 arena：至少保证存在一个；轮询分摊。 */
-int mem_arena_pick_for_thread(mem_theap_t* t) {
+int mem_arena_pick() {
   int count = mem_arena_count();
   if (count == 0) {
     std::lock_guard<allocator_mutex> lock(g_subproc_lock);
@@ -170,10 +170,8 @@ int mem_arena_pick_for_thread(mem_theap_t* t) {
     }
     count = mem_arena_count();
   }
-  int idx = (int)(g_arena_round_robin.fetch_add(1, std::memory_order_relaxed) %
-                  (uint32_t)count);
-  t->arena_idx = idx;
-  return idx;
+  return (int)(g_arena_round_robin.fetch_add(1, std::memory_order_relaxed) %
+               (uint32_t)count);
 }
 
 /* ------------------------------ slice 分配 ----------------------------- */
@@ -230,13 +228,13 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
 
 /* 在任意 arena 中分配 n 个连续 slice；必要时创建新 arena（×4 增长）。
  * 成功返回 arena 内 slice 下标并设置 *out_arena / *out_zeroed；失败 (size_t)-1。 */
-size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
+size_t mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_slices,
                                  mem_arena_t** out_arena, bool* out_zeroed) {
   std::unique_lock<allocator_mutex> growth_lock(g_subproc_lock, std::defer_lock);
   for (int pass = 0; pass < 2; ++pass) {
     if (pass != 0) growth_lock.lock();
     int count = mem_arena_count();
-    int start = t->arena_idx;
+    int start = preferred_arena;
     if (start < 0 || start >= count) start = 0;
     for (int k = 0; k < count; k++) {
       int idx = (start + k) % count;
@@ -252,7 +250,7 @@ size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
             mem_desc_construct_upto(end, a->first_slice + a->slice_count);
           }
         }
-        t->arena_idx = idx;
+        preferred_arena = idx;
         *out_arena = a;
         return s;
       }
@@ -272,7 +270,7 @@ size_t mem_arena_alloc_slices_any(mem_theap_t* t, size_t n, size_t align_slices,
   size_t s = mem_arena_alloc_slices(a, n, align_slices, out_zeroed);
   if (s == (size_t)-1) return (size_t)-1;
   mem_desc_construct_upto(a->first_slice + s + n, a->first_slice + a->slice_count);
-  t->arena_idx = a->index;
+  preferred_arena = a->index;
   *out_arena = a;
   return s;
 }

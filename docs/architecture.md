@@ -23,7 +23,7 @@
 
 ## 当前主要问题
 
-- `mem/allocator/internal.h` 同时定义页、arena、线程堆、指针定位、缓存快路径和全部模块接口；页、线程堆与缓存仍需进一步划清边界。
+- 分配器页和 arena 已不依赖线程堆类型；`theap.h` 持有线程堆、缓存和分配路径。`internal.h` 仍集中页、arena、指针定位和调试标记，页与区域管理之间的状态边界还需继续检查。
 - 分配器与协程栈现已共用 `mem/pages`；元数据分配器已脱离 `allocator/internal.h`。
 - `runtime/scheduler.cpp` 同时维护本地调度、定时器、远端完成事件和工作线程启动关闭；状态和生命周期需要进一步分开。
 - 配置解析、文件读取、应用 flags 已分开；路径字符串操作已脱离磁盘 I/O。同步原语只包含 park 接口，网络只包含 scheduler_io 接口。I/O 引擎只持有不透明的 park_token 指针。
