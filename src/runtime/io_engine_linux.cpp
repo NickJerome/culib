@@ -124,47 +124,27 @@ bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
 }
 
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
-    const int fd = request.handle;
-    if (!engine || fd < 0) {
+    if (!engine) {
         request.transferred = -1;
         request.failure = EBADF;
         return false;
     }
+    io_fd_slot* const slot = io_prepare_wait(engine->slots, request);
+    if (!slot) return false;
 
-    // 先试一次；若已完成则返回 false，调用方无需挂起协程。
-    const std::size_t index = static_cast<std::size_t>(fd);
-    if ((index >= engine->slots.size() ||
-         !(request.direction == io_read ? engine->slots[index].readers
-                                       : engine->slots[index].writers)) &&
-        io_try_now(request)) return false;
-    if (!engine->slots.ensure(index)) {
+    const unsigned bit = request.direction == io_read ? io_armed_read : io_armed_write;
+    sync_interest(engine, request.handle, *slot, slot->armed | bit);
+    if (!(slot->armed & bit)) {
         request.transferred = -1;
-        request.failure = ENOMEM;
+        request.failure = errno;
         return false;
     }
-    io_fd_slot& slot = engine->slots[index];
 
-    // 先挂进链尾（先来先服务）。这样登记失败时摘回来只动这一处：它是尾、next 是 0。
+    // 引擎只由所属 vCPU 驱动；登记期间不会消费事件，成功后才让请求入队。
     request.next = 0;
-    io_request** tail = (request.direction == io_read) ? &slot.readers : &slot.writers;
+    io_request** tail = request.direction == io_read ? &slot->readers : &slot->writers;
     while (*tail) tail = &(*tail)->next;
     *tail = &request;
-
-    const unsigned armed = slot.armed |
-        (request.direction == io_read ? io_armed_read : io_armed_write);
-    if (armed != slot.armed) {
-        const unsigned had = slot.armed;
-        sync_interest(engine, fd, slot, armed);
-        if (slot.armed == had) {
-            // 登记没成上，把请求摘回来，失败交给调用方——**不能挂起协程**，
-            // 否则它永远醒不过来。
-            const int failed = errno;
-            *tail = 0;
-            request.transferred = -1;
-            request.failure = failed;
-            return false;
-        }
-    }
     ++engine->pending;
     return true;
 }

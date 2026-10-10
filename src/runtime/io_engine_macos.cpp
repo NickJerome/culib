@@ -119,47 +119,27 @@ bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
 }
 
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
-    const int fd = request.handle;
-    if (!engine || fd < 0) {
+    if (!engine) {
         request.transferred = -1;
         request.failure = EBADF;
         return false;
     }
+    io_fd_slot* const slot = io_prepare_wait(engine->slots, request);
+    if (!slot) return false;
 
-    // 先试一次；若已完成则返回 false，调用方无需挂起协程。
-    const std::size_t index = static_cast<std::size_t>(fd);
-    if ((index >= engine->slots.size() ||
-         !(request.direction == io_read ? engine->slots[index].readers
-                                       : engine->slots[index].writers)) &&
-        io_try_now(request)) return false;
-    if (!engine->slots.ensure(index)) {
+    const unsigned bit = request.direction == io_read ? io_armed_read : io_armed_write;
+    sync_interest(engine, request.handle, *slot, slot->armed | bit);
+    if (!(slot->armed & bit)) {
         request.transferred = -1;
-        request.failure = ENOMEM;
+        request.failure = errno;
         return false;
     }
-    io_fd_slot& slot = engine->slots[index];
 
-    // 先挂进链尾（先来先服务）。这样登记失败时摘回来只动这一处：它是尾、next 是 0。
+    // 引擎只由所属 vCPU 驱动；登记期间不会消费事件，成功后才让请求入队。
     request.next = 0;
-    io_request** tail = (request.direction == io_read) ? &slot.readers : &slot.writers;
+    io_request** tail = request.direction == io_read ? &slot->readers : &slot->writers;
     while (*tail) tail = &(*tail)->next;
     *tail = &request;
-
-    const unsigned armed =
-        slot.armed | (request.direction == io_read ? io_armed_read : io_armed_write);
-    if (armed != slot.armed) {
-        const unsigned had = slot.armed;
-        sync_interest(engine, fd, slot, armed);
-        if (slot.armed == had) {
-            // 登记没成上，把请求摘回来，失败交给调用方——**不能挂起协程**，
-            // 否则它永远醒不过来。
-            const int failed = errno;
-            *tail = 0;
-            request.transferred = -1;
-            request.failure = failed;
-            return false;
-        }
-    }
     ++engine->pending;
     return true;
 }
@@ -168,15 +148,7 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept {
     if (!engine) return;
 
-    // **直接给纳秒，不走 io_timeout_ms 的毫秒折算。** `kevent` 收的是 timespec，
-    // 本来就能表达纳秒；epoll 和 IOCP 只能收毫秒那是它们的 API 限制，不是我们要
-    // 对齐的东西。折成毫秒会让「睡 100 微秒」在 macOS 上变成睡 1 毫秒——比手写的
-    // kqueue 循环更粗，而「用到的功能不比手写的更慢」是硬约束。
-    //
-    // 毫秒折算那条「不足 1 毫秒进成 1」的规则在这里也不需要：它是为了防止
-    // epoll_wait 拿到 0 立刻返回变成忙转，而真给 100 微秒的 timespec 就是真等
-    // 100 微秒。精度上三个平台因此不同，但那是**性能差异不是语义差异**——
-    // 三边的承诺都是「至少睡够这么久」。
+    // kevent 接受 timespec，直接保留纳秒精度。
     const bool finite = timeout.count() >= 0;
     const std::chrono::steady_clock::time_point started = finite
         ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();

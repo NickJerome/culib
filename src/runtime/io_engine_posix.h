@@ -223,6 +223,25 @@ inline bool io_try_now(io_request& request) {
     return true;
 }
 
+// 返回空指针表示请求已完成或失败；否则准备等待位置，但尚未入队。
+inline io_fd_slot* io_prepare_wait(io_fd_table& slots, io_request& request) noexcept {
+    if (request.handle < 0) {
+        request.transferred = -1;
+        request.failure = EBADF;
+        return 0;
+    }
+    const std::size_t index = static_cast<std::size_t>(request.handle);
+    if ((index >= slots.size() ||
+         !(request.direction == io_read ? slots[index].readers : slots[index].writers)) &&
+        io_try_now(request)) return 0;
+    if (!slots.ensure(index)) {
+        request.transferred = -1;
+        request.failure = ENOMEM;
+        return 0;
+    }
+    return &slots[index];
+}
+
 // 把链头那个请求做掉并交还给调度器。
 //
 // 返回 false 表示这一轮没完成：链空了，或者 EAGAIN。后者是水平触发下的虚假唤醒
