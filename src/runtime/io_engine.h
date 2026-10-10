@@ -130,14 +130,8 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept;
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept;
 
-// 撤掉一次已经挂上去的操作（调用方超时了）。
-//
-// 返回 **true = 撤干净了，不会再有任何通知**，调用方可以直接带着「超时」走。
-// 返回 **false = 撤销已经发出，但完成通知还会来**（Windows 的 CancelIoEx 就是这样），
-// 调用方**必须再挂起一次等那个通知**，否则 io_request 连同里面的 OVERLAPPED 会随
-// 栈帧消失，而内核还握着它的地址。
-//
-// 两条路的区别不是实现细节，是调用方必须照着写的东西，所以写在返回值里而不是注释里。
+// 撤销已提交的操作。true：已撤干净，不再有通知，可释放 request。
+// false：完成通知仍会到来，调用方必须等到通知后才能释放 request 及其 OVERLAPPED。
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept;
 
 // 还有几个操作没回来。调度器用它判断「这根 vCPU 是不是还有活」，所以它就是

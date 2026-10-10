@@ -53,6 +53,8 @@ WSL2 release 与 `3af96b7` 按 ABBA 顺序比较，每版本两个进程、每�
 
 发布顺序与查找相配：`mem_page_init` 清 `magic` 并填好字段，大页先登记全部 `CONT`，最后由 `mem_page_publish` 以 release store 点亮首页。任何在发布后才写的字段都可能被并发查找看到半成品。
 
+首次清零使用 relaxed store 加 release fence，防止后续字段写入越过清零；单独的 release store 只约束它之前的操作，不能代替这道屏障。它也处理复用的 slice 留有旧 CONT 标记的情况；最后的发布仍由 release store 完成。
+
 ## 页所有权与空闲块记账
 
 正常持有期间，每个小页恰有一个 owner，独占 `free`、`local_free` 和 `used`；本地释放先压入 `local_free` 并扣减 `used`。其他线程通过 CAS 把块压入 `xthread_free`，暂不扣减 `used`，由 owner 收集整条链时逐块扣减。因此在完整的分配或释放操作之间，`used + |free| + |local_free| = capacity`，其中 `used` 包括待收集的跨线程释放块。L2 调试构建在 collect 时遍历两条本地空闲链检查等式，并以 `capacity` 限制遍历长度，损坏的环形链不会让诊断挂死。

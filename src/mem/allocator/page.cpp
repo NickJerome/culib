@@ -80,12 +80,8 @@ void mem_page_release_slices(mem_page_t* page) {
 
 void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, int bin,
                   uint8_t* slice_start, uint32_t slice_count) {
-  /* 先熄灭 magic：本 slice 可能残留上一任 CONT 项的 magic（页归还时只清首项，
-   * 见 mem_desc_clear），不先清就存在"半初始化的描述符被并发 mem_ptr_page 认成
-   * 活页"的窗口。清零之后本页对外不可见，直到调用方显式 mem_page_publish。
-   * 用 relaxed + release fence 而非 store(release)：release-store 只保证它
-   * *之前* 的操作不下沉，并不阻止它 *之后* 的字段写被提升到它之前——那正是
-   * 这里要防的方向。x86 的 TSO 下无差别，aarch64 上则是真实的重排窗口。 */
+  // 先清除可能残留的 CONT 标记；屏障阻止后续字段写入越过清零。
+  // 全部初始化完成后，由调用方重新发布 magic。
   page->magic.store(0, std::memory_order_relaxed);
   std::atomic_thread_fence(std::memory_order_release);
 

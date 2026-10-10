@@ -1,11 +1,6 @@
 ﻿#pragma once
 
 // optional 的存储：值放在一个 union 里，只多一个标志位。公共接口见 culib/optional.h。
-//
-// 结构和 detail/result_storage.h 一样，而且是故意一样的：读过一个就懂另一个。
-// 不去共用一份代码——result 的存储是「T 和 E 二选一」，optional 是「T 有或没有」，
-// 硬套成 result_storage<T, 空标签> 能少几十行，但那是「聪明而不清楚」的写法，
-// 而且会让 optional 的报错信息里出现 error 相关的字眼。
 
 #include <memory>
 #include <new>

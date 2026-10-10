@@ -124,6 +124,8 @@ API），见 superpowers/specs/2026-10-05-event-engine-design.md 第 2 节。
 但完成包仍在 IOCP 队列；此时释放请求栈帧会让包里的 `OVERLAPPED` 地址悬空。
 Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序。
 
+句柄关联由创建句柄的调用方完成，引擎不缓存“已关联的句柄值”，因为系统会复用这个数值。完成项通过 OVERLAPPED 地址找到请求，完成键无需另存索引。后端未启用 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS：同步成功同样等待完成包，保证内核持有 OVERLAPPED 期间请求一直存活；不为省去一次让出再增加一套同步完成分支。读方向的 ERROR_HANDLE_EOF / ERROR_BROKEN_PIPE 统一返回 0 字节，写方向保留错误，与 POSIX 语义一致。
+
 ## [`park.h`](../src/runtime/park.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
@@ -228,6 +230,8 @@ OVERLAPPED 生命周期正是靠这条兜住的（它住在挂起协程的栈上
 相关设计见 [设计文档](superpowers/specs/2026-10-01-test-term-table-design.md)。
 
 term 的 Windows 侧：判断是不是控制台、读 NO_COLOR，以及**开 VT 模式**。
+
+NO_COLOR 通过 GetEnvironmentVariableW 查询进程实时环境，避免 CRT 环境副本看不到 os::setenv 后的修改，也避开 MSVC 对 std::getenv 的弃用警告。判断只需要所需缓冲区长度，不读取字符串、不分配内存；缺失和空值都允许上色。Windows 不依赖 TERM 约定。
 
 **VT 开不起来就不上色**，不退回旧版控制台 API。原设计
 （2026-10-01-test-term-table-design.md 5.5）写了那条退路：刷新流、记下当前属性、

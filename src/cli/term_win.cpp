@@ -58,13 +58,7 @@ bool enable_ansi(stream_kind which) noexcept {
 }
 
 bool environment_allows_color() noexcept {
-    // 不用 std::getenv，两个理由：MSVC 把它标成弃用（C4996），警告即错误就编不过；而且
-    // 它读的是 CRT 启动时拷下的那份环境，看不到 os::setenv（SetEnvironmentVariableW）
-    // 后来改的值。
-    //
-    // 只问长度、不取值：规则只关心「设没设、空不空」。不给缓冲区时返回的是需要的大小，
-    // 含结尾的 '\0'——没设置是 0，设成空串是 1（os_win.cpp 的 getenv 靠的是同一条）。
-    // TERM 不看，Windows 上没有这个约定。
+    // 读取实时进程环境；只查询长度，NO_COLOR 非空时禁色。
     return ::GetEnvironmentVariableW(L"NO_COLOR", 0, 0) <= 1;
 }
 

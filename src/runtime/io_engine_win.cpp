@@ -99,12 +99,8 @@ bool io_engine_notify(io_engine* engine) noexcept {
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
     if (!engine || unusable(handle)) return false;
-    // **关联是一次性的**：同一个句柄再关联一次直接失败。所以这个函数由持有句柄生命
-    // 周期的那一方在创建时调一次，引擎不自己记表——Windows 会回收句柄值，表会把新
-    // 句柄误判成「关联过了」，于是它上面的操作永远不完成。见 io_engine.h。
-    //
-    // 完成键传 0：完成项靠 lpOverlapped 反推回 io_request（request_of），
-    // 不需要按键查表。
+    // 由句柄所有者在创建时关联；不按可复用的句柄值缓存状态。
+    // 完成项由 OVERLAPPED 找回请求，无需完成键。
     return ::CreateIoCompletionPort(static_cast<HANDLE>(handle), engine->port, 0, 0) != 0;
 }
 
@@ -186,12 +182,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         }
     }
 
-    // 到这里有两种情形：还在飞（ERROR_IO_PENDING），或者已经同步做完了（finished）。
-    // **两种都照样会投一个完成包**，因为没有开 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS，
-    // 所以这边的协程总是让出一轮。
-    //
-    // FILE_SKIP_COMPLETION_PORT_ON_SUCCESS 对套接字有已知限制；误判无完成包会让
-    // 完成通知落在已销毁的 OVERLAPPED 上，所以此处始终等待完成通知。
+    // 未启用 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS；同步成功也须等待完成包。
     ++engine->pending;
     return true;
 }
@@ -234,12 +225,7 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         } else {
             const DWORD failed = request->operation == io_datagram_transfer
                 ? static_cast<DWORD>(::WSAGetLastError()) : ::GetLastError();
-            // **读**方向上的「没有了」要报成 0 而不是错误，和 POSIX 那边 read()
-            // 返回 0 对齐。套接字优雅关闭本来就是 0 字节成功完成，但管道那边会以
-            // ERROR_BROKEN_PIPE 报，所以两个都收。
-            //
-            // **写**方向上同一个错误码是真失败（POSIX 那边是 EPIPE），不能当 0。
-            // 这一处不对称是对齐三个后端行为必须付的，不是笔误。
+            // EOF / 断管在读方向报 0 字节，在写方向仍是错误。
             if (request->direction == io_read &&
                 (failed == ERROR_HANDLE_EOF || failed == ERROR_BROKEN_PIPE)) {
                 request->transferred = 0;

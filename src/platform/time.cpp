@@ -164,13 +164,7 @@ date_time utc_parts(timestamp point) noexcept {
 result<date_time> local_parts(timestamp point) {
     const std::int64_t seconds = point.unix_seconds();
 
-    // 范围限制放在这里而不是各平台文件里，为的是**三个平台行为一致**。
-    // 上下界是 Windows CRT 的 localtime_s 能接受的范围（1970-01-01 .. 3000-12-31）；
-    // POSIX 的 localtime_r 本来能走得更远，但那样同一个调用在 Linux 上成功、在
-    // Windows 上失败，而「三平台行为一致」是 README 承诺过的。
-    //
-    // 只限制**本地时间**。UTC 是我们自己算的，任何时刻都能格式化，不受这条约束。
-    // 1970 以前的本地偏移本来也靠不住：那时候很多地区还没进 tzdata 的记录。
+    // 本地时间统一采用 Windows CRT 的 1970..3000 范围；UTC 不受此限制。
     if (seconds < 0 || seconds > 32535215999LL) {
         return make_error(error_kind::out_of_range,
                           "取本地时间失败：只支持 1970-01-01 .. 3000-12-31 这个范围"
