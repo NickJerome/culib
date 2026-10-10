@@ -126,12 +126,6 @@ struct ready_queue {
     bool empty() const noexcept { return head == 0; }
     std::size_t size() const noexcept { return count; }
 
-    void swap(ready_queue& other) noexcept {
-        std::swap(head, other.head);
-        std::swap(tail, other.tail);
-        std::swap(count, other.count);
-    }
-
     coroutine_control* head;
     coroutine_control* tail;
     std::size_t count;
@@ -145,7 +139,6 @@ struct vcpu {
     }
 
     ready_queue ready;
-    ready_queue round;
     wait_set waiting;
     io_engine* engine;
     coroutine_control* current;
@@ -445,7 +438,6 @@ fiber_failure scheduler_spawn(coroutine_control* taken) {
         coroutine_destroy(taken);
         return fiber_failure::resource_exhausted;
     }
-    // 当前轮次使用独立的 round 队列，嵌套 spawn 可以直接进入下一轮的 ready。
     self->ready.push(taken);
     return fiber_failure::none;
 }
@@ -717,8 +709,7 @@ void sleep_for(std::chrono::nanoseconds duration) {
 std::size_t scheduled() noexcept {
     detail::vcpu* const current_vcpu = detail::active_vcpu();
     if (!current_vcpu) return 0;
-    return current_vcpu->ready.size() + current_vcpu->round.size() +
-           current_vcpu->waiting.size();
+    return current_vcpu->ready.size() + current_vcpu->waiting.size();
 }
 
 std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
@@ -732,7 +723,6 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
 
     self.running = true;
     std::size_t completed = 0;
-    ready_queue& round = self.round;
     for (;;) {
         if (target && task_finished(target)) break;
         accept_remote(self);
@@ -779,9 +769,10 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             continue;
         }
 
-        // 独立的本轮队列让嵌套 spawn 进入下一轮。
-        round.swap(self.ready);
-        while (coroutine_control* const body = round.pop()) {
+        // 只运行轮首已有的任务；新建、唤醒和让出的任务都追加到下一轮。
+        const std::size_t count = self.ready.size();
+        for (std::size_t i = 0; i < count; ++i) {
+            coroutine_control* const body = self.ready.pop();
             self.park_of_current = 0;
             self.completed_task = 0;
             self.current = body;          // park 要知道挂起的是哪根

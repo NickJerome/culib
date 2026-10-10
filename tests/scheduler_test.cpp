@@ -525,6 +525,35 @@ TEST(scheduler, main_thread_yield_runs_another_coroutine) {
     worker.join();
 }
 
+TEST(scheduler, main_yield_keeps_new_and_yielded_tasks_in_the_next_round) {
+    wavvix::scheduler_scope runtime;
+    std::string order;
+    spawn([&] {
+        order += 'A';
+        EXPECT(scheduled(), ==, 1u);
+        spawn([&] {
+            order += 'C';
+            EXPECT(scheduled(), ==, 2u);
+        }).value();
+        EXPECT(scheduled(), ==, 2u);
+        yield();
+        order += 'a';
+    }).value();
+    spawn([&] {
+        order += 'B';
+        EXPECT(scheduled(), ==, 2u);
+        yield();
+        order += 'b';
+    }).value();
+
+    yield();
+    EXPECT(order, ==, "AB");
+    EXPECT(scheduled(), ==, 3u);
+    yield();
+    EXPECT(order, ==, "ABCab");
+    EXPECT(scheduled(), ==, 0u);
+}
+
 TEST(scheduler, joining_one_coroutine_leaves_unrelated_work_scheduled) {
     int other = 0;
     spawn([&] { sleep_for(ms(20)); ++other; }).value();
