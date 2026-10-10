@@ -25,7 +25,7 @@ SKIP = re.compile(r"\[\s*SKIP(?:PED)?\s*\]|-> SKIP\b")
 DIAGNOSTIC = re.compile(
     r"\b(?:fatal|error|warning)(?: [A-Z]+\d+)?:|: Failure$|"
     r"^\s*(?:Expression|Values):|\[\s*FAIL(?:ED)?\s*\]|-> FAIL\b|"
-    r"(?:Address|Leak|Thread|Memory)Sanitizer:|runtime error:|"
+    r"(?:Address|Leak|Thread|Memory)Sanitizer:|runtime error:|culib mem: leak(?: report)?:|"
     r"Segmentation fault|core dumped|^wavvix::|terminate called|^what\(\):|\bFAIL [1-9]\d*\b|"
     r"\b[1-9]\d* test\(s\) failed|\[\s*\d+%\]:.*\bfailed\b", re.IGNORECASE)
 

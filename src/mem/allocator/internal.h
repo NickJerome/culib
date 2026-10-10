@@ -150,6 +150,7 @@ struct mem_theap_t {
   uint64_t        random_state;                     /* splitmix64 */
   uintptr_t       thread_id;                        /* 唯一 id（非 0，低3位为 0） */
   int             arena_idx;                        /* 当前偏好 arena */
+  bool            temporary;                        /* 本次调用后归还，不能依赖退出钩子 */
   uint32_t        full_count[WAVVIX_MEM_BIN_COUNT];         /* 每 bin 在 FULL 队列中的页数 */
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */
   mem_tcache_bin_t tcache[WAVVIX_MEM_BIN_FULL];                /* 索引 bin-1，small bin 1..36 */
@@ -390,8 +391,8 @@ void mem_page_check_invariants(const mem_page_t* page);
 
 /* --- theap.cpp --- */
 void mem_theap_exit_hook_init(void);   /* 注册线程退出回调（init 调一次） */
-mem_theap_t* mem_theap_current(void);
 mem_theap_t* mem_theap_create(void);
+void        mem_theap_release(mem_theap_t* t);
 void*       mem_malloc_generic(mem_theap_t* t, int bin);
 void*       mem_malloc_large(mem_theap_t* t, size_t size, bool* out_zeroed = NULL);
 void*       mem_malloc_large_aligned(mem_theap_t* t, size_t alignment, size_t size);
@@ -408,6 +409,20 @@ static inline mem_theap_t* mem_theap_fast(void) {
   if (WAVVIX_MEM_UNLIKELY(t == NULL)) t = mem_theap_create();
   return t;
 }
+
+// Normal threads retain their heap; teardown/failing exit registration gets a lease.
+class heap_scope {
+public:
+  heap_scope() : heap_(mem_theap_fast()) {}
+  ~heap_scope() {
+    if (heap_ != NULL && WAVVIX_MEM_UNLIKELY(heap_->temporary)) mem_theap_release(heap_);
+  }
+  mem_theap_t* get() const { return heap_; }
+  heap_scope(const heap_scope&) = delete;
+  heap_scope& operator=(const heap_scope&) = delete;
+private:
+  mem_theap_t* heap_;
+};
 
 /* --- arena.cpp --- */
 bool        mem_window_init(size_t want_size);       /* 保留窗口 + 描述符数组 */
@@ -448,11 +463,6 @@ uintptr_t   mem_next_thread_id(void);                /* 全局自增，左移3�
 void   mem_secure_page_keys(mem_page_t* page, uint64_t* random_state);
 /* L2 声明（mem_l2_wrap / mem_l2_unwrap / mem_debug_verify_free_block）见上文
  * "页内快路径"一节——mem_page_malloc 内联需要先行声明。 */
-
-/* --- diag.cpp --- */
-#if defined(WAVVIX_MEM_DEBUG)
-void   mem_debug_leak_report(void);
-#endif
 
 /* ============================ 分配总入口 ============================== */
 /* api.cpp 的 wavvix::mem::alloc 经此内联展开快路径；t 属于调用线程。 */

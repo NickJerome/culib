@@ -377,36 +377,37 @@ void test_thread_churn_concurrent() {
  *   POSIX  : 在 culib mem 首次分配之后再 pthread_key_create。glibc 按 key 下标
  *            升序调析构，后注册的下标更大，必排在 culib mem 的 key 之后。
  *   Windows: thread_local 对象的析构排在 FLS 回调之后，用它即可。 */
+void late_allocations() {
+    void* keep[64];
+    for (int i = 0; i < 64; ++i) {
+        const size_t size = 64 + (i % 7) * 16;
+        if (i % 3 == 0) keep[i] = wavvix::mem::alloc(size);
+        else if (i % 3 == 1) keep[i] = wavvix::mem::calloc(1, 16384 + size);
+        else keep[i] = wavvix::mem::aligned_alloc(256, size);
+        CHECK_MSG(keep[i] != NULL, "allocation after thread-exit hook failed");
+        if (keep[i] != NULL) memset(keep[i], 0xAB, 64);
+    }
+    for (int i = 0; i < 64; ++i) wavvix::mem::free(keep[i]);
+}
+
 #if defined(_WIN32)
 struct LateAllocDtor {
     int touched;
-    ~LateAllocDtor() {
-        if (touched == 0) return;
-        void* keep[64];
-        for (int i = 0; i < 64; ++i) {
-            keep[i] = wavvix::mem::alloc(64 + (i % 7) * 16);
-            if (keep[i] != NULL) memset(keep[i], 0xAB, 64);
-        }
-        for (int i = 0; i < 64; ++i) wavvix::mem::free(keep[i]);
-    }
+    ~LateAllocDtor() { if (touched) late_allocations(); }
 };
 static thread_local LateAllocDtor g_late_dtor;
 static void arm_late_alloc(void) { g_late_dtor.touched = 1; }
 #else
 #include <pthread.h>
 static pthread_key_t g_late_key;
-static void late_alloc_dtor(void*) {
-    void* keep[64];
-    for (int i = 0; i < 64; ++i) {
-        keep[i] = wavvix::mem::alloc(64 + (i % 7) * 16);
-        if (keep[i] != NULL) memset(keep[i], 0xAB, 64);
-    }
-    for (int i = 0; i < 64; ++i) wavvix::mem::free(keep[i]);
-}
+static void late_alloc_dtor(void*) { late_allocations(); }
 static void arm_late_alloc(void) { pthread_setspecific(g_late_key, (void*)1); }
 #endif
 
 void test_alloc_after_exit_hook() {
+    wavvix::mem::collect();
+    mem_stats_t before;
+    mem_stats_get(&before);
 #if !defined(_WIN32)
     /* 必须在 culib mem 已经建好自己的 key 之后再建：靠 key 下标顺序拿到
      * "排在它之后"这个保证。先做一次分配确保 mem_init_once 已跑完。 */
@@ -436,6 +437,11 @@ void test_alloc_after_exit_hook() {
     CHECK_MSG(p != NULL, "allocator unusable after post-hook allocation churn");
     memset(p, 0x3B, 4096);
     wavvix::mem::free(p);
+    wavvix::mem::collect();
+    mem_stats_t after;
+    mem_stats_get(&after);
+    CHECK_MSG(after.committed_bytes <= before.committed_bytes,
+              "allocations after the exit hook retained pages from terminated threads");
 }
 
 } /* namespace */

@@ -117,9 +117,6 @@ void mem_init_impl(void) {
   /* 线程退出回调必须早于任何 theap 创建：mem_theap_create 末尾会 set 值。 */
   mem_theap_exit_hook_init();
   mem_os_atfork_register(mem_fork_prepare, mem_fork_parent, mem_fork_child);
-#if defined(WAVVIX_MEM_DEBUG)
-  std::atexit(mem_debug_leak_report);
-#endif
 }
 
 } /* anonymous namespace */

@@ -7,6 +7,7 @@ namespace wavvix { namespace mem { namespace detail {
 
 /* 快路径直接读取的 TLS 指针（internal.h 中 inline） */
 thread_local mem_theap_t* mem_t_theap = NULL;
+static thread_local bool thread_exiting = false;
 
 static void mem_tcache_flush_all(mem_theap_t* t);
 
@@ -17,15 +18,13 @@ namespace {
 static void mem_thread_exit_cb(void* value) {
   mem_theap_t* t = (mem_theap_t*)value;
   if (t == NULL) return;
-  /* 只清本线程仍持有的指针；后续析构可能再分配，不能复用已入回收链的 t。 */
-  if (mem_t_theap == t) mem_t_theap = NULL;
-  mem_tcache_flush_all(t);
-  mem_theap_abandon(t);
+  if (mem_t_theap == t) thread_exiting = true;
+  mem_theap_release(t);
 }
 
 }  /* namespace */
 
-/* 进程初始化时注册一次；注册失败时仍可分配，但线程退出不会回收页。 */
+/* 注册失败时，分配入口使用单次调用的 heap_scope。 */
 void mem_theap_exit_hook_init(void) {
   mem_os_thread_exit_init(mem_thread_exit_cb);
 }
@@ -188,14 +187,14 @@ mem_theap_t* mem_theap_create(void) {
   mem_t_theap = t;
   /* 线程退出钩子登记。放在最后一步：上面任何一个失败返回都不该留下一个
    * "登记了却没建成"的 theap。 */
-  mem_os_thread_exit_set(t);
+  t->temporary = thread_exiting || !mem_os_thread_exit_set(t);
   return t;
 }
 
-mem_theap_t* mem_theap_current(void) {
-  mem_theap_t* t = mem_t_theap;
-  if (WAVVIX_MEM_UNLIKELY(t == NULL)) t = mem_theap_create();
-  return t;
+void mem_theap_release(mem_theap_t* t) {
+  if (mem_t_theap == t) mem_t_theap = NULL;
+  mem_tcache_flush_all(t);
+  mem_theap_abandon(t);
 }
 
 /* 线程退出时摘出所持小页并登记 abandoned 桶。 */
@@ -409,7 +408,7 @@ static void mem_free_to_page(mem_theap_t* t, mem_page_t* page, void* p) {
   const size_t bs  = page->block_size;   /* 只有 L2 的 0xDF 填充还要用它 */
 #endif
   uintptr_t owner = page->xthread_id.load(std::memory_order_relaxed);
-  if (WAVVIX_MEM_LIKELY(owner == t->thread_id)) {
+  if (t != NULL && WAVVIX_MEM_LIKELY(owner == t->thread_id)) {
     /* 本地释放（≤6 条指令目标）：压 local_free + 计数 */
     mem_tcache_check_guard(p);        /* 块仍驻留某个 tcache → double free */
     mem_secure_check_free(page, p);   /* L1 double-free 编码哨兵 */
@@ -523,10 +522,10 @@ void wavvix::mem::free(void* p) noexcept {
     mem_fatal_page("free of interior pointer (small block)", p, page);
   }
 
-  mem_theap_t* t = mem_theap_current();
+  mem_theap_t* t = mem_t_theap;
   /* tcache 快路径（release 与 WAVVIX_MEM_DEBUG 均启用）。
    * 块在 tcache 期间页视角仍为已分配（used 不变）。 */
-  {
+  if (t != NULL) {
     int bin = page->bin;
     /* 最小块已是 16B（mem_bin 线性区取偶），tcache 元数据（编码链 + guard）
      * 恒能放下，无需再按 block_size 设门槛。 */

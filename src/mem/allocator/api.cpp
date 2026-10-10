@@ -18,7 +18,8 @@ void* wavvix::mem::alloc(size_t size) noexcept {
   if (WAVVIX_MEM_UNLIKELY(size > SIZE_MAX / 2)) return NULL;
 
   /* theap_fast 保证 init_once 已执行。 */
-  mem_theap_t* t = mem_theap_fast();
+  heap_scope heap;
+  mem_theap_t* t = heap.get();
   if (WAVVIX_MEM_UNLIKELY(t == NULL)) return NULL;
 
 #if defined(WAVVIX_MEM_DEBUG)
@@ -38,9 +39,10 @@ void* wavvix::mem::calloc(size_t count, size_t size) noexcept {
 
 #if !defined(WAVVIX_MEM_DEBUG)
   /* 新提交 slice 的零页可避免整块 memset。 */
-  mem_theap_t* t = mem_theap_fast();
-  if (t == NULL) return NULL;
   if (total > WAVVIX_MEM_SMALL_MAX) {
+    heap_scope heap;
+    mem_theap_t* t = heap.get();
+    if (t == NULL) return NULL;
     bool zeroed = false;
     void* p = mem_malloc_large(t, total, &zeroed);
     if (p != NULL && !zeroed) std::memset(p, 0, total);
@@ -92,7 +94,8 @@ void* wavvix::mem::aligned_alloc(size_t alignment, size_t size) noexcept {
   if (size == 0) size = 1;
   /* 块大小恒为 16 的倍数、页 64KiB 对齐 → wavvix::mem::alloc 结果已满足 ≤16 的对齐 */
   if (alignment <= 16) return wavvix::mem::alloc(size);
-  mem_theap_t* t = mem_theap_fast();
+  heap_scope heap;
+  mem_theap_t* t = heap.get();
   if (t == NULL) return NULL;
 
   /* slack = 为了在块内挪出对齐位置所需的额外字节。

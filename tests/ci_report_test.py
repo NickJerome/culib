@@ -29,6 +29,8 @@ class ReportTests(unittest.TestCase):
 
     def test_errors_are_not_hidden_by_success(self):
         for message in ("stderr: culib mem: fatal: double free detected ptr=0x1",
+                        "stderr: culib mem: leak: page 0x1 bin=10 used=10/682",
+                        "culib mem: leak report: 4608 live blocks in 360 pages",
                         "ERROR: AddressSanitizer: heap-use-after-free", "x.cpp:3: Failure",
                         "[  FAILED  ] scheduler.join", "error C2039: broken",
                         "runtime error: signed integer overflow",
