@@ -138,19 +138,18 @@ result<unsigned long long> parse_unsigned(string_view text, int base) {
 }
 
 result<bool> parse_bool(string_view text) {
-    // 大小写不敏感，八个词。配置文件里这八个都常见，只认 true/false 太窄。
     static const char* const yes[] = {"true", "1", "yes", "on"};
     static const char* const no[] = {"false", "0", "no", "off"};
-    char folded[8];
-    if (text.size() < sizeof folded) {
-        for (std::size_t i = 0; i < text.size(); ++i) folded[i] = lowered(text[i]);
-        folded[text.size()] = '\0';
-        for (std::size_t i = 0; i < 4; ++i) {
-            if (std::strcmp(folded, yes[i]) == 0) return true;
-            if (std::strcmp(folded, no[i]) == 0) return false;
-        }
+    const char* const why = "不是布尔值（true/false/1/0/yes/no/on/off，大小写不敏感）";
+    char folded[5];
+    if (text.size() > sizeof folded) return malformed(text, why);
+    for (std::size_t i = 0; i < text.size(); ++i) folded[i] = lowered(text[i]);
+    const string_view value(folded, text.size());
+    for (std::size_t i = 0; i < 4; ++i) {
+        if (value == yes[i]) return true;
+        if (value == no[i]) return false;
     }
-    return malformed(text, "不是布尔值（true/false/1/0/yes/no/on/off，大小写不敏感）");
+    return malformed(text, why);
 }
 
 // 浮点解析分两步：这里严格校验语法，换算交给 strtof / strtod。
@@ -194,15 +193,15 @@ result<T> parse_floating(string_view text, T (*convert)(const char*, char**),
             negative = body[0] == '-';
             body.remove_prefix(1);
         }
-        char folded[9];
-        if (!body.empty() && body.size() < sizeof folded) {
+        char folded[8];
+        if (!body.empty() && body.size() <= sizeof folded) {
             for (std::size_t i = 0; i < body.size(); ++i) folded[i] = lowered(body[i]);
-            folded[body.size()] = '\0';
-            if (std::strcmp(folded, "inf") == 0 || std::strcmp(folded, "infinity") == 0) {
+            const string_view value(folded, body.size());
+            if (value == "inf" || value == "infinity") {
                 const T infinity = std::numeric_limits<T>::infinity();
                 return negative ? -infinity : infinity;
             }
-            if (std::strcmp(folded, "nan") == 0) return std::numeric_limits<T>::quiet_NaN();
+            if (value == "nan") return std::numeric_limits<T>::quiet_NaN();
         }
     }
 

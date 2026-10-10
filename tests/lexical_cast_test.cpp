@@ -23,7 +23,7 @@ T parsed(const char* text) {
 }
 
 template <typename T>
-error_kind kind_of(const char* text) {
+error_kind kind_of(wavvix::string_view text) {
     result<T> value = lexical_cast<T>(text);
     if (value.is_ok()) return error_kind::unknown;   // 用 unknown 表示「没报错」
     return value.error().kind();
@@ -133,6 +133,19 @@ TEST(lexical_cast, parses_bool_from_eight_spellings) {
     EXPECT(kind_of<bool>("truex"), ==, error_kind::invalid_argument);
 }
 
+TEST(lexical_cast, consumes_all_bytes_when_parsing_bool) {
+    const char* const words[] = {"true", "false", "1", "0", "yes", "no", "on", "off"};
+    for (const char* word : words) {
+        std::string text(word);
+        text.push_back('\0');
+        EXPECT(kind_of<bool>(text), ==, error_kind::invalid_argument);
+        text += 'x';
+        EXPECT(kind_of<bool>(text), ==, error_kind::invalid_argument);
+    }
+    const char bounded[] = {'T', 'R', 'U', 'E'};
+    EXPECT(lexical_cast<bool>(wavvix::string_view(bounded, sizeof bounded)).value_or(false), ==, true);
+}
+
 TEST(lexical_cast, parses_floating_point) {
     EXPECT(parsed<double>("0"), ==, 0.0);
     EXPECT(parsed<double>("1.5"), ==, 1.5);
@@ -182,6 +195,20 @@ TEST(lexical_cast, handles_floating_point_specials_and_range) {
     EXPECT(lexical_cast<float>("inf").value_or(0.0f), ==,
            std::numeric_limits<float>::infinity());
     EXPECT(lexical_cast<float>("1e-100").value_or(1.0f), ==, 0.0f);
+}
+
+TEST(lexical_cast, consumes_all_bytes_when_parsing_floating_specials) {
+    const char* const words[] = {"inf", "INF", "-inf", "+InF", "nan", "NaN",
+                                 "+nan", "-NaN", "infinity", "-INFINITY"};
+    for (const char* word : words) {
+        std::string text(word);
+        text.push_back('\0');
+        EXPECT(kind_of<float>(text), ==, error_kind::invalid_argument);
+        EXPECT(kind_of<double>(text), ==, error_kind::invalid_argument);
+        text += 'x';
+        EXPECT(kind_of<float>(text), ==, error_kind::invalid_argument);
+        EXPECT(kind_of<double>(text), ==, error_kind::invalid_argument);
+    }
 }
 
 TEST(lexical_cast, rejects_finite_overflow_under_round_toward_zero) {
