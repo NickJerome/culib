@@ -35,7 +35,8 @@
 /* void* wavvix_make_context(void* stack_top, std::size_t size,
  *                           void (*entry)(context_transfer)); */
 DECLARE(wavvix_make_context)
-.align 16
+// ELF 与 Mach-O 都按 2^4 字节对齐；.align 的单位因格式而异。
+.p2align 4
 BEGIN(wavvix_make_context)
     movq  %rdi, %rax
     andq  $-16, %rax              /* 栈顶对齐到 16 */
@@ -61,7 +62,7 @@ END(wavvix_make_context)
  * （协程 → resume 它的那一侧）是不该支持的语义——那一侧可能已经在别的线程上了。
  */
 DECLARE(wavvix_jump_context)
-.align 16
+.p2align 4
 BEGIN(wavvix_jump_context)
     leaq  -0x40(%rsp), %rsp
     stmxcsr (%rsp)
