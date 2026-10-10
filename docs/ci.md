@@ -16,6 +16,8 @@ python .github/ci_report.py 38025351576 --job "allocator L2"
 
 结果保存到 `build/ci/<run>-<attempt>/report.txt` 和 `report.json`；取得的完整 job 日志
 或原始 annotations 也保存在同一目录。`--output PATH` 可改目录。
+整轮已结束且有日志权限时，一次下载 `logs.zip` 后逐 job 扫描；未结束、筛选 job 或整包不可用时，
+改用各 job 的日志接口。压缩包只在内存中读取，不解压执行其中的内容。
 有失败或可疑输出时，先看具体断言、跳过原因与上下文，再报告结论。
 
 ## 日志权限与覆盖范围
@@ -44,8 +46,8 @@ CI 的 `.github/report-failure.sh` 在命令成功和失败时都会扫描 stdou
 | 1 | CI 失败，或发现需要审查的诊断（即使 CI 是绿色） |
 | 2 | CI 未完成、读取失败，或只有摘要，无法完整核验日志 |
 
-查询不自动轮询。一般先按 job 筛选定位；完整检查一次约需每个 job 一次 API 请求，
-匿名 GitHub API 通常限制每小时 60 次。不要把退出码 2 当作测试失败或测试通过。
+查询不自动轮询。整包模式通常只需 3–4 次 API 请求；按 job 下载或匿名读取 annotations 时，
+每个 job 还需一次请求。匿名 GitHub API 通常限制每小时 60 次。不要把退出码 2 当作测试失败或测试通过。
 
 ## 本地验证报告脚本
 

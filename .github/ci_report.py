@@ -3,6 +3,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
 
 TITLE = "culib CI report"
@@ -97,7 +99,7 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
         return redirected
 
 
-def api(path, raw=False):
+def api(path, raw=False, binary=False):
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "culib-ci-report"}
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
@@ -106,6 +108,8 @@ def api(path, raw=False):
     try:
         with urllib.request.build_opener(SafeRedirect()).open(request, timeout=30) as response:
             data = response.read()
+            if binary:
+                return data
             return data.decode("utf-8-sig", errors="replace") if raw else json.loads(data)
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
@@ -175,11 +179,28 @@ def select_run(args):
     return base, api(path + ("/attempts/" + str(args.attempt) if args.attempt else ""))
 
 
-def inspect_job(base, job, output, full_logs):
+def archive_logs(path, output):
+    data = api(path + "/logs", binary=True)
+    logs = {}
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for entry in archive.infolist():
+            match = re.fullmatch(r"\d+_([^/]+)\.txt", entry.filename)
+            if match:
+                name = match.group(1)
+                # Sanitized job names can collide; those jobs use the ID endpoint.
+                logs[name] = None if name in logs else archive.read(entry).decode("utf-8-sig", errors="replace")
+    (output / "logs.zip").write_bytes(data)
+    return logs
+
+
+def inspect_job(base, job, output, full_logs, archived=None):
     record = dict(job, coverage="unavailable", reports=[], fetch_errors=[])
     if full_logs:
         try:
-            raw = api(base + "/actions/jobs/{}/logs".format(job["id"]), raw=True)
+            name = re.sub(r'[\\/:*?"<>|]', "_", job["name"])
+            raw = archived.get(name) if archived else None
+            if raw is None:
+                raw = api(base + "/actions/jobs/{}/logs".format(job["id"]), raw=True)
             (output / (str(job["id"]) + ".log")).write_bytes(raw.encode("utf-8"))
             record.update(coverage="full log", reports=[scan(raw)])
             return record
@@ -214,12 +235,21 @@ def query(args):
     output = Path(args.output or "build/ci/{}-{}".format(run["id"], run["run_attempt"]))
     output.mkdir(parents=True, exist_ok=True)
     full_logs = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+    archived = None
+    archive_error = None
+    if full_logs and run["status"] == "completed" and not args.job:
+        try:
+            archived = archive_logs(base + "/actions/runs/{}/attempts/{}".format(run["id"], run["run_attempt"]), output)
+        except (RuntimeError, OSError, zipfile.BadZipFile) as error:
+            archive_error = str(error)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        records = list(pool.map(lambda job: inspect_job(base, job, output, full_logs), jobs))
+        records = list(pool.map(lambda job: inspect_job(base, job, output, full_logs, archived), jobs))
     lines = [run["html_url"], "commit {} / attempt {} / {} / {}".format(
         run["head_sha"], run["run_attempt"], run["status"], run["conclusion"])]
     if not full_logs:
         lines.append("No GitHub credential available: full logs unavailable; reading public CI excerpts.")
+    if archive_error:
+        lines.append("Archive unavailable; used job endpoints: " + archive_error)
     bad = run["conclusion"] not in (None, "success")
     incomplete = run["status"] != "completed"
     for record in records:

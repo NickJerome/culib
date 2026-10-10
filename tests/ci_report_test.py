@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -91,7 +92,9 @@ class ReportTests(unittest.TestCase):
                    check_run_url="https://api.github.com/repos/a/b/check-runs/789",
                    steps=[dict(name="run tests", conclusion="success")])
 
-        def api(path, raw=False):
+        def api(path, raw=False, binary=False):
+            if binary:
+                raise RuntimeError("archive unavailable")
             if "/attempts/2/jobs?" in path:
                 return {"jobs": [job]}
             if path.endswith("/logs"):
@@ -135,6 +138,20 @@ class ReportTests(unittest.TestCase):
         with patch.object(ci, "api", side_effect=[[{}] * 100, [{}] * 2]) as api:
             self.assertEqual(len(ci.pages("/annotations")), 102)
             self.assertTrue(api.call_args.args[0].endswith("page=2"))
+
+    def test_archive_ignores_step_logs_and_ambiguous_names(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            archive.writestr("0_Linux.txt", "[  PASSED  ] 3 tests.\r\n")
+            archive.writestr("Linux/1_Set up job.txt", "not the complete job")
+            archive.writestr("1_a_b.txt", "first")
+            archive.writestr("2_a_b.txt", "second")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(ci, "api", return_value=data.getvalue()):
+            logs = ci.archive_logs("/runs/1/attempts/1", Path(directory))
+        self.assertEqual(logs["Linux"], "[  PASSED  ] 3 tests.\r\n")
+        self.assertIsNone(logs["a_b"])
+        self.assertEqual(len(logs), 2)
 
 
 if __name__ == "__main__":
