@@ -348,7 +348,7 @@ CI 报告支持指定运行链接、筛选 job，并区分完整日志与公开�
 
 三个平台都是警告即错误（MSVC 上是 `/W4` 加 `/WX`）；[CI](https://github.com/NickJerome/culib/actions/runs/37877826017) 覆盖 Linux GCC、Linux Clang、macOS Clang、Windows MSVC 各 debug / release 两种模式，以及 MinGW-w64 x86_64/i686、GCC 4.8、公共头文件和源码依赖引入场景。MinGW 两种架构均运行测试并编译全部示例。
 
-## 待定事项
+## 已确定的项目约定
 
 - [x] 最低系统版本：**Windows 10**（2026-10-07 定）。构建时给 culib 定义 `_WIN32_WINNT=0x0A00`，见[路线图](docs/superpowers/specs/2026-10-03-roadmap.md)第 6 节
 - [x] 头文件注释的语言与编码：**已定**，中文注释保留，公共头文件存成带 BOM 的 UTF-8，使用方不加 `/utf-8` 也不会报 C4819。CI 的 `headers` job 检查 BOM 在不在
@@ -359,4 +359,6 @@ CI 报告支持指定运行链接、筛选 job，并区分完整日志与公开�
 
 ## 许可证
 
-待定。
+项目自身代码目前仅供作者自用，**保留所有权利，暂不授予使用、修改或分发许可**。详见 [权利声明](LICENSE)。
+
+第三方代码继续适用其原有许可证：`src/runtime/asm/` 中源自 Boost.Context 的汇编保留原版权声明，并遵循 [Boost Software License 1.0](licenses/BOOST-1.0.txt)。
