@@ -367,3 +367,8 @@ jobs:
       - name: run the consumer
         working-directory: consumer
         run: xmake run consumer
+
+      - name: inspect macOS consumer dependencies
+        if: runner.os == 'macOS'
+        working-directory: consumer
+        run: otool -L build/macosx/*/release/consumer

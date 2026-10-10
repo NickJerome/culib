@@ -14,12 +14,6 @@ target("culib_test")
     add_files("*.cpp")
     -- 测试框架和终端测试需要各自模块的内部头文件。
     add_includedirs("../src", "../src/testing", "../src/cli")
-    -- 事件引擎的测试要造一对连起来的套接字。Windows 上没有 socketpair，只能在回环上
-    -- 真连一次，而那要 winsock。**库本身不需要**（IOCP 那些调用全在 kernel32 里），
-    -- 所以这条加在测试目标上而不是库上；将来 net 落地时库那边才需要。
-    if is_plat("windows", "mingw") then
-        add_syslinks("ws2_32")
-    end
     add_deps("culib")
     add_tests("default")
 target_end()

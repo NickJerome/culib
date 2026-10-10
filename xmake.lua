@@ -53,8 +53,6 @@ target("culib")
     if is_plat("windows", "mingw") then
         add_defines("_WIN32_WINNT=0x0A00", "WINVER=0x0A00")
         add_syslinks("ws2_32", {public = true})
-    elseif is_plat("macosx") then
-        add_frameworks("CoreServices", "CoreFoundation", {public = true})
     end
 
     -- 协程的换栈汇编：每个 (ABI, 架构, 汇编器) 一个文件，按目标挑一个。
