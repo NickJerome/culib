@@ -55,6 +55,14 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size) {
     return task.release();
 }
 
+template <typename F, typename Arg, typename... Args>
+task_state* make_coroutine_task(F&& body, std::size_t stack_size,
+                                Arg&& arg, Args&&... args) {
+    return make_coroutine_task(bind_coroutine_call(
+        std::forward<F>(body), std::forward<Arg>(arg),
+        std::forward<Args>(args)...), stack_size);
+}
+
 }  // namespace detail
 
 // 类似 std::thread 的协程句柄：构造即提交，join 等待完成。
@@ -65,26 +73,15 @@ class coroutine {
 public:
     coroutine() noexcept : task_(0) {}
 
-    template <typename F>
-    explicit coroutine(F&& body)
-        : task_(detail::make_coroutine_task(std::forward<F>(body), default_stack_size)) {}
+    template <typename F, typename... Args>
+    explicit coroutine(F&& body, Args&&... args)
+        : task_(detail::make_coroutine_task(std::forward<F>(body),
+              default_stack_size, std::forward<Args>(args)...)) {}
 
-    template <typename F, typename Arg, typename... Args>
-    explicit coroutine(F&& body, Arg&& arg, Args&&... args)
-        : task_(detail::make_coroutine_task(detail::bind_coroutine_call(
-              std::forward<F>(body), std::forward<Arg>(arg),
-              std::forward<Args>(args)...), default_stack_size)) {}
-
-    template <typename F>
-    static coroutine with_stack(std::size_t stack_size, F&& body) {
-        return coroutine(stack_tag(), stack_size, std::forward<F>(body));
-    }
-
-    template <typename F, typename Arg, typename... Args>
-    static coroutine with_stack(std::size_t stack_size, F&& body, Arg&& arg,
-                                Args&&... args) {
-        return coroutine(stack_tag(), stack_size, std::forward<F>(body),
-                         std::forward<Arg>(arg), std::forward<Args>(args)...);
+    template <typename F, typename... Args>
+    static coroutine with_stack(std::size_t stack_size, F&& body, Args&&... args) {
+        return coroutine(detail::make_coroutine_task(
+            std::forward<F>(body), stack_size, std::forward<Args>(args)...));
     }
 
     ~coroutine() noexcept { if (task_) std::terminate(); }
@@ -114,17 +111,7 @@ public:
     static void yield() { wavvix::yield(); }
 
 private:
-    struct stack_tag {};
-
-    template <typename F>
-    coroutine(stack_tag, std::size_t stack_size, F&& body)
-        : task_(detail::make_coroutine_task(std::forward<F>(body), stack_size)) {}
-
-    template <typename F, typename Arg, typename... Args>
-    coroutine(stack_tag, std::size_t stack_size, F&& body, Arg&& arg, Args&&... args)
-        : task_(detail::make_coroutine_task(detail::bind_coroutine_call(
-              std::forward<F>(body), std::forward<Arg>(arg),
-              std::forward<Args>(args)...), stack_size)) {}
+    explicit coroutine(detail::task_state* task) noexcept : task_(task) {}
 
     detail::task_state* task_;
 };
