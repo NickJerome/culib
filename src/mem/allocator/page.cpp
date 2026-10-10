@@ -86,7 +86,7 @@ void mem_page_release_slices(mem_page_t* page) {
 }
 
 void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, int bin,
-                  uint8_t* slice_start, uint32_t slice_count, bool slice_is_zero) {
+                  uint8_t* slice_start, uint32_t slice_count) {
   /* 先熄灭 magic：本 slice 可能残留上一任 CONT 项的 magic（页归还时只清首项，
    * 见 mem_desc_clear），不先清就存在"半初始化的描述符被并发 mem_ptr_page 认成
    * 活页"的窗口。清零之后本页对外不可见，直到调用方显式 mem_page_publish。
@@ -102,7 +102,6 @@ void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, in
   page->local_free = NULL;
   page->used = 0;
   page->kind = bin == 0 ? WAVVIX_MEM_PAGE_LARGE : WAVVIX_MEM_PAGE_SMALL;
-  page->free_is_zero = slice_is_zero;
   page->flags = 0;
   page->bin = (uint8_t)bin;
   page->has_aligned.store(0, std::memory_order_relaxed);
@@ -110,11 +109,9 @@ void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, in
   page->slice_count = slice_count;
   page->cont_first = 0;
   page->next = page->prev = NULL;
-  page->xthread_id.store(owner, std::memory_order_relaxed);
+  page->owner_id.store(owner, std::memory_order_relaxed);
   page->xthread_free.store(0, std::memory_order_relaxed);
-  page->large_size = 0;
-
-  mem_secure_page_keys(page, &random_state);
+  page->key = mem_random_next(&random_state) | 1ull;
 
   if (bin != 0) {
     const size_t block_size = mem_bin_size(bin);
@@ -159,11 +156,9 @@ void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, in
     /* large/huge：整块即一个对象 */
     page->capacity = 1;
     page->block_size = 0;
-    page->large_size = (size_t)slice_count * WAVVIX_MEM_SLICE_SIZE;
   }
 
-  /* 发布留给调用方：large 路径还要在 publish 之前补 large_size / flags /
-   * used 与续页项登记。 */
+  /* 发布留给调用方：large 路径还要补 flags / used 与续页项登记。 */
 }
 
 } } } // namespace wavvix::mem::detail

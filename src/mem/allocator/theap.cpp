@@ -103,7 +103,7 @@ mem_page_t* mem_theap_unfull_scan(mem_theap_t* t, int bin) {
 mem_page_t* mem_page_reclaim(mem_theap_t* t, int bin) {
   mem_page_t* page = mem_reclaim_page(bin);
   if (page == NULL) return NULL;
-  page->xthread_id.store(t->thread_id, std::memory_order_release);
+  page->owner_id.store(t->thread_id, std::memory_order_release);
   mem_page_free_collect(page);
   if (page->free != NULL) {
     mem_page_queue_push(&t->pages[bin - 1], page);
@@ -160,8 +160,7 @@ void mem_theap_release(mem_theap_t* t) {
         mem_page_release_slices(page);
         continue;
       }
-      page->xthread_id.fetch_or(WAVVIX_MEM_PAGE_XTHREAD_ABANDONED,
-                                std::memory_order_acq_rel);
+      page->owner_id.store(0, std::memory_order_release);
       mem_abandon_page(page);
     }
   }
@@ -225,13 +224,12 @@ void* mem_malloc_generic(mem_theap_t* t, int bin) {
 
   mem_arena_t* arena = mem_arena_get(t->arena_idx);
   if (arena != NULL) mem_arena_purge_check(arena);
-  bool zeroed = false;
-  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, 1, 1, &arena, &zeroed);
+  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, 1, 1, &arena, NULL);
   if (sidx == (size_t)-1) return NULL;
   page = mem_desc_at(arena->first_slice + sidx);
   uint8_t* start = arena->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = arena->index;
-  mem_page_init(page, t->thread_id, t->random_state, bin, start, 1, zeroed);
+  mem_page_init(page, t->thread_id, t->random_state, bin, start, 1);
   mem_page_publish(page);
   mem_page_queue_push(q, page);
   return mem_page_malloc(page);
@@ -254,22 +252,19 @@ static void* mem_malloc_large_impl(mem_theap_t* t, size_t size,
       return NULL;
   }
 
-  bool zeroed = false;
   mem_arena_t* a = NULL;
-  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, n, align_slices, &a, &zeroed);
+  size_t sidx = mem_arena_alloc_slices_any(t->arena_idx, n, align_slices, &a, out_zeroed);
   if (sidx == (size_t)-1) return NULL;
 
   mem_page_t* page = mem_desc_at(a->first_slice + sidx);
   uint8_t* start = a->base + sidx * WAVVIX_MEM_SLICE_SIZE;
   page->arena_idx = a->index;   /* slice 的固有属性，mem_page_init 不碰 */
-  mem_page_init(page, t->thread_id, t->random_state, 0, start, (uint32_t)n, zeroed);
-  page->large_size = n * WAVVIX_MEM_SLICE_SIZE;
+  mem_page_init(page, t->thread_id, t->random_state, 0, start, (uint32_t)n);
   if (size > WAVVIX_MEM_HUGE_THRESHOLD) page->flags |= WAVVIX_MEM_PAGE_FLAG_HUGE;
   mem_desc_mark_cont(mem_page_slice_index(page), n);
   page->used = 1;
   mem_page_publish(page);   /* 续页项先于首项发布：野指针只会解析到 magic==0 */
 
-  if (out_zeroed != NULL) *out_zeroed = zeroed;
   return start;
 }
 
@@ -303,7 +298,7 @@ static void mem_free_to_page(mem_theap_t* t, mem_page_t* page, void* p) {
 #if defined(WAVVIX_MEM_DEBUG)
   const size_t bs  = page->block_size;   /* 只有 L2 的 0xDF 填充还要用它 */
 #endif
-  uintptr_t owner = page->xthread_id.load(std::memory_order_relaxed);
+  uintptr_t owner = page->owner_id.load(std::memory_order_relaxed);
   if (t != NULL && WAVVIX_MEM_LIKELY(owner == t->thread_id)) {
     /* 本地释放（≤6 条指令目标）：压 local_free + 计数 */
     mem_tcache_check_guard(p);        /* 块仍驻留某个 tcache → double free */
@@ -313,7 +308,6 @@ static void mem_free_to_page(mem_theap_t* t, mem_page_t* page, void* p) {
     mem_block_set_next(page, (mem_block_t*)p, page->local_free);
     page->local_free = (mem_block_t*)p;
     page->used--;
-    page->free_is_zero = false;
 #if defined(WAVVIX_MEM_DEBUG)
     /* L2：释放填 0xDF（保留首 8B 编码域与尾部 canary），UAF 写探测。
      * 必须在压链之后：哨兵校验依赖压链写入的编码态。 */

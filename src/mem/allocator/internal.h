@@ -41,9 +41,6 @@
 #define WAVVIX_MEM_PAGE_FLAG_IN_FULL 0x01   /* 当前挂在 pages[WAVVIX_MEM_BIN_FULL] 队列 */
 #define WAVVIX_MEM_PAGE_FLAG_HUGE    0x02   /* free 即 decommit 归还物理页       */
 
-/* xthread_id 低位标志 */
-#define WAVVIX_MEM_PAGE_XTHREAD_ABANDONED ((uintptr_t)0x1)
-
 /* L1 哨兵：已分配块的首 8 字节被写入 encode(WAVVIX_MEM_BLOCK_ALLOCATED)。
  * 该值非 0、不可能是页内地址（页地址均 64KiB 对齐且远大于它）。 */
 #define WAVVIX_MEM_BLOCK_ALLOCATED ((uintptr_t)0x1ED0C0DE1u)
@@ -92,14 +89,13 @@ struct mem_page_queue_t {
  * CONT 发布所写的 kind/cont_first/magic 集中在第一条 cache line。 */
 struct mem_page_t {
   /* ---- cache line 0：分配/释放热路径 + CONT 续页项 ---- */
-  std::atomic<uintptr_t> xthread_id;  /* owner 线程 id(左移3位) | 低3位标志 */
+  std::atomic<uintptr_t> owner_id;    /* 所属线程编号；0 表示无主 */
   mem_block_t*            free;        /* 立即可分配空闲链（仅 owner） */
   mem_block_t*            local_free;  /* 本线程延迟释放链（仅 owner） */
   uint32_t               used;        /* 已分配块数（含 xthread_free 中的块） */
   uint16_t               capacity;    /* 总块数 */
   uint16_t               block_size;  /* 块字节数（small） */
   uint8_t                kind;        /* SMALL / LARGE / CONT */
-  bool                   free_is_zero;  /* 空闲块内容已清零 */
   uint8_t                flags;
   uint8_t                bin;         /* small bin（1..36）；large 为 0 */
   std::atomic<uint8_t>   has_aligned; /* 一旦置位，本页复用前不再清零 */
@@ -113,9 +109,8 @@ struct mem_page_t {
   std::atomic<uintptr_t> xthread_free; /* 他线程释放链头（裸指针，0=空） */
   mem_page_t*             next;
   mem_page_t*             prev;
-  uintptr_t              keys[2];      /* L1：空闲链 XOR 密钥 */
-  size_t                 large_size;   /* large/huge：可用字节数 */
-  uint8_t                reserved[16]; // 描述符数组保持 128 字节步长。
+  uintptr_t              key;         /* L1：空闲链 XOR 密钥 */
+  uint8_t                reserved[32]; // 描述符数组保持 128 字节步长。
 };
 static_assert(sizeof(mem_page_t) == 128, "mem_page_t must be exactly two cache lines");
 static_assert(ATOMIC_CHAR_LOCK_FREE == 2, "page alignment marker must be lock-free");
@@ -134,7 +129,7 @@ struct mem_arena_t {
   size_t      first_slice;          /* 在窗口/描述符数组中的起始下标 */
   struct mem_bbitmap_t* slices_free;      /* 空闲 slice（bitmap.h 定义） */
   struct mem_bitmap_t*  slices_committed;
-  struct mem_bitmap_t*  slices_dirty;     /* 内容脏（再分配需清 free_is_zero） */
+  struct mem_bitmap_t*  slices_dirty;     /* 内容脏，calloc 不能省去清零 */
   struct mem_bitmap_t*  slices_purge;     /* 待归还 OS */
   std::atomic<int64_t> purge_expire;     /* ms 时间戳，0=无待 purge */
   uint16_t    index;                /* 自身在 g_arenas[] 中的下标 */
@@ -182,10 +177,10 @@ static inline size_t mem_page_slice_index(const mem_page_t* page) {
 
 /* ======================== 空闲链 XOR 编码（L1） ======================== */
 static inline uintptr_t mem_encode(const mem_page_t* page, const void* p) {
-  return (uintptr_t)p ^ page->keys[0];
+  return (uintptr_t)p ^ page->key;
 }
 static inline mem_block_t* mem_decode(const mem_page_t* page, uintptr_t v) {
-  return (mem_block_t*)(v ^ page->keys[0]);
+  return (mem_block_t*)(v ^ page->key);
 }
 static inline mem_block_t* mem_block_next(const mem_page_t* page, const mem_block_t* b) {
   return mem_decode(page, b->encoded_next);
@@ -200,7 +195,7 @@ static inline void mem_block_set_next(const mem_page_t* page, mem_block_t* b,
  * 已分配块由 pop 时写入的 encode(WAVVIX_MEM_BLOCK_ALLOCATED) 标记（解码为常量，通过）。
  * 用户数据解码为随机 64 位值，误判概率 ≈ 页大小/2^64。 */
 static inline void mem_secure_check_free(const mem_page_t* page, const void* p) {
-  uintptr_t v = ((const mem_block_t*)p)->encoded_next ^ page->keys[0];
+  uintptr_t v = ((const mem_block_t*)p)->encoded_next ^ page->key;
   if (v == WAVVIX_MEM_BLOCK_ALLOCATED) return;       /* 正常已分配块 */
   if (v == 0 ||
       v - (uintptr_t)page->slice_start <
@@ -281,7 +276,7 @@ static inline void* mem_page_malloc(mem_page_t* page) {
 /* --- page.cpp --- */
 /* 先 init 并填好全部字段，最后 publish 点亮 magic。 */
 void mem_page_init(mem_page_t* page, uintptr_t owner, uint64_t& random_state, int bin,
-                  uint8_t* slice_start, uint32_t slice_count, bool slice_is_zero);
+                  uint8_t* slice_start, uint32_t slice_count);
 static inline void mem_page_publish(mem_page_t* page) {
   page->magic.store(WAVVIX_MEM_PAGE_MAGIC, std::memory_order_release);
 }
@@ -302,7 +297,7 @@ int         mem_arena_count(void);
 int         mem_arena_pick();
 /* 分配 n 个连续 slice，返回 arena 内下标（失败 (size_t)-1）。
  * align_slices：返回地址须按 align_slices*64KiB 对齐（1 = 无额外约束）。
- * *out_zeroed：slice 内容是否保证全零（fresh 或 purge 后）。 */
+ * out_zeroed 可为空；否则报告 slice 内容是否保证全零（fresh 或 purge 后）。 */
 size_t      mem_arena_alloc_slices(mem_arena_t* a, size_t n, size_t align_slices,
                                   bool* out_zeroed);
 size_t      mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_slices,
@@ -323,17 +318,16 @@ void        mem_arena_reinit_locks_child(void);
 /* --- runtime.cpp --- */
 uint64_t mem_global_seed(void);
 void        mem_init_once(void);
-uintptr_t   mem_next_thread_id(void);                /* 全局自增，左移3位唯一 */
+uintptr_t   mem_next_thread_id(void);                /* 全局自增的非零线程编号 */
 
 /* --- secure.cpp --- */
-void   mem_secure_page_keys(mem_page_t* page, uint64_t* random_state);
 /* L2 声明（mem_l2_wrap / mem_l2_unwrap / mem_debug_verify_free_block）见上文
  * "页内快路径"一节——mem_page_malloc 内联需要先行声明。 */
 
-/* small 块的可用字节数 */
+/* 块的可用字节数；大块容量由 slice 数直接算出。 */
 static inline size_t mem_page_usable_size(const mem_page_t* page) {
   if (page->kind == WAVVIX_MEM_PAGE_SMALL) return page->block_size;
-  return page->large_size;
+  return (size_t)page->slice_count * WAVVIX_MEM_SLICE_SIZE;
 }
 
 } } } // namespace wavvix::mem::detail

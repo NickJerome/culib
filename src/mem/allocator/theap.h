@@ -15,7 +15,7 @@ struct mem_tcache_bin_t {
 struct mem_theap_t {
   mem_page_queue_t pages[WAVVIX_MEM_BIN_COUNT];              /* 0..35 每 bin + [WAVVIX_MEM_BIN_FULL] */
   uint64_t        random_state;                     /* splitmix64 */
-  uintptr_t       thread_id;                        /* 唯一 id（非 0，低3位为 0） */
+  uintptr_t       thread_id;                        /* 唯一的非零线程编号 */
   int             arena_idx;                        /* 当前偏好 arena */
   bool            temporary;                        /* 本次调用后归还，不能依赖退出钩子 */
   /* tcache（见上方注释）；tcache_key 在 theap 创建时随机化 */

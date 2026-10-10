@@ -68,8 +68,7 @@ void mem_init_once(void) {
 }
 
 uintptr_t mem_next_thread_id(void) {
-  /* 全局自增计数器（绝不复用，左移 3 位腾标志位，保证非 0） */
-  return g_thread_counter.fetch_add(1, std::memory_order_relaxed) << 3;
+  return g_thread_counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 } } } // namespace wavvix::mem::detail

@@ -217,7 +217,7 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
   }
   if (!mem_bitmap_any(arena->slices_purge))
     arena->purge_expire.store(0, std::memory_order_relaxed);
-  *out_zeroed = zeroed;
+  if (out_zeroed != NULL) *out_zeroed = zeroed;
   return idx;
 }
 

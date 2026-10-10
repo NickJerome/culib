@@ -1,21 +1,9 @@
-/* ----------------------------------------------------------------------------
- * secure.cpp — 页密钥与调试校验
- *
- * L1（默认开）：空闲链 XOR 密钥生成（编码本身内联在 internal.h 快路径），
- *   double-free 编码哨兵（internal.h 的 mem_secure_check_free 内联）。
- * L2 在 WAVVIX_MEM_DEBUG 构建中校验 canary 与 UAF 写入。
- * ------------------------------------------------------------------------- */
+// WAVVIX_MEM_DEBUG 构建的 canary 与释放后写入检查。
 #include "internal.h"
 
 #include <cstring>
 
 namespace wavvix { namespace mem { namespace detail {
-
-/* L1：页内随机密钥（splitmix64 取自 owner 线程随机源） */
-void mem_secure_page_keys(mem_page_t* page, uint64_t* random_state) {
-  page->keys[0] = mem_random_next(random_state) | 1ull;   /* 必须非 0 */
-  page->keys[1] = mem_random_next(random_state);
-}
 
 #if defined(WAVVIX_MEM_DEBUG)
 /* ============================ L2 debug 层 ============================== */
