@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -245,4 +246,31 @@ TEST(fs, an_append_handle_picks_up_where_the_file_left_off) {
 TEST(fs, refuses_to_write_before_open) {
     wavvix::fs::output_file out;
     EXPECT(out.write("nope").is_ok(), ==, false);
+}
+
+TEST(fs, moves_an_append_handle_and_releases_the_previous_destination) {
+    scratch_log source("move_source");
+    scratch_log previous("move_previous");
+    wavvix::fs::output_file destination;
+    {
+        wavvix::fs::output_file original;
+        if (!EXPECT(original.open(source.path()).is_ok(), ==, true)) return;
+        EXPECT(original.write("before\n").is_ok(), ==, true);
+
+        wavvix::fs::output_file moved(std::move(original));
+        EXPECT(original.is_open(), ==, false);
+        EXPECT(original.size(), ==, 0u);
+        EXPECT(moved.size(), ==, 7u);
+
+        if (!EXPECT(destination.open(previous.path()).is_ok(), ==, true)) return;
+        EXPECT(destination.write("previous\n").is_ok(), ==, true);
+        destination = std::move(moved);
+        EXPECT(moved.is_open(), ==, false);
+        EXPECT(moved.size(), ==, 0u);
+        EXPECT(destination.size(), ==, 7u);
+    }
+    EXPECT(destination.write("after\n").is_ok(), ==, true);
+    destination.close();
+    EXPECT(source.read(), ==, "before\nafter\n");
+    EXPECT(previous.read(), ==, "previous\n");
 }

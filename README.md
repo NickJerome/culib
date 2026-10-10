@@ -45,7 +45,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
 | 调度器与 I/O | vCPU 调度器、三个事件后端（`epoll` / `kqueue` / `IOCP`）、超时与协程感知的同步原语 | **可用**：TCP/UDP 和显式多 vCPU 分发已通过三平台 CI，包括 GCC 4.8、MinGW i686 和无异常构建。见 [调度器用法](docs/scheduler.md)和[网络用法](docs/net.md) |
 | blocking_pool | 让必须阻塞的操作在系统工作线程上执行，等待期间只挂起调用它的协程 | **初版已实现**；[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37870009886) 21/21 通过，含 GCC 4.8、MinGW i686 与无异常构建。见 [用法](docs/blocking-pool.md) |
-| log | 日志：`LOG_INFO << ...`，**级别不够时参数一行都不求值**（1.5 ns/行）；级别、多个输出目标、文件轮转；一行日志**不分配内存**也**没有用户态缓冲**（崩了不丢已写出的行） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-log-design.md)。那边逐条定掉了预期接口留的四个待定项 |
+| log | 日志：`LOG_INFO << ...`，级别不足时不求值参数；多个输出目标与文件轮转。消息使用固定栈缓冲，文件整行拼接可能分配；文件写入不使用 stdio 缓冲 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-log-design.md) |
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | 公开接口为构造即提交、`join()` / `detach()` 的线程式句柄；底层换栈原语已覆盖 x86_64、arm64 与 Windows x86。Windows x86 已在 MSVC 本机和 CI 运行验证 |
 | mem | 自带通用分配器 `wavvix::mem`，支持显式分配；可显式覆盖全局 `new/delete`，Linux 可覆盖 `malloc/free` | 64 位 Linux、macOS、Windows 已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)；平台边界与覆盖方式见[分配器用法](docs/mem.md) |

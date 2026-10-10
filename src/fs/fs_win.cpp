@@ -273,10 +273,6 @@ result<void> append_file(string_view path, string_view content) {
 // FILE_APPEND_DATA 让每次 WriteFile 都落到文件末尾，不需要自己 seek——多个进程
 // 写同一个日志文件时也不会互相盖。不开用户态缓冲，理由见 fs_posix.cpp 那边。
 
-output_file::output_file() noexcept : handle_(-1), written_(0) {}
-
-output_file::~output_file() { close(); }
-
 bool output_file::is_open() const noexcept {
     return reinterpret_cast<HANDLE>(handle_) != INVALID_HANDLE_VALUE;
 }

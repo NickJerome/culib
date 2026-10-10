@@ -12,6 +12,7 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wavvix {
@@ -19,7 +20,6 @@ namespace log {
 
 namespace {
 
-// 五个字符对齐，这样不同级别的行里文件名起始列是一样的，眼睛扫起来快。
 const char* name_of(level at) {
     switch (at) {
         case level::trace: return "TRACE";
@@ -44,18 +44,13 @@ term::style style_of(level at) {
     return term::style();
 }
 
-// 轮转和重开路上的失败都是「知道了也没用」的那种：别人占着文件、权限不够。
-// **不该为日志杀掉服务器**（和栈分配失败是同一个取舍），所以这里显式接住再丢掉。
-//
-// 不写成 `(void)f()`：那在 GCC / clang 上**不能**消掉 `warn_unused_result`，而
-// `result` 带着那个属性（README：忽略 result 返回值会产生警告）。用一个具名函数，
-// 顺便让「这里是故意忽略」写在代码里而不是靠读者猜。
+// 写入与轮转失败不终止进程；显式接住 result 的未使用警告。
 template <typename T>
 void ignore(const result<T>&) {}
 
-// 一个输出目标。不可拷贝（握着文件句柄），所以按指针存。
 struct sink {
-    sink() : max_bytes(0), keep_files(0), console(false) {}
+    explicit sink(bool to_console = false)
+        : max_bytes(0), keep_files(0), console(to_console) {}
 
     fs::output_file file;
     std::string path;
@@ -67,30 +62,16 @@ struct sink {
 // 全局状态。级别用原子（读得多写得少），sink 列表和写入都在同一把锁下。
 std::atomic<int> chosen_level(static_cast<int>(level::info));
 
-// 函数内静态：**文件级全局的初始化顺序跨翻译单元不确定**，而开发约定不许在 main
-// 之前跑代码。第一次写日志时才真正建起来。
-std::mutex& sink_lock() {
-    static std::mutex one;
-    return one;
-}
+struct output_state {
+    output_state() : configured(false) {}
+    std::mutex mutex;
+    std::vector<sink> sinks;
+    bool configured;
+};
 
-std::vector<sink*>& sinks() {
-    static std::vector<sink*> all;
-    return all;
-}
-
-bool& configured() {
-    static bool done = false;
-    return done;
-}
-
-// 还没配过就补一个控制台输出。**调用方必须已经拿着 sink_lock()。**
-void ensure_default() {
-    if (configured()) return;
-    configured() = true;
-    sink* const one = new sink();
-    one->console = true;
-    sinks().push_back(one);
+output_state& output() {
+    static output_state state;
+    return state;
 }
 
 // 轮转：path → path.1，path.1 → path.2，…，超过 keep_files 个的删掉。
@@ -112,13 +93,7 @@ void rotate(sink& target) {
 void deliver(sink& target, level at, const char* stamp, std::size_t stamp_length,
              const char* file, int row, const char* message, std::size_t length) {
     if (target.console) {
-        // 整行走同一条流：std::clog（接的是 stderr）。
-        //
-        // 用 clog 不用 cerr：**cerr 默认 unitbuf**，每个 << 都刷一次，一行日志会变成
-        // 七八个系统调用。clog 不刷，所以这里拼完一行手动刷一次。
-        //
-        // 只给级别那几个字上色，时间和正文保持原样——一行里到处是颜色反而难读。
-        // 上不上色由 term 判断（clog 是它认的三条标准流之一）。
+        // clog 接 stderr，整行完成后统一 flush；只有级别着色。
         std::clog.write(stamp, static_cast<std::streamsize>(stamp_length));
         std::clog << ' ' << style_of(at)(name_of(at)) << ' ' << file << ':' << row << "  ";
         std::clog.write(message, static_cast<std::streamsize>(length));
@@ -162,34 +137,31 @@ level current_level() noexcept {
 }
 
 void add_console_sink() {
-    const std::lock_guard<std::mutex> held(sink_lock());
-    configured() = true;
-    sink* const one = new sink();
-    one->console = true;
-    sinks().push_back(one);
+    output_state& state = output();
+    const std::lock_guard<std::mutex> held(state.mutex);
+    state.sinks.emplace_back(true);
+    state.configured = true;
 }
 
 result<void> add_file_sink(string_view path, std::uint64_t max_bytes, int keep_files) {
-    sink* const one = new sink();
-    one->path = path.to_string();
-    one->max_bytes = max_bytes;
-    one->keep_files = keep_files;
-    const result<void> opened = one->file.open(path);
-    if (!opened.is_ok()) {
-        delete one;
-        return opened;
-    }
-    const std::lock_guard<std::mutex> held(sink_lock());
-    configured() = true;
-    sinks().push_back(one);
+    sink one;
+    one.path = path.to_string();
+    one.max_bytes = max_bytes;
+    one.keep_files = keep_files;
+    const result<void> opened = one.file.open(path);
+    if (opened.is_err()) return opened;
+    output_state& state = output();
+    const std::lock_guard<std::mutex> held(state.mutex);
+    state.sinks.push_back(std::move(one));
+    state.configured = true;
     return result<void>();
 }
 
 void clear_sinks() {
-    const std::lock_guard<std::mutex> held(sink_lock());
-    for (std::size_t i = 0; i < sinks().size(); ++i) delete sinks()[i];
-    sinks().clear();
-    configured() = true;   // 清空是**明确表示不要输出**，不该再被自动补上
+    output_state& state = output();
+    const std::lock_guard<std::mutex> held(state.mutex);
+    state.sinks.clear();
+    state.configured = true;   // 清空后不再自动补控制台输出。
 }
 
 namespace detail {
@@ -207,11 +179,14 @@ line::~line() {
     const std::size_t stamp_length =
         format_time(timestamp::now(), precision::millis, stamp, sizeof stamp);
 
-    const std::lock_guard<std::mutex> held(sink_lock());
-    ensure_default();
-    for (std::size_t i = 0; i < sinks().size(); ++i) {
-        deliver(*sinks()[i], at_, stamp, stamp_length, file_, row_, room_, buffer_.used());
+    output_state& state = output();
+    const std::lock_guard<std::mutex> held(state.mutex);
+    if (!state.configured) {
+        state.sinks.emplace_back(true);
+        state.configured = true;
     }
+    for (sink& target : state.sinks)
+        deliver(target, at_, stamp, stamp_length, file_, row_, room_, buffer_.used());
 }
 
 }  // namespace detail

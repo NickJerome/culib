@@ -54,6 +54,11 @@ class output_file {
 public:
     output_file() noexcept;
     ~output_file();
+    output_file(output_file&& other) noexcept;
+    output_file& operator=(output_file&& other) noexcept;
+
+    output_file(const output_file&) = delete;
+    output_file& operator=(const output_file&) = delete;
 
     // 已经打开时先关闭旧句柄。
     result<void> open(string_view path);
@@ -66,9 +71,6 @@ public:
     std::uint64_t size() const noexcept { return written_; }
 
 private:
-    output_file(const output_file&);
-    output_file& operator=(const output_file&);
-
     std::intptr_t handle_;      // -1 = 没开。POSIX 上是 fd，Windows 上是 HANDLE
     std::uint64_t written_;
 };

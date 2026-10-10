@@ -11,6 +11,26 @@ using detail::is_separator;
 using detail::kNativeSeparator;
 using detail::root_name_length;
 
+output_file::output_file() noexcept : handle_(-1), written_(0) {}
+
+output_file::~output_file() { close(); }
+
+output_file::output_file(output_file&& other) noexcept
+    : handle_(other.handle_), written_(other.written_) {
+    other.handle_ = -1;
+    other.written_ = 0;
+}
+
+output_file& output_file::operator=(output_file&& other) noexcept {
+    if (this == &other) return *this;
+    close();
+    handle_ = other.handle_;
+    written_ = other.written_;
+    other.handle_ = -1;
+    other.written_ = 0;
+    return *this;
+}
+
 result<std::string> absolute(string_view path) {
     if (!path.empty() && std::memchr(path.data(), 0, path.size()))
         return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
