@@ -2,7 +2,6 @@
 
 #include <culib/fs.h>
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -28,9 +27,6 @@ struct entry {
     bool on_command_line;
 };
 
-// 登记表。用函数内静态变量而不是文件级全局：全局选项对象在 main 之前构造，
-// 而文件级全局的初始化顺序跨翻译单元是不确定的，第一个构造的选项可能撞上还没
-// 初始化的 vector。函数内静态变量在第一次调用时才构造，没有这个问题。
 struct registry {
     std::vector<entry> entries;
     std::vector<string_view> positional;
@@ -90,13 +86,10 @@ std::string spelling(const char* name) {
     return out;
 }
 
-// 在层边界上补上下文：lexical_cast 只知道「"80x" 不是合法整数」，
-// 只有这一层知道那是 --port 的值（见 CLAUDE.md「错误处理」）。
 error prefixed(const entry& which, const error& cause) {
     return make_error(cause.kind(), spelling(which.name) + "：" + cause.message());
 }
 
-// 五种类型只在「转成什么」上不同，用模板把剩下的共享掉。
 template <typename T>
 result<void> assign_as(entry& which, string_view text) {
     result<T> value = lexical_cast<T>(text);
@@ -105,7 +98,6 @@ result<void> assign_as(entry& which, string_view text) {
     return result<void>();
 }
 
-// 把一段文本装进选项。
 result<void> assign(entry& which, string_view text) {
     switch (which.which) {
         case detail::kind::boolean:          return assign_as<bool>(which, text);
@@ -122,9 +114,6 @@ result<void> assign(entry& which, string_view text) {
 
 const char* type_label(detail::kind which) {
     switch (which) {
-        // 用 ASCII：用法文本靠字节数对齐，而按显示宽度对齐要内置 Unicode 表，
-        // 那是明确推后的功能（见 strings 设计「不做」）。帮助文字在对齐列之后，
-        // 所以它是中文不影响对齐。
         case detail::kind::boolean: return "";          // 布尔选项不带值，不显示类型
         case detail::kind::signed_integer: return "<int>";
         case detail::kind::unsigned_integer: return "<uint>";
@@ -134,8 +123,6 @@ const char* type_label(detail::kind which) {
     return "";
 }
 
-// 每次 parse 先把所有选项恢复成默认值，所以重复调用的结果是确定的。
-// 必填项没有默认值（铺的是空文本），跳过。
 result<void> apply_defaults(registry& self) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
         self.entries[i].on_command_line = false;
@@ -146,7 +133,6 @@ result<void> apply_defaults(registry& self) {
     return result<void>();
 }
 
-// --help / --version 时不查：用户就是来看用法的。
 result<void> check_required(const registry& self) {
     if (self.help_requested || self.version_requested) return result<void>();
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
@@ -167,9 +153,6 @@ bool is_option(string_view token) {
 
 namespace detail {
 
-// 重名和保留名都是编程错误，而且是静默的那种：重名会让后登记的那个永远读不到，
-// 别名撞上 "h" 会被 --help 遮住。在 main 之前就打印诊断并终止，和测试框架处理
-// 重名测试的做法一致。
 [[noreturn]] void reject(const std::string& why) {
     std::fprintf(stderr, "wavvix::flag: %s\n", why.c_str());
     std::fflush(stderr);
@@ -348,10 +331,8 @@ result<void> parse(int argc, char* argv[], string_view version) {
         which->on_command_line = true;
     }
 
-    if (!self.help_requested && !self.version_requested) {
-        const result<void> missing = check_required(self);
-        if (missing.is_err()) return missing;
-    }
+    const result<void> missing = check_required(self);
+    if (missing.is_err()) return missing;
     self.parsed = true;
     attempt.complete = true;
     return result<void>();
