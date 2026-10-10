@@ -1,11 +1,5 @@
 /* rand_s 需要在包含任何 CRT 头之前定义（MSVC 与 MinGW-w64 皆然） */
 #define _CRT_RAND_S
-/* ----------------------------------------------------------------------------
- * os.cpp — OS 抽象层实现（Linux / macOS / Windows）
- *
- * 平台头文件只在本文件包含：os.h 仅有接口声明，不把 windows.h / sys/mman.h
- * 泄漏给其余 15 个源文件。编译器差异见 compiler.h。
- * ------------------------------------------------------------------------- */
 #if defined(_WIN32)
 /* ---------------------------------------------------------------- Windows */
 #  define WIN32_LEAN_AND_MEAN
@@ -15,7 +9,6 @@
 #  include <psapi.h>
 #elif defined(__linux__) || defined(__APPLE__) || defined(__unix__)
 /* ------------------------------------------------------------- POSIX/Unix */
-#  include <sys/mman.h>
 #  include <fcntl.h>
 #  include <errno.h>
 #  include <sys/types.h>
@@ -30,6 +23,7 @@
 #endif
 
 #include "os.h"
+#include "../pages.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -38,33 +32,6 @@ namespace wavvix { namespace mem { namespace detail {
 
 #if defined(_WIN32)
 /* ================================ Windows =============================== */
-
-bool mem_os_reserve(size_t size, void** out) {
-  /* MEM_RESERVE 天然按分配粒度（64KiB）对齐，正好等于 WAVVIX_MEM_OS_RESERVE_ALIGN */
-  void* p = VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
-  if (p == NULL) return false;
-  *out = p;
-  return true;
-}
-
-bool mem_os_commit(void* p, size_t size) {
-  return VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE) != NULL;
-}
-
-bool mem_os_decommit(void* p, size_t size) {
-  return VirtualFree(p, size, MEM_DECOMMIT) != 0;
-}
-
-bool mem_os_release(void* p, size_t size) {
-  (void)size; /* MEM_RELEASE 要求 size 为 0，整片释放 */
-  return VirtualFree(p, 0, MEM_RELEASE) != 0;
-}
-
-size_t mem_os_page_size(void) {
-  SYSTEM_INFO si;
-  GetSystemInfo(&si);
-  return (size_t)si.dwPageSize;
-}
 
 size_t mem_os_process_rss(void) {
   PROCESS_MEMORY_COUNTERS pmc;
@@ -128,58 +95,6 @@ static int mem_open_readonly(const char* path) {
 #endif
 }
 
-bool mem_os_reserve(size_t size, void** out) {
-  /* mmap 只保证页对齐：超额 WAVVIX_MEM_OS_RESERVE_ALIGN 后裁掉两端，得到 64KiB 对齐。 */
-  const size_t over = size + WAVVIX_MEM_OS_RESERVE_ALIGN;
-  int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#if !defined(__APPLE__)
-  flags |= MAP_NORESERVE;
-#endif
-  uint8_t* p = (uint8_t*)mmap(NULL, over, PROT_NONE, flags, -1, 0);
-  if (p == MAP_FAILED) return false;
-  uintptr_t raw = (uintptr_t)p;
-  uintptr_t aligned = (raw + WAVVIX_MEM_OS_RESERVE_ALIGN - 1) & ~(uintptr_t)(WAVVIX_MEM_OS_RESERVE_ALIGN - 1);
-  size_t head = (size_t)(aligned - raw);
-  size_t tail = over - head - size;
-  if (head > 0) munmap(p, head);
-  if (tail > 0) munmap((void*)(aligned + size), tail);
-  *out = (void*)aligned;
-  return true;
-}
-
-bool mem_os_commit(void* p, size_t size) {
-  return mprotect(p, size, PROT_READ | PROT_WRITE) == 0;
-}
-
-bool mem_os_decommit(void* p, size_t size) {
-#if defined(__APPLE__)
-  // 重新映射为不可访问的匿名页；下次 commit 后由内核保证内容为零。
-  return mmap(p, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-              -1, 0) == p;
-#else
-  /* madvise DONTNEED：内容作废、物理页归还内核，映射保持 RW，
-   * 下次访问得到零页——这正是"免清零传递"（free_is_zero）的内核依据。 */
-  if (madvise(p, size, MADV_DONTNEED) != 0) return false;
-#if defined(WAVVIX_MEM_DEBUG)
-  /* 契约是"再访问前必须 commit"，但 madvise 之后映射仍可读写、访问只会
-   * 静默拿到零页。Windows 的 MEM_DECOMMIT 会让同样的契约违反直接崩溃——
-   * 调试构建下补一道 PROT_NONE，使"忘记 commit 就访问"在两个平台上都是
-   * 确定性崩溃，而不是只有 Windows CI 才暴露。 */
-  return mprotect(p, size, PROT_NONE) == 0;
-#else
-  return true;
-#endif
-#endif
-}
-
-bool mem_os_release(void* p, size_t size) {
-  return munmap(p, size) == 0;
-}
-
-size_t mem_os_page_size(void) {
-  return (size_t)sysconf(_SC_PAGESIZE);
-}
-
 size_t mem_os_process_rss(void) {
 #if defined(__APPLE__)
   mach_task_basic_info_data_t info;
@@ -201,9 +116,9 @@ size_t mem_os_process_rss(void) {
   const char* c = buf;
   while (*c != ' ' && *c != '\0') c++;   /* 跳过第一个字段（总虚拟页数） */
   while (*c == ' ') c++;
-  size_t pages = 0;
-  while (*c >= '0' && *c <= '9') { pages = pages * 10 + (size_t)(*c - '0'); c++; }
-  return pages * mem_os_page_size();
+  size_t resident_pages = 0;
+  while (*c >= '0' && *c <= '9') { resident_pages = resident_pages * 10 + (size_t)(*c - '0'); c++; }
+  return resident_pages * pages::page_size();
 #endif
 }
 

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "meta.h"
 
 #include <cstring>
 

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../pages.h"
 
 #include <cstring>
 
@@ -86,7 +87,7 @@ void mem_page_release_slices(mem_page_t* page) {
   if (a == NULL) return;                      /* 不应发生；不再二次归还 */
   const size_t aidx = idx - a->first_slice;
   if ((flags & WAVVIX_MEM_PAGE_FLAG_HUGE) != 0) {
-    mem_os_decommit(start, n * WAVVIX_MEM_SLICE_SIZE);
+    pages::decommit(start, n * WAVVIX_MEM_SLICE_SIZE);
     mem_arena_free_slices_decommitted(a, aidx, n);
   } else {
     mem_arena_free_slices(a, aidx, n);

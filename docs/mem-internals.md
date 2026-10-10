@@ -4,7 +4,7 @@
 
 分配器的内部类型、函数和共享状态位于 `wavvix::mem::detail`；公开分配接口位于 `wavvix::mem`。只有显式启用的 malloc/new 覆盖入口使用进程级全局符号。
 
-编译器差异集中在 `src/mem/allocator/compiler.h`，系统虚拟内存、随机源、线程退出和 fork 钩子集中在 `os.h` / `os.cpp`，原生锁集中在 `mutex.h`；其余分配器文件不直接包含平台头文件。
+编译器差异集中在 `src/mem/allocator/compiler.h`，系统虚拟内存集中在 `src/mem/pages.h` 及其平台实现，随机源、线程退出和 fork 钩子在 `allocator/os.h` / `os.cpp`，原生锁集中在 `mutex.h`；其余分配器文件不直接包含平台头文件。
 
 ## 退出阶段的锁
 
@@ -50,3 +50,13 @@ abandoned 页桶的链表始终由 arena mutex 保护。分配慢路径只无锁
 `WAVVIX_MEM_DEBUG` 的普通块布局为：首 8 字节编码域、接着 8 字节头 canary、用户区、末尾 8 字节尾 canary。两个 canary 都与自身所在地址异或。头 canary 必须紧贴用户指针；对齐块的用户指针可能离块首很远，解包必须先验证只依赖用户指针的头 canary，才能找回块首。查页时使用头 canary 地址，避免用户指针恰在页首时越界读取其前方。
 
 释放后填 `0xDF` 的区间取决于块所在位置：页空闲链保留首 8 字节编码域和尾 canary，检查 `[8, block_size - 8)`；线程缓存占用前两个机器字存编码链和驻留标记，检查 `[16, block_size)`。填充与校验使用相同区间。线程缓存中的头 canary 已被驻留标记覆盖，重复释放会先被头部检查拦下，尾 canary 在这一路不再提供额外检出。
+
+## 内存页底座
+
+`pages` 只管理操作系统内存页，不依赖分配器初始化、线程堆、尺寸分桶或协程运行时。`allocate/release` 直接分配和释放零初始化的读写内存；`reserve/commit/decommit` 供 arena 管理保留地址空间；`protect` 供栈设置保护页。保留区按 64 KiB 对齐，提交与回收区间由调用方保证页对齐，并位于自己持有的映射中。
+
+POSIX 的 decommit 重新映射为不可访问的匿名页，Windows 使用 MEM_DECOMMIT；重新 commit 后读取为零。这样回收行为不再由上层的 WAVVIX_MEM_DEBUG 改变。`protect` 仅修改保护，不作废内容。allocator 与 stack 直接调用这层，没有旧 mem_os 虚拟内存包装。
+
+元数据 bump 分配器只依赖 pages 和原生锁，每块内存按 16 字节推进并保留到进程退出；它不需要知道页描述符、arena 或线程堆的布局。新内存来自零初始化的 OS 页，推进后从不复用，因此不用再次 memset；超过 2 MiB 的单次请求仍检查对齐和容量溢出。
+
+本轮验证：MSVC x64 debug + WAVVIX_MEM_DEBUG 的 13 组测试，以及 GCC 11.4 C++11 release 的 14 组测试通过，包含栈、协程、malloc/new 覆盖、安全注入、压力与 RSS 回收。Linux 释放后 RSS 从 266012 KiB 降至 3868 KiB。Windows 日志中的线程退出活块报告在未改动的 9ccd0bb 上也可复现（new 覆盖 128 块、stress 4608 块），是待解决的既有生命周期问题，不能以退出码为零视为无诊断。当前数据不构成与旧分配器的性能比较。

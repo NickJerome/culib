@@ -5,25 +5,7 @@
 
 #include "compiler.h"
 
-/* 保留粒度：所有 mem_os_reserve 返回的地址按此对齐（Windows 分配粒度亦为此值）。 */
-#define WAVVIX_MEM_OS_RESERVE_ALIGN ((size_t)64 * 1024)
-
 namespace wavvix { namespace mem { namespace detail {
-
-/* --------------------------- 虚拟内存（契约） ---------------------------
- * reserve   保留地址空间，不占物理内存，页保护为不可访问；成功时 *out 按
- *           WAVVIX_MEM_OS_RESERVE_ALIGN 对齐。失败返回 false 且不修改 *out。
- * release   整片归还（必须与某次 reserve 的 [p, size) 完全一致）。
- * commit    使 [p,size) 可读写；首次访问读到零。必须落在已 reserve 区内。
- * decommit  作废内容并归还物理页；再次访问前必须重新 commit。
- * 全部以字节为单位，size 需为系统页大小的倍数（调用方保证）。 */
-bool    mem_os_reserve(size_t size, void** out);
-bool    mem_os_release(void* p, size_t size);
-bool    mem_os_commit(void* p, size_t size);
-bool    mem_os_decommit(void* p, size_t size);
-
-/* 系统页大小（字节）。 */
-size_t  mem_os_page_size(void);
 
 /* 填充 n 字节密码学随机数（POSIX /dev/urandom；Windows rand_s）。
  * 失败返回 false——调用方必须有退化种子，不得静默使用未初始化缓冲。 */

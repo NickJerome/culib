@@ -29,7 +29,7 @@ if supported then
             set_encodings("utf-8")
             add_includedirs("../../include", {public = true})
             add_includedirs("allocator")
-            add_files("allocator/*.cpp", "override/override.cpp", "override/new.cpp")
+            add_files("pages_posix.cpp", "allocator/*.cpp", "override/override.cpp", "override/new.cpp")
             add_cxxflags("-ftls-model=initial-exec")
             add_ldflags("-ftls-model=initial-exec")
             add_syslinks("pthread")

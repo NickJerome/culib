@@ -2,7 +2,7 @@
  * bitmap.cpp — 位图 / binned bitmap 实现
  * ------------------------------------------------------------------------- */
 #include "bitmap.h"
-#include "os.h"   /* mem_ctz64 */
+#include "compiler.h"   /* mem_ctz64 */
 
 #include <cstring>
 

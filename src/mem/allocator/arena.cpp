@@ -2,6 +2,8 @@
  * arena.cpp — 地址窗口、平铺描述符、slice 回收和 abandoned 页
  * ------------------------------------------------------------------------- */
 #include "internal.h"
+#include "meta.h"
+#include "../pages.h"
 #include "bitmap.h"
 
 #include <limits>
@@ -36,14 +38,14 @@ inline size_t mem_round_up(size_t v, size_t granule) {
 /* 描述符按 arena 提交虚拟页；对象到首次使用时才构造。
  * 调用方持 g_subproc_lock。 */
 bool mem_desc_commit_upto(size_t end_slice) {
-  size_t need = mem_round_up(end_slice * sizeof(mem_page_t), mem_os_page_size());
+  size_t need = mem_round_up(end_slice * sizeof(mem_page_t), pages::page_size());
   /* 越界只可能来自调用方算错 end_slice：mem_arena_create 已用
    * start + n > g_window_slices 挡在前面，所以这里不可达。静默截断会让
    * 描述符区间悄悄少提交一段，之后写进去就是越界——宁可当场死。 */
   if (WAVVIX_MEM_UNLIKELY(need > g_desc_reserve))
     mem_os_fatal("descriptor commit beyond reserved range (bad end_slice)");
   if (need > g_desc_committed) {
-    if (!mem_os_commit((uint8_t*)mem_desc_base + g_desc_committed,
+    if (!pages::commit((uint8_t*)mem_desc_base + g_desc_committed,
                        need - g_desc_committed))
       return false;
     g_desc_committed = need;
@@ -124,12 +126,12 @@ bool mem_window_init(size_t want) {
   size_t size = want < WAVVIX_MEM_WINDOW_MIN ? WAVVIX_MEM_WINDOW_MIN
                                      : (want & ~(WAVVIX_MEM_ARENA_MIN - 1));
   for (;;) {
-    void* base = NULL;
-    if (mem_os_reserve(size, &base)) {
+    void* base = pages::reserve(size);
+    if (base) {
       size_t slices = size >> WAVVIX_MEM_SLICE_SHIFT;
-      size_t dres = mem_round_up(slices * sizeof(mem_page_t), WAVVIX_MEM_OS_RESERVE_ALIGN);
-      void* d = NULL;
-      if (mem_os_reserve(dres, &d)) {
+      size_t dres = mem_round_up(slices * sizeof(mem_page_t), pages::reservation_alignment);
+      void* d = pages::reserve(dres);
+      if (d) {
         mem_window_base  = (uint8_t*)base;
         mem_window_size  = size;
         g_window_slices = slices;
@@ -139,7 +141,7 @@ bool mem_window_init(size_t want) {
         mem_desc_constructed_slices.store(0, std::memory_order_relaxed);
         return true;
       }
-      mem_os_release(base, size);
+      pages::release(base, size);
     }
     if (size <= WAVVIX_MEM_WINDOW_MIN) return false;
     size >>= 1;
@@ -206,7 +208,7 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
     if (dirty) mem_bitmap_clear(arena->slices_dirty, i);
     if (!mem_bitmap_test(arena->slices_committed, i)) {
       /* 按需提交（v1 简化：整 slice 提交，不再细分更小粒度） */
-      if (!mem_os_commit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE)) {
+      if (!pages::commit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE)) {
         /* 回滚：本次循环已经把 [idx, i) 的 dirty 位清掉了，直接返回会让那些
          * 仍然脏的 slice 被标成干净，下一次分配就报 zeroed=true，calloc 的
          * 免清零快路径于是把上一任的数据交给调用方。保守地把整段重新标脏：
@@ -307,7 +309,7 @@ void mem_arena_purge_force(mem_arena_t* arena) {
   }
   for (size_t i = 0; i < arena->slice_count; i++) {
     if (!mem_bitmap_test(arena->slices_purge, i)) continue;
-    mem_os_decommit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE);
+    pages::decommit(arena->base + i * WAVVIX_MEM_SLICE_SIZE, WAVVIX_MEM_SLICE_SIZE);
     mem_bitmap_clear(arena->slices_purge, i);
     mem_bitmap_clear(arena->slices_committed, i);
     mem_bitmap_clear(arena->slices_dirty, i);   /* 重新提交后内容保证全零 */

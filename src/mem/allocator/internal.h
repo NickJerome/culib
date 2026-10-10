@@ -29,7 +29,6 @@
 #define WAVVIX_MEM_ARENA_MAX        ((size_t)1 << 30)
 #define WAVVIX_MEM_ARENA_COUNT_MAX  1024
 
-#define WAVVIX_MEM_META_CHUNK       ((size_t)2 * 1024 * 1024)
 #define WAVVIX_MEM_PAGE_MAX_CANDIDATES 4
 #define WAVVIX_MEM_RETIRE_EXPIRE    4
 #define WAVVIX_MEM_PURGE_DELAY_MS   1000
@@ -368,10 +367,7 @@ static inline void* mem_page_malloc(mem_page_t* page) {
 /* ============================ 模块接口 ================================ */
 
 /* --- meta.cpp：元数据 bump 分配器（与用户数据物理分离） --- */
-void*      mem_meta_alloc(size_t size);              /* 16 字节对齐，永不 free */
-void       mem_meta_lock(void);
-void       mem_meta_unlock(void);
-void       mem_meta_reinit_locks_child(void);
+
 
 /* --- page.cpp --- */
 /* 先 init 并填好全部字段，最后 publish 点亮 magic。 */

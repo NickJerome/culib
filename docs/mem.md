@@ -2,7 +2,7 @@
 
 `wavvix::mem` 是 culib 自带的通用分配器，源码位于 `src/mem/allocator/`，随 `culib` 静态库一起编译，不依赖外部 EduMalloc 库。实现基于本地 EduMalloc v2；[原规格](archive/edumalloc/SPEC.md)、[设计](archive/edumalloc/docs/design.md)、[决策记录](archive/edumalloc/docs/decisions.md)和[基准记录](archive/edumalloc/docs/benchmark_results_2026-09-17.md)是导入时的历史记录，提到的守护页抽样已从当前实现移除。
 
-协程栈也由 `wavvix::mem` 内部管理：`src/mem/stack_pool.*` 缓存每线程的栈，`stack_posix.cpp` / `stack_win.cpp` 向系统申请虚拟内存，并把最低一页设为不可访问。普通 `mem::alloc()` 不提供保护页；直接拿堆块当栈还会让协程首次使用时初始化整个通用分配器。因此栈池是 `mem` 内部的专用分配路径，不是公开的第二套分配器 API。最外层调度器作用域关闭或线程退出时清空缓存。
+协程栈也由 `wavvix::mem` 内部管理：`src/mem/stack_pool.*` 缓存每线程的栈，`stack.cpp` 使用共用的 `pages` 接口申请内存，并把最低一页设为不可访问。普通 `mem::alloc()` 不提供保护页；直接拿堆块当栈还会让协程首次使用时初始化整个通用分配器。因此栈池是 `mem` 内部的专用分配路径，不是公开的第二套分配器 API。最外层调度器作用域关闭或线程退出时清空缓存。
 
 分配器把小对象放在 64 KiB slice 中，按尺寸分桶，常见路径使用线程缓存；跨线程释放延后交还所属页。大对象从 arena 的连续 slice 分配。指针到页描述符的定位靠保留的虚拟地址窗口和旁路描述符数组，不在每个用户对象前放头部。当前代码的跨文件约束见[实现约束](mem-internals.md)，导入前的推导见上述历史设计文档。
 
