@@ -313,7 +313,7 @@ TEST(io_engine, signals_do_not_restart_the_entire_timeout) {
     struct sigaction action;
     std::memset(&action, 0, sizeof action);
     action.sa_handler = &count_wait_signal;
-    ::sigemptyset(&action.sa_mask);
+    sigemptyset(&action.sa_mask);
     struct sigaction previous;
     if (!EXPECT(::sigaction(SIGUSR1, &action, &previous), ==, 0)) {
         wavvix::detail::io_engine_destroy(engine);
