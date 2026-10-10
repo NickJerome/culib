@@ -15,8 +15,7 @@ class defer_guard {
 public:
     explicit defer_guard(F&& fn) noexcept : fn_(std::move(fn)) {}
 
-    // C++11 没有强制的复制消除，按值返回要求类型可以移动。
-    // 编译器实际上都会省略这次移动，active_ 只在真的发生移动时起作用，优化后不产生代码。
+    // 移动转移回调责任，源对象析构时不再执行。
     defer_guard(defer_guard&& other) noexcept : fn_(std::move(other.fn_)), active_(other.active_) {
         other.active_ = false;
     }

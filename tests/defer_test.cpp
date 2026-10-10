@@ -56,6 +56,14 @@ TEST(defer, runs_on_every_return_path) {
     EXPECT(cleanup_count, ==, 2);
 }
 
+TEST(defer, supports_multiple_guards_on_one_line) {
+    int order = 0;
+    {
+        defer { order = order * 10 + 1; }; defer { order = order * 10 + 2; };
+    }
+    EXPECT(order, ==, 21);
+}
+
 TEST(defer, runs_once_per_loop_iteration) {
     std::string log;
     for (int i = 0; i < 3; ++i) {

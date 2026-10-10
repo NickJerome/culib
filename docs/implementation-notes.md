@@ -9,6 +9,13 @@ Windows 的网络实现需要 `ws2_32`；当前 macOS 实现使用 POSIX 与 kqu
 留下的 `CoreServices` / `CoreFoundation` 链接项。CI 在 macOS 源码依赖示例运行后输出
 `otool -L`，便于核对使用方实际加载的动态库。
 
+## [`defer.h`](../include/culib/defer.h)
+
+守卫宏优先用 `__COUNTER__` 生成变量名，支持同一行展开多个 `defer`，也避免 MSVC
+开启 `/ZI` 时 `__LINE__` 无法直接拼接的问题。缺少计数器的编译器退回行号，此时同一
+作用域的一行只能展开一次。C++11 不保证复制消除，移动时转移 `active_`，保证只有
+接收者析构时执行回调；正确性不依赖编译器是否省略移动。
+
 ## [`io_engine.h`](../src/runtime/io_engine.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。

@@ -7,9 +7,8 @@
 // 先展开参数再拼接，例如 WAVVIX_DETAIL_CONCAT(name_, __LINE__) 得到 name_42
 #define WAVVIX_DETAIL_CONCAT(a, b) WAVVIX_DETAIL_CONCAT_IMPL(a, b)
 
-// 生成名字用的唯一编号。MSVC 开启 /ZI（Visual Studio 调试配置的默认选项）时
-// __LINE__ 不是字面量，拼接名字会编译失败，因此 MSVC 下改用 __COUNTER__。
-#if defined(_MSC_VER)
+// 计数器支持同一行多次展开；缺失时退回行号。
+#if defined(__COUNTER__)
 #define WAVVIX_DETAIL_UNIQUE_ID __COUNTER__
 #else
 #define WAVVIX_DETAIL_UNIQUE_ID __LINE__
