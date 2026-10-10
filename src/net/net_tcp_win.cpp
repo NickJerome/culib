@@ -60,6 +60,12 @@ result<tcp_listener> tcp_listener::listen(const endpoint& local, int backlog) {
     const SOCKET socket = new_socket(local.family() == address_family::ipv4 ? AF_INET : AF_INET6);
     if (socket == INVALID_SOCKET) return detail::tcp_error("socket", ::WSAGetLastError());
     tcp_listener listener(static_cast<std::uintptr_t>(socket));
+    if (local.family() == address_family::ipv6) {
+        const DWORD enabled = 1;
+        if (::setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY,
+                         reinterpret_cast<const char*>(&enabled), sizeof enabled) == SOCKET_ERROR)
+            return detail::tcp_error("IPV6_V6ONLY", ::WSAGetLastError());
+    }
     detail::socket_address address;
     detail::encode_address(local, address);
     if (::bind(socket, reinterpret_cast<const sockaddr*>(&address.storage),

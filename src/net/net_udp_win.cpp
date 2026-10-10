@@ -25,6 +25,15 @@ result<std::uintptr_t> udp_bind_socket(const endpoint& local) {
         ::closesocket(socket);
         return udp_error("SIO_UDP_CONNRESET", failed);
     }
+    if (family == AF_INET6) {
+        const DWORD enabled = 1;
+        if (::setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY,
+                         reinterpret_cast<const char*>(&enabled), sizeof enabled) == SOCKET_ERROR) {
+            const int failed = ::WSAGetLastError();
+            ::closesocket(socket);
+            return udp_error("IPV6_V6ONLY", failed);
+        }
+    }
     socket_address address;
     encode_address(local, address);
     if (::bind(socket, reinterpret_cast<const sockaddr*>(&address.storage),

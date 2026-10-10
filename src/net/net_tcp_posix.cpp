@@ -82,6 +82,11 @@ result<tcp_listener> tcp_listener::listen(const endpoint& local, int backlog) {
     const int socket = new_socket(local.family());
     if (socket < 0) return detail::tcp_error("socket", errno);
     tcp_listener listener(static_cast<std::uintptr_t>(socket));
+    if (local.family() == address_family::ipv6) {
+        const int enabled = 1;
+        if (::setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, sizeof enabled) < 0)
+            return detail::tcp_error("IPV6_V6ONLY", errno);
+    }
     detail::socket_address address;
     detail::encode_address(local, address);
     if (::bind(socket, reinterpret_cast<const sockaddr*>(&address.storage),

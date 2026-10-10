@@ -32,6 +32,14 @@ result<std::uintptr_t> udp_bind_socket(const endpoint& local) {
         return udp_error("setsockopt", failed);
     }
 #endif
+    if (family == AF_INET6) {
+        const int enabled = 1;
+        if (::setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, sizeof enabled) < 0) {
+            const int failed = errno;
+            ::close(socket);
+            return udp_error("IPV6_V6ONLY", failed);
+        }
+    }
     socket_address address;
     encode_address(local, address);
     if (::bind(socket, reinterpret_cast<const sockaddr*>(&address.storage),

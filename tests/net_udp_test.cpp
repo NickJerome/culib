@@ -17,6 +17,24 @@ typedef std::chrono::milliseconds ms;
 
 }  // namespace
 
+TEST(net_udp, ipv6_socket_does_not_claim_the_ipv4_port) {
+    const wavvix::result<endpoint> any_v6 = endpoint::parse("::", 0);
+    EXPECT(any_v6.is_ok(), ==, true);
+    if (any_v6.is_err()) return;
+    wavvix::result<udp_socket> opened_v6 = udp_socket::bind(any_v6.value());
+    if (opened_v6.is_err()) return;  // IPv6 may be disabled by the test environment.
+    udp_socket socket_v6 = std::move(opened_v6).value();
+    const wavvix::result<endpoint> local_v6 = socket_v6.local_endpoint();
+    EXPECT(local_v6.is_ok(), ==, true);
+    if (local_v6.is_err()) return;
+
+    const wavvix::result<endpoint> any_v4 = endpoint::parse("0.0.0.0", local_v6.value().port());
+    EXPECT(any_v4.is_ok(), ==, true);
+    if (any_v4.is_err()) return;
+    const wavvix::result<udp_socket> opened_v4 = udp_socket::bind(any_v4.value());
+    EXPECT(opened_v4.is_ok(), ==, true);
+}
+
 TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
     const wavvix::result<endpoint> loopback = endpoint::parse("127.0.0.1", 0);
     EXPECT(loopback.is_ok(), ==, true);
