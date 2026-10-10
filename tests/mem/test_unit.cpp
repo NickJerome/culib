@@ -2,6 +2,7 @@
 #include "test_util.h"
 
 #include <mem_core.h>
+#include <bitmap.h>
 
 #include <cstdint>
 #include <cstring>
@@ -16,6 +17,29 @@ using wavvix::mem::detail::mem_stats_get;
 using wavvix::mem::detail::mem_stats_t;
 
 namespace {
+
+void test_bitmap_ranges() {
+    using namespace wavvix::mem::detail;
+    uint64_t storage[4];
+    mem_bitmap_t bitmap;
+    mem_bitmap_init(&bitmap, storage, 256, true);
+    CHECK(mem_bitmap_alloc(&bitmap, 1, 128, 48) == 80);
+    CHECK(mem_bitmap_alloc(&bitmap, 175, 1, 0) == 81);
+    // 仅剩 [0,80) 连续空闲；搜索起点不能把它切成两个不够大的片段。
+    CHECK_MSG(mem_bitmap_alloc(&bitmap, 70, 1, 0) == 0,
+              "a free range crossing the search start was missed");
+    CHECK(mem_bitmap_alloc(&bitmap, 10, 1, 0) == 70);
+    CHECK(mem_bitmap_alloc(&bitmap, 1, 1, 0) == size_t(-1));
+    mem_bitmap_set_range(&bitmap, 0, 256);
+    CHECK(mem_bitmap_alloc(&bitmap, 256, 1, 0) == 0);
+
+    // 尾字只含两个有效位；跨字分配不得把尾部填充当作空闲空间。
+    mem_bitmap_init(&bitmap, storage, 130, true);
+    CHECK(mem_bitmap_alloc(&bitmap, 130, 1, 0) == 0);
+    CHECK(mem_bitmap_alloc(&bitmap, 1, 1, 0) == size_t(-1));
+    mem_bitmap_set_range(&bitmap, 64, 66);
+    CHECK(mem_bitmap_alloc(&bitmap, 66, 64, 0) == 64);
+}
 
 /* 填充独特字节模式：由 (种子, 下标) 决定，便于读回校验 */
 void fill_pattern(uint8_t* p, size_t n, uint8_t seed) {
@@ -530,6 +554,8 @@ void test_reuses_remote_frees_behind_live_pages() {
 
 int main() {
     std::printf("== test_unit ==\n");
+    test_bitmap_ranges();
+    std::printf("  bitmap ranges OK\n");
     test_size_boundaries();
     std::printf("  size boundaries OK\n");
     test_alignment_sweep();

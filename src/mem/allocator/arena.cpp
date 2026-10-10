@@ -78,7 +78,7 @@ mem_arena_t* mem_arena_create(size_t size) {
 
   size_t words = (n + 63) / 64;
   mem_arena_t*   arena        = (mem_arena_t*)mem_meta_alloc(sizeof(mem_arena_t));
-  mem_bbitmap_t* bm_free      = (mem_bbitmap_t*)mem_meta_alloc(sizeof(mem_bbitmap_t));
+  mem_bitmap_t* bm_free      = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
   mem_bitmap_t*  bm_committed = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
   mem_bitmap_t*  bm_dirty     = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
   mem_bitmap_t*  bm_purge     = (mem_bitmap_t*)mem_meta_alloc(sizeof(mem_bitmap_t));
@@ -100,7 +100,7 @@ mem_arena_t* mem_arena_create(size_t size) {
   arena->slices_committed = bm_committed;
   arena->slices_dirty     = bm_dirty;
   arena->slices_purge     = bm_purge;
-  mem_bbitmap_init(bm_free, st_free, n);
+  mem_bitmap_init(bm_free, st_free, n, true);
   mem_bitmap_init(bm_committed, st_committed, n, false);
   mem_bitmap_init(bm_dirty, st_dirty, n, false);
   mem_bitmap_init(bm_purge, st_purge, n, false);
@@ -180,7 +180,7 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
   size_t phase = (align_slices > 1)
                      ? (((uintptr_t)arena->base >> WAVVIX_MEM_SLICE_SHIFT) % align_slices)
                      : 0;
-  size_t idx = mem_bbitmap_alloc(arena->slices_free, n, align_slices, phase);
+  size_t idx = mem_bitmap_alloc(arena->slices_free, n, align_slices, phase);
   if (idx == (size_t)-1) return (size_t)-1;
 
   /* *out_zeroed 是整段的**合取**：只要有一个 slice 脏，整段就不算全零。
@@ -207,7 +207,7 @@ size_t mem_arena_alloc_slices(mem_arena_t* arena, size_t n, size_t align_slices,
          * 代价是多几次 memset，换取"绝不把脏内存当零交出去"。 */
         mem_bitmap_set_range(arena->slices_dirty, idx, n);
         /* OOM：回滚 */
-        mem_bbitmap_free(arena->slices_free, idx, n);
+        mem_bitmap_set_range(arena->slices_free, idx, n);
         return (size_t)-1;
       }
       mem_bitmap_set(arena->slices_committed, i);
@@ -273,7 +273,7 @@ size_t mem_arena_alloc_slices_any(int& preferred_arena, size_t n, size_t align_s
  * 此刻不做 madvise——物理页归还延迟到 purge 到期。 */
 void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
   std::lock_guard<allocator_mutex> lock(arena->mutex);
-  mem_bbitmap_free(arena->slices_free, slice_idx, n);
+  mem_bitmap_set_range(arena->slices_free, slice_idx, n);
   mem_bitmap_set_range(arena->slices_dirty, slice_idx, n);
   mem_bitmap_set_range(arena->slices_purge, slice_idx, n);
   arena->purge_expire.store(mem_os_now_ms() + WAVVIX_MEM_PURGE_DELAY_MS,
@@ -283,7 +283,7 @@ void mem_arena_free_slices(mem_arena_t* arena, size_t slice_idx, size_t n) {
 /* 归还已由调用方 decommit 的 slice（huge 页：free 即归还物理页）。 */
 void mem_arena_free_slices_decommitted(mem_arena_t* arena, size_t slice_idx, size_t n) {
   std::lock_guard<allocator_mutex> lock(arena->mutex);
-  mem_bbitmap_free(arena->slices_free, slice_idx, n);
+  mem_bitmap_set_range(arena->slices_free, slice_idx, n);
   mem_bitmap_clear_range(arena->slices_committed, slice_idx, n);
   mem_bitmap_clear_range(arena->slices_dirty, slice_idx, n);
   mem_bitmap_clear_range(arena->slices_purge, slice_idx, n);

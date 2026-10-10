@@ -127,7 +127,7 @@ struct mem_arena_t {
   uint8_t*    base;                 /* = mem_window_base + first_slice*64KiB */
   size_t      slice_count;
   size_t      first_slice;          /* 在窗口/描述符数组中的起始下标 */
-  struct mem_bbitmap_t* slices_free;      /* 空闲 slice（bitmap.h 定义） */
+  struct mem_bitmap_t*  slices_free;      /* 空闲 slice（bitmap.h 定义） */
   struct mem_bitmap_t*  slices_committed;
   struct mem_bitmap_t*  slices_dirty;     /* 内容脏，calloc 不能省去清零 */
   struct mem_bitmap_t*  slices_purge;     /* 待归还 OS */
