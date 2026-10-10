@@ -19,10 +19,6 @@
 namespace wavvix {
 namespace os {
 
-namespace detail {
-extern volatile std::sig_atomic_t stop_flag;
-}  // namespace detail
-
 namespace {
 
 error from_errno(string_view what, int code) {
@@ -38,9 +34,8 @@ error from_errno(string_view what, int code) {
     return make_error(kind, what.to_string() + " 失败：" + std::strerror(code));
 }
 
-// 信号处理函数里唯一允许做的事：给 volatile sig_atomic_t 赋值。
-// 不要在这里加任何别的代码——printf / malloc / 加锁都不是 async-signal-safe 的。
-void raise_stop_flag(int) { detail::stop_flag = 1; }
+// Only the lock-free flag store is safe here; no I/O, allocation or locks.
+extern "C" void raise_stop_flag(int) { request_stop(); }
 
 // C API 会在 NUL 处截断；必须先验证完整的 string_view。
 result<void> check_name(string_view name) {

@@ -11,9 +11,7 @@ using wavvix::nullopt;
 
 }  // namespace
 
-// 注意：停止标志**不在这里测**。它按设计是单向的（翻了不会复位），在单元测试里
-// 调 request_stop() 会污染后面所有测试。信号那条路径用独立子进程发真信号验证，
-// 见 os 设计文档的「实现验证」节。
+// 置位停止标志的测试独立运行于 process/os_stop.cpp，避免污染本进程。
 
 TEST(os, reads_environment_variables) {
     // 「没设置」是正常结果，不是失败

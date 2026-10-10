@@ -3,24 +3,27 @@
 
 #include <culib/os.h>
 
+#include <atomic>
 #include <thread>
 
 namespace wavvix {
 namespace os {
 
-namespace detail {
+namespace {
 
-// 停止标志。用 volatile sig_atomic_t 而不是 std::atomic<bool>：
-// POSIX 只保证对 volatile sig_atomic_t 的赋值在信号处理函数里是安全的
-// （signal-safety(7)），而 std::atomic 的无锁性是实现定义的，标准也没有
-// 把它列进 async-signal-safe 的清单。单向翻转一个标志不需要更强的保证。
-volatile std::sig_atomic_t stop_flag = 0;
+static_assert(ATOMIC_INT_LOCK_FREE == 2, "stop flag requires always-lock-free atomic int");
+std::atomic<int> stop_flag(0);
 
-}  // namespace detail
+}  // namespace
 
-bool stop_requested() noexcept { return detail::stop_flag != 0; }
+bool stop_requested() noexcept {
+    return std::atomic_load_explicit(&stop_flag, std::memory_order_relaxed) != 0;
+}
 
-void request_stop() noexcept { detail::stop_flag = 1; }
+void request_stop() noexcept {
+    // C++11 signal handlers allow non-member lock-free atomic operations.
+    std::atomic_store_explicit(&stop_flag, 1, std::memory_order_relaxed);
+}
 
 unsigned cpu_count() noexcept {
     const unsigned reported = std::thread::hardware_concurrency();

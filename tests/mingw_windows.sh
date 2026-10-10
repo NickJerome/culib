@@ -52,6 +52,12 @@ done
 
 "$output/culib_test.exe"
 
+"$compiler" "${flags[@]}" -static -o "$output/os_stop_test.exe" \
+    tests/process/os_stop.cpp "${library_objects[@]}" -lws2_32
+"$output/os_stop_test.exe" threads
+"$output/os_stop_test.exe" ctrl-c
+"$output/os_stop_test.exe" ctrl-break
+
 for source in examples/*.cpp; do
     example="$output/example_$(basename "$source" .cpp).exe"
     "$compiler" "${flags[@]}" -static -o "$example" \

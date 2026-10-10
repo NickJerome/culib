@@ -6,7 +6,6 @@
 #include <culib/result.h>
 #include <culib/string_view.h>
 
-#include <csignal>
 #include <string>
 
 namespace wavvix {
@@ -42,15 +41,14 @@ unsigned cpu_count() noexcept;
 
 // 装上信号处理。**必须显式调用**：修改进程级的信号处置是调用方的决定，库不在
 // 背后替它做（也符合「不在 main 之前执行任何代码」）。重复调用是安全的。
+// Windows 的关闭窗口、注销和关机事件不保证留出清理时间。
 result<void> install_stop_handler();
 
-// 收到终止信号了吗。没装处理器时永远返回 false。
-// 这是个函数调用而不是暴露变量，因为标志在 .cpp 里；主循环里每轮一次调用，
-// 相对于一轮真实工作（通常含 I/O）是噪声。
+// 是否收到停止请求（信号或 request_stop）。初始为 false，置位后不复位。
+// 可跨线程调用；只传递停止状态，不同步调用方的其他数据。
 bool stop_requested() noexcept;
 
-// 自己把标志翻起来，效果和收到信号一样。给两种场合：测试，以及程序内部
-// 决定要退出时（例如配置非法）——那样收尾路径只有一条。
+// 请求停止，可跨线程或在信号处理函数中调用；不要求先安装处理器。
 void request_stop() noexcept;
 
 }  // namespace os

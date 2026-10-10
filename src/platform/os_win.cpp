@@ -4,7 +4,6 @@
 #include <culib/os.h>
 #include <culib/strings.h>
 
-#include <csignal>
 #include <string>
 #include <vector>
 
@@ -18,10 +17,6 @@
 
 namespace wavvix {
 namespace os {
-
-namespace detail {
-extern volatile std::sig_atomic_t stop_flag;
-}  // namespace detail
 
 namespace {
 
@@ -41,7 +36,7 @@ error from_last_error(string_view what, DWORD code) {
 }
 
 // 关机 / 关窗口 / 注销 / Ctrl-C / Ctrl-Break 五种都当「该停了」。
-// 返回 TRUE 表示「这个事件我处理了」，系统于是不走默认的立即终止。
+// 系统用独立线程调用；关闭、注销、关机仍受 Windows 的强制退出规则限制。
 BOOL WINAPI console_handler(DWORD event) {
     switch (event) {
         case CTRL_C_EVENT:
@@ -49,7 +44,7 @@ BOOL WINAPI console_handler(DWORD event) {
         case CTRL_CLOSE_EVENT:
         case CTRL_LOGOFF_EVENT:
         case CTRL_SHUTDOWN_EVENT:
-            detail::stop_flag = 1;
+            request_stop();
             return TRUE;
         default:
             return FALSE;
