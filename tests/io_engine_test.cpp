@@ -323,9 +323,14 @@ TEST(io_engine, signals_do_not_restart_the_entire_timeout) {
     interrupted_wait_signals = 0;
     const pthread_t waiting_thread = ::pthread_self();
     std::atomic<bool> sender_ready(false);
-    std::thread sender([waiting_thread, &sender_ready] {
+    std::atomic<bool> wait_done(false);
+    std::thread sender([waiting_thread, &sender_ready, &wait_done] {
+        // 回归导致等待不断重启时，也要让测试最终结束。
+        const std::chrono::steady_clock::time_point stop_at =
+            std::chrono::steady_clock::now() + std::chrono::seconds(2);
         sender_ready.store(true, std::memory_order_release);
-        for (int i = 0; i < 20; ++i) {
+        while (!wait_done.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < stop_at) {
             std::this_thread::sleep_for(ms(10));
             ::pthread_kill(waiting_thread, SIGUSR1);
         }
@@ -337,6 +342,7 @@ TEST(io_engine, signals_do_not_restart_the_entire_timeout) {
     const std::chrono::steady_clock::duration elapsed =
         std::chrono::steady_clock::now() - start;
     const sig_atomic_t seen_during_wait = interrupted_wait_signals;
+    wait_done.store(true, std::memory_order_release);
     sender.join();
     ::sigaction(SIGUSR1, &previous, 0);
     wavvix::detail::io_engine_destroy(engine);
