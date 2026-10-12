@@ -11,6 +11,10 @@
 namespace wavvix {
 namespace mem {
 
+// 想让 std::vector、std::string、new 等改用本分配器，不用调用下面这些函数：依赖
+// culib_new_override 覆盖全局 new/delete 即可，Linux 还可以用 LD_PRELOAD 换掉 malloc，
+// 见 docs/mem.md。下面是 C 语义的底层接口，给 C 风格的代码和这两个覆盖目标用。
+//
 // 全部线程安全；任何线程分配的块都可以在任何线程释放。分配失败返回空指针，
 // 返回的地址至少按 16 字节对齐。块只能交给本命名空间的 free / realloc。
 //

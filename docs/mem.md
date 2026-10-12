@@ -4,9 +4,32 @@
 
 协程栈也由 `wavvix::mem` 管理：`src/mem/stack_pool.*` 缓存每个线程的栈，`stack.cpp` 用共用的 `pages` 接口申请内存，并把最低一页设成不可访问。普通的 `mem::alloc()` 不提供保护页，所以栈池是 mem 内部的专用路径，不是第二套公开分配接口。最外层调度器作用域关闭或线程退出时清空缓存。
 
-## 普通使用
+## 用法：覆盖全局 `new/delete`（推荐）
 
-64 位 Linux、macOS、Windows 上包含 `<culib/mem.h>` 并链接 `culib`：
+代码不用改。依赖 `culib_new_override` 对象目标，程序里的 `new` / `delete` 就改用本分配器；`std::vector`、`std::string`、`std::make_shared` 这些默认经 `operator new` 分配的容器和智能指针也一样：
+
+```lua
+target("myapp")
+    set_kind("binary")
+    add_files("src/*.cpp")
+    add_deps("culib", "culib_new_override")
+```
+
+64 位 Linux、macOS、Windows 都能用。Windows 上覆盖按模块生效：链接了它的 exe（连同静态链进去的库）走本分配器，单独编译的 DLL 仍用自己的 `operator new`。`mem_test_new_override` 在三个平台的 CI 上检查直接 `new` 和标准容器的缓冲区都来自本分配器；可运行的程序见 [examples/mem.cpp](../examples/mem.cpp)。不要把这个对象目标和另一套 `new/delete` 覆盖同时链接。
+
+`culib_new_override` 覆盖后的 `new` / `new[]` 遵循 `std::new_handler`：分配失败时先调用已安装的处理器；没有处理器时抛出 `std::bad_alloc`（关闭异常的构建会终止）。`std::nothrow` 形式同样调用处理器，最终失败时返回空指针；处理器抛出的异常不会越过 `noexcept` 入口。
+
+Linux 还可以连 C 的 `malloc` 一起换：构建 `culib_malloc_override`，程序启动时用 `LD_PRELOAD=/绝对路径/libculib_malloc_override.so` 加载。它覆盖 `malloc/free/calloc/realloc`、对齐分配的几个入口（`aligned_alloc`、`posix_memalign`、`memalign`、`valloc`、`pvalloc`）和 `malloc_usable_size`；C++ 的 `operator new/delete` 由 libstdc++ 实现，内部调用的就是 `malloc/free`，所以也走本分配器，`new_handler` 和 `bad_alloc` 的行为照旧。这个共享库只依赖 libc，加载进 C 程序不会带进 libstdc++，只导出上面这些 C 入口。也可以把它作为显式链接依赖，集成测试就是这样做的。进程里不要同时加载别的 malloc 覆盖库。
+
+`wavvix::mem::aligned_alloc(alignment, size)` 接受任意大小。Linux 符号覆盖里的 C11 `aligned_alloc` 则按标准要求 `size` 是 `alignment` 的整数倍；`memalign` 和 `valloc` 仍然接受任意大小。
+
+macOS 和 Windows 上 culib 不替换 C 的 `malloc`：MSVC 动态 UCRT 的 `malloc/free` 没法靠一个静态库可靠地全进程替换，macOS 要靠 malloc zone 或 `DYLD_INSERT_LIBRARIES`，这里没做。这两个平台上 C 风格的分配要显式调用下面的接口。
+
+普通的 `culib` 依赖只提供分配接口，不会悄悄覆盖进程的全局符号，默认构建也不编译这两个覆盖目标。全局替换要显式选择，避免和别的库的分配、释放家族混用。
+
+## 显式接口（C 语义）
+
+C 风格的代码，或者在 macOS / Windows 上需要 C 风格分配时，包含 `<culib/mem.h>` 直接调用：
 
 ```cpp
 #include <culib/mem.h>
@@ -23,16 +46,7 @@ void example() {
 
 还提供 `calloc`、`realloc`、`aligned_alloc`、`usable_size` 和 `collect`，契约写在头文件里，也见 [API 参考](../api.md)。分配和释放必须是同一家族：系统 `malloc` 得到的指针交给 `mem::free` 会被当成误用（见下文）。
 
-## 替换 `malloc/new`
-
-- Linux：构建 `culib_malloc_override`，程序启动时用 `LD_PRELOAD=/绝对路径/libculib_malloc_override.so` 加载。它覆盖 `malloc/free/calloc/realloc`、对齐分配的几个入口（`aligned_alloc`、`posix_memalign`、`memalign`、`valloc`、`pvalloc`）和 `malloc_usable_size`；C++ 的 `operator new/delete` 由 libstdc++ 实现，内部调用的就是 `malloc/free`，所以也走本分配器，`new_handler` 和 `bad_alloc` 的行为照旧。这个共享库只依赖 libc，加载进 C 程序不会带进 libstdc++，只导出上面这些 C 入口。也可以把它作为显式链接依赖，集成测试就是这样做的。进程里不要同时加载别的 malloc 覆盖库。
-- macOS / Windows：依赖 `culib_new_override` 对象目标，程序里的全局 `new/delete` 就会用这个分配器。MSVC 动态 UCRT 的 `malloc/free` 没法靠一个静态库可靠地全进程替换；Windows 上需要 C 风格分配时，显式调用 `mem::alloc/free`。不要把这个对象目标和另一套 `new/delete` 覆盖同时链接。
-
-普通的 `culib` 依赖只提供分配接口，不会悄悄覆盖进程的全局符号，默认构建也不编译这两个覆盖目标。全局替换要显式选择，避免和别的库的分配、释放家族混用。
-
-`wavvix::mem::aligned_alloc(alignment, size)` 接受任意大小。Linux 符号覆盖里的 C11 `aligned_alloc` 则按标准要求 `size` 是 `alignment` 的整数倍；`memalign` 和 `valloc` 仍然接受任意大小。
-
-`culib_new_override` 覆盖后的 `new` / `new[]` 遵循 `std::new_handler`：分配失败时先调用已安装的处理器；没有处理器时抛出 `std::bad_alloc`（关闭异常的构建会终止）。`std::nothrow` 形式同样调用处理器，最终失败时返回空指针；处理器抛出的异常不会越过 `noexcept` 入口。
+失败返回空指针，沿用 `malloc` 的语义而不用 `result`：两个覆盖目标直接用这些函数实现 `malloc` 和 `new`。返回新块的四个函数（`alloc`、`calloc`、`realloc`、`aligned_alloc`）丢掉返回值时编译器会警告：`alloc` 的结果没人接就是泄漏，`realloc` 的结果没人接则原指针可能已经释放。
 
 ## 内存怎么占、怎么还
 

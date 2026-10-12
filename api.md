@@ -1100,6 +1100,8 @@ int main() {
 
 命名空间：`wavvix::mem`，当前仅支持 64 位 Linux、macOS、Windows。
 
+想让标准容器和 `new` 改用本分配器，依赖 `culib_new_override` 即可，代码不用改（见下文「显式覆盖全局分配」）；下面这组函数是 C 语义的底层接口。
+
 ```cpp
 void* alloc(std::size_t size) noexcept;
 void free(void* p) noexcept;
@@ -1120,7 +1122,7 @@ void collect() noexcept;
 | `usable_size(p)` | 查询活块的可用字节数，可能大于请求；空指针、不是本分配器给出的地址和块中间的地址返回 `0` |
 | `collect()` | 马上把当前线程的空页、已退出线程留下的空页和空闲内存还给系统；不动仍在使用的块，也不动其他活线程的页。不调用时，空出来的内存至少 1 秒后在之后的分配或释放里归还 |
 
-允许跨线程释放，但必须同步同一对象的访问，分配与释放家族必须匹配。释放不是本分配器给出的指针、块中间的地址和重复释放，在 release 构建里同样打印一行 `culib mem: fatal:` 诊断后终止。`realloc` 不承诺保留额外的过度对齐要求。
+允许跨线程释放，但必须同步同一对象的访问，分配与释放家族必须匹配。释放不是本分配器给出的指针、块中间的地址和重复释放，在 release 构建里同样打印一行 `culib mem: fatal:` 诊断后终止。`realloc` 不承诺保留额外的过度对齐要求。返回新块的四个函数丢掉返回值时编译器会警告。
 
 示例：扩容时保留旧指针以处理失败。
 
@@ -1149,7 +1151,7 @@ int main() {
 
 | xmake 目标 | 范围与接入 |
 | --- | --- |
-| `culib_new_override` | 支持的 64 位平台上的对象目标；应用添加 `add_deps("culib", "culib_new_override")`，覆盖全局 `new/delete` |
+| `culib_new_override` | 支持的 64 位平台上的对象目标；应用添加 `add_deps("culib", "culib_new_override")`，覆盖全局 `new/delete`；Windows 上只对链接了它的模块生效 |
 | `culib_malloc_override` | Linux 共享库；`xmake build culib_malloc_override` 后，在进程启动时用 `LD_PRELOAD=/绝对路径/libculib_malloc_override.so ./app`，覆盖 C 分配入口。C++ 的 `new/delete` 由 libstdc++ 转到 `malloc/free`，同样走本分配器；共享库只依赖 libc |
 
 一次只选一套全局覆盖，不能再链接另一套同名覆盖。Windows/macOS 的 `culib_new_override` 不等于替换全部 C `malloc/free`。Linux 覆盖中的 C11 `aligned_alloc` 按标准要求大小是对齐倍数，和上面的 `mem::aligned_alloc` 不同。
