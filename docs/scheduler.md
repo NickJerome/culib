@@ -23,7 +23,7 @@ int main() {
 
 `join()` 和 `detach()` 必须在创建协程的 vCPU（同一系统线程）上调用，并且要早于该 vCPU 的 `scheduler_scope` 析构。`join()` 在协程内只挂起调用者；在 vCPU 主栈上会继续调度本地任务并等待远端完成。作用域析构会运行当前及远端 vCPU 剩余的任务；若任务持续等待，须先由应用发出停止信号。最外层作用域析构还会释放当前线程缓存的协程栈；再次创建任务时按需重新分配。
 `coroutine` 构造成功就表示任务已提交。栈大小非法时抛出 `std::invalid_argument`；运行时或分配资源不足时抛出 `std::system_error`。无异常构建无法从构造函数返回错误，遇到这些失败会 `std::terminate()`。默认构造及移动后的对象是不持有任务的空句柄；对空句柄调用 `join()` 或 `detach()` 会打印诊断并终止。需要显式处理提交失败时使用返回 `result` 的 `spawn()`。
-和 Photon 的 `photon_std::thread` 一样，构造时可以直接传函数参数；参数按值保存，启动时移动到目标函数。传引用请显式用 `std::ref`。默认请求 240 KiB 可用栈；普通小回调进入 256 KiB 栈池桶，另加一页保护页。Windows 会提交这整段内存，创建大量并发协程时要把它计入进程提交预算。需要更深的栈时用 `coroutine::with_stack(bytes, function, args...)`，避免整数函数参数和栈大小混淆。
+和 Photon 的 `photon_std::thread` 一样，构造时可以直接传函数参数；参数按值保存，启动时移动到目标函数。传引用请显式用 `std::ref`。默认请求 240 KiB 可用栈；普通小回调进入 256 KiB 栈池桶。Windows 会提交这整段内存，创建大量并发协程时要把它计入进程提交预算。需要更深的栈时用 `coroutine::with_stack(bytes, function, args...)`，避免整数函数参数和栈大小混淆。
 
 `<culib/scheduler.h>` 提供 `spawn()` 供不持有句柄的场合使用，也提供 `yield()`、`sleep_for()` 和 `scheduler_scope`。`spawn(function, args...)` 与 `coroutine` 构造函数一样，按值保存参数，传引用请用 `std::ref`；需要指定栈大小时用 `spawn_with_stack(bytes, function, args...)`。两个提交函数都返回 `result<void>`：成功表示已入队，非法栈大小返回 `out_of_range`，协程对象或栈分配失败返回 `resource_exhausted`；失败时任务不会运行。`scheduler_scope` 用 RAII 管理 vCPU 生命周期，一个作用域可以统一跑完其间提交的任务：
 
@@ -56,3 +56,17 @@ int main() {
 PhotonLibOS 的原生 [`thread_create11()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/thread11.h) / [`go()`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/go.h) 创建后只把协程放进运行队列，默认不要求等待；需要等待时才启用 join。[`photon_std::thread`](https://github.com/alibaba/PhotonLibOS/blob/main/thread/std-compat.h) 则是 `std::thread` 风格的持有型句柄，构造即入队，随后 `join()` 或 `detach()`；仍可 `join` 时析构会 `terminate`。culib 的 `spawn()` 和 `coroutine` 分别对应这两种用法。Photon 的 [`init()` / `fini()`](https://github.com/alibaba/PhotonLibOS/blob/main/photon.h) 在这里由 `scheduler_scope` 管理。Photon 另行启用 WorkPool 后才把新任务交给其他 vCPU；culib 用 `with_workers(n)` 显式启用同类分发。
 
 创建协程不会立刻切走当前执行流；没有工作池时，调用方让出、等待、进行协程 I/O 或进入调度器收尾才会运行新任务。启用工作池后，新任务可立即在另一个 vCPU 开始执行，因此传入的引用与对象必须在 `join()` 或运行时收尾之前保持有效。
+
+## 栈溢出
+
+协程栈大小固定。release 构建不设保护页：栈用超了不会报错，而是悄悄写坏相邻协程的内存，表现为别的协程卡住、崩溃或数据被改。不设保护页是为了让协程数量不受限制：保护页在 Linux 上每根栈要多占一个内存映射，默认上限会把并发协程卡在约 3.2 万根，而容器里改不了这个上限。原因和测量见[实现说明](implementation-notes.md#协程栈)。
+
+debug 构建在每根栈的最低一页设保护页，溢出当场崩溃，调试器里能看到越界那一刻的调用栈。代价是 Linux 默认设置下 debug 构建最多约 3.2 万根并发协程。怀疑 release 程序里有栈溢出时（卡死或崩溃发生在无关的协程里，或者用 `with_stack` 把栈调大后问题消失），用 debug 构建重现。
+
+普通代码用不了多少栈：库自己的协程最深用 4.1 KiB，格式化、异常、排序、DNS 解析最多 11.5 KiB，默认栈有 20 倍余量。会用超的只有递归深度随输入增长的代码，这些地方要自己限制深度：
+
+- 解析嵌套数据（JSON、XML、表达式）时限制嵌套层数，或者改成循环加显式的栈。Go 的 `encoding/json` 也把嵌套限制在 1 万层。
+- 用 `unique_ptr` 串起来的链表和树，析构时一层层递归，长链要写成循环释放。
+- 不对外部输入用 `std::regex`。GCC 15 及以前的 libstdc++ 每匹配一个字符约用 0.7 KiB 栈，几百个字符就能用完默认栈；回溯式匹配遇到特定输入还要花指数级的时间。
+
+确实需要深栈的协程用 `coroutine::with_stack` 或 `spawn_with_stack` 指定更大的栈。

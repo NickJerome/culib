@@ -608,7 +608,8 @@ const std::size_t default_stack_size = 240 * 1024;
 - `join/detach` 须在创建句柄的 vCPU 上调用，并早于其调度器关闭；不能自己 join 自己。`inside()` 判断当前是否在协程栈上，`yield()` 主动让出。
 - 参数按值保存、运行时移动传入；引用参数用 `std::ref`。引用捕获必须活到任务完成。
 - 构造时栈大小非法抛 `std::invalid_argument`，资源不足抛 `std::system_error`；无异常构建中终止。用户函数的异常须在函数内处理。需要显式处理提交失败时用 `spawn()`。
-- 默认请求 240 KiB 可用栈，实际分配还包含对齐、回调存储和保护页等开销。用 `with_stack(bytes, fn, args...)` 指定更大的栈。
+- 默认请求 240 KiB 可用栈，实际分配还包含对齐和回调存储的开销。用 `with_stack(bytes, fn, args...)` 指定更大的栈。
+- **release 构建里栈溢出不会被检测**：没有保护页，用超了会写坏别的协程的内存；debug 构建有保护页，溢出当场崩溃。递归深度随输入增长的代码要自己限制深度，规则见[调度器文档](docs/scheduler.md#栈溢出)。
 
 示例：
 

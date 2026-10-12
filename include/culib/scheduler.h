@@ -71,7 +71,7 @@ result<void> spawn(F&& body, Arg&& arg, Args&&... args) {
         std::forward<Args>(args)...), default_stack_size);
 }
 
-// 显式指定栈大小，避免把整数函数参数误认成栈大小。
+// 显式指定栈大小，避免把整数函数参数误认成栈大小。release 构建里栈溢出不会被检测，见 default_stack_size。
 template <typename F>
 result<void> spawn_with_stack(std::size_t stack_size, F&& body) {
     return detail::spawn_fiber(std::forward<F>(body), stack_size);

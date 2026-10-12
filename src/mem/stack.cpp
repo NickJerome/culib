@@ -20,27 +20,36 @@ extern "C" void __asan_unpoison_memory_region(void const volatile* address, std:
 
 namespace wavvix { namespace mem { namespace detail {
 
+// release 构建不设保护页：每根栈多一个映射，Linux 默认的映射数上限会把并发协程数卡在约 3.2 万。
+// debug 构建把最低一页设成不可访问，栈溢出当场崩溃，便于排查；代价是同样受那个上限约束。
+// 原因和数据见 docs/implementation-notes.md 的协程栈一节。
 stack_memory allocate_stack(std::size_t usable) noexcept {
     stack_memory out = {0, 0, 0, -1};
     const std::size_t page = pages::page_size();
-    if (page > (std::numeric_limits<std::size_t>::max)() / 2 ||
-        usable > (std::numeric_limits<std::size_t>::max)() - (2 * page - 1)) {
+#if defined(NDEBUG)
+    const std::size_t guard = 0;
+#else
+    const std::size_t guard = page;
+#endif
+    if (usable > (std::numeric_limits<std::size_t>::max)() - (page - 1) - guard) {
         return out;
     }
 
-    const std::size_t total = ((usable + page - 1) / page + 1) * page;
+    const std::size_t total = (usable + page - 1) / page * page + guard;
     void* const raw = pages::allocate(total);
     if (!raw) {
         return out;
     }
-    if (!pages::protect(raw, page)) {
+#if !defined(NDEBUG)
+    if (!pages::protect(raw, guard)) {
         pages::release(raw, total);
         return out;
     }
+#endif
 
     out.base = static_cast<char*>(raw);
     out.total = total;
-    out.guard = page;
+    out.guard = guard;
     return out;
 }
 

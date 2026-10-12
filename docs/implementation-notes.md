@@ -167,6 +167,57 @@ Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序
 因此不会在入集合之前消费通知。回归测试让超时者尚未恢复时发生 semaphore 交棒，
 确认跳过超时者，把名额交给下一位等待者。
 
+## 协程栈
+
+[`stack.cpp`](../src/mem/stack.cpp) 按整页向系统申请栈，[`stack_pool`](../src/mem/stack_pool.h) 缓存用过的栈。**release 构建不设保护页**，栈溢出不会被拦住：越界的写入落到相邻那根栈的栈顶，那里放着它的控制块，包括 `invoke` / `destroy` 两个函数指针。debug 构建把每根栈的最低一页设成不可访问，用来排查。
+
+### 为什么 release 不设保护页
+
+在 Linux 上，保护页每根栈要多占一个内存映射。默认的 `vm.max_map_count` 是 65530，每根带保护页的栈占 2 个映射，并发协程数卡在约 3.2 万根，超过后 `spawn` 返回 `resource_exhausted`。ws / API 服务器常要数十万根。这个上限只能在宿主机上改：容器里 `/proc/sys` 是只读的，`docker run --sysctl vm.max_map_count=...` 直接被拒绝（`not allowed`）。在 6.13 以下的内核上，任何形式的保护页都要占映射。
+
+撞到上限时坏掉的不只是 `spawn`：映射数用完后，进程里任何需要新映射的分配都会失败。旧实现同时挂起 30 万根协程的实测里，第 32746 根 `spawn` 返回 `resource_exhausted`，接着调度器自己的定时堆扩容失败，整个进程以 `std::bad_alloc` 退出。不设保护页后同样的程序 30 万根全部挂起，映射数从 41 个变成 44 个，每根协程的驻留内存约 4.0 KiB。
+
+Boost.Context 默认也不设保护页：`default_stack` 是用 `std::malloc` 分配的 `fixedsize_stack`，带保护页的 `protected_fixedsize_stack` 要显式选。
+
+### debug 构建保留保护页
+
+不设保护页时，溢出的症状出现在别的协程上，开发者看不出原因。实测协程 A 递归 300 层、每层写满 1 KiB，越界写进紧挨在下面的协程 B：不设保护页时 A 正常结束，B 的挂起凭据被写坏，再也醒不过来，程序卡住，没有任何输出；有保护页时 A 在越界的那一刻 SIGSEGV，gdb 的调用栈直接指向第 254 层递归。所以 debug 构建保留保护页：开发和测试时溢出当场崩溃，CI 的 debug 与 sanitizer 任务也一直带着它。代价是 debug 构建在 Linux 默认设置下最多约 3.2 万根并发协程。
+
+### 代价有多大
+
+把栈填满固定字节、协程结束时从栈底往上扫，量每根协程最深用到多少栈（WSL2，GCC 11.4，`-O2`）：
+
+| 代码 | 最深用栈 |
+| --- | ---: |
+| culib 全部测试里的协程（1294 根） | 4.1 KiB |
+| `snprintf` 格式化浮点数 / `ostringstream` | 3.4 / 3.9 KiB |
+| 抛出并捕获异常 | 3.4 KiB |
+| `std::sort` 100 万个 `int` | 1.0 KiB |
+| `net::resolve("github.com")`，走 DNS | 11.5 KiB |
+
+普通代码在 240 KiB 的默认栈上有 20 倍余量。会用超的只有递归深度随输入增长的代码，栈开多大只是把门槛往后挪：
+
+| 代码 | 每单位输入用的栈 | 240 KiB 能撑到 |
+| --- | ---: | ---: |
+| `std::regex_match`，GCC 11.4 的 libstdc++ | 约 0.7 KiB / 字符 | 第 347 个字符时用完（gdb 看到 3835 层调用） |
+| 递归下降解析，每层一个 `std::string` | 约 80 B / 层，`-O0` 约 110 B | 约 3000 层 |
+| `unique_ptr` 串成的链表析构 | 约 12 B / 节点，`-O0` 约 144 B | 约 2 万个节点，`-O0` 约 1700 个 |
+
+`std::regex` 的栈用量取决于标准库：libstdc++ 在 GCC 15 及以前每个字符递归一圈 `_M_dfs`，GCC 16 起改成压进堆上的 `_M_frames`；MSVC（14.44）的 `_Match_pat` 也递归，x64 上 600 层后抛 `regex_error(error_stack)`，这 600 层在 240 KiB 栈上够不够没量过；libc++ 用堆上的 `vector<__state>`。这些规则写进了[调度器文档](scheduler.md#栈溢出)。
+
+### 不做的
+
+| 试过什么 | 结果 | 什么条件下重开 |
+| --- | --- | --- |
+| release 构建也给每根栈设保护页（原来的做法） | Linux 默认设置下并发协程卡在约 3.2 万根，容器里改不了上限 | 不重开 |
+| 用环境变量在任何构建里打开保护页 | 能在 release 程序里排查，但 Windows 要单独写读环境变量的代码，CI 也要专门打开；debug 构建自动带上已经覆盖开发和测试 | 出现只能在 release 程序里复现的栈溢出时 |
+| 只给一部分栈设保护页（folly fibers 的做法） | 溢出时是崩溃还是写坏内存，取决于这是第几根栈 | 不重开 |
+| 保护页能设上就设，失败不报错（Photon 的做法） | 照抄 Photon 两种分配器的系统调用实测：每根栈占 3 个映射，从第 21836 根起悄悄没有保护页 | 不重开 |
+| `MADV_GUARD_INSTALL`，Linux 6.13 起保护页不占映射 | 实测 10 万根保护页不增加映射；但更老的内核要退回 `mprotect`，行为随内核版本变化 | 最低支持的 Linux 内核到 6.13 时 |
+| 栈底放 canary，切换时检查 | 检查到时相邻的栈已经被写坏，溢出的写入还可以直接越过 canary | 不重开 |
+| 共享栈（coost、libaco） | 挂起时栈被拷走，指向栈的指针失效。culib 的 park 凭据、`io_request`（Windows 上含 `OVERLAPPED`）都在栈上；libaco 的实测程序里子协程的写入悄悄丢了 | 不重开 |
+| 像 Go 那样按需增长 | 要编译器在每个函数开头插检查，还要找到并改写所有指向栈的指针，C++ 都做不到。GCC 的 `-fsplit-stack` 只有 Linux 有，而且要求所有库都这样编译 | 不重开 |
+
 ## [`scheduler.cpp`](../src/runtime/scheduler.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-04-scheduler-design.md)。

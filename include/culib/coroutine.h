@@ -69,6 +69,7 @@ task_state* make_coroutine_task(F&& body, std::size_t stack_size,
 // join/detach 须在创建它的 vCPU 上、该 vCPU 关闭前调用。
 // 构造失败抛异常（无异常构建终止）；空句柄不能 join/detach。
 // 未 join/detach 就析构是误用；协程仍是协作式调度，不创建系统线程。
+// 栈大小固定，release 构建里栈溢出不会被检测，见 default_stack_size。
 class coroutine {
 public:
     coroutine() noexcept : task_(0) {}
