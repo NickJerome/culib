@@ -192,6 +192,9 @@ result<std::size_t> socket::read(void* buf, std::size_t len) {
 
 ### 6.1 epoll：三行的那一边
 
+> **2026-10-12 起 epoll 和 kqueue 都改为接管 fd 时用边沿触发登记一次**（epoll 的 `EPOLLET`、kqueue 的 `EV_CLEAR`），等待时不再登记和撤销兴趣。原因和测量见[实现说明](../../implementation-notes.md#io_engine_linuxcpp)。下面是当时的记录。
+
+
 | 动作 | 做法 |
 | --- | --- |
 | 建 | `epoll_create1(EPOLL_CLOEXEC)` |
@@ -214,6 +217,9 @@ const ssize_t n = (req->direction == io_read)
 fd 必须是非阻塞的，否则「报了可读、读到一半阻塞住」会把整个 vCPU 卡死。**这一期不替调用方设 `O_NONBLOCK`**——那是 `net` 创建句柄时的事，引擎只在 debug 下断言。
 
 ### 6.2 kqueue：两条独立的过滤器
+
+> **2026-10-12 起 epoll 和 kqueue 都改为接管 fd 时用边沿触发登记一次**（epoll 的 `EPOLLET`、kqueue 的 `EV_CLEAR`），等待时不再登记和撤销兴趣。原因和测量见[实现说明](../../implementation-notes.md#io_engine_linuxcpp)。下面是当时的记录。
+
 
 | 动作 | 做法 |
 | --- | --- |
@@ -424,6 +430,8 @@ CI 从 `3e59e3f` 起就红了，而那是这一期开工时的 HEAD。推上去�
 
 
 ### 9.7 POSIX 提交只在成功后入队（2026-10-10）
+
+> 2026-10-12 起登记改在接管时做一次，`io_prepare_wait` 和平台登记合并成共用的 `io_enqueue`，见 6.1 开头的说明。
 
 epoll 与 kqueue 共用 `io_prepare_wait` 检查句柄、尝试立即完成并准备 fd 槽；若已有同方向等待者，仍按 FIFO 排队。平台代码先向内核登记兴趣，成功后才链接请求并增加 pending，因此不再维护“先入队、登记失败再撤回”的中间状态。引擎由所属 vCPU 单线程驱动，登记与入队之间不会消费事件，入队本身也不分配或失败。
 

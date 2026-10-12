@@ -92,7 +92,14 @@ int main() {
 
     wavvix::scheduler_scope runtime;
 #if !defined(_WIN32)
-    if (!wavvix::detail::scheduler_adopt(0)) return 19;
+    // 先接管一个句柄，让 vCPU 把引擎建好，下面注入的失败才落在唤醒源的分配上。用管道不用
+    // fd 0：接管要把 fd 真的登记进 epoll，标准输入可能是 epoll 不支持的普通文件或 /dev/null。
+    int engine_pipe[2];
+    if (::pipe(engine_pipe) != 0) return 19;
+    const bool adopted = wavvix::detail::scheduler_adopt(engine_pipe[0]);
+    ::close(engine_pipe[0]);
+    ::close(engine_pipe[1]);
+    if (!adopted) return 19;
     fail_after = 1;
     wavvix::detail::remote_waker* const rejected_waker =
         wavvix::detail::scheduler_remote_prepare();

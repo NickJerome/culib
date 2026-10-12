@@ -153,8 +153,8 @@ public:
             right = no_handle();
             return;
         }
-        // 两个句柄在第一次参与 I/O 之前先交给引擎。POSIX 两个后端这一步什么都不做，
-        // IOCP 要靠它做完成端口的一次性关联，见 io_engine.h。
+        // 两个句柄在第一次参与 I/O 之前先交给引擎：epoll / kqueue 在这里用边沿触发登记，
+        // IOCP 在这里关联完成端口，见 io_engine.h。
         if (!wavvix::detail::scheduler_adopt(left) || !wavvix::detail::scheduler_adopt(right)) {
             close_handle(left);
             close_handle(right);

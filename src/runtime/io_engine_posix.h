@@ -18,21 +18,16 @@
 namespace wavvix {
 namespace detail {
 
-// 登记状态用两个与后端无关的位，epoll 那边再翻成 EPOLLIN / EPOLLOUT，
-// kqueue 那边翻成 EVFILT_READ / EVFILT_WRITE。
-const unsigned io_armed_read = 1;
-const unsigned io_armed_write = 2;
-
-// 一个 fd 上的等待状态，按 fd 下标存。POSIX 的 fd 是小整数而且内核总是分配最小可用
+// 一个 fd 上的等待链，按 fd 下标存。POSIX 的 fd 是小整数而且内核总是分配最小可用
 // 值，所以下标表是 O(1) 且稳态下不分配——抄 Photon 的 _inflight_events（io/epoll.cpp）。
+// 内核那边的兴趣集在接管时就登记好了读写两个方向，这里不再记登记状态。
 struct io_fd_slot {
     io_request* readers;    // 等读的，先来先服务
     io_request* writers;
-    unsigned armed;         // io_armed_read / io_armed_write 的组合。0 就是没登记
 };
 
 inline io_fd_slot io_empty_slot() {
-    const io_fd_slot empty = {0, 0, 0};
+    const io_fd_slot empty = {0, 0};
     return empty;
 }
 
@@ -223,29 +218,58 @@ inline bool io_try_now(io_request& request) {
     return true;
 }
 
-// 返回空指针表示请求已完成或失败；否则准备等待位置，但尚未入队。
-inline io_fd_slot* io_prepare_wait(io_fd_table& slots, io_request& request) noexcept {
+// 先试一次，做不了就排到这个 fd 这个方向的队尾。返回 true 表示排上了，调用方应当挂起；
+// false 表示已经有结果（完成或失败），结果写在 request 里。
+//
+// 同方向已经有人在排队时不试：先来先服务，免得后来的抢走前面那个在等的数据。
+// 不试也不会漏：边沿触发下，队首等的那次事件还会来，到时候一路做到 EAGAIN。
+inline bool io_enqueue(io_fd_table& slots, std::size_t& pending, io_request& request) noexcept {
     if (request.handle < 0) {
         request.transferred = -1;
         request.failure = EBADF;
-        return 0;
+        return false;
     }
+
     const std::size_t index = static_cast<std::size_t>(request.handle);
-    if ((index >= slots.size() ||
-         !(request.direction == io_read ? slots[index].readers : slots[index].writers)) &&
-        io_try_now(request)) return 0;
+    const bool queued = index < slots.size() &&
+        (request.direction == io_read ? slots[index].readers : slots[index].writers) != 0;
+    if (!queued && io_try_now(request)) {
+        return false;
+    }
     if (!slots.ensure(index)) {
         request.transferred = -1;
         request.failure = ENOMEM;
-        return 0;
+        return false;
     }
-    return &slots[index];
+
+    io_fd_slot& slot = slots[index];
+    request.next = 0;
+    io_request** tail = request.direction == io_read ? &slot.readers : &slot.writers;
+    while (*tail) {
+        tail = &(*tail)->next;
+    }
+    *tail = &request;
+    ++pending;
+    return true;
+}
+
+// 把超时的请求从等待链上摘掉。摘不到说明它已经完成了；两种情况都不会再有通知。
+inline void io_dequeue(io_fd_table& slots, std::size_t& pending, io_request& request) noexcept {
+    if (request.handle < 0 || static_cast<std::size_t>(request.handle) >= slots.size()) {
+        return;
+    }
+
+    io_fd_slot& slot = slots[static_cast<std::size_t>(request.handle)];
+    io_request*& head = request.direction == io_read ? slot.readers : slot.writers;
+    if (io_unlink(head, request) && pending != 0) {
+        --pending;
+    }
 }
 
 // 把链头那个请求做掉并交还给调度器。
 //
-// 返回 false 表示这一轮没完成：链空了，或者 EAGAIN。后者是水平触发下的虚假唤醒
-// （别的东西把数据抢走了，或者内核报早了），**请求留在链上继续等，不唤醒协程**。
+// 返回 false 表示这一轮没完成：链空了，或者 EAGAIN（别的东西先把数据拿走了）。
+// EAGAIN 时**请求留在链上，不唤醒协程**，等下一次边沿事件。
 inline bool io_complete(io_request*& head, io_completion_batch& completed,
                         std::size_t& pending) {
     if (!head) return false;
@@ -254,14 +278,23 @@ inline bool io_complete(io_request*& head, io_completion_batch& completed,
     return true;
 }
 
-// 把一个方向上所有等着的请求用同一个错误码收掉。给「这个 fd 整个废了」用——
-// 不收的话那些协程永远醒不过来，run() 也就永远不返回。
-inline void io_fail_chain(io_request*& head, int failure,
-                          io_completion_batch& completed, std::size_t& pending) {
-    while (head) {
-        head->transferred = -1;
-        head->failure = failure;
-        io_hand_back(head, completed, pending);
+// 一个 fd 来了读或写的事件。边沿触发下同一个状态不会再报第二次，所以把这个方向
+// 排着的请求一直做到 EAGAIN 或者队列空。错误和对端关闭不单独处理：直接做系统调用，
+// 让它把错误码或者 0 字节报出来。
+inline void io_dispatch(io_fd_table& slots, std::size_t& pending, int fd, bool readable,
+                        bool writable, io_completion_batch& completed) noexcept {
+    if (fd < 0 || static_cast<std::size_t>(fd) >= slots.size()) {
+        return;
+    }
+
+    io_fd_slot& slot = slots[static_cast<std::size_t>(fd)];
+    if (readable) {
+        while (io_complete(slot.readers, completed, pending)) {
+        }
+    }
+    if (writable) {
+        while (io_complete(slot.writers, completed, pending)) {
+        }
     }
 }
 

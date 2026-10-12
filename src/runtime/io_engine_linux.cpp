@@ -1,4 +1,5 @@
-// Linux 事件引擎：epoll。
+// Linux 事件引擎：epoll。每个 fd 在接管时用边沿触发登记读写两个方向，之后不再改兴趣集；
+// fd 关闭时内核自动把它从 epoll 里摘掉。
 
 #include "io_engine_eventfd_linux.h"
 #include "io_engine_posix.h"
@@ -42,33 +43,13 @@ int open_epoll() {
     return fd;
 }
 
-std::uint32_t epoll_mask(unsigned armed) {
-    std::uint32_t mask = 0;
-    if (armed & io_armed_read) mask |= static_cast<std::uint32_t>(EPOLLIN);
-    if (armed & io_armed_write) mask |= static_cast<std::uint32_t>(EPOLLOUT);
-    return mask;
-}
-
-// 把兴趣集同步到内核。armed 是想要的状态，slot.armed 是已登记的状态。
-// 失败时**不改 slot.armed**，这样下一次还会再试；留着一个过期的掩码只会多几次虚假
-// 唤醒，而那条路 io_complete() 的 EAGAIN 分支本来就接得住。
-void sync_interest(io_engine* engine, int fd, io_fd_slot& slot, unsigned armed) {
-    if (armed == slot.armed) return;
-
-    if (armed == 0) {
-        // ENOENT 当成成功：fd 可能已经被关掉了，而关闭会自动把它从 epoll 里摘掉。
-        if (::epoll_ctl(engine->epoll_fd, EPOLL_CTL_DEL, fd, 0) == 0 || errno == ENOENT) {
-            slot.armed = 0;
-        }
-        return;
-    }
-
+// 已经登记过（EEXIST）也算成功：同一个 fd 可以被接管不止一次。
+bool watch(int epoll_fd, int fd, std::uint32_t events) {
     epoll_event event;
     std::memset(&event, 0, sizeof event);    // 清零再填，别让未初始化的填充字节进系统调用
-    event.events = epoll_mask(armed);
+    event.events = events;
     event.data.fd = fd;
-    const int op = slot.armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
-    if (::epoll_ctl(engine->epoll_fd, op, fd, &event) == 0) slot.armed = armed;
+    return ::epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) == 0 || errno == EEXIST;
 }
 
 }  // namespace
@@ -99,11 +80,8 @@ bool io_engine_enable_notify(io_engine* engine) noexcept {
     if (engine->wake_fd >= 0) return true;
     const int fd = io_eventfd_open();
     if (fd < 0) return false;
-    epoll_event event;
-    std::memset(&event, 0, sizeof event);
-    event.events = EPOLLIN;
-    event.data.fd = fd;
-    if (::epoll_ctl(engine->epoll_fd, EPOLL_CTL_ADD, fd, &event) != 0) {
+    // 唤醒源用水平触发：每次醒来都把计数读空，不需要边沿语义
+    if (!watch(engine->epoll_fd, fd, static_cast<std::uint32_t>(EPOLLIN))) {
         const int failed = errno;
         ::close(fd);
         errno = failed;
@@ -119,8 +97,14 @@ bool io_engine_notify(io_engine* engine) noexcept {
 }
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
-    // epoll 每次操作单独登记，无需一次性关联。
-    return engine != 0 && handle >= 0;
+    if (!engine || handle < 0) {
+        return false;
+    }
+
+    const std::uint32_t events = static_cast<std::uint32_t>(EPOLLIN) |
+                                 static_cast<std::uint32_t>(EPOLLOUT) |
+                                 static_cast<std::uint32_t>(EPOLLET);
+    return watch(engine->epoll_fd, handle, events);
 }
 
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
@@ -129,24 +113,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         request.failure = EBADF;
         return false;
     }
-    io_fd_slot* const slot = io_prepare_wait(engine->slots, request);
-    if (!slot) return false;
-
-    const unsigned bit = request.direction == io_read ? io_armed_read : io_armed_write;
-    sync_interest(engine, request.handle, *slot, slot->armed | bit);
-    if (!(slot->armed & bit)) {
-        request.transferred = -1;
-        request.failure = errno;
-        return false;
-    }
-
-    // 引擎只由所属 vCPU 驱动；登记期间不会消费事件，成功后才让请求入队。
-    request.next = 0;
-    io_request** tail = request.direction == io_read ? &slot->readers : &slot->writers;
-    while (*tail) tail = &(*tail)->next;
-    *tail = &request;
-    ++engine->pending;
-    return true;
+    return io_enqueue(engine->slots, engine->pending, request);
 }
 
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
@@ -171,47 +138,27 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         return;
     }
 
+    const std::uint32_t failed = static_cast<std::uint32_t>(EPOLLERR) |
+                                 static_cast<std::uint32_t>(EPOLLHUP);
     for (int i = 0; i < ready; ++i) {
         const int fd = events[i].data.fd;
         if (fd == engine->wake_fd) {
             io_eventfd_drain(fd);
             continue;
         }
-        if (fd < 0 || static_cast<std::size_t>(fd) >= engine->slots.size()) continue;
-        io_fd_slot& slot = engine->slots[static_cast<std::size_t>(fd)];
+
+        // EPOLLERR / EPOLLHUP 两个方向都去做一次系统调用，让它把错误报出来
         const std::uint32_t got = events[i].events;
-
-        // EPOLLERR / EPOLLHUP 不单独处理：直接去做那次系统调用，让它去报错。
-        // 一条路比两条路少一个「错误该归谁」的判断，而错误码本来就是系统调用给的。
-        if (got & static_cast<std::uint32_t>(EPOLLIN | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(slot.readers, completed, engine->pending)) {}
-        }
-        if (got & static_cast<std::uint32_t>(EPOLLOUT | EPOLLERR | EPOLLHUP)) {
-            while (io_complete(slot.writers, completed, engine->pending)) {}
-        }
-
-        unsigned armed = 0;
-        if (slot.readers) armed |= io_armed_read;
-        if (slot.writers) armed |= io_armed_write;
-        sync_interest(engine, fd, slot, armed);
+        const bool readable = (got & (static_cast<std::uint32_t>(EPOLLIN) | failed)) != 0;
+        const bool writable = (got & (static_cast<std::uint32_t>(EPOLLOUT) | failed)) != 0;
+        io_dispatch(engine->slots, engine->pending, fd, readable, writable, completed);
     }
 }
 
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
-    const int fd = request.handle;
-    if (!engine || fd < 0) return true;
-    if (static_cast<std::size_t>(fd) >= engine->slots.size()) return true;
-
-    io_fd_slot& slot = engine->slots[static_cast<std::size_t>(fd)];
-    io_request*& head = (request.direction == io_read) ? slot.readers : slot.writers;
-    if (io_unlink(head, request)) {
-        if (engine->pending) --engine->pending;
-        unsigned armed = 0;
-        if (slot.readers) armed |= io_armed_read;
-        if (slot.writers) armed |= io_armed_write;
-        sync_interest(engine, fd, slot, armed);
+    if (engine) {
+        io_dequeue(engine->slots, engine->pending, request);
     }
-
     // 撤销是同步的；无论已完成还是刚摘除，都不会再有通知。
     return true;
 }

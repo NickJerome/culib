@@ -114,11 +114,12 @@ void io_engine_destroy(io_engine* engine) noexcept;
 bool io_engine_enable_notify(io_engine* engine) noexcept;
 bool io_engine_notify(io_engine* engine) noexcept;
 
-// 在句柄第一次参与 I/O 前调用；IOCP 在这里做一次性关联，POSIX 后端直接返回。
+// 在句柄第一次参与 I/O 前调用，**必须调**：IOCP 在这里关联完成端口；epoll / kqueue 在这里
+// 用边沿触发登记读写两个方向，之后不再改，没接管的 fd 永远等不到事件。
 // 持有句柄生命周期的调用方负责调用，不能按会被系统复用的句柄值缓存关联状态。
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 
-// 把这次操作挂上去。epoll / kqueue 登记兴趣，IOCP 提交真正的 I/O。
+// 把这次操作挂上去。epoll / kqueue 先试一次系统调用，做不了就排队等事件；IOCP 提交真正的 I/O。
 // **不挂起协程**——挂起是调度器的事。
 //
 // 返回 true 表示挂上了，调用方应当挂起当前协程；返回 false 表示挂不上去，
