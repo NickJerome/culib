@@ -141,6 +141,55 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
     EXPECT(wavvix::run(), ==, std::size_t(2));
 }
 
+// 服务重启后要能马上在原端口监听：服务端先关的连接会在这个端口上留下 TIME_WAIT。
+TEST(net, tcp_listener_rebinds_port_left_in_time_wait) {
+    const wavvix::result<endpoint> address = endpoint::parse("127.0.0.1", 0);
+    EXPECT(address.is_ok(), ==, true);
+    if (address.is_err()) {
+        return;
+    }
+    wavvix::result<tcp_listener> opened = tcp_listener::listen(address.value());
+    EXPECT(opened.is_ok(), ==, true);
+    if (opened.is_err()) {
+        return;
+    }
+    tcp_listener listener = std::move(opened).value();
+    const wavvix::result<endpoint> local = listener.local_endpoint();
+    EXPECT(local.is_ok(), ==, true);
+    if (local.is_err()) {
+        return;
+    }
+
+    wavvix::spawn([&] {
+        wavvix::result<tcp_stream> accepted = listener.accept(ms(1000));
+        EXPECT(accepted.is_ok(), ==, true);
+        if (accepted.is_ok()) {
+            accepted.value().close();   // 服务端先关：TIME_WAIT 留在服务端这一侧
+        }
+    }).value();
+    wavvix::spawn([&] {
+        wavvix::result<tcp_stream> connected = tcp_stream::connect(local.value(), ms(1000));
+        EXPECT(connected.is_ok(), ==, true);
+        if (connected.is_err()) {
+            return;
+        }
+        char byte = 0;
+        const wavvix::result<std::size_t> eof = connected.value().read(&byte, 1, ms(1000));
+        EXPECT(eof.is_ok(), ==, true);
+        if (eof.is_ok()) {
+            EXPECT(eof.value(), ==, std::size_t(0));
+        }
+    }).value();
+    EXPECT(wavvix::run(), ==, std::size_t(2));
+
+    listener.close();
+    wavvix::result<tcp_listener> again = tcp_listener::listen(local.value());
+    EXPECT(again.is_ok(), ==, true);
+    if (again.is_err()) {
+        EXPECT(again.error().to_string(), ==, std::string());
+    }
+}
+
 TEST(net, accepted_tcp_stream_can_move_to_worker_vcpu) {
     const wavvix::result<endpoint> address = endpoint::parse("127.0.0.1", 0);
     EXPECT(address.is_ok(), ==, true);

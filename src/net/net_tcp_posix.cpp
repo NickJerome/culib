@@ -87,6 +87,14 @@ result<tcp_listener> tcp_listener::listen(const endpoint& local, int backlog) {
         if (::setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, sizeof enabled) < 0)
             return detail::tcp_error("IPV6_V6ONLY", errno);
     }
+
+    // 服务重启后要能马上在原端口监听：上一次服务端先关的连接还在 TIME_WAIT，不设这个 bind 会失败。
+    // Windows 上 SO_REUSEADDR 允许别的套接字抢占端口，含义不同，所以只在 POSIX 设。
+    const int reuse = 1;
+    if (::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse) < 0) {
+        return detail::tcp_error("SO_REUSEADDR", errno);
+    }
+
     detail::socket_address address;
     detail::encode_address(local, address);
     if (::bind(socket, reinterpret_cast<const sockaddr*>(&address.storage),

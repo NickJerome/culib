@@ -55,3 +55,5 @@ Windows 默认会把发向不可达 UDP 端口的 ICMP 错误作为下一次接�
 - Windows：IOCP 上的 TCP `AcceptEx` / `ConnectEx` 和 UDP `WSASendTo` / `WSARecvFrom`。
 
 POSIX 套接字是非阻塞且 close-on-exec。Linux 发送抑制 `SIGPIPE`，macOS 设置 `SO_NOSIGPIPE`。DNS 不计入 `connect` 的超时。
+
+POSIX 上的 TCP 监听套接字设 `SO_REUSEADDR`：服务重启后可以马上在原端口监听，不用等上一次服务端先关的连接结束 TIME_WAIT（约 60 秒）；Go 和 libuv 在 Unix 上也这样做。Windows 上这个选项允许别的套接字抢占同一端口，含义不同，所以不设。
