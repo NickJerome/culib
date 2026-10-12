@@ -53,6 +53,12 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(len(result["diagnostics"]), 2)
         self.assertIn("scheduler.remote_join", result["diagnostics"][0])
 
+    def test_xmake_bootstrap_warnings_are_not_culib_diagnostics(self):
+        result = ci.scan("core/src/lua-cjson/lua-cjson/dtoa.c:3971:42: warning: 'j1' may be used uninitialized\n"
+                         "src/mem/pages_posix.cpp:21:72: error: 'O_CLOEXEC' was not declared in this scope\n")
+        self.assertEqual(len(result["diagnostics"]), 1)
+        self.assertIn("pages_posix.cpp", result["diagnostics"][0])
+
     def test_runner_annotations_remain_visible_in_full_logs(self):
         self.assertTrue(ci.scan("##[warning]Node.js 20 is deprecated")['diagnostics'])
 

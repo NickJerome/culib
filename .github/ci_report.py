@@ -28,6 +28,8 @@ DIAGNOSTIC = re.compile(
     r"(?:Address|Leak|Thread|Memory)Sanitizer:|runtime error:|culib mem: leak(?: report)?:|"
     r"Segmentation fault|core dumped|^wavvix::|terminate called|^what\(\):|\bFAIL [1-9]\d*\b|"
     r"\b[1-9]\d* test\(s\) failed|\[\s*\d+%\]:.*\bfailed\b", re.IGNORECASE)
+# setup-xmake builds xmake from source on Linux runners; warnings from its own tree are not ours.
+XMAKE_SOURCE = re.compile(r"^core/src/")
 
 
 def scan(raw):
@@ -45,6 +47,8 @@ def scan(raw):
         if echoing or line.startswith(("##[", "::", "culib-ci:")):
             continue
         line = re.sub(r"^(?:stdout|stderr):\s*", "", line).strip()
+        if XMAKE_SOURCE.match(line):
+            continue
         if re.match(r"\[\s*RUN\s*\]", line) and not re.search(r"-> (?:PASS|FAIL|SKIP)\b", line):
             current_test = "L{}: {}".format(number, line)
         elif re.match(r"\[\s*OK\s*\]", line) or SUMMARY.search(line):
