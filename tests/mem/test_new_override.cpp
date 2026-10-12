@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <limits>
 #include <new>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 int new_handler_calls = 0;
@@ -51,6 +53,16 @@ int main() {
     std::printf("new block: %p %u %u\n", static_cast<void*>(p),
                 static_cast<unsigned>(p[0]), static_cast<unsigned>(p[36]));
     delete[] p;
+
+    // 标准容器经全局 operator new 分配，也要落到本分配器上。string 构造后再追加：macOS 上
+    // libc++ 的一部分 string 成员编译在系统动态库里，那里的分配同样要走到这里
+    std::vector<int> numbers(1000, 7);
+    std::string text(100, 'x');
+    text.append(1000, 'z');
+    if (wavvix::mem::usable_size(numbers.data()) == 0 || wavvix::mem::usable_size(text.data()) == 0) {
+        std::fprintf(stderr, "std containers did not use culib allocator\n");
+        return 1;
+    }
 
     const std::size_t impossible = (std::numeric_limits<std::size_t>::max)();
     std::new_handler previous = std::set_new_handler(&release_new_handler);
