@@ -72,7 +72,7 @@ void example() {
 | `mem_test_security` | 14 种误用，每种在独立子进程里做一次，要求以 `abort` 结束并输出分配器的诊断 |
 | `mem_test_new_override` / `mem_test_malloc_override` | 全局替换后 `new` 和 `malloc` 一族确实走本分配器，失败处理符合标准 |
 
-本机验证过的配置：Linux（WSL2，内核 6.18）上 GCC 11.4 release / debug、Clang 14 debug、GCC 11.4 debug + ASan + UBSan；Windows 10 上 MSVC 2022 x64 release / debug。以上配置里全部分配器测试和 `culib_test` 都通过，只有 ASan 构建不跑 `mem_test_malloc_override`：ASan 自己接管 `malloc`，覆盖库替换不进去（CI 的 ASan 作业同样不跑它）。macOS 没有本机，等 CI。
+本机验证过的配置：Linux（WSL2，内核 6.18）上 GCC 11.4 release / debug、Clang 14 debug、GCC 11.4 debug + ASan + UBSan；Windows 10 上 MSVC 2022 x64 release / debug。以上配置里全部分配器测试和 `culib_test` 都通过，只有 ASan 构建不跑 `mem_test_malloc_override`：ASan 自己接管 `malloc`，覆盖库替换不进去（CI 的 ASan 作业同样不跑它）。macOS 没有本机，由 CI 覆盖：[`09f952d` 的运行](https://github.com/NickJerome/culib/actions/runs/38219833032)里 macOS arm64 和 x86_64 的 debug / release 都跑了全部分配器测试，均通过。
 
 ## 性能
 

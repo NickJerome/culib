@@ -267,7 +267,7 @@ mleak10、mleak100 各轮之间对所有分配器都差 ±30%，只看个大概�
 
 ## 没覆盖的
 
-- macOS 没有本机，只能等 CI；`mprotect` 那条路径在 Linux 上只有严格 overcommit 时才走，CI 的 Linux 机器默认不是严格模式，这条路径的实际覆盖来自 macOS。
-- Windows 只验证了正确性（MSVC 2022 x64 release / debug），没有测性能。MinGW 这次没有在本机编译。
+- macOS 没有本机，只有 CI 覆盖正确性（[`09f952d` 的运行](https://github.com/NickJerome/culib/actions/runs/38219833032)里 arm64 / x86_64 × debug / release 的分配器测试全部通过），没有测性能；`mprotect` 那条路径在 Linux 上只有严格 overcommit 时才走，CI 的 Linux 机器默认不是严格模式，这条路径的实际覆盖来自 macOS。
+- Windows 只验证了正确性（本机 MSVC 2022 x64 release / debug；CI 上 MSVC x64 跑全部分配器测试，MinGW x86_64 跑 `culib_test` 和 `mem_test_stress`），没有测性能。
 - 全套测量只在 Linux 上做过，而且宿主机同时在跑别的程序，单项各轮之间最多差 ±27%（lua），本实现最多 ±22%（alloc-testN），几何平均更稳。
 - glibc-thread 的峰值 RSS 是 mimalloc（关大页）的 1.6 倍（13.8 MB 对 8.9 MB），没有查原因。
