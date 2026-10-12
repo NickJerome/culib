@@ -28,7 +28,9 @@ struct early_allocation {
         block[0] = 0x31;
         block[36] = 0x79;
     }
-    ~early_allocation() { delete[] block; }
+    ~early_allocation() {
+        delete[] block;
+    }
 };
 early_allocation early;
 }
@@ -88,7 +90,9 @@ int main() {
                 wavvix::run();
             });
         }
-        for (int i = 0; i < 16; ++i) carriers[i].join();
+        for (int i = 0; i < 16; ++i) {
+            carriers[i].join();
+        }
     }
     if (completed.load() != 64) {
         std::fprintf(stderr, "scheduler lost work with global new/delete override\n");

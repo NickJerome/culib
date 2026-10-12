@@ -1,87 +1,88 @@
 # mem：通用分配器
 
-`wavvix::mem` 是 culib 自带的通用分配器，源码位于 `src/mem/allocator/`，随 `culib` 静态库一起编译，不依赖外部 EduMalloc 库。实现基于本地 EduMalloc v2；[原规格](archive/edumalloc/SPEC.md)、[设计](archive/edumalloc/docs/design.md)、[决策记录](archive/edumalloc/docs/decisions.md)和[基准记录](archive/edumalloc/docs/benchmark_results_2026-09-17.md)是导入时的历史记录，提到的守护页抽样已从当前实现移除。
+`wavvix::mem` 是 culib 自带的通用分配器，源码在 `src/mem/allocator/`，随 `culib` 静态库一起编译。目标是在不多占内存的前提下替换 `malloc` 和全局 `new/delete`，让 `std::vector`、`std::string` 这类容器的分配更快。结构、并发约定、取舍和测量见[实现说明](mem-internals.md)。
 
-协程栈也由 `wavvix::mem` 内部管理：`src/mem/stack_pool.*` 缓存每线程的栈，`stack.cpp` 使用共用的 `pages` 接口申请内存，并把最低一页设为不可访问。普通 `mem::alloc()` 不提供保护页；直接拿堆块当栈还会让协程首次使用时初始化整个通用分配器。因此栈池是 `mem` 内部的专用分配路径，不是公开的第二套分配器 API。最外层调度器作用域关闭或线程退出时清空缓存。
-
-分配器把小对象放在 64 KiB slice 中，按尺寸分桶，常见路径使用线程缓存；跨线程释放延后交还所属页。大对象从 arena 的连续 slice 分配。指针到页描述符的定位靠保留的虚拟地址窗口和旁路描述符数组，不在每个用户对象前放头部。当前代码的跨文件约束见[实现约束](mem-internals.md)，导入前的推导见上述历史设计文档。
+协程栈也由 `wavvix::mem` 管理：`src/mem/stack_pool.*` 缓存每个线程的栈，`stack.cpp` 用共用的 `pages` 接口申请内存，并把最低一页设成不可访问。普通的 `mem::alloc()` 不提供保护页，所以栈池是 mem 内部的专用路径，不是第二套公开分配接口。最外层调度器作用域关闭或线程退出时清空缓存。
 
 ## 普通使用
 
-64 位 Linux、macOS、Windows 包含 `<culib/mem.h>` 并链接 `culib`：
+64 位 Linux、macOS、Windows 上包含 `<culib/mem.h>` 并链接 `culib`：
 
 ```cpp
 #include <culib/mem.h>
 
 void example() {
     void* p = wavvix::mem::alloc(128);
-    if (!p) return;                    // 分配失败返回空指针
+    if (!p) {
+        return;   // 分配失败返回空指针
+    }
+
     wavvix::mem::free(p);
 }
 ```
 
-还提供 `calloc`、`realloc`、`aligned_alloc`、`usable_size` 和 `collect`。分配与释放必须使用同一家族；系统 `malloc` 得到的指针不能交给 `mem::free`。分配器实现与内部测试共用的声明位于 `src/mem/allocator/mem_core.h`，不作为公共头文件安装。
+还提供 `calloc`、`realloc`、`aligned_alloc`、`usable_size` 和 `collect`，契约写在头文件里，也见 [API 参考](../api.md)。分配和释放必须是同一家族：系统 `malloc` 得到的指针交给 `mem::free` 会被当成误用（见下文）。
 
 ## 替换 `malloc/new`
 
-- Linux：构建 `culib_malloc_override`，在程序启动时用 `LD_PRELOAD=/absolute/path/libculib_malloc_override.so` 加载。它覆盖 `malloc/free/calloc/realloc`、相关对齐入口及全局 `new/delete`。也可以把该共享库作为显式链接依赖，集成测试采用这种方式。进程内不要同时加载其他 malloc 覆盖库。
-- macOS/Windows：依赖 `culib_new_override` 对象目标，可让程序中的全局 `new/delete` 使用该分配器。MSVC 动态 UCRT 的 `malloc/free` 调用不能靠一个静态库可靠地全进程替换；Windows 上需要 C 风格分配时使用显式 `mem::alloc/free`。不要把这个对象目标和另一套 `new/delete` 覆盖同时链接。
+- Linux：构建 `culib_malloc_override`，程序启动时用 `LD_PRELOAD=/绝对路径/libculib_malloc_override.so` 加载。它覆盖 `malloc/free/calloc/realloc`、对齐分配的几个入口（`aligned_alloc`、`posix_memalign`、`memalign`、`valloc`、`pvalloc`）和 `malloc_usable_size`；C++ 的 `operator new/delete` 由 libstdc++ 实现，内部调用的就是 `malloc/free`，所以也走本分配器，`new_handler` 和 `bad_alloc` 的行为照旧。这个共享库只依赖 libc，加载进 C 程序不会带进 libstdc++，只导出上面这些 C 入口。也可以把它作为显式链接依赖，集成测试就是这样做的。进程里不要同时加载别的 malloc 覆盖库。
+- macOS / Windows：依赖 `culib_new_override` 对象目标，程序里的全局 `new/delete` 就会用这个分配器。MSVC 动态 UCRT 的 `malloc/free` 没法靠一个静态库可靠地全进程替换；Windows 上需要 C 风格分配时，显式调用 `mem::alloc/free`。不要把这个对象目标和另一套 `new/delete` 覆盖同时链接。
 
-普通 `culib` 依赖会提供分配器 API，但不会悄悄覆盖进程全局符号，也不会在默认构建中编译两个覆盖目标。全局替换由上述目标显式启用，避免与其他库的分配/释放族混用。
+普通的 `culib` 依赖只提供分配接口，不会悄悄覆盖进程的全局符号，默认构建也不编译这两个覆盖目标。全局替换要显式选择，避免和别的库的分配、释放家族混用。
 
-`wavvix::mem::aligned_alloc(alignment, size)` 接受任意大小。Linux 符号覆盖中的 C11 `aligned_alloc` 则要求 `size` 是 `alignment` 的整数倍；`memalign` 和 `valloc` 仍接受任意大小。
+`wavvix::mem::aligned_alloc(alignment, size)` 接受任意大小。Linux 符号覆盖里的 C11 `aligned_alloc` 则按标准要求 `size` 是 `alignment` 的整数倍；`memalign` 和 `valloc` 仍然接受任意大小。
 
-覆盖后的 `new` / `new[]` 遵循 `std::new_handler`：分配失败时先调用已安装的处理器；没有处理器时抛出 `std::bad_alloc`（关闭异常的构建会终止）。`std::nothrow` 形式同样调用处理器，最终失败时返回空指针；处理器抛出的异常不会越过 `noexcept` 入口。
+`culib_new_override` 覆盖后的 `new` / `new[]` 遵循 `std::new_handler`：分配失败时先调用已安装的处理器；没有处理器时抛出 `std::bad_alloc`（关闭异常的构建会终止）。`std::nothrow` 形式同样调用处理器，最终失败时返回空指针；处理器抛出的异常不会越过 `noexcept` 入口。
+
+## 内存怎么占、怎么还
+
+- 地址空间按 64 MiB 的 chunk 保留，用到哪里提交哪里。保留的是**虚拟地址**，不是物理内存；小程序只碰得到第一个 chunk 的开头。第一次分配要 128 MiB 的虚拟地址余量（先多映射一倍，找出对齐的位置）；实测 `ulimit -v 256 MiB` 下正常启动。
+- 8 KiB 以内的块放在 64 KiB 的页里，8–64 KiB 的块放在 512 KiB 的页里，每个线程一个堆；更大的块直接占连续的 64 KiB slice；超过约 64 MiB 的块单独保留一段地址，释放时立刻还给系统，下次分配重新映射、重新缺页（glibc 对 32 MiB 以上、jemalloc 对 8 MiB 以上的块也是这样）。需要反复使用这么大的缓冲区时，留着它复用，例如 `std::vector` 只 `clear()` 不释放。
+- 空出来的 slice 至少过 1 秒，在之后的分配或释放里还给系统；`collect()` 马上还。超大块释放时立刻还。每个线程在每个尺寸档最多留一个空页，免得分配、释放交替时反复换页，每 1024 次慢路径还掉一次；线程退出时全部还掉。
+- 大块 `calloc` 拿到的如果全是新提交的 slice，就不再清零，也就不会把整块拖进物理内存。
+- Linux 默认允许 overcommit：保留下来的地址空间直接可读写，归还用 `MADV_DONTNEED`，全程不改映射。`vm.overcommit_memory=2`（严格模式）时自动改为用 `mprotect` 提交、重新映射成 `PROT_NONE` 来归还，提交额度只按实际用量记，归还时退回；macOS 也走这条路径。Windows 用 `VirtualAlloc` / `VirtualFree` 提交和解除提交。不需要任何配置或环境变量。
+
+## 误用检查
+
+释放时（`free`，以及 `realloc` 交出的旧块）检查下面几种误用，release 构建同样检查：打印一行 `culib mem: fatal: <原因> ptr=0x...` 后 `abort`，Windows 上退出码是 3。
+
+| 误用 | 怎么发现 |
+| --- | --- |
+| 不是本分配器给出的指针：栈地址、系统 `malloc` 的块、野指针 | 每 64 MiB 地址一位的位图（512 KiB，在静态区里，用到的部分才占物理内存）标出所有 chunk 和超大块的起点 |
+| 块中间的地址 | 地址相对页起点的偏移必须正好落在某个块的起点上 |
+| 页已经还掉之后再释放里面的块；大块、超大块的重复释放 | 页还掉时描述符标记为已归还 |
+| 小块重复释放 | 释放时在块的第二个字写入一个随机值、分配时清零，再次释放时还是它就是重复释放（glibc 的 tcache 也这样查） |
+
+代价是每一对分配、释放多执行约 24 条指令，几乎全花在后两项上；在只做小块分配、释放的测试上，这让用时多出 2–18%（测量见实现说明）。
+
+查不出来的：块释放后又被写坏（释放后写），两个线程同时释放同一块，块释放后又被分配出去、再用旧指针释放一次。查这些用 ASan。
 
 ## 平台与验证
 
-当前实现限 64 位 Linux、macOS 和 Windows；Windows x86 暂无该模块。无需配置环境变量。首次分配时尝试保留 1 TiB 的**虚拟地址**窗口，失败时逐级减小到 4 GiB；这不等于消耗 1 TiB 物理内存。首个 arena 为 64 MiB，空间不足时自动增长。归还给 arena 的普通页延迟 1 秒后在分配慢路径释放物理内存，`collect()` 主动回收；大于 8 MiB 的块释放时立即归还。页密钥始终启用，arena 按需提交物理内存。
+当前限 64 位 Linux、macOS 和 Windows；Windows x86 没有这个模块。
 
-Windows MSVC x64、Linux x86_64/arm64 和 macOS arm64/x86_64 的 debug、release 构建已通过[跨平台 CI](https://github.com/NickJerome/culib/actions/runs/37885351444)，包含分配器单元、压力、安全和 RSS 测试，以及全局 `new/delete` 覆盖测试；Linux 的 `malloc/new` 共享库覆盖也通过了计数测试。原 EduMalloc 基准数据属于 2026-09-17 的独立项目快照，**不是**这次 culib 集成后的性能结论。
+测试：
 
-`xmake` 的 `debug` 模式本身不启用 L2 canary 与释放后写入检查；这些检查由编译宏 `WAVVIX_MEM_DEBUG` 独立控制。CI 单独在 Linux、macOS、Windows 带该宏构建并运行测试，且要求全部 14 个安全注入用例检出、0 项跳过。
+| 目标 | 内容 |
+| --- | --- |
+| `mem_test_unit` | 各档尺寸的边界、超大块、`calloc` 清零与溢出、`realloc`、各种对齐、`usable_size`、`collect` 不动活块 |
+| `mem_test_stress` | 多线程随机分配释放、生产者与消费者跨线程释放、线程退出后内存回落、带着活块退出的页被接手、跨线程释放对齐块、退出回调之后再分配（POSIX） |
+| `mem_test_rss` | 释放并 `collect` 后常驻集回落到峰值的 55% 以下；大块 `calloc` 不把整块拖进常驻集 |
+| `mem_test_abandoned` | 带着活块退出的页进共享池、fork 出的子进程能回收、别的线程接手同一页不多提交内存 |
+| `mem_test_security` | 14 种误用，每种在独立子进程里做一次，要求以 `abort` 结束并输出分配器的诊断 |
+| `mem_test_new_override` / `mem_test_malloc_override` | 全局替换后 `new` 和 `malloc` 一族确实走本分配器，失败处理符合标准 |
 
-`test_security` 把每条非法操作放进独立子进程（POSIX 用 `fork`，Windows 重新启动测试程序）。父进程同时要求预期的 `SIGABRT`（Windows 为退出码 3）和带指针的 `culib mem: fatal:` 诊断；其他崩溃、正常退出或分配前置条件失败都判 FAIL，不能冒充检出。普通构建未启用的 canary 用例记 SKIP；只有写后重分配检测用例允许实现不检测时记 SKIP。常规测试只显示判定，手工执行 `mem_test_security --case double_free` 可查看原始诊断。
+本机验证过的配置：Linux（WSL2，内核 6.18）上 GCC 11.4 release / debug、Clang 14 debug、GCC 11.4 debug + ASan + UBSan；Windows 10 上 MSVC 2022 x64 release / debug。以上配置里全部分配器测试和 `culib_test` 都通过，只有 ASan 构建不跑 `mem_test_malloc_override`：ASan 自己接管 `malloc`，覆盖库替换不进去（CI 的 ASan 作业同样不跑它）。macOS 没有本机，等 CI。
 
-## 分配性能基准
+## 性能
 
-`mem_benchmark` 是单独的非默认构建目标，不进入 `culib`。它在同一个进程内交替测量 `mem::alloc/free` 和 `malloc/free`，每组先各预热一轮，再用相同种子的输入跑五轮并报告比值中位数。`small` 使用每线程 128 个槽位、8–8192 字节的随机块；`large` 使用 64 个槽位、64 KiB–4 MiB 的随机块。每次分配写首尾字节，释放前读回；计时包含随机数、访存和工作线程启动成本，**只用于比较这一组负载**。
+用 mimalloc-bench 的 21 项测试对比 glibc 和 mimalloc，结果和方法见[实现说明的测量一节](mem-internals.md#测量)。几何平均下，用时是 glibc 的 91%、jemalloc 的 89%、mimalloc（关闭透明大页）的 109%；峰值内存是 glibc 的 113%、jemalloc 的 87%、mimalloc 的 97%。多线程、内存用量反复涨落的负载（rptest）和 mimalloc 持平。只分配一点内存的小程序比 glibc 多占约 0.2 MB 常驻内存（jemalloc 多 2.2 MB）。
+
+`mem_benchmark` 是单独的非默认构建目标，不进入 `culib`。它在同一个进程里交替测量 `mem::alloc/free` 和 `malloc/free`，每组先各预热一轮，再用相同种子的输入跑五轮，报告比值的中位数。`small` 用每线程 128 个槽位、8–8192 字节的随机块；`large` 用 64 个槽位、64 KiB–4 MiB 的随机块。每次分配写首尾字节、释放前读回；计时包含随机数、访存和工作线程的启动，**只用来比较这一组负载**。
 
 ```bash
 xmake build mem_benchmark
 xmake run mem_benchmark small 1
 xmake run mem_benchmark small 4
 xmake run mem_benchmark large 1
-
-# Linux：用系统安装的实际路径替换下面的示例路径。
-LD_PRELOAD=/lib/x86_64-linux-gnu/libjemalloc.so.2 \
-  ./build/linux/x86_64/release/mem_benchmark small 1
-LD_PRELOAD=/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 \
-  ./build/linux/x86_64/release/mem_benchmark small 1
 ```
-
-2026-10-09 在 WSL2 / i7-12700 / GCC 11.4 release 上的一次五轮配对测量如下。这是小块内部指针校验加入前的记录。表中是 `mem` 耗时除以参照分配器耗时，低于 1 表示 `mem` 更快；jemalloc、tcmalloc 通过 `LD_PRELOAD` 替换 `malloc`。
-
-| 负载 | glibc | jemalloc | tcmalloc |
-| --- | ---: | ---: | ---: |
-| small，1 线程 | 0.23× | 0.95× | 2.18× |
-| small，4 线程 | 0.26× | 0.98× | 1.99× |
-| large，1 线程 | 0.36× | 0.25× | 0.63× |
-
-加入小块内部指针校验后，同机同命令重新做了五轮配对测量：`small` 的 1 线程 `mem/glibc` 中位比为 0.26×，4 线程为 0.28×。这是各自与同次运行的 glibc 比值；不要把两次运行的比值相除当成精确回归幅度。大块数据预热后明显改善，不能用它推断冷启动表现。RSS 与跨线程释放也不能从吞吐表推断。
-
-2026-10-10 在提交 `7dfbdcd` 上重新跑了当前版本（同一台 WSL2 / i7-12700 / GCC 11.4，release）。每格是一次运行中五轮配对的 `mem/参照分配器` 中位比；jemalloc 与 tcmalloc 用系统安装的库通过 `LD_PRELOAD` 加载。低于 1 表示本负载下 `mem` 较快。
-
-| 负载 | glibc | jemalloc | tcmalloc |
-| --- | ---: | ---: | ---: |
-| small，1 线程 | 0.25× | 1.02× | 2.33× |
-| small，4 线程 | 0.28× | 1.09× | 1.62× |
-| large，1 线程 | 0.40× | 0.26× | 0.60× |
-
-四线程对 tcmalloc 的五轮比值落在 1.19–2.31×，调度噪声明显，不能把 1.62× 当成稳定差距。大块负载第一轮的 `mem/glibc` 为 0.94×，后四轮为 0.34–0.42×；这是同一次运行里的状态差异，表中中位数不能代表冷启动。
-
-同一版本的 `mem_test_rss` 以 64 KiB 块触及 256 MiB 后全部释放，`collect()` 并等待回收，RSS 从峰值 265980 KiB 降到 3836 KiB；`calloc(1, 64 MiB)` 但只读首尾字节时，RSS 增量为 380 KiB。`mem_test_stress` 的跨线程释放、线程退出回收和 abandoned 页回收均通过，后两项的已提交字节从 0 KiB 回到 0 KiB。这些结果验证了该负载下的归还行为，不是与其他分配器的 RSS 对比。
-
-随后删除了仅供内部测试读取的每次分配/释放线程计数，并把覆盖测试改为直接检查块内容与复用。对照 `6176a7e`，同机 release 二进制按旧、新、新、旧顺序交替，各启动四次；每次仍取基准自身五轮的 `mem/glibc` 中位比。`small` 单线程旧版为 0.25–0.26×、新版为 0.23–0.25×；四线程旧版为 0.27–0.28×、新版四次均为 0.26×。这说明在本负载上去掉热路径记账有小幅收益，数据不足以推断其他负载或给出精确加速百分比。
-
-2026-10-09 又比较了描述符构造的冷启动成本：WSL2 / i7-12700 / GCC 11.4 release，每个版本各启动 40 次独立进程，按 ABBA 顺序交替测首次 `mem::alloc(64)`，并在调用前后读取 VmRSS。旧版 `399965d` 的耗时中位数为 53.9 µs、RSS 增量 408 KiB；当前的分批构造为 56.1 µs、412 KiB。此前在 arena 建立时一次构造全部描述符的 `622befc`，同法与分批版配对时是 100.2 µs、532 KiB，对照分批版的 62.8 µs、412 KiB。两组配对在不同批次，不能跨批次精确相除。`small` 单/四线程及 `large` 单线程的稳态配对测试未显示一致性退化；这个结论只覆盖上述负载。

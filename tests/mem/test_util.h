@@ -67,7 +67,9 @@ struct splitmix64 {
     uint64_t log_range(uint64_t lo, uint64_t hi) {
         /* 先选 2 的幂档位，再在档内均匀 */
         uint64_t bits = 0;
-        for (uint64_t v = hi; v > lo; v >>= 1) ++bits;
+        for (uint64_t v = hi; v > lo; v >>= 1) {
+            ++bits;
+        }
         uint64_t b = range(0, bits);
         uint64_t base = lo > 0 ? lo : 1;
         uint64_t low = base << b;

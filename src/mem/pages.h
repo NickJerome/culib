@@ -4,21 +4,20 @@
 
 namespace wavvix { namespace mem { namespace detail { namespace pages {
 
-static const std::size_t reservation_alignment = 64u * 1024;
-
 std::size_t page_size() noexcept;
 
-// Allocate readable/writable zero-filled pages; no allocator initialization.
+// 分配可读写、已清零的页，不经过分配器。
 void* allocate(std::size_t size) noexcept;
 bool release(void* address, std::size_t size) noexcept;
 
-// Reserve inaccessible address space, aligned to reservation_alignment.
-// Size must be a nonzero multiple of page_size(); failure returns null.
-void* reserve(std::size_t size) noexcept;
+// 保留地址空间，起点按 alignment 对齐（2 的幂，至少 64 KiB）；size 是页大小的整数倍。
+// 失败返回空。Linux 默认允许 overcommit，这时保留下来的空间已经可读写，第一次写才占物理内存。
+void* reserve(std::size_t size, std::size_t alignment) noexcept;
+// 让保留的页可读写。在 Linux 默认配置下什么都不做，所以不能用它撤销 protect。
 bool commit(void* address, std::size_t size) noexcept;
-// Discard contents and make pages inaccessible; recommit reads as zero.
+// 丢弃内容、归还物理内存，之后读到全零。在 Linux 默认配置下页仍然可读写。
 bool decommit(void* address, std::size_t size) noexcept;
-// Keep contents but deny access, e.g. a coroutine stack's guard page.
+// 保留内容但禁止访问，例如协程栈的保护页。
 bool protect(void* address, std::size_t size) noexcept;
 
 } } } } // namespace wavvix::mem::detail::pages

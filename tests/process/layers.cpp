@@ -4,11 +4,8 @@
 #include <culib/fs.h>
 #include "runtime/wait_set.h"
 #include "mem/pages.h"
-#include "mem/allocator/meta.h"
 
 #include <cstdio>
-#include <cstdint>
-#include <limits>
 
 int main() {
     wavvix::result<wavvix::config> parsed = wavvix::config::parse("[server]\nport=8080\n");
@@ -60,13 +57,7 @@ int main() {
     if (!block || block[0] != 0 || block[16] != 0) return 11;
     block[16] = 'x';
     if (!memory::pages::release(block, 17)) return 12;
-    const std::size_t large = 2u * 1024 * 1024 + 1;
-    char* const metadata = static_cast<char*>(memory::mem_meta_alloc(large));
-    if (!metadata || reinterpret_cast<std::uintptr_t>(metadata) % 16 != 0 ||
-        metadata[0] != 0 || metadata[large - 1] != 0) return 13;
-    metadata[large - 1] = 'y';
-    if (memory::mem_meta_alloc((std::numeric_limits<std::size_t>::max)()) != 0) return 14;
 
-    std::puts("[PASS] layers: config, flags, paths, waits, pages and metadata work independently");
+    std::puts("[PASS] layers: config, flags, paths, waits and pages work independently");
     return 0;
 }

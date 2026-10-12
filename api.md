@@ -1116,11 +1116,11 @@ void collect() noexcept;
 | `free(p)` | 释放本分配器返回的指针；空指针无操作 |
 | `calloc(count,size)` | 返回清零存储，乘法溢出或分配失败返回空指针 |
 | `realloc(p,size)` | 保留前部数据；失败保留原块。空指针等同 `alloc`；非空指针配零大小则释放并返回空指针 |
-| `aligned_alloc(alignment,size)` | 对齐须为非零二次幂；`size` 不要求是对齐倍数。非法或分配失败返回空指针 |
-| `usable_size(p)` | 查询有效块从用户指针起的可用字节数，可能大于请求；空指针返回 `0`。仅对本分配器的活块使用，不是通用指针验证工具 |
-| `collect()` | 主动回收当前线程缓存、已遗弃页和可归还的 arena 空闲页；不会释放仍在使用的块，也不会强行清空其他活线程的缓存 |
+| `aligned_alloc(alignment,size)` | 对齐须为非零二次幂，最大 32 MiB；`size` 不要求是对齐倍数。非法或分配失败返回空指针 |
+| `usable_size(p)` | 查询活块的可用字节数，可能大于请求；空指针、不是本分配器给出的地址和块中间的地址返回 `0` |
+| `collect()` | 马上把当前线程的空页、已退出线程留下的空页和空闲内存还给系统；不动仍在使用的块，也不动其他活线程的页。不调用时，空出来的内存至少 1 秒后在之后的分配或释放里归还 |
 
-允许跨线程释放，但必须同步同一对象的访问，分配与释放家族必须匹配。重复释放、内指针释放等误用可能诊断并终止。`realloc` 不承诺保留额外的过度对齐要求。
+允许跨线程释放，但必须同步同一对象的访问，分配与释放家族必须匹配。释放不是本分配器给出的指针、块中间的地址和重复释放，在 release 构建里同样打印一行 `culib mem: fatal:` 诊断后终止。`realloc` 不承诺保留额外的过度对齐要求。
 
 示例：扩容时保留旧指针以处理失败。
 
@@ -1150,11 +1150,11 @@ int main() {
 | xmake 目标 | 范围与接入 |
 | --- | --- |
 | `culib_new_override` | 支持的 64 位平台上的对象目标；应用添加 `add_deps("culib", "culib_new_override")`，覆盖全局 `new/delete` |
-| `culib_malloc_override` | Linux 共享库；`xmake build culib_malloc_override` 后，在进程启动时用 `LD_PRELOAD=/绝对路径/libculib_malloc_override.so ./app`，覆盖 C 分配入口和全局 `new/delete` |
+| `culib_malloc_override` | Linux 共享库；`xmake build culib_malloc_override` 后，在进程启动时用 `LD_PRELOAD=/绝对路径/libculib_malloc_override.so ./app`，覆盖 C 分配入口。C++ 的 `new/delete` 由 libstdc++ 转到 `malloc/free`，同样走本分配器；共享库只依赖 libc |
 
 一次只选一套全局覆盖，不能再链接另一套同名覆盖。Windows/macOS 的 `culib_new_override` 不等于替换全部 C `malloc/free`。Linux 覆盖中的 C11 `aligned_alloc` 按标准要求大小是对齐倍数，和上面的 `mem::aligned_alloc` 不同。
 
-宏 `WAVVIX_MEM_DEBUG` 在**构建分配器实现时**启用 canary 和释放后写入检查，单给消费方定义不生效；普通 xmake debug 模式不会自动启用它。详见 [docs/mem.md](docs/mem.md)。
+内存布局、归还策略、误用检查和测量见 [docs/mem.md](docs/mem.md)。
 
 <a id="time"></a>
 ## 时刻：`<culib/time.h>`
@@ -1469,7 +1469,6 @@ int main() {
 | `WAVVIX_NO_DEFER_KEYWORD` | 关闭 `defer`，保留 `WAVVIX_DEFER` |
 | `WAVVIX_NO_LOG_SHORT_NAMES` | 关闭 `LOG_*`，保留 `WAVVIX_LOG_*` |
 | `WAVVIX_NO_TEST_SHORT_NAMES` | 关闭 `TEST/EXPECT`，保留正式宏 |
-| `WAVVIX_MEM_DEBUG` | 编译分配器实现时启用额外内存检查；不是调用方的运行时开关 |
 
 `WAVVIX_NODISCARD` 是内部属性适配宏，使用方不应直接依赖或重新定义。协程 `init/shutdown`、手动 `resume`、文件监听、TLS、HTTP 等没有列入本文，因为当前没有相应公共接口；运行时生命周期使用 `scheduler_scope`。
 

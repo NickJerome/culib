@@ -6,7 +6,7 @@
 python .github/ci_report.py                         # 当前 HEAD 对应的 build.yml
 python .github/ci_report.py 38025351576              # 指定运行 ID，也可传完整运行 URL
 python .github/ci_report.py --sha origin/master      # 指定提交
-python .github/ci_report.py 38025351576 --job "allocator L2"
+python .github/ci_report.py 38025351576 --job "ASan"
 ```
 
 脚本读取指定运行的最新 attempt；用 `--attempt N` 检查重跑之前的结果。

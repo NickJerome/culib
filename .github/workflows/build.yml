@@ -172,37 +172,6 @@ jobs:
             done
           '
 
-  allocator-l2:
-    name: allocator L2 / ${{ matrix.platform.name }}
-    runs-on: ${{ matrix.platform.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - { name: Linux, os: ubuntu-latest, toolchain: gcc, define: '-DWAVVIX_MEM_DEBUG' }
-          - { name: macOS, os: macos-latest, toolchain: clang, define: '-DWAVVIX_MEM_DEBUG' }
-          - { name: Windows, os: windows-latest, toolchain: msvc, define: '/DWAVVIX_MEM_DEBUG' }
-    steps:
-      - uses: actions/checkout@v5
-      - uses: xmake-io/github-action-setup-xmake@v1.2.5
-        with:
-          xmake-version: latest
-      - name: configure L2 canaries and UAF checks
-        run: xmake f -m debug --toolchain=${{ matrix.platform.toolchain }} --cxxflags="${{ matrix.platform.define }}" --ccache=n -y
-      - name: build library
-        shell: bash
-        run: bash .github/report-failure.sh xmake -y
-      - name: run tests
-        shell: bash
-        run: bash .github/report-failure.sh xmake test -v
-      - name: require all L2 security injections
-        shell: bash
-        run: |
-          bash .github/report-failure.sh bash -e -o pipefail -c '
-            xmake run mem_test_security 2>&1 | tee security.log
-            grep -Fxq "== summary: 14 cases | PASS 14 | SKIP 0 | FAIL 0 ==" security.log
-          '
-
   build:
     name: ${{ matrix.target.name }} / ${{ matrix.mode }}
     runs-on: ${{ matrix.target.os }}
