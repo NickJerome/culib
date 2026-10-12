@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <culib/detail/macros.h>
+
 #include <cstddef>
 
 #if !(((defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__aarch64__))) || defined(_WIN64))
@@ -14,19 +16,22 @@ namespace mem {
 //
 // 释放时检查误用：不是本分配器给出的指针、块中间的地址、重复释放，打印一行
 // "culib mem: fatal: ..." 后 abort，release 构建同样检查。
-void* alloc(std::size_t size) noexcept;
+//
+// 返回新块的函数丢掉返回值时编译器会警告：alloc 的结果没人接就是泄漏，realloc 的
+// 结果没人接则原指针可能已经释放。
+WAVVIX_NODISCARD void* alloc(std::size_t size) noexcept;
 
 // 空指针什么都不做。
 void free(void* p) noexcept;
 
 // count * size 溢出时返回空指针。
-void* calloc(std::size_t count, std::size_t size) noexcept;
+WAVVIX_NODISCARD void* calloc(std::size_t count, std::size_t size) noexcept;
 
 // p 为空等同 alloc；size 为 0 时释放 p 并返回空指针。失败时 p 原样保留。
-void* realloc(void* p, std::size_t size) noexcept;
+WAVVIX_NODISCARD void* realloc(void* p, std::size_t size) noexcept;
 
 // alignment 必须是 2 的幂，最大 32 MiB，否则返回空指针；size 任意。
-void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept;
+WAVVIX_NODISCARD void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept;
 
 // 块实际可用的字节数。空指针、不是本分配器给出的地址、块中间的地址都返回 0。
 std::size_t usable_size(const void* p) noexcept;
