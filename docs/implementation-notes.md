@@ -50,7 +50,7 @@ wait() 实现的，在 wait() 里调它就是自己等自己。（这个坑是 P
 
 每根工作线程启动时都给自己的事件引擎打开内部的 `io_engine_enable_notify()`。别的线程用 `io_engine_notify()` 打断它的 `io_engine_wait()`：派来协程、跨线程唤醒、全局等待队列来了活、runtime 叫停，都走这一条。通知只打断等待，不增加 I/O 完成数，也不进入协程的 `park_token` 队列。
 
-Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败时运行时打印诊断后终止：东西已经放进对方的收件口，叫不醒那根线程就没有别的恢复办法。旧版 glibc 缺少 `<sys/eventfd.h>`，Linux 实现直接调用 `eventfd2`；当旧系统头文件也缺少系统调用号时，使用项目支持的 x86_64 / arm64 Linux 调用号。三个后端的通知在改成 runtime 之前已经过[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37874443895)；改成 runtime 以后还没有 CI 结果。
+Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败时运行时打印诊断后终止：东西已经放进对方的收件口，叫不醒那根线程就没有别的恢复办法。旧版 glibc 缺少 `<sys/eventfd.h>`，Linux 实现直接调用 `eventfd2`；当旧系统头文件也缺少系统调用号时，使用项目支持的 x86_64 / arm64 Linux 调用号。改成 runtime 以后，三个后端的通知由 [`60417e4` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38411545278) 验证。
 
 ## [`io_engine_posix.h`](../src/runtime/io_engine_posix.h)
 

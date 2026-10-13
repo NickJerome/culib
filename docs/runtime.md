@@ -150,4 +150,6 @@ Windows 上 `mem_test_security` 和 `mem_test_unit` 刚链接完就跑时会失�
 
 ThreadSanitizer 另外对两条测试报了 `std::condition_variable::wait_for` 的竞争：glibc 2.30 起带时限的等待走 `pthread_cond_clockwait`，GCC 11 的 libtsan 没有拦截它，看不到等待期间放开了锁。那两条测试用的是测试自己的 `std::mutex`，报告不涉及运行时。
 
-**没有覆盖的**：macOS（本机没有，kqueue 后端这次没改）、MinGW（本机没装）、GCC 4.8。这次改动还没有 CI 结果。
+[`60417e4` 的 CI](https://github.com/NickJerome/culib/actions/runs/38411545278) 24/24 通过：Linux x86_64 / arm64 的 GCC 与 Clang、macOS arm64 / x86_64、Windows MSVC x64 各 debug / release，GCC 4.8，MinGW x86_64，无异常构建，ASan + UBSan，公共头文件，以及作为源码依赖引入。`culib_test` 在 Linux 上 363 项、macOS 上 359 项、Windows 上 354 项；误用诊断 POSIX 20 条、Windows 19 条。
+
+**没有覆盖的**：ThreadSanitizer 只在本机跑过（CI 的 ThreadSanitizer 只查停止请求）；中文代码页（936）下不加 `/utf-8` 的 Windows 使用方。
