@@ -127,6 +127,7 @@
 - **公共类型的定义不能随语言标准变化**：culib 自己按 C++11 编译，使用方可以用更高标准。不要在高标准下别名到标准库对应物（如 `using string_view = std::string_view`），也不要只在高标准下给类增加成员；前者让公共函数签名不匹配，后者违反 ODR。跨标准转换使用两边定义相同的受约束构造模板。理由与实例见路线图 4.1。
 - **头文件**：使用 `#pragma once`；头文件中不写 `using namespace`。
 - **公共头文件存成带 BOM 的 UTF-8**（`include/` 下的全部 `.h`）。头文件里有中文注释，而使用方在非 UTF-8 代码页（如中文 Windows 的 936）下不加 `/utf-8` 编译时，MSVC 会对每个头文件报 C4819，开了 `/WX` 就是编译失败。**BOM 让文件自己说明编码，不要求使用方加任何标志**——culib 自己的 `set_encodings("utf-8")` 只管 culib 的编译单元，管不到使用方的。`src/` / `tests/` / `examples/` 不需要 BOM，它们只由 culib 自己的构建编译。CI 的 `headers` job 会拦。
+- **公共头文件里的字符串字面量只用 ASCII。** BOM 只管源文件怎么读，管不到字面量：MSVC 把字面量转成执行字符集，使用方不加 `/utf-8` 时就是系统代码页，代码页里没有的字符报 C4566，`/WX` 下编译失败。所以要给使用方看的中文诊断放进 `.cpp`，头文件只传一个枚举，例如 `sync.h` 的 `detail::channel_error`。注释不受影响。
 - **零警告，三个平台一致**：警告即错误（`xmake.lua` 在 culib 作为主工程时设 `set_warnings("allextra", "pedantic", "error")`，MSVC 上 `allextra` 就是 `/W4`）。被其他工程 `includes` 时不加 `error`，因为使用方的编译器版本不同，将来新增的警告不该打断他们的构建。
 
   MSVC 的 `/W4` 原先豁免（「只显示不拦」），因为**在 CI 第一次真正编译 Windows 代码之前，那些警告根本看不到、也就无法逐条排查**。Windows 侧全绿之后才纳入。这是「在正确的层解决问题」的一个具体形态：那条豁免不是偷懒，是在缺少 runner 的前提下唯一能做的事；前提变了就该撤掉。
@@ -189,6 +190,7 @@
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
+| 公共头文件的字符串字面量只用 ASCII | CI 的 `consumed-as-dependency` job：Windows 上的使用方不加 `/utf-8`，MSVC 按 runner 的代码页 1252 编译，`/WX` | 经 `culib.h` 包含到的全部头文件。**实际拦下过一次**：`6047a49` 里 `sync.h` 的 channel 诊断是中文字面量，两个 Windows 任务报 C4566 |
 | 关异常 / RTTI 可用 | `.github/workflows/build.yml` 的 `no-exceptions-rtti` job | [Linux GCC/Clang release CI](https://github.com/NickJerome/culib/actions/runs/37845192319)：库、测试和全部示例均在 `-fno-exceptions -fno-rtti` 下构建，测试通过 |
 | Windows 代码能编译并通过测试 | 本机交叉编译 + wine，以及 Windows CI | MinGW-w64 x86_64 运行全部测试并编译全部示例；2026-10-13 改成 runtime 之后本机没装 MinGW，还没有新结果。**MinGW 不能代替 MSVC**（头文件和警告集都不同），后者由独立 CI 任务覆盖 |
 | macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
@@ -282,4 +284,4 @@ g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc \
 
 「性能主张有依据」仍由人工检查设计文档里的测量和汇编对比；关闭异常 / RTTI 的验证已加入上面的 CI 门禁。
 
-**C4819 这一条 CI 抓不到真正的现场**：GitHub 的 windows runner 代码页是 UTF-8（65001），正是不会报 C4819 的那种。所以 `headers` job 拦的是「BOM 在不在」这个代理指标，而不是「MSVC 会不会报警」。真实验证要一台中文代码页的 Windows，目前没有。
+**C4819 这一条 CI 抓不到真正的现场**：GitHub 的 windows runner 上 MSVC 用的代码页是 1252（`6047a49` 那次运行的 C4566 诊断里写着），不是中文 Windows 的 936，所以这里不报 C4819，不能说明 936 下也不报。所以 `headers` job 拦的是「BOM 在不在」这个代理指标，而不是「MSVC 会不会报警」。真实验证要一台中文代码页的 Windows，目前没有。本机是 936，字面量的问题也复现不出来，要加 `/execution-charset:.1252` 才能复现 CI 的 C4566。

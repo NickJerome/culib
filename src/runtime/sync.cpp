@@ -88,6 +88,24 @@ bool hand_over(park_token*& head, park_token*& tail) {
     std::abort();
 }
 
+// 不在协程里就打印诊断后终止。
+void require_coroutine(const char* what) {
+    if (!detail::fiber::inside()) {
+        die(what);
+    }
+}
+
+const char* channel_message(detail::channel_error what) {
+    switch (what) {
+    case detail::channel_error::no_capacity: return "wavvix::channel 的容量至少为 1";
+    case detail::channel_error::send_outside_coroutine: return "wavvix::channel::send 只能在协程里调用";
+    case detail::channel_error::receive_outside_coroutine: return "wavvix::channel::receive 只能在协程里调用";
+    case detail::channel_error::send_after_close: return "wavvix::channel 已经关闭，不能再 send";
+    case detail::channel_error::closed_twice: return "wavvix::channel 重复关闭";
+    }
+    return "wavvix::channel 用错了";
+}
+
 // 带着等待者销毁会让那些协程永远挂着。
 void die_if_busy(const park_token* head, const char* what) {
     if (head) {
@@ -105,7 +123,7 @@ mutex::~mutex() {
 }
 
 void mutex::lock() {
-    detail::require_coroutine("wavvix::mutex::lock 只能在协程里调用");
+    require_coroutine("wavvix::mutex::lock 只能在协程里调用");
     park_token token;
     {
         std::lock_guard<std::mutex> state(state_);
@@ -129,7 +147,7 @@ bool mutex::try_lock() {
 }
 
 bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
-    detail::require_coroutine("wavvix::mutex::try_lock_for 只能在协程里调用");
+    require_coroutine("wavvix::mutex::try_lock_for 只能在协程里调用");
     park_token token;
     {
         std::lock_guard<std::mutex> state(state_);
@@ -168,7 +186,7 @@ condition_variable::~condition_variable() {
 }
 
 void condition_variable::wait(mutex& held) {
-    detail::require_coroutine("wavvix::condition_variable::wait 只能在协程里调用");
+    require_coroutine("wavvix::condition_variable::wait 只能在协程里调用");
     park_token token;
     // **先进队列再放锁**：顺序反过来的话，放锁之后到挂起之前的那一小段里，拿到锁的
     // 那一方可能已经 notify 过了，而我们还没进队列——那个通知就丢了。
@@ -182,7 +200,7 @@ void condition_variable::wait(mutex& held) {
 }
 
 bool condition_variable::wait_for(mutex& held, std::chrono::nanoseconds timeout) {
-    detail::require_coroutine("wavvix::condition_variable::wait_for 只能在协程里调用");
+    require_coroutine("wavvix::condition_variable::wait_for 只能在协程里调用");
     if (timeout.count() <= 0) {
         return false;
     }
@@ -259,13 +277,13 @@ void channel_waiters::wake_everyone() {
     }
 }
 
-void channel_misuse(const char* what) {
-    die(what);
+void channel_misuse(channel_error what) {
+    die(channel_message(what));
 }
 
-void require_coroutine(const char* what) {
+void channel_require_coroutine(channel_error what) {
     if (!fiber::inside()) {
-        die(what);
+        channel_misuse(what);
     }
 }
 

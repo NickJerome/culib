@@ -37,9 +37,20 @@ private:
     park_token* senders_tail_;
 };
 
-[[noreturn]] void channel_misuse(const char* what);
-// 不在协程里就打印诊断后终止。
-void require_coroutine(const char* what);
+// channel 的误用。诊断文字在 sync.cpp 里：头文件里的中文字符串字面量按使用方的代码页编译，
+// MSVC 在 1252 这类代码页下报 C4566，开了 /WX 就编译不过。
+enum class channel_error {
+    no_capacity,
+    send_outside_coroutine,
+    receive_outside_coroutine,
+    send_after_close,
+    closed_twice
+};
+
+// 打印对应的诊断后终止。
+[[noreturn]] void channel_misuse(channel_error what);
+// 不在协程里就 channel_misuse(what)。
+void channel_require_coroutine(channel_error what);
 
 }  // namespace detail
 
@@ -118,18 +129,18 @@ public:
     // capacity 至少为 1；为 0 打印诊断后终止。
     explicit channel(std::size_t capacity) : capacity_(capacity), closed_(false) {
         if (capacity == 0) {
-            detail::channel_misuse("wavvix::channel 的容量至少为 1");
+            detail::channel_misuse(detail::channel_error::no_capacity);
         }
     }
 
     void send(T value) {
-        detail::require_coroutine("wavvix::channel::send 只能在协程里调用");
+        detail::channel_require_coroutine(detail::channel_error::send_outside_coroutine);
         std::unique_lock<std::mutex> held(state_);
         while (items_.size() == capacity_ && !closed_) {
             waiters_.wait_for_room(held);
         }
         if (closed_) {
-            detail::channel_misuse("wavvix::channel 已经关闭，不能再 send");
+            detail::channel_misuse(detail::channel_error::send_after_close);
         }
         items_.push_back(std::move(value));
         waiters_.wake_receiver();
@@ -137,7 +148,7 @@ public:
 
     // 取一个值放进 out，返回 true；通道已经关闭、剩下的也都取完了，返回 false。
     bool receive(T& out) {
-        detail::require_coroutine("wavvix::channel::receive 只能在协程里调用");
+        detail::channel_require_coroutine(detail::channel_error::receive_outside_coroutine);
         std::unique_lock<std::mutex> held(state_);
         while (items_.empty() && !closed_) {
             waiters_.wait_for_item(held);
@@ -155,7 +166,7 @@ public:
     void close() {
         std::lock_guard<std::mutex> held(state_);
         if (closed_) {
-            detail::channel_misuse("wavvix::channel 重复关闭");
+            detail::channel_misuse(detail::channel_error::closed_twice);
         }
         closed_ = true;
         waiters_.wake_everyone();
