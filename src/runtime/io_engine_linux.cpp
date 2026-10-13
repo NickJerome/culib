@@ -1,7 +1,6 @@
 // Linux 事件引擎：epoll。每个 fd 在接管时用边沿触发登记读写两个方向，之后不再改兴趣集；
 // fd 关闭时内核自动把它从 epoll 里摘掉。
 
-#include "io_engine_eventfd_linux.h"
 #include "io_engine_posix.h"
 
 #include <cerrno>
@@ -9,8 +8,8 @@
 #include <cstring>
 #include <new>
 
-#include <fcntl.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 namespace wavvix {
@@ -26,23 +25,6 @@ public:
 
 namespace {
 
-int open_epoll() {
-#if defined(EPOLL_CLOEXEC)
-    const int modern = ::epoll_create1(EPOLL_CLOEXEC);
-    if (modern >= 0 || errno != ENOSYS) return modern;
-#endif
-    const int fd = ::epoll_create(1);
-    if (fd < 0) return -1;
-    const int flags = ::fcntl(fd, F_GETFD);
-    if (flags < 0 || ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
-        const int code = errno;
-        ::close(fd);
-        errno = code;
-        return -1;
-    }
-    return fd;
-}
-
 // 已经登记过（EEXIST）也算成功：同一个 fd 可以被接管不止一次。
 bool watch(int epoll_fd, int fd, std::uint32_t events) {
     epoll_event event;
@@ -55,8 +37,10 @@ bool watch(int epoll_fd, int fd, std::uint32_t events) {
 }  // namespace
 
 io_engine* io_engine_create() noexcept {
-    const int epoll_fd = open_epoll();
-    if (epoll_fd < 0) return 0;
+    const int epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
+    if (epoll_fd < 0) {
+        return 0;
+    }
     io_engine* const engine = new (std::nothrow) io_engine();
     if (!engine) {
         ::close(epoll_fd);
@@ -76,10 +60,16 @@ void io_engine_destroy(io_engine* engine) noexcept {
 }
 
 bool io_engine_enable_notify(io_engine* engine) noexcept {
-    if (!engine) return false;
-    if (engine->wake_fd >= 0) return true;
-    const int fd = io_eventfd_open();
-    if (fd < 0) return false;
+    if (!engine) {
+        return false;
+    }
+    if (engine->wake_fd >= 0) {
+        return true;
+    }
+    const int fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (fd < 0) {
+        return false;
+    }
     // 唤醒源用水平触发：每次醒来都把计数读空，不需要边沿语义
     if (!watch(engine->epoll_fd, fd, static_cast<std::uint32_t>(EPOLLIN))) {
         const int failed = errno;
@@ -92,8 +82,19 @@ bool io_engine_enable_notify(io_engine* engine) noexcept {
 }
 
 bool io_engine_notify(io_engine* engine) noexcept {
-    if (!engine) return false;
-    return engine->wake_fd >= 0 && io_eventfd_notify(engine->wake_fd);
+    if (!engine || engine->wake_fd < 0) {
+        return false;
+    }
+    // EAGAIN 表示计数器满了，唤醒已经挂着。
+    return ::eventfd_write(engine->wake_fd, 1) == 0 || errno == EAGAIN;
+}
+
+int io_open_socket(int domain, int type, int protocol) noexcept {
+    return ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, protocol);
+}
+
+int io_accept_socket(int listener) noexcept {
+    return ::accept4(listener, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC);
 }
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
@@ -143,7 +144,8 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
     for (int i = 0; i < ready; ++i) {
         const int fd = events[i].data.fd;
         if (fd == engine->wake_fd) {
-            io_eventfd_drain(fd);
+            eventfd_t count = 0;
+            ::eventfd_read(fd, &count);   // 读空计数；非阻塞，读不到就算了
             continue;
         }
 

@@ -2,7 +2,6 @@
 #include <cerrno>
 #include <string>
 
-#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -13,25 +12,10 @@ namespace detail {
 
 result<std::uintptr_t> udp_bind_socket(const endpoint& local) {
     const int family = local.family() == address_family::ipv4 ? AF_INET : AF_INET6;
-    const int socket = ::socket(family, SOCK_DGRAM, IPPROTO_UDP);
-    if (socket < 0) return udp_error("socket", errno);
-    const int flags = ::fcntl(socket, F_GETFL, 0);
-    const int descriptor_flags = ::fcntl(socket, F_GETFD, 0);
-    if (flags < 0 || descriptor_flags < 0 ||
-        ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) < 0 ||
-        ::fcntl(socket, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) {
-        const int failed = errno;
-        ::close(socket);
-        return udp_error("fcntl", failed);
+    const int socket = wavvix::detail::io_open_socket(family, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket < 0) {
+        return udp_error("socket", errno);
     }
-#if defined(SO_NOSIGPIPE)
-    const int enabled = 1;
-    if (::setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof enabled) < 0) {
-        const int failed = errno;
-        ::close(socket);
-        return udp_error("setsockopt", failed);
-    }
-#endif
     if (family == AF_INET6) {
         const int enabled = 1;
         if (::setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, sizeof enabled) < 0) {

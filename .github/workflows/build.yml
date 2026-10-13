@@ -34,9 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # 官方 gcc:4.8.5 镜像：Debian 7、glibc 2.13，GCC 从源码编译。gcc:4.8 这个标签还是 schema 1 的清单，
+      # 新版 Docker 拉不了。按摘要固定。
       - name: build and test with GCC 4.8
         shell: bash
-        run: bash .github/report-failure.sh docker run --rm -v "$PWD:/workspace" -w /workspace quay.io/pypa/manylinux1_x86_64@sha256:506d34897aa3e6f41297bb05e721f92b6cebd23966b5c3a36b015ec7ba5c764d bash tests/legacy_gcc48.sh
+        run: bash .github/report-failure.sh docker run --rm -v "$PWD:/workspace" -w /workspace gcc:4.8.5@sha256:a515c9a2b8bf7d0f91470f7315be90862e249e6f4caa9f0d71898d3f2be8c280 bash tests/legacy_gcc48.sh
 
   # 两条开发约定原先只有人工流程、没有机制：公共头文件带 UTF-8 BOM、每个头文件能单独包含。
   # 都只需要一个 Linux runner，所以合成一个快速门禁，排在编译矩阵前面。

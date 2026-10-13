@@ -119,6 +119,12 @@ bool io_engine_notify(io_engine* engine) noexcept;
 // 持有句柄生命周期的调用方负责调用，不能按会被系统复用的句柄值缓存关联状态。
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 
+#if !defined(_WIN32)
+// 建一个引擎能驱动的套接字：非阻塞，exec 时关闭，macOS 上还关掉 SIGPIPE。
+// 失败返回 -1，原因在 errno。Windows 的套接字由调用方用 WSASocketW 建。
+int io_open_socket(int domain, int type, int protocol) noexcept;
+#endif
+
 // 把这次操作挂上去。epoll / kqueue 先试一次系统调用，做不了就排队等事件；IOCP 提交真正的 I/O。
 // **不挂起协程**——挂起是调度器的事。
 //

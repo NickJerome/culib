@@ -26,7 +26,7 @@
 - 分配器的实现只有 `allocator/allocator.cpp` 一个文件，平台设施（锁、线程退出、fork、时钟）在 `allocator/native_*.cpp`，内存页操作在 `mem/pages`；分配器不直接调用系统内存 API。
 - 协程栈向分配器要（`mem::aligned_alloc`），只有 debug 构建的保护页直接改 `mem/pages` 的页保护。
 - `runtime/scheduler.cpp` 是运行时：工作线程、全局等待队列、各线程的收件口、跨线程唤醒和阻塞调用的后台线程；定时器归 `wait_set`。
-- 配置解析、文件读取、应用 flags 已分开；路径字符串操作已脱离磁盘 I/O。同步原语只包含 park 接口（挂起、唤醒、超时放弃），网络只包含 `scheduler_bind` 和 `scheduler_io`。I/O 引擎只持有不透明的 park_token 指针。
+- 配置解析、文件读取、应用 flags 已分开；路径字符串操作已脱离磁盘 I/O。同步原语只包含 park 接口（挂起、唤醒、超时放弃），网络只包含 `scheduler_bind`、`scheduler_io` 和建套接字的 `io_open_socket`。I/O 引擎只持有不透明的 park_token 指针。
 
 ## 重构的验证方式
 

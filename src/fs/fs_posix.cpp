@@ -140,19 +140,10 @@ result<std::intptr_t> open_file(string_view path, file_mode mode) {
     int flags = mode == file_mode::read ? O_RDONLY : O_WRONLY | O_CREAT;
     if (mode == file_mode::truncate) flags |= O_TRUNC;
     if (mode == file_mode::append) flags |= O_APPEND;
-#ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
-#endif
     int fd;
     do { fd = ::open(native.get(), flags, 0666); } while (fd < 0 && errno == EINTR);
     if (fd < 0) return from_errno("打开", path, errno);
-#ifndef O_CLOEXEC
-    if (::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
-        const int code = errno;
-        ::close(fd);
-        return from_errno("设置文件句柄", path, code);
-    }
-#endif
     return static_cast<std::intptr_t>(fd);
 }
 
@@ -239,7 +230,7 @@ result<void> copy_file(string_view from, string_view to, overwrite mode) {
         return from_errno("检查复制源", from, code);
     }
 
-    const int flags = O_WRONLY | O_CREAT | (mode == overwrite::no ? O_EXCL : 0);
+    const int flags = O_WRONLY | O_CREAT | O_CLOEXEC | (mode == overwrite::no ? O_EXCL : 0);
     const int fd = ::open(native_to.get(), flags, 0666);
     if (fd < 0) {
         const int code = errno;

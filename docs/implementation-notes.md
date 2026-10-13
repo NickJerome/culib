@@ -50,7 +50,7 @@ wait() 实现的，在 wait() 里调它就是自己等自己。（这个坑是 P
 
 每根工作线程启动时都给自己的事件引擎打开内部的 `io_engine_enable_notify()`。别的线程用 `io_engine_notify()` 打断它的 `io_engine_wait()`：派来协程、跨线程唤醒、全局等待队列来了活、runtime 叫停，都走这一条。通知只打断等待，不增加 I/O 完成数，也不进入协程的 `park_token` 队列。
 
-Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败时运行时打印诊断后终止：东西已经放进对方的收件口，叫不醒那根线程就没有别的恢复办法。旧版 glibc 缺少 `<sys/eventfd.h>`，Linux 实现直接调用 `eventfd2`；当旧系统头文件也缺少系统调用号时，使用项目支持的 x86_64 / arm64 Linux 调用号。改成 runtime 以后，三个后端的通知由 [`60417e4` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38411545278) 验证。
+Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGGER`；Windows 直接向 IOCP 投递空完成项。通知失败时运行时打印诊断后终止：东西已经放进对方的收件口，叫不醒那根线程就没有别的恢复办法。改成 runtime 以后，三个后端的通知由 [`60417e4` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38411545278) 验证。
 
 ## [`io_engine_posix.h`](../src/runtime/io_engine_posix.h)
 
@@ -70,7 +70,27 @@ Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGG
 在请求入队前返回 `ENOMEM`，原有等待项保持有效。完成批次复用请求节点的链指针，
 不需要扩容容器。
 
+套接字也由引擎建：`io_open_socket()` 和 `io_accept_socket()` 在两个后端里各实现一份，网络层只管调用。Linux 用 `SOCK_NONBLOCK | SOCK_CLOEXEC` 和 `accept4`，一次系统调用就建好，也没有「建好了、还没设 CLOEXEC」的窗口让另一根线程的 fork + exec 把 fd 带进子进程。macOS 没有这两个标志和 `accept4`，建好以后补 4 次 `fcntl`，再设 `SO_NOSIGPIPE`。以前为了 GCC 4.8 那个 CI 用的 CentOS 5（glibc 2.5），Linux 上也是补 `fcntl`：一根协程连、一根协程接各 1000 次，`strace -c` 数到的系统调用从 16625 次降到 8622 次，其中 `fcntl` 从 8004 次降到 0（2026-10-13，WSL2，GCC 11.4 release）。
+
 `epoll_wait()` 与 `kevent()` 被信号打断后，会按单调时钟扣除已经等待的时间，再传入剩余超时；否则连续信号会反复重启完整时限，使一次限时 I/O 或睡眠远超调用方指定的时长。无限等待仍直接重试。
+
+### POSIX I/O 简化的验证
+
+2026-10-14 在本机对包含新增套接字标志测试的最终源码快照重新验证；以下是本地结果，不是先前 `eb397bc` 的 CI 结果：
+
+| 配置 | 结果 |
+| --- | --- |
+| WSL2 Ubuntu 22.04，GCC 11.4 / Clang 14，各 debug / release | 每配置 13 个测试目标、364 项单元测试通过，全部 22 个示例编译通过 |
+| GCC / Clang release，关闭异常与 RTTI | 每配置 13 个测试目标、357 项单元测试通过，全部示例编译通过 |
+| GCC ASan + UBSan，范围与 CI 相同 | 10 个测试目标、364 项单元测试通过，无 sanitizer 诊断 |
+| GCC ThreadSanitizer，运行时相关测试 | 87 项连跑 3 次，无诊断；仍排除 `runtime.an_idle_worker_takes_the_next_queued_coroutine` 和 `call_blocking.runs_calls_from_several_coroutines_side_by_side` 两项，原因见 [运行时验证](runtime.md#验证) |
+| 重复与并发 | 新 socket 测试连跑 100 次；debug / release 全套各 30 次；104 项运行时相关测试以 8 个进程并发跑 5 轮，全部通过 |
+| Windows MSVC 2022 x64 debug / release | 每配置 12 个测试目标、354 项单元测试通过，全部示例编译通过；新增 socket 测试仅在 POSIX 上运行 |
+| 公共头文件与 CI 报告脚本 | 29 个头文件的 BOM 和独立 C++11 编译检查通过；15 项报告脚本测试通过 |
+
+GCC 4.8.5 使用 CI 固定摘要的同一镜像，已核实为 Debian 7.10 / glibc 2.13。39 个库源文件、测试和 22 个示例均编译通过；GCC 4.8.5 产物在 WSL 的 glibc 2.35 上运行，364 项测试和三个停止请求场景通过。本机内核配置为 `CONFIG_LEGACY_VSYSCALL_NONE=y`，旧 glibc 的运行路径会段错误：容器内测试在 193 项通过后退出 139，不能记为全量通过；归档阶段也因此仅在本地使用 `ar rcsD` 避免写时间戳。以上证明旧编译器可构建，不替代旧 glibc 环境的完整 CI。
+
+macOS 只验证了从最终源码提取的套接字 helper 在 GCC / Clang 下的语法，使用 Linux 头文件并补 `SO_NOSIGPIPE` 常量；这不等于真实 SDK 编译或 kqueue 运行验证。当前这批改动尚未推送，macOS、Linux arm64、MinGW 及新镜像的完整 CI 结果仍待取得，不能沿用上一次绿色矩阵。
 
 ## [`io_engine_linux.cpp`](../src/runtime/io_engine_linux.cpp)
 

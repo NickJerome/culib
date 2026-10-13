@@ -25,6 +25,39 @@ public:
     std::size_t pending;    // 还在等的请求数
 };
 
+namespace {
+
+// macOS 没有 SOCK_NONBLOCK、SOCK_CLOEXEC 和 accept4，拿到 fd 以后再补；往断开的连接上写
+// 会收到 SIGPIPE，用 SO_NOSIGPIPE 关掉。补不上就关掉 fd，errno 留着原因。
+int prepare_socket(int fd) {
+    if (fd < 0) {
+        return -1;
+    }
+
+    const int enabled = 1;
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    const int descriptor_flags = ::fcntl(fd, F_GETFD, 0);
+    if (flags < 0 || descriptor_flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+        ::fcntl(fd, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0 ||
+        ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof enabled) < 0) {
+        const int failed = errno;
+        ::close(fd);
+        errno = failed;
+        return -1;
+    }
+    return fd;
+}
+
+}  // namespace
+
+int io_open_socket(int domain, int type, int protocol) noexcept {
+    return prepare_socket(::socket(domain, type, protocol));
+}
+
+int io_accept_socket(int listener) noexcept {
+    return prepare_socket(::accept(listener, 0, 0));
+}
+
 io_engine* io_engine_create() noexcept {
     const int kq = ::kqueue();
     if (kq < 0) return 0;

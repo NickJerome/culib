@@ -18,9 +18,7 @@ namespace {
 // 先映射成 PROT_NONE、用到再 mprotect。glibc、jemalloc、mimalloc 都读这个文件做同样的判断。
 #if defined(__linux__)
 char overcommit_mode() {
-    // 不加 O_CLOEXEC：GCC 4.8 那个 CI 环境的 glibc 2.5 没有它，mimalloc 读这个文件也不加。
-    // fd 读一个字节就关，最坏是别的线程恰好这时 fork + exec，新程序多拿到一个只读的 proc 文件
-    const int fd = ::open("/proc/sys/vm/overcommit_memory", O_RDONLY);
+    const int fd = ::open("/proc/sys/vm/overcommit_memory", O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         return '0';
     }

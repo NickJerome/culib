@@ -35,7 +35,9 @@
 #  endif
 #  include <windows.h>
 #else
+#  include <arpa/inet.h>
 #  include <fcntl.h>
+#  include <netinet/in.h>
 #  include <pthread.h>
 #  include <signal.h>
 #  include <sys/socket.h>
@@ -275,6 +277,24 @@ volatile sig_atomic_t interrupted_wait_signals = 0;
 void count_wait_signal(int) {
     ++interrupted_wait_signals;
 }
+
+// 引擎建的套接字要非阻塞（报了可读、真去读却阻塞住的话，整根工作线程就卡死了），
+// exec 时关闭（不然别的线程 fork + exec 会把连接带进子进程）；macOS 上还要关掉 SIGPIPE。
+bool engine_ready(int fd) {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    const int descriptor_flags = ::fcntl(fd, F_GETFD, 0);
+    if (flags < 0 || descriptor_flags < 0) {
+        return false;
+    }
+#  if defined(SO_NOSIGPIPE)
+    int no_sigpipe = 0;
+    socklen_t length = sizeof no_sigpipe;
+    if (::getsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, &length) != 0 || no_sigpipe == 0) {
+        return false;
+    }
+#  endif
+    return (flags & O_NONBLOCK) != 0 && (descriptor_flags & FD_CLOEXEC) != 0;
+}
 #endif
 
 }  // namespace
@@ -294,6 +314,44 @@ TEST(io_engine, fd_table_growth_preserves_waiters_on_failure) {
     EXPECT(slots.ensure(static_cast<std::size_t>(-1)), ==, false);
     EXPECT(slots.size(), ==, 16u);
     EXPECT(slots[7].readers, ==, &waiting);
+}
+
+// Linux 建的时候一次设好标志，macOS 建完再补，两边都由这一条检查。
+TEST(io_engine, opens_and_accepts_sockets_the_engine_can_drive) {
+    const int listener = wavvix::detail::io_open_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (!EXPECT(listener, >=, 0)) {
+        return;
+    }
+
+    sockaddr_in address;
+    std::memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t length = sizeof address;
+    const int client = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    int accepted = -1;
+    if (client >= 0 && ::bind(listener, reinterpret_cast<sockaddr*>(&address), length) == 0 &&
+        ::listen(listener, 1) == 0 &&
+        ::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) == 0 &&
+        ::connect(client, reinterpret_cast<sockaddr*>(&address), length) == 0) {
+        // 监听套接字是非阻塞的，连接还没进队列时会报 EAGAIN，等一会儿再接。
+        for (int attempt = 0; attempt < 1000 && accepted < 0; ++attempt) {
+            accepted = wavvix::detail::io_accept_socket(listener);
+            if (accepted < 0) {
+                std::this_thread::sleep_for(ms(1));
+            }
+        }
+    }
+
+    EXPECT(engine_ready(listener), ==, true);
+    if (EXPECT(accepted, >=, 0)) {
+        EXPECT(engine_ready(accepted), ==, true);
+        ::close(accepted);
+    }
+    if (client >= 0) {
+        ::close(client);
+    }
+    ::close(listener);
 }
 #endif
 

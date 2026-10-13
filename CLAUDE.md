@@ -258,16 +258,17 @@ MinGW **不能代替 MSVC**：头文件、`__declspec`、警告集都不同。�
 ```bash
 # 把 macOS 的 sys/event.h 里用到的那部分抄进桩里：struct kevent 的六个字段、
 # EV_SET 的七个参数、kevent() 的六个参数和 const 修饰、EVFILT_* / EV_* 常量。
+# 套接字 helper 还需要 Darwin 的 SO_NOSIGPIPE；Linux 的 sys/socket.h 没有它。
 mkdir -p /tmp/macos-shim/sys && $EDITOR /tmp/macos-shim/sys/event.h
 g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc \
-    -I/tmp/macos-shim -fsyntax-only src/runtime/io_engine_macos.cpp
+    -I/tmp/macos-shim -DSO_NOSIGPIPE=0x1022 -fsyntax-only src/runtime/io_engine_macos.cpp
 ```
 
 `-I` 的路径排在系统路径前面，所以 `#include <sys/event.h>` 会命中桩，而 `<sys/types.h>` 之类桩里没有的照常落到系统头文件上。**抄原型时去 SDK 文档或源码核对，别凭记忆**——桩写错了比没有桩更坏，它会让你以为验证过了。
 
 能抓到的：参数个数和顺序、字段名、类型不匹配、常量不存在、`const` 修饰不对。**抓不到**：宏的真实展开形式、字段的确切宽度、平台特有的 `#define`。所以这一步的定位和 MinGW 对 MSVC 一样——**把「从没编译过」变成「至少类型对」，不是把 CI 替掉。**
 
-配套的一招更管用：**让那个编不了的平台尽量少写新代码。** kqueue 后端把最容易写错的 `io_complete()`（`EINTR` 重做、`EAGAIN` 虚假唤醒、对端关闭报 0）抽到 `src/runtime/io_engine_posix.h` 和 epoll 共用，于是它独有的只剩「怎么登记兴趣」，未验证面小一大截。
+配套的一招更管用：**让那个编不了的平台尽量少写新代码。** kqueue 后端把最容易写错的 `io_complete()`（`EINTR` 重做、`EAGAIN` 虚假唤醒、对端关闭报 0）抽到 `src/runtime/io_engine_posix.h` 和 epoll 共用，于是它独有的只剩「怎么登记兴趣」和「建套接字时补哪些标志」，未验证面小一大截。
 
 **这条限制已经兑现过三次，而且是同一类错：伸手去拿平台专有、或者被 MSVC 弃用的 libc 函数。** 前两次在 `examples/` 里；第三次在 `src/` 里，一连红了三个提交才被发现——MinGW 不报 C4996，`log` 和 `config` 两期记下的 MinGW + wine 结果都是全过、零警告。
 

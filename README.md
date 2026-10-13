@@ -26,6 +26,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | macOS | Apple Clang（Xcode / Command Line Tools） | x86_64、arm64 |
 
 - 只支持 64 位：协程的换栈汇编只有 x86_64 和 arm64 两种，栈来自只支持 64 位的分配器，32 位目标在编译期报错。
+- Linux 需要 glibc 2.10、内核 2.6.28 以上（建套接字用了 `accept4` 和 `SOCK_CLOEXEC`）。CI 里最老的是 GCC 4.8 那个任务：Debian 7，glibc 2.13。
 - 常规 CI 使用托管 runner 的工具链，另有 GCC 4.8 专项构建与测试。VS2015、Clang 3.3 等旧版本尚未验证；C++11 语言要求不等于对所有 C++11 编译器版本的兼容承诺。
 - 构建工具：[xmake](https://xmake.io) 2.8.5 及以上（`xmake test` 自该版本起提供），推荐使用最新版。
 

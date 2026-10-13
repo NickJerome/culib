@@ -10,13 +10,16 @@
 #include <cstring>
 #include <limits>
 #include <new>
-#include <fcntl.h>
 
 #include <unistd.h>
 #include <sys/socket.h>
 
 namespace wavvix {
 namespace detail {
+
+// 接一个连接，接到的套接字和 io_open_socket 建的一样。失败返回 -1，原因在 errno。
+// 两个后端各实现一份：Linux 用 accept4 一次做完，macOS 接完再补。
+int io_accept_socket(int listener) noexcept;
 
 // 一个 fd 上的等待链，按 fd 下标存。POSIX 的 fd 是小整数而且内核总是分配最小可用
 // 值，所以下标表是 O(1) 且稳态下不分配——抄 Photon 的 _inflight_events（io/epoll.cpp）。
@@ -145,24 +148,15 @@ inline bool io_try_now(io_request& request) {
     if (request.operation == io_accept) {
         int accepted;
         for (;;) {
-            accepted = ::accept(fd, 0, 0);
-            if (accepted >= 0 || errno != EINTR) break;
-        }
-        if (accepted < 0 && io_would_block(errno)) return false;
-        if (accepted >= 0) {
-            const int flags = ::fcntl(accepted, F_GETFL, 0);
-            const int descriptor_flags = ::fcntl(accepted, F_GETFD, 0);
-            if (flags < 0 || descriptor_flags < 0 ||
-                ::fcntl(accepted, F_SETFL, flags | O_NONBLOCK) < 0 ||
-                ::fcntl(accepted, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) {
-                const int failed = errno;
-                ::close(accepted);
-                request.transferred = -1;
-                request.failure = failed;
-                return true;
+            accepted = io_accept_socket(fd);
+            if (accepted >= 0 || errno != EINTR) {
+                break;
             }
-            request.accepted = accepted;
         }
+        if (accepted < 0 && io_would_block(errno)) {
+            return false;
+        }
+        request.accepted = accepted;
         request.transferred = accepted < 0 ? -1 : 0;
         request.failure = accepted < 0 ? errno : 0;
         return true;

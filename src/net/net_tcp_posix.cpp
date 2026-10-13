@@ -6,7 +6,6 @@
 #include <string>
 #include <utility>
 
-#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -25,29 +24,8 @@ result<endpoint> endpoint_from_socket(int socket) {
 }
 
 int new_socket(address_family family) {
-    const int socket = ::socket(family == address_family::ipv4 ? AF_INET : AF_INET6,
-                                SOCK_STREAM, IPPROTO_TCP);
-    if (socket < 0) return -1;
-    const int flags = ::fcntl(socket, F_GETFL, 0);
-    const int descriptor_flags = ::fcntl(socket, F_GETFD, 0);
-    if (flags < 0 || descriptor_flags < 0 ||
-        ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) < 0 ||
-        ::fcntl(socket, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) {
-        const int failed = errno;
-        ::close(socket);
-        errno = failed;
-        return -1;
-    }
-#if defined(SO_NOSIGPIPE)
-    const int enabled = 1;
-    if (::setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof enabled) < 0) {
-        const int failed = errno;
-        ::close(socket);
-        errno = failed;
-        return -1;
-    }
-#endif
-    return socket;
+    const int domain = family == address_family::ipv4 ? AF_INET : AF_INET6;
+    return wavvix::detail::io_open_socket(domain, SOCK_STREAM, IPPROTO_TCP);
 }
 
 }  // namespace
@@ -123,16 +101,7 @@ result<tcp_stream> tcp_listener::accept(std::chrono::nanoseconds timeout) {
         if (request.accepted >= 0) ::close(request.accepted);
         return detail::tcp_error("accept", request.failure);
     }
-    const int socket = request.accepted;
-#if defined(SO_NOSIGPIPE)
-    const int enabled = 1;
-    if (::setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof enabled) < 0) {
-        const int failed = errno;
-        ::close(socket);
-        return detail::tcp_error("setsockopt", failed);
-    }
-#endif
-    tcp_stream stream(static_cast<std::uintptr_t>(socket));
+    tcp_stream stream(static_cast<std::uintptr_t>(request.accepted));
     return result<tcp_stream>(std::move(stream));
 }
 
