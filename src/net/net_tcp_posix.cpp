@@ -68,13 +68,13 @@ void close_socket(std::uintptr_t native) noexcept {
 void tcp_stream::close() noexcept {
     if (is_open()) detail::close_socket(native_);
     native_ = invalid_handle();
-    adopted_ = false;
+    owner_ = 0;
 }
 
 void tcp_listener::close() noexcept {
     if (is_open()) detail::close_socket(native_);
     native_ = invalid_handle();
-    adopted_ = false;
+    owner_ = 0;
 }
 
 result<tcp_listener> tcp_listener::listen(const endpoint& local, int backlog) {
@@ -111,10 +111,8 @@ result<endpoint> tcp_listener::local_endpoint() const {
 
 result<tcp_stream> tcp_listener::accept(std::chrono::nanoseconds timeout) {
     if (!is_open()) return make_error(error_kind::invalid_argument, "listener is closed");
-    if (!adopted_) {
-        if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(native_)))
-            return make_error(error_kind::io, "cannot adopt TCP listener");
-        adopted_ = true;
+    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
+        return make_error(error_kind::io, "cannot adopt TCP listener");
     }
     wavvix::detail::io_request request;
     request.operation = wavvix::detail::io_accept;
@@ -143,9 +141,9 @@ result<tcp_stream> tcp_stream::connect(const endpoint& peer,
     const int socket = new_socket(peer.family());
     if (socket < 0) return detail::tcp_error("socket", errno);
     tcp_stream stream(static_cast<std::uintptr_t>(socket));
-    if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(stream.native_)))
+    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(stream.native_), stream.owner_)) {
         return make_error(error_kind::io, "cannot adopt TCP stream");
-    stream.adopted_ = true;
+    }
     detail::socket_address address;
     detail::encode_address(peer, address);
     wavvix::detail::io_request request;

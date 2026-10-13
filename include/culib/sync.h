@@ -1,17 +1,49 @@
 ﻿#pragma once
 
-// 单个 vCPU 内的协程同步原语，不用于跨线程同步。
+// 协程同步原语。等待者和唤醒者可以在不同的工作线程上。
 
 #include <chrono>
 #include <cstddef>
+#include <deque>
+#include <mutex>
+#include <utility>
 
 namespace wavvix {
 
 namespace detail {
-struct park_token;
-}
 
-// 协程感知的互斥量。拿不到就挂起，**不占着 vCPU**。
+struct park_token;
+
+// channel 里和 T 无关的那一半：收、发两条等待队列。调用方持有 channel 的状态锁。
+class channel_waiters {
+public:
+    channel_waiters() : receivers_head_(0), receivers_tail_(0), senders_head_(0), senders_tail_(0) {}
+    ~channel_waiters();
+
+    // 排进对应的队列、放开 held、挂起，被叫醒后重新拿回 held。
+    void wait_for_item(std::unique_lock<std::mutex>& held);
+    void wait_for_room(std::unique_lock<std::mutex>& held);
+    void wake_receiver();
+    void wake_sender();
+    void wake_everyone();
+
+private:
+    channel_waiters(const channel_waiters&);
+    channel_waiters& operator=(const channel_waiters&);
+
+    park_token* receivers_head_;
+    park_token* receivers_tail_;
+    park_token* senders_head_;
+    park_token* senders_tail_;
+};
+
+[[noreturn]] void channel_misuse(const char* what);
+// 不在协程里就打印诊断后终止。
+void require_coroutine(const char* what);
+
+}  // namespace detail
+
+// 协程感知的互斥量。拿不到就挂起，**不占着工作线程**。持有者和等待者可以在不同的工作线程上。
 //
 // 公平：等待者按先来后到排队，`unlock()` 交给队首那个。所以不会饿死。
 class mutex {
@@ -19,13 +51,13 @@ public:
     mutex() : held_(false), head_(0), tail_(0) {}
     ~mutex();
 
-    // 拿锁。被别人持有就挂起，直到轮到自己。只能在协程里调。
+    // 拿锁。被别人持有就挂起，直到轮到自己。只能在协程里调用，否则打印诊断后终止。
     void lock();
 
-    // 拿不到就立刻回 false，**不挂起**。可以在协程外调。
+    // 拿不到就立刻回 false，**不挂起**。可以在协程外调用。
     bool try_lock();
 
-    // 最多等这么久。零或负时长只尝试一次；只能在协程里调。
+    // 最多等这么久。零或负时长只尝试一次。只能在协程里调用，否则打印诊断后终止。
     bool try_lock_for(std::chrono::nanoseconds timeout);
 
     void unlock();
@@ -34,53 +66,32 @@ private:
     mutex(const mutex&);
     mutex& operator=(const mutex&);
 
+    std::mutex state_;            // 保护下面三项：持有者和等待者可能在不同的工作线程上
     bool held_;
     detail::park_token* head_;    // 等待队列，先来先服务
-    detail::park_token* tail_;
-};
-
-// 计数信号量。常见用处是**给并发量封顶**：起 1000 根协程但只让 16 根同时去连数据库。
-class semaphore {
-public:
-    // initial 须非负；传入负数是编程错误，会打印诊断并终止。
-    explicit semaphore(std::ptrdiff_t initial);
-    ~semaphore();
-
-    void acquire();                                        // 没有就挂起
-    bool try_acquire();                                    // 没有就立刻回 false
-    // 零或负时长只尝试一次；只能在协程里调。
-    bool try_acquire_for(std::chrono::nanoseconds timeout);
-    // amount 须非负；计数溢出会打印诊断并终止。
-    void release(std::ptrdiff_t amount = 1);
-
-    std::ptrdiff_t count() const { return count_; }
-
-private:
-    semaphore(const semaphore&);
-    semaphore& operator=(const semaphore&);
-
-    std::ptrdiff_t count_;
-    detail::park_token* head_;
     detail::park_token* tail_;
 };
 
 // 条件变量。和 std:: 一样：**必须持有那把锁才能 wait**，wait 期间锁是放开的。
 //
 //     wavvix::lock_guard<wavvix::mutex> held(lock);
-//     while (queue.empty()) ready.wait(lock);      // 照例用 while，不是 if
+//     while (queue.empty()) {                       // 照例用 while，不是 if
+//         ready.wait(lock);
+//     }
 //     take(queue);
 class condition_variable {
 public:
     condition_variable() : head_(0), tail_(0) {}
     ~condition_variable();
 
-    // 放开 held、挂起，被通知后重新拿回 held 才返回。只能在协程里调。
+    // 放开 held、挂起，被通知后重新拿回 held 才返回。只能在协程里调用，否则打印诊断后终止。
     void wait(mutex& held);
 
     // 同上，但最多等这么久。**返回 false 表示到点了**（不管哪种情况，返回时锁都
     // 重新拿在手里）。零或负时长立即返回 false，锁仍由调用方持有。
     bool wait_for(mutex& held, std::chrono::nanoseconds timeout);
 
+    // 在哪里都能调用。
     void notify_one();
     void notify_all();
 
@@ -88,8 +99,77 @@ private:
     condition_variable(const condition_variable&);
     condition_variable& operator=(const condition_variable&);
 
+    std::mutex state_;
     detail::park_token* head_;
     detail::park_token* tail_;
+};
+
+// 协程之间传值的通道：容量固定的先进先出队列。可以多根协程同时发、同时收，也可以跨工作线程。
+// 满了 send 挂起，空了 receive 挂起，这两个只能在协程里调用；close 在哪里都能调用。
+// 往已经关闭的通道 send、重复关闭，都打印诊断后终止。
+//
+//     std::string host;
+//     while (hosts.receive(host)) {      // 关闭以后、剩下的取完了才返回 false
+//         resolve(host);
+//     }
+template <typename T>
+class channel {
+public:
+    // capacity 至少为 1；为 0 打印诊断后终止。
+    explicit channel(std::size_t capacity) : capacity_(capacity), closed_(false) {
+        if (capacity == 0) {
+            detail::channel_misuse("wavvix::channel 的容量至少为 1");
+        }
+    }
+
+    void send(T value) {
+        detail::require_coroutine("wavvix::channel::send 只能在协程里调用");
+        std::unique_lock<std::mutex> held(state_);
+        while (items_.size() == capacity_ && !closed_) {
+            waiters_.wait_for_room(held);
+        }
+        if (closed_) {
+            detail::channel_misuse("wavvix::channel 已经关闭，不能再 send");
+        }
+        items_.push_back(std::move(value));
+        waiters_.wake_receiver();
+    }
+
+    // 取一个值放进 out，返回 true；通道已经关闭、剩下的也都取完了，返回 false。
+    bool receive(T& out) {
+        detail::require_coroutine("wavvix::channel::receive 只能在协程里调用");
+        std::unique_lock<std::mutex> held(state_);
+        while (items_.empty() && !closed_) {
+            waiters_.wait_for_item(held);
+        }
+        if (items_.empty()) {
+            return false;
+        }
+        out = std::move(items_.front());
+        items_.pop_front();
+        waiters_.wake_sender();
+        return true;
+    }
+
+    // 关闭并叫醒所有在等的协程。之后 receive 把剩下的取完就返回 false。
+    void close() {
+        std::lock_guard<std::mutex> held(state_);
+        if (closed_) {
+            detail::channel_misuse("wavvix::channel 重复关闭");
+        }
+        closed_ = true;
+        waiters_.wake_everyone();
+    }
+
+private:
+    channel(const channel&);
+    channel& operator=(const channel&);
+
+    std::mutex state_;
+    detail::channel_waiters waiters_;
+    std::deque<T> items_;
+    std::size_t capacity_;
+    bool closed_;
 };
 
 // 作用域锁，和 std::lock_guard 一样。

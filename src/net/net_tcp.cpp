@@ -9,18 +9,18 @@ namespace net {
 tcp_stream::~tcp_stream() { close(); }
 
 tcp_stream::tcp_stream(tcp_stream&& other) noexcept
-    : native_(other.native_), adopted_(other.adopted_) {
+    : native_(other.native_), owner_(other.owner_) {
     other.native_ = invalid_handle();
-    other.adopted_ = false;
+    other.owner_ = 0;
 }
 
 tcp_stream& tcp_stream::operator=(tcp_stream&& other) noexcept {
     if (this != &other) {
         close();
         native_ = other.native_;
-        adopted_ = other.adopted_;
+        owner_ = other.owner_;
         other.native_ = invalid_handle();
-        other.adopted_ = false;
+        other.owner_ = 0;
     }
     return *this;
 }
@@ -28,18 +28,18 @@ tcp_stream& tcp_stream::operator=(tcp_stream&& other) noexcept {
 tcp_listener::~tcp_listener() { close(); }
 
 tcp_listener::tcp_listener(tcp_listener&& other) noexcept
-    : native_(other.native_), adopted_(other.adopted_) {
+    : native_(other.native_), owner_(other.owner_) {
     other.native_ = invalid_handle();
-    other.adopted_ = false;
+    other.owner_ = 0;
 }
 
 tcp_listener& tcp_listener::operator=(tcp_listener&& other) noexcept {
     if (this != &other) {
         close();
         native_ = other.native_;
-        adopted_ = other.adopted_;
+        owner_ = other.owner_;
         other.native_ = invalid_handle();
-        other.adopted_ = false;
+        other.owner_ = 0;
     }
     return *this;
 }
@@ -49,10 +49,8 @@ result<std::size_t> tcp_stream::read(void* buffer, std::size_t size,
     if (!is_open()) return make_error(error_kind::invalid_argument, "stream is closed");
     if (size == 0) return std::size_t(0);
     if (!buffer) return make_error(error_kind::invalid_argument, "read buffer is null");
-    if (!adopted_) {
-        if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(native_)))
-            return make_error(error_kind::io, "cannot adopt TCP stream");
-        adopted_ = true;
+    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
+        return make_error(error_kind::io, "cannot adopt TCP stream");
     }
     wavvix::detail::io_request request;
     request.direction = wavvix::detail::io_read;
@@ -70,10 +68,8 @@ result<std::size_t> tcp_stream::write(const void* buffer, std::size_t size,
     if (!is_open()) return make_error(error_kind::invalid_argument, "stream is closed");
     if (size == 0) return std::size_t(0);
     if (!buffer) return make_error(error_kind::invalid_argument, "write buffer is null");
-    if (!adopted_) {
-        if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(native_)))
-            return make_error(error_kind::io, "cannot adopt TCP stream");
-        adopted_ = true;
+    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
+        return make_error(error_kind::io, "cannot adopt TCP stream");
     }
     wavvix::detail::io_request request;
     request.direction = wavvix::detail::io_write;

@@ -69,8 +69,8 @@ Function socket_extension(SOCKET socket, GUID id) {
 }  // namespace
 
 io_engine* io_engine_create() noexcept {
-    // 最后那个参数是「允许多少根线程同时取完成项」。取 1：一个 vCPU 就是一根线程，
-    // 而协程不跨 vCPU 迁移（coroutine 设计 3.13）。
+    // 最后那个参数是「允许多少根线程同时取完成项」。取 1：每根工作线程有自己的完成端口，
+    // 协程也不换线程（coroutine 设计 3.13）。
     const HANDLE port = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 1);
     if (!port) return 0;
     io_engine* const engine = new (std::nothrow) io_engine();
@@ -163,7 +163,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         }
         if (!finished) failed = static_cast<DWORD>(::WSAGetLastError());
     } else {
-        // 一次最多 MAXDWORD 字节；32 位上 size_t 与 MAXDWORD 同宽。
+        // 一次最多 MAXDWORD 字节。
         const std::size_t ceiling = static_cast<std::size_t>(MAXDWORD);
         const DWORD length =
             static_cast<DWORD>(request.length < ceiling ? request.length : ceiling);

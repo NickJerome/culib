@@ -1,6 +1,10 @@
 ﻿#pragma once
 
 // IP 地址与网络套接字。主机名解析可能阻塞，见 resolve()。
+//
+// 套接字的 connect / accept / 读写只能在协程里调用。第一次读写时，套接字绑到当时所在的工作线程，
+// 之后在别的工作线程上读写打印诊断后终止。要在另一根协程里用同一个套接字，把那根协程派到
+// 同一根工作线程上：coroutine(scheduler::current(), ...)。
 
 #include <culib/result.h>
 #include <culib/string_view.h>
@@ -50,7 +54,7 @@ class tcp_listener;
 
 class tcp_stream {
 public:
-    tcp_stream() noexcept : native_(invalid_handle()), adopted_(false) {}
+    tcp_stream() noexcept : native_(invalid_handle()), owner_(0) {}
     ~tcp_stream();
     tcp_stream(tcp_stream&& other) noexcept;
     tcp_stream& operator=(tcp_stream&& other) noexcept;
@@ -68,15 +72,15 @@ public:
 
 private:
     friend class tcp_listener;
-    explicit tcp_stream(std::uintptr_t native) noexcept : native_(native), adopted_(false) {}
+    explicit tcp_stream(std::uintptr_t native) noexcept : native_(native), owner_(0) {}
     static std::uintptr_t invalid_handle() noexcept { return ~std::uintptr_t(0); }
     std::uintptr_t native_;
-    bool adopted_;
+    const void* owner_;   // 第一次读写它的工作线程
 };
 
 class tcp_listener {
 public:
-    tcp_listener() noexcept : native_(invalid_handle()), adopted_(false) {}
+    tcp_listener() noexcept : native_(invalid_handle()), owner_(0) {}
     ~tcp_listener();
     tcp_listener(tcp_listener&& other) noexcept;
     tcp_listener& operator=(tcp_listener&& other) noexcept;
@@ -90,10 +94,10 @@ public:
     bool is_open() const noexcept { return native_ != invalid_handle(); }
 
 private:
-    explicit tcp_listener(std::uintptr_t native) noexcept : native_(native), adopted_(false) {}
+    explicit tcp_listener(std::uintptr_t native) noexcept : native_(native), owner_(0) {}
     static std::uintptr_t invalid_handle() noexcept { return ~std::uintptr_t(0); }
     std::uintptr_t native_;
-    bool adopted_;
+    const void* owner_;   // 第一次读写它的工作线程
 };
 
 // 接收结果的元数据；报文内容写进调用方的缓冲区。
@@ -106,7 +110,7 @@ struct udp_datagram {
 
 class udp_socket {
 public:
-    udp_socket() noexcept : native_(invalid_handle()), adopted_(false) {}
+    udp_socket() noexcept : native_(invalid_handle()), owner_(0) {}
     ~udp_socket();
     udp_socket(udp_socket&& other) noexcept;
     udp_socket& operator=(udp_socket&& other) noexcept;
@@ -123,10 +127,10 @@ public:
     bool is_open() const noexcept { return native_ != invalid_handle(); }
 
 private:
-    explicit udp_socket(std::uintptr_t native) noexcept : native_(native), adopted_(false) {}
+    explicit udp_socket(std::uintptr_t native) noexcept : native_(native), owner_(0) {}
     static std::uintptr_t invalid_handle() noexcept { return ~std::uintptr_t(0); }
     std::uintptr_t native_;
-    bool adopted_;
+    const void* owner_;   // 第一次读写它的工作线程
 };
 
 }  // namespace net

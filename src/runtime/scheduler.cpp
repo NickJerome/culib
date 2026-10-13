@@ -1,84 +1,49 @@
-// 协程的运行队列与挂起集合。
+// 协程运行时：工作线程、全局等待队列、跨线程唤醒、阻塞调用。
 
-#include <culib/scheduler.h>
+#include <culib/coroutine.h>
+#include <culib/runtime.h>
 
 #include "coroutine_detail.h"
-#include "scheduler_io.h"
 #include "park.h"
-#include "remote_wake.h"
+#include "scheduler_io.h"
 #include "wait_set.h"
-#include "vcpu_pool.h"
 
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
-#include <memory>
+#include <exception>
 #include <mutex>
 #include <new>
 #include <thread>
-#include <utility>
+#include <vector>
 
 namespace wavvix {
 namespace detail {
 
-struct vcpu;
-struct remote_waker;
-struct task_state;
+namespace {
 
-result<void*> scheduler_scope_enter_with_workers(unsigned workers);
-void scheduler_sleep_for(std::chrono::nanoseconds duration);
-std::size_t scheduler_run_until(task_state* task);
-std::size_t scheduler_drive(task_state* task, bool timed,
-                            std::chrono::steady_clock::time_point deadline, bool once);
-void scheduler_run_for(std::chrono::nanoseconds duration);
-void scheduler_yield_main();
+[[noreturn]] void die(const char* what) {
+    std::fputs(what, stderr);
+    std::fputc('\n', stderr);
+    std::abort();
+}
 
-struct remote_task_state {
-    explicit remote_task_state(remote_waker* source) noexcept
-        : waker(source), done(false), waiter(0), refs(2) {}
-    remote_waker* waker;
-    std::mutex mutex;
-    std::atomic<bool> done;
-    park_token* waiter;
-    std::atomic<unsigned> refs;
-};
+}  // namespace
 
+// 句柄和协程共享：句柄一份引用，协程一份。
 struct task_state {
-    explicit task_state(vcpu* parent) noexcept
-        : owner(parent), body(0), waiter(0), next_detached(0),
-          prev_next_detached(0), done(false),
-          remote(0), next_remote(0) {}
-    vcpu* owner;
-    coroutine_control* body;
-    park_token* waiter;
-    task_state* next_detached;
-    task_state** prev_next_detached;  // 非空即已加入 detached 链。
-    bool done;
-    remote_task_state* remote;
-    task_state* next_remote;
-};
+    task_state() : done(false), waiter(0), blocked(0), refs(2), body(0), next(0) {}
 
-struct remote_task : task_state {
-    remote_task(vcpu* parent, remote_waker* source) noexcept
-        : task_state(parent), state(source) { remote = &state; }
-    remote_task_state state;
-};
-
-struct remote_waker {
-    explicit remote_waker(io_engine* target) noexcept
-        : engine(target), head(0), tail(0), tasks_head(0), tasks_tail(0),
-          has_pending(false), outstanding(0) {}
-    io_engine* engine;
     std::mutex mutex;
-    park_token* head;
-    park_token* tail;
-    task_state* tasks_head;
-    task_state* tasks_tail;
-    std::atomic<bool> has_pending;
-    // 尚未发布完成通知的远端协程与阻塞任务；先发布通知，再扣减。
-    std::atomic<std::size_t> outstanding;
+    bool done;
+    park_token* waiter;                 // 在协程里 join 的
+    std::condition_variable* blocked;   // 在协程外 join 的
+    std::atomic<unsigned> refs;
+    coroutine_control* body;
+    task_state* next;                   // 排队用
 };
 
 struct ready_queue {
@@ -86,17 +51,24 @@ struct ready_queue {
 
     void push(coroutine_control* body) noexcept {
         body->next_ready = 0;
-        if (tail) tail->next_ready = body;
-        else head = body;
+        if (tail) {
+            tail->next_ready = body;
+        } else {
+            head = body;
+        }
         tail = body;
         ++count;
     }
 
     coroutine_control* pop() noexcept {
         coroutine_control* const body = head;
-        if (!body) return 0;
+        if (!body) {
+            return 0;
+        }
         head = body->next_ready;
-        if (!head) tail = 0;
+        if (!head) {
+            tail = 0;
+        }
         body->next_ready = 0;
         --count;
         return body;
@@ -110,11 +82,49 @@ struct ready_queue {
     std::size_t count;
 };
 
+// 工作线程的收件口：派给这根线程的协程、别的线程发来的唤醒都从这里进。
+struct inbox {
+    inbox() : tokens_head(0), tokens_tail(0), tasks_head(0), tasks_tail(0), has_pending(false) {}
+
+    std::mutex mutex;
+    park_token* tokens_head;
+    park_token* tokens_tail;
+    task_state* tasks_head;
+    task_state* tasks_tail;
+    std::atomic<bool> has_pending;
+};
+
+struct blocking_job {
+    void (*invoke)(void*);
+    void* body;
+    park_token* token;
+    blocking_job* next;
+};
+
+// call_blocking 的后台线程，整个 runtime 共用：第一次用到时才建，最多 background_limit 根。
+struct background_threads {
+    background_threads() : head(0), tail(0), queued(0), idle(0), closing(false) {}
+
+    std::mutex mutex;
+    std::condition_variable ready;
+    blocking_job* head;
+    blocking_job* tail;
+    std::size_t queued;   // 还没被取走的调用
+    std::size_t idle;     // 正在等活的线程
+    bool closing;
+    std::vector<std::thread> threads;
+};
+
+const std::size_t background_limit = 64;
+
 struct vcpu {
+    vcpu()
+        : engine(0), current(0), park_of_current(0), completed_task(0), index(0), next_idle(0),
+          idle_listed(false), rounds(0) {}
     ~vcpu() {
-        pool.reset();
-        delete remote;
-        if (engine) io_engine_destroy(engine);
+        if (engine) {
+            io_engine_destroy(engine);
+        }
     }
 
     ready_queue ready;
@@ -123,13 +133,33 @@ struct vcpu {
     coroutine_control* current;
     park_token* park_of_current;
     task_state* completed_task;
-    bool running;
-    std::size_t scope_depth;
-    std::size_t pool_scope_depth;
-    task_state* detached;
-    remote_waker* remote;
-    std::unique_ptr<vcpu_pool> pool;
-    std::atomic<bool>* worker_stop;
+    unsigned index;
+    inbox mail;
+    vcpu* next_idle;
+    bool idle_listed;
+    std::size_t rounds;
+};
+
+// 一个进程同时只有一个。全局等待队列也在这里：coroutine(f) 起的协程排在这里还没开始跑，
+// 空闲的工作线程取走一根，取走以后就绑在那根线程上。
+struct runtime_state {
+    runtime_state()
+        : generation(0), stopping(false), live(0), queue_head(0), queue_tail(0), queued(0), idle(0),
+          started(0) {}
+
+    unsigned generation;                // 句柄靠它认出已经结束的 runtime
+    std::vector<vcpu*> workers;
+    std::vector<std::thread> threads;
+    std::atomic<bool> stopping;
+    std::atomic<std::size_t> live;      // 还没结束的协程，含还没开始跑的
+    std::mutex mutex;                   // 保护全局等待队列、空闲名单、启动计数
+    std::condition_variable changed;
+    task_state* queue_head;
+    task_state* queue_tail;
+    std::atomic<std::size_t> queued;    // 不加锁先看一眼有没有活
+    vcpu* idle;                         // 睡在 idle() 里的工作线程
+    unsigned started;
+    background_threads blocking;        // call_blocking 的后台线程
 };
 
 namespace {
@@ -137,13 +167,7 @@ namespace {
 typedef park_clock clock_type;
 typedef park_instant instant;
 
-instant deadline_after(std::chrono::nanoseconds duration) {
-    const instant now = clock_type::now();
-    // The largest timeout can exceed the remaining range of steady_clock.
-    if (now >= instant() && duration >= (instant::max)() - now)
-        return (instant::max)();
-    return now + duration;
-}
+const std::chrono::nanoseconds forever(-1);
 
 #if defined(_MSC_VER)
 __declspec(thread) vcpu* current_vcpu = 0;
@@ -151,492 +175,241 @@ __declspec(thread) vcpu* current_vcpu = 0;
 __thread vcpu* current_vcpu = 0;
 #endif
 
-void reap(ready_queue& queue) {
-    while (coroutine_control* const body = queue.pop()) coroutine_destroy(body);
-}
+std::atomic<runtime_state*> active_runtime(0);
+std::atomic<unsigned> generations(0);
 
-void reap_detached(vcpu& self) noexcept;
-
-// OS 退出回调传入 vCPU 指针，不在 MinGW 的 TLS 析构阶段读取线程局部变量。
-void reap_vcpu(void* owner) noexcept {
-    vcpu* const self = static_cast<vcpu*>(owner);
-    if (self->pool) {
-        std::fputs("wavvix::scheduler: 工作 vCPU 仍在运行；请先关闭作用域\n", stderr);
-        std::abort();
+instant deadline_after(std::chrono::nanoseconds duration) {
+    const instant now = clock_type::now();
+    // 最长的时限可能超出 steady_clock 剩下的范围。
+    if (now >= instant() && duration >= (instant::max)() - now) {
+        return (instant::max)();
     }
-    if (!self->waiting.empty() ||
-        io_engine_pending(self->engine) != 0) {
-        std::fputs("wavvix::scheduler: 线程退出时仍有挂起的协程；请先调用 run() 或使用 scheduler_scope\n", stderr);
-        std::abort();
-    }
-    // 可以销毁尚未执行或仅处于 ready 的协程；挂起协程不能直接释放。
-    reap(self->ready);
-    reap_detached(*self);
-
-    delete self;
-}
-
-vcpu* active_vcpu() noexcept {
-    return runtime_thread_state_current() == &runtime_thread_exit_marker ? 0 : current_vcpu;
-}
-
-void die(const char* what);
-
-vcpu* try_here() noexcept {
-    if (runtime_thread_state_current() == &runtime_thread_exit_marker)
-        die("wavvix::scheduler: 线程正在退出，不能再创建协程");
-    if (current_vcpu) return current_vcpu;
-    std::unique_ptr<vcpu> self(new (std::nothrow) vcpu());
-    if (!self || !register_runtime_thread_exit(self.get(), &reap_vcpu)) return 0;
-    current_vcpu = self.release();
-    return current_vcpu;
+    return now + duration;
 }
 
 vcpu& here() {
-    vcpu* const self = try_here();
-    if (!self) die("wavvix::scheduler: 无法创建当前 vCPU");
-    return *self;
+    if (!current_vcpu) {
+        die("wavvix: 这个调用只能在协程里用");
+    }
+    return *current_vcpu;
 }
 
-void die(const char* what) {
-    std::fputs(what, stderr);
-    std::fputc('\n', stderr);
-    std::abort();
+runtime_state& running() {
+    runtime_state* const state = active_runtime.load(std::memory_order_acquire);
+    if (!state) {
+        die("wavvix::coroutine: 没有 runtime；先在 main 里建 wavvix::runtime");
+    }
+    return *state;
+}
+
+vcpu& worker_of(runtime_state& state, const worker_ref& ref) {
+    if (ref.generation != state.generation || ref.index >= state.workers.size()) {
+        die("wavvix::coroutine: 这个 scheduler 属于已经结束的 runtime");
+    }
+    return *state.workers[ref.index];
 }
 
 // 只有仍在挂起集合中的凭据可以被唤醒，避免超时与通知重复入队。
 bool rouse(vcpu& self, park_token& token) {
-    if (!token.parked) return false;
+    if (!token.parked) {
+        return false;
+    }
     token.roused = true;
     self.waiting.remove(token);
     self.ready.push(token.owner);
     return true;
 }
 
-// 创建失败返回空指针，交由调用方处理。
-io_engine* engine_here(vcpu& self) {
-    if (!self.engine) self.engine = io_engine_create();
-    return self.engine;
+void post_token(vcpu& home, park_token& token) {
+    inbox& mail = home.mail;
+    std::lock_guard<std::mutex> lock(mail.mutex);
+    token.next = 0;
+    if (mail.tokens_tail) {
+        mail.tokens_tail->next = &token;
+    } else {
+        mail.tokens_head = &token;
+    }
+    mail.tokens_tail = &token;
+    mail.has_pending.store(true, std::memory_order_release);
+    // 在锁里通知：收件口的主人要先拿这把锁取走凭据，之后等待者才可能返回、凭据才可能失效。
+    if (!io_engine_notify(home.engine)) {
+        die("wavvix: 不能唤醒工作线程");
+    }
+}
+
+void post_task(vcpu& target, task_state* task) {
+    inbox& mail = target.mail;
+    std::lock_guard<std::mutex> lock(mail.mutex);
+    task->next = 0;
+    if (mail.tasks_tail) {
+        mail.tasks_tail->next = task;
+    } else {
+        mail.tasks_head = task;
+    }
+    mail.tasks_tail = task;
+    mail.has_pending.store(true, std::memory_order_release);
+    if (!io_engine_notify(target.engine)) {
+        die("wavvix: 不能唤醒工作线程");
+    }
 }
 
 void accept_remote(vcpu& self) {
-    remote_waker* const remote = self.remote;
-    if (!remote || !remote->has_pending.load(std::memory_order_acquire)) return;
-    park_token* pending = 0;
-    task_state* submitted = 0;
-    {
-        std::lock_guard<std::mutex> lock(remote->mutex);
-        pending = remote->head;
-        remote->head = 0;
-        remote->tail = 0;
-        submitted = remote->tasks_head;
-        remote->tasks_head = 0;
-        remote->tasks_tail = 0;
-        remote->has_pending.store(false, std::memory_order_release);
-    }
-    while (pending) {
-        park_token* const next = pending->next;
-        pending->next = 0;
-        rouse(self, *pending);
-        pending = next;
-    }
-    while (submitted) {
-        task_state* const next = submitted->next_remote;
-        submitted->next_remote = 0;
-        self.ready.push(submitted->body);
-        submitted = next;
-    }
-}
-
-void wait_io(vcpu& self, std::chrono::nanoseconds timeout) {
-    if (!self.engine) {
-        if (timeout.count() > 0) std::this_thread::sleep_for(timeout);
+    inbox& mail = self.mail;
+    if (!mail.has_pending.load(std::memory_order_acquire)) {
         return;
     }
 
+    park_token* tokens = 0;
+    task_state* tasks = 0;
+    {
+        std::lock_guard<std::mutex> lock(mail.mutex);
+        tokens = mail.tokens_head;
+        mail.tokens_head = 0;
+        mail.tokens_tail = 0;
+        tasks = mail.tasks_head;
+        mail.tasks_head = 0;
+        mail.tasks_tail = 0;
+        mail.has_pending.store(false, std::memory_order_release);
+    }
+
+    while (tokens) {
+        park_token* const next = tokens->next;
+        tokens->next = 0;
+        tokens->delivered = true;
+        rouse(self, *tokens);
+        tokens = next;
+    }
+    while (tasks) {
+        task_state* const next = tasks->next;
+        tasks->next = 0;
+        self.ready.push(tasks->body);
+        tasks = next;
+    }
+}
+
+void push_waiting(runtime_state& state, task_state* task) {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    task->next = 0;
+    if (state.queue_tail) {
+        state.queue_tail->next = task;
+    } else {
+        state.queue_head = task;
+    }
+    state.queue_tail = task;
+    state.queued.fetch_add(1, std::memory_order_release);
+
+    vcpu* const sleeper = state.idle;
+    if (!sleeper) {
+        return;
+    }
+    // 在锁里通知：睡着的线程要先拿这把锁把自己从名单上摘掉才能退出，所以它的引擎此刻一定还在。
+    state.idle = sleeper->next_idle;
+    sleeper->idle_listed = false;
+    if (!io_engine_notify(sleeper->engine)) {
+        die("wavvix: 不能唤醒空闲的工作线程");
+    }
+}
+
+// 本地没有就绪协程时取一根；一直有活时每 61 轮也取一根，免得排着的协程饿死（Go 也用 61）。
+void take_waiting(runtime_state& state, vcpu& self) {
+    if (state.queued.load(std::memory_order_acquire) == 0) {
+        return;
+    }
+    if (!self.ready.empty() && ++self.rounds % 61 != 0) {
+        return;
+    }
+
+    task_state* task = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        task = state.queue_head;
+        if (!task) {
+            return;
+        }
+        state.queue_head = task->next;
+        if (!state.queue_head) {
+            state.queue_tail = 0;
+        }
+        state.queued.fetch_sub(1, std::memory_order_release);
+    }
+    task->next = 0;
+    self.ready.push(task->body);
+}
+
+// 睡之前登记为空闲；返回 false 表示队列里已经有活，不用睡。
+bool idle_begin(runtime_state& state, vcpu& self) {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.queue_head) {
+        return false;
+    }
+    self.next_idle = state.idle;
+    state.idle = &self;
+    self.idle_listed = true;
+    return true;
+}
+
+void idle_end(runtime_state& state, vcpu& self) {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (!self.idle_listed) {
+        return;
+    }
+    vcpu** link = &state.idle;
+    while (*link != &self) {
+        link = &(*link)->next_idle;
+    }
+    *link = self.next_idle;
+    self.idle_listed = false;
+}
+
+void wait_io(vcpu& self, std::chrono::nanoseconds timeout) {
     io_completion_batch completed;
     io_engine_wait(self.engine, timeout, completed);
     // 引擎交回请求，入队由调度器处理。
-    while (io_request* const request = completed.pop()) rouse(self, *request->waiter);
+    while (io_request* const request = completed.pop()) {
+        rouse(self, *request->waiter);
+    }
 }
 
-// 等到最早的时限或 I/O 完成。
+// 等到最早的时限、I/O 完成或者别的线程的通知。
 void idle(vcpu& self, bool have_deadline, instant nearest) {
-    std::chrono::nanoseconds timeout(-1);   // 负数 = 无限等
+    std::chrono::nanoseconds timeout(-1);   // 负数表示一直等
     if (have_deadline) {
         const instant now = clock_type::now();
-        timeout = (nearest > now)
-                      ? std::chrono::duration_cast<std::chrono::nanoseconds>(nearest - now)
-                      : std::chrono::nanoseconds(0);
+        timeout = nearest > now ? std::chrono::duration_cast<std::chrono::nanoseconds>(nearest - now)
+                                : std::chrono::nanoseconds(0);
     }
     wait_io(self, timeout);
 }
 
-}  // namespace
-
-namespace {
-
-void reap_detached(vcpu& self) noexcept {
-    task_state* task = self.detached;
-    while (task) {
-        task_state* const next = task->next_detached;
-        delete task;
-        task = next;
-    }
-}
-
-void unlink_detached(task_state* task) noexcept {
-    *task->prev_next_detached = task->next_detached;
-    if (task->next_detached)
-        task->next_detached->prev_next_detached = task->prev_next_detached;
-}
-
-// 调用方持有 waker.mutex。
-void queue_remote_token(remote_waker& waker, park_token& token) noexcept {
-    token.next = 0;
-    if (waker.tail) waker.tail->next = &token;
-    else waker.head = &token;
-    waker.tail = &token;
-}
-
-void release_remote(task_state* task) noexcept {
-    remote_task_state* const remote = task->remote;
-    if (remote->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        delete static_cast<remote_task*>(task);
-    }
-}
-
-void finish_remote_task(task_state* task) noexcept {
-    remote_task_state* const remote = task->remote;
-    {
-        std::lock_guard<std::mutex> lock(remote->mutex);
-        remote->done.store(true, std::memory_order_release);
-        remote_waker& waker = *remote->waker;
-        std::lock_guard<std::mutex> wake_lock(waker.mutex);
-        if (remote->waiter) queue_remote_token(waker, *remote->waiter);
-        // 先发布完成事件，再扣待完成数；创建者不能在两者之间误判死锁。
-        waker.has_pending.store(true, std::memory_order_release);
-        waker.outstanding.fetch_sub(1, std::memory_order_acq_rel);
-        if (!io_engine_notify(waker.engine))
-            die("wavvix::coroutine: 不能通知创建它的 vCPU");
-    }
-    release_remote(task);
-}
-
-bool task_finished(const task_state* task) noexcept {
-    return task->remote ? task->remote->done.load(std::memory_order_acquire)
-                        : task->done;
-}
-
-}  // namespace
-
-fiber_failure scheduler_spawn(coroutine_control* taken) {
-    vcpu* const self = try_here();
-    if (!self) {
-        coroutine_destroy(taken);
-        return fiber_failure::resource_exhausted;
-    }
-    self->ready.push(taken);
-    return fiber_failure::none;
-}
-
-void* scheduler_scope_enter() {
-    if (fiber::inside()) die("wavvix::scheduler_scope 只能在 vCPU 线程入口创建");
-    vcpu& self = here();
-    ++self.scope_depth;
-    return &self;
-}
-
-result<void*> scheduler_scope_enter_with_workers(unsigned workers) {
-    if (fiber::inside()) die("wavvix::scheduler_scope 只能在 vCPU 线程入口创建");
-    if (workers == 0)
-        return make_error(error_kind::invalid_argument, "work pool needs at least one vCPU");
-    vcpu* const self = try_here();
-    if (!self) return make_error(error_kind::resource_exhausted);
-    if (self->pool)
-        return make_error(error_kind::invalid_argument, "work pool is already active");
-    result<std::unique_ptr<vcpu_pool>> started = vcpu_pool::create(workers);
-    if (started.is_err()) return std::move(started).error();
-    self->pool = std::move(started).value();
-    self->pool_scope_depth = ++self->scope_depth;
-    return self;
-}
-
-void scheduler_scope_leave(void* owner) noexcept {
-    vcpu* const self = active_vcpu();
-    if (!self || self != owner || self->scope_depth == 0 || self->running)
-        die("wavvix::scheduler_scope 必须在创建它的线程上、run() 外析构");
-    --self->scope_depth;
-    if (self->pool && self->scope_depth < self->pool_scope_depth) {
-        wavvix::run();
-        self->pool.reset();
-        self->pool_scope_depth = 0;
-    } else if (self->scope_depth == 0) {
-        wavvix::run();
-    }
-    if (self->scope_depth != 0) return;
-    release_thread_stack_pool();
-    unregister_runtime_thread_exit(self);
-    current_vcpu = 0;
-    delete self;
-}
-
-task_state* scheduler_task_create() noexcept {
-    vcpu* const self = try_here();
-    if (!self) return 0;
-    return self->pool ? static_cast<task_state*>(new (std::nothrow) remote_task(self, self->remote))
-                      : new (std::nothrow) task_state(self);
-}
-
-void scheduler_task_discard(task_state* task) noexcept {
-    if (task->remote) delete static_cast<remote_task*>(task);
-    else delete task;
-}
-
-void scheduler_task_schedule(task_state* task, coroutine_control* body) {
-    std::unique_ptr<coroutine_control, void (*)(coroutine_control*)> owned(
-        body, &coroutine_destroy);
-    vcpu& self = *task->owner;
-    task->body = body;
-    if (!self.pool) {
-        self.ready.push(owned.release());
-        return;
-    }
-
-    remote_waker* const worker = self.pool->next();
-    self.remote->outstanding.fetch_add(1, std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(worker->mutex);
-        task->next_remote = 0;
-        if (worker->tasks_tail) worker->tasks_tail->next_remote = task;
-        else worker->tasks_head = task;
-        worker->tasks_tail = task;
-        owned.release();
-        worker->has_pending.store(true, std::memory_order_release);
-    }
-    if (!io_engine_notify(worker->engine))
-        die("wavvix::coroutine: 不能唤醒工作 vCPU");
-}
-
-void scheduler_task_complete(task_state* task) noexcept {
-    if (task->remote) {
-        here().completed_task = task;
-        return;
-    }
-    task->done = true;
-    if (task->waiter) scheduler_wake(*task->waiter);
-    if (task->prev_next_detached) {
-        unlink_detached(task);
+void release_task(task_state* task) noexcept {
+    if (task->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         delete task;
     }
 }
 
-void scheduler_task_join(task_state* task) {
-    if (!task) die("wavvix::coroutine::join() requires a joinable task");
-    // done 只由所属 vCPU 写；先拒绝跨线程调用，再读取它。
-    vcpu* const self = active_vcpu();
-    if (!self || task->owner != self)
-        die("wavvix::coroutine::join() 必须在创建它的 vCPU 上调用");
-    if (task->remote) {
-        remote_task_state* const remote = task->remote;
-        if (fiber::inside()) {
-            park_token token;
-            bool wait = false;
-            {
-                std::lock_guard<std::mutex> lock(remote->mutex);
-                if (!remote->done.load(std::memory_order_acquire)) {
-                    remote->waiter = &token;
-                    wait = true;
-                }
-            }
-            if (wait) {
-                scheduler_park(token, std::chrono::nanoseconds(-1));
-                std::lock_guard<std::mutex> lock(remote->mutex);
-                remote->waiter = 0;
-            }
-        } else if (!remote->done.load(std::memory_order_acquire)) {
-            scheduler_run_until(task);
+void finish_task(runtime_state& state, task_state* task) {
+    {
+        std::lock_guard<std::mutex> lock(task->mutex);
+        task->done = true;
+        if (task->waiter) {
+            scheduler_wake(*task->waiter);
         }
-        release_remote(task);
-        return;
+        if (task->blocked) {
+            task->blocked->notify_one();
+        }
     }
-    if (task->done) { delete task; return; }
-    if (fiber::inside() && self->current == task->body)
-        die("wavvix::coroutine 不能 join 自己");
-    if (fiber::inside()) {
-        park_token token;
-        task->waiter = &token;
-        scheduler_park(token, std::chrono::nanoseconds(-1));
-        task->waiter = 0;
-    } else {
-        scheduler_run_until(task);
-    }
-    delete task;
-}
-
-void scheduler_task_detach(task_state* task) noexcept {
-    if (!task) die("wavvix::coroutine::detach() requires a joinable task");
-    if (task->owner != active_vcpu())
-        die("wavvix::coroutine::detach() 必须在创建它的 vCPU 上调用");
-    if (task->remote) {
-        release_remote(task);
-        return;
-    }
-    if (task->done) { delete task; return; }
-    vcpu& self = *task->owner;
-    task->next_detached = self.detached;
-    task->prev_next_detached = &self.detached;
-    if (self.detached) self.detached->prev_next_detached = &task->next_detached;
-    self.detached = task;
-}
-
-bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
-    if (!fiber::inside()) die("wavvix 的挂起只能在协程里调用");
-    vcpu& self = here();
-
-    token.owner = self.current;
-    token.roused = false;
-    token.parked = false;
-    token.timed = timeout.count() >= 0;
-    if (token.timed) token.deadline = deadline_after(timeout);
-    // **不动 token.next**：那是把它串进等待队列的那一方的字段，而那一方是先串好
-    // 再调这里的。动了就会把别人的队列拆开。
-
-    self.park_of_current = &token;
-    fiber::yield();          // 调度器读到 park_of_current 就把我们挪进 parked
-    return token.roused;
-}
-
-bool scheduler_wake(park_token& token) {
-    return rouse(here(), token);
-}
-
-remote_waker* scheduler_remote_prepare() {
-    vcpu* const self = try_here();
-    if (!self) return 0;
-    if (self->remote) return self->remote;
-    io_engine* const engine = engine_here(*self);
-    if (!engine) return 0;
-    std::unique_ptr<remote_waker> remote(new (std::nothrow) remote_waker(engine));
-    if (!remote || !io_engine_enable_notify(engine)) return 0;
-    self->remote = remote.release();
-    return self->remote;
-}
-
-bool scheduler_remote_notify(remote_waker* waker) noexcept {
-    return io_engine_notify(waker->engine);
-}
-
-void scheduler_worker_run(std::atomic<bool>& stopping) {
-    here().worker_stop = &stopping;
-    wavvix::run();
-}
-
-void scheduler_external_wait_begin(remote_waker* waker) noexcept {
-    waker->outstanding.fetch_add(1, std::memory_order_release);
-}
-
-bool scheduler_external_wake(remote_waker* waker, park_token& token) noexcept {
-    if (!waker) return false;
-    std::lock_guard<std::mutex> lock(waker->mutex);
-    queue_remote_token(*waker, token);
-    waker->has_pending.store(true, std::memory_order_release);
-    waker->outstanding.fetch_sub(1, std::memory_order_acq_rel);
-    // 通知完成前不能让所属 vCPU 取走 token 并销毁 waker/engine。
-    return io_engine_notify(waker->engine);
-}
-
-void scheduler_sleep_for(std::chrono::nanoseconds duration) {
-    park_token token;
-    // 没有任何人持有这个凭据，所以它只能靠时限醒——「没人会叫我的 park」。
-    scheduler_park(token, duration);
-}
-
-bool scheduler_adopt(io_handle handle) {
-    vcpu& self = here();
-    io_engine* const engine = engine_here(self);
-    return engine != 0 && io_engine_adopt(engine, handle);
-}
-
-void scheduler_io(io_request& request, std::chrono::nanoseconds timeout) {
-    if (!fiber::inside()) die("wavvix 的 I/O 只能在协程里调用");
-    vcpu& self = here();
-
-    if (!engine_here(self)) {
-        // 引擎建不起来（句柄耗尽之类）。和栈分配失败一个道理：不 abort，
-        // 把失败交给调用方，让它决定是拒掉这个请求还是整个退出。
-        request.transferred = -1;
-        request.failure = errno;
-        return;
-    }
-
-    park_token token;
-    request.waiter = &token;
-    request.next = 0;
-    request.transferred = 0;
-    request.failure = 0;
-    if (!io_engine_arm(self.engine, request)) return;   // 已经有结果了，不挂起
-
-    if (scheduler_park(token, timeout)) return;         // 引擎叫醒的，结果在 request 里
-
-    // 到点了。请引擎撤掉这次操作。
-    if (!io_engine_cancel(self.engine, request)) {
-        // **撤销通知还会来**（Windows 的 CancelIoEx）。必须等到它回来，否则
-        // request 连同里面的 OVERLAPPED 会随这个栈帧消失，而内核还握着它的地址。
-        // 这一次不设时限：等的是一个必然会到的通知。
-        scheduler_park(token, std::chrono::nanoseconds(-1));
-    }
-    // 不管那个通知里说什么，调用方看到的都是超时——它已经不要这个结果了。
-    request.transferred = -1;
-    request.failure = ETIMEDOUT;
-}
-
-}  // namespace detail
-
-void yield() {
-    if (detail::fiber::inside()) {
-        detail::fiber::yield();
-    } else if (detail::active_vcpu()) {
-        detail::scheduler_yield_main();
-    } else {
-        detail::die("wavvix::yield() 需要先初始化当前 vCPU");
+    release_task(task);
+    if (state.live.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.changed.notify_all();
     }
 }
 
-void sleep_for(std::chrono::nanoseconds duration) {
-    if (duration.count() <= 0) return;
-    if (detail::fiber::inside()) {
-        detail::scheduler_sleep_for(duration);
-    } else if (detail::active_vcpu()) {
-        detail::scheduler_run_for(duration);
-    } else {
-        std::this_thread::sleep_for(duration);
-    }
-}
-
-std::size_t scheduled() noexcept {
-    detail::vcpu* const current_vcpu = detail::active_vcpu();
-    if (!current_vcpu) return 0;
-    return current_vcpu->ready.size() + current_vcpu->waiting.size();
-}
-
-std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
-                                    std::chrono::steady_clock::time_point deadline, bool once) {
-    using namespace detail;
-    if (fiber::inside()) {
-        die("wavvix::run() 不能在协程里调用：那是在调度器里再跑一个调度器");
-    }
-    vcpu& self = here();
-    if (self.running) die("wavvix::run() 不能重入");
-
-    self.running = true;
-    std::size_t completed = 0;
+void worker_loop(runtime_state& state, vcpu& self) {
     for (;;) {
-        if (target && task_finished(target)) break;
         accept_remote(self);
-        // 已到期的协程仍须获得一轮运行机会。
-        const bool time_elapsed = timed && clock_type::now() >= deadline;
-        // 只有带时限的凭据进入堆；普通让出无需扫描所有挂起协程。
+        take_waiting(state, self);
+
         bool have_deadline = false;
         instant nearest = instant();
         if (self.waiting.next() != 0) {
@@ -653,79 +426,446 @@ std::size_t detail::scheduler_drive(detail::task_state* target, bool timed,
             }
         }
 
-        if (timed && (!have_deadline || deadline < nearest)) {
-            nearest = deadline;
-            have_deadline = true;
-        }
         if (self.ready.empty()) {
-            if (once || time_elapsed) break;
-            // 完成队列也必须清空，才能安全释放协程栈上的 I/O 请求。
-            const bool remote_work = self.remote &&
-                self.remote->outstanding.load(std::memory_order_acquire) != 0;
-            const bool worker_alive = self.worker_stop &&
-                !self.worker_stop->load(std::memory_order_acquire);
-            const std::size_t pending_io = io_engine_pending(self.engine);
-            if (!timed && self.waiting.empty() && pending_io == 0 &&
-                !remote_work && !worker_alive) break;
-            // 没有待完成 I/O、计时器或跨线程通知时，剩余的本地等待无法被唤醒。
-            if (!have_deadline && !self.waiting.empty() && pending_io == 0 &&
-                !remote_work && !worker_alive &&
-                (!self.remote || !self.remote->has_pending.load(std::memory_order_acquire)))
-                die("wavvix::scheduler: 无时限等待的协程已无唤醒来源");
+            // runtime 只在所有协程都结束以后才叫停，这时本线程不会再有挂起的协程。
+            if (state.stopping.load(std::memory_order_acquire)) {
+                return;
+            }
+            if (!idle_begin(state, self)) {
+                continue;
+            }
             idle(self, have_deadline, nearest);
+            idle_end(state, self);
             continue;
         }
 
-        // 只运行轮首已有的任务；新建、唤醒和让出的任务都追加到下一轮。
+        // 只运行轮首已有的任务；新取到、唤醒和让出的任务都追加到下一轮。
         const std::size_t count = self.ready.size();
         for (std::size_t i = 0; i < count; ++i) {
             coroutine_control* const body = self.ready.pop();
             self.park_of_current = 0;
             self.completed_task = 0;
-            self.current = body;          // park 要知道挂起的是哪根
+            self.current = body;   // park 要知道挂起的是哪根
 
             const bool alive = coroutine_resume(body);
+            self.current = 0;
 
             if (!alive) {
                 coroutine_destroy(body);
-                ++completed;
-                if (self.completed_task) finish_remote_task(self.completed_task);
+                if (self.completed_task) {
+                    finish_task(state, self.completed_task);
+                }
             } else if (self.park_of_current) {
                 self.waiting.add(*self.park_of_current);
             } else {
-                self.ready.push(body);        // 让出了，下一轮继续
+                self.ready.push(body);   // 让出了，下一轮继续
             }
         }
-        // 就绪协程持续让出时队列不会清空；仍需领取已完成的 I/O。
-        if (!self.ready.empty() && io_engine_pending(self.engine) != 0)
+        // 就绪协程一直在让出时队列不会清空，已经完成的 I/O 也要收。
+        if (!self.ready.empty() && io_engine_pending(self.engine) != 0) {
             wait_io(self, std::chrono::nanoseconds(0));
-        if (once || time_elapsed) break;
+        }
+    }
+}
+
+// ---- call_blocking 的后台线程 ------------------------------------------------------
+
+void background_main(background_threads* pool) noexcept {
+    std::unique_lock<std::mutex> lock(pool->mutex);
+    for (;;) {
+        if (pool->head) {
+            blocking_job* const job = pool->head;
+            pool->head = job->next;
+            if (!pool->head) {
+                pool->tail = 0;
+            }
+            --pool->queued;
+            lock.unlock();
+
+            job->invoke(job->body);
+            // 叫醒以后 job 随等待者的栈帧消失，之后不能再碰它。
+            scheduler_wake(*job->token);
+
+            lock.lock();
+            continue;
+        }
+        if (pool->closing) {
+            return;
+        }
+
+        ++pool->idle;
+        pool->ready.wait(lock);
+        --pool->idle;
+    }
+}
+
+void start_background_thread(background_threads& pool) {
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    try {
+        pool.threads.push_back(std::thread(&background_main, &pool));
+    } catch (const std::exception&) {
+        die("wavvix::call_blocking: 起不来后台线程");
+    }
+#else
+    pool.threads.push_back(std::thread(&background_main, &pool));
+#endif
+}
+
+// runtime 结束时调用：协程都已结束，不会再有调用在路上。
+void stop_background(background_threads& pool) {
+    {
+        std::lock_guard<std::mutex> lock(pool.mutex);
+        pool.closing = true;
+    }
+    pool.ready.notify_all();
+    for (std::size_t i = 0; i < pool.threads.size(); ++i) {
+        pool.threads[i].join();
+    }
+}
+
+// ---- 工作线程和 runtime 的启停 ----------------------------------------------------
+
+void worker_main(runtime_state* state, unsigned index) noexcept {
+    vcpu* const self = new (std::nothrow) vcpu();
+    if (!self) {
+        die("wavvix::runtime: 内存不足");
+    }
+    self->index = index;
+    self->engine = io_engine_create();
+    if (!self->engine || !io_engine_enable_notify(self->engine)) {
+        die("wavvix::runtime: 工作线程建不起事件引擎");
+    }
+    current_vcpu = self;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->workers[index] = self;
+        ++state->started;
+    }
+    state->changed.notify_all();
+
+    worker_loop(*state, *self);
+
+    // runtime_stop 在锁里设停止标志并通知每根线程；拿一下锁，等它通知完再拆引擎。
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+    }
+    current_vcpu = 0;
+    delete self;
+}
+
+void start_worker(runtime_state& state, unsigned index) {
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    try {
+        state.threads.push_back(std::thread(&worker_main, &state, index));
+    } catch (const std::exception&) {
+        die("wavvix::runtime: 起不来工作线程");
+    }
+#else
+    state.threads.push_back(std::thread(&worker_main, &state, index));
+#endif
+}
+
+}  // namespace
+
+vcpu* scheduler_current_vcpu() noexcept {
+    return current_vcpu;
+}
+
+void runtime_start(unsigned workers) {
+    if (workers == 0) {
+        die("wavvix::runtime: 至少要一根工作线程");
+    }
+    runtime_state* const state = new (std::nothrow) runtime_state();
+    if (!state) {
+        die("wavvix::runtime: 内存不足");
+    }
+    state->generation = generations.fetch_add(1, std::memory_order_relaxed) + 1;
+    runtime_state* expected = 0;
+    if (!active_runtime.compare_exchange_strong(expected, state, std::memory_order_acq_rel,
+                                                std::memory_order_acquire)) {
+        die("wavvix::runtime: 一个进程同时只能有一个 runtime");
     }
 
-    self.current = 0;
-    self.running = false;
-    return completed;
+    state->workers.assign(workers, 0);
+    state->threads.reserve(workers);
+    for (unsigned i = 0; i < workers; ++i) {
+        start_worker(*state, i);
+    }
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->changed.wait(lock, [state, workers] { return state->started == workers; });
 }
 
-std::size_t detail::scheduler_run_until(detail::task_state* target) {
-    return scheduler_drive(target, false, std::chrono::steady_clock::time_point(), false);
+void runtime_stop() noexcept {
+    if (fiber::inside()) {
+        die("wavvix::runtime 不能在协程里析构");
+    }
+    runtime_state* const state = active_runtime.load(std::memory_order_acquire);
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        state->changed.wait(lock, [state] { return state->live.load(std::memory_order_acquire) == 0; });
+        state->stopping.store(true, std::memory_order_release);
+        for (std::size_t i = 0; i < state->workers.size(); ++i) {
+            if (!io_engine_notify(state->workers[i]->engine)) {
+                die("wavvix::runtime: 不能叫停工作线程");
+            }
+        }
+    }
+    for (std::size_t i = 0; i < state->threads.size(); ++i) {
+        state->threads[i].join();
+    }
+    stop_background(state->blocking);
+    active_runtime.store(0, std::memory_order_release);
+    delete state;
 }
 
-void detail::scheduler_run_for(std::chrono::nanoseconds duration) {
-    if (duration.count() <= 0) return;
-    scheduler_drive(0, true, deadline_after(duration), false);
+// ---- 协程 --------------------------------------------------------------------------
+
+void coroutine_creation_failed(fiber_failure failure) {
+    if (failure == fiber_failure::invalid_size) {
+        die("wavvix::coroutine: 栈大小不合法，至少 16 KiB");
+    }
+    die("wavvix::coroutine: 内存不足，建不起协程");
 }
 
-void detail::scheduler_yield_main() {
-    scheduler_drive(0, false, std::chrono::steady_clock::time_point(), true);
+task_state* scheduler_task_create() {
+    runtime_state& state = running();
+    task_state* const task = new (std::nothrow) task_state();
+    if (!task) {
+        die("wavvix::coroutine: 内存不足，建不起协程");
+    }
+    state.live.fetch_add(1, std::memory_order_relaxed);
+    return task;
 }
 
-std::size_t run() { return detail::scheduler_run_until(0); }
+void scheduler_task_discard(task_state* task) noexcept {
+    running().live.fetch_sub(1, std::memory_order_relaxed);
+    delete task;
+}
 
-result<scheduler_scope> scheduler_scope::with_workers(unsigned workers) {
-    result<void*> opened = detail::scheduler_scope_enter_with_workers(workers);
-    if (opened.is_err()) return std::move(opened).error();
-    return scheduler_scope(opened.value());
+void scheduler_task_submit(task_state* task, coroutine_control* body, const worker_ref* target) {
+    task->body = body;
+    runtime_state& state = running();
+    if (!target) {
+        push_waiting(state, task);
+        return;
+    }
+    post_task(worker_of(state, *target), task);
+}
+
+void scheduler_task_complete(task_state* task) noexcept {
+    here().completed_task = task;
+}
+
+void scheduler_task_join(task_state* task) {
+    if (!task) {
+        die("wavvix::coroutine::join() 需要一个 joinable 的协程");
+    }
+
+    if (!fiber::inside()) {
+        std::condition_variable finished;
+        std::unique_lock<std::mutex> lock(task->mutex);
+        while (!task->done) {
+            task->blocked = &finished;
+            finished.wait(lock);
+        }
+        task->blocked = 0;
+        lock.unlock();
+        release_task(task);
+        return;
+    }
+
+    park_token token;
+    token.home = &here();
+    bool wait = false;
+    {
+        std::lock_guard<std::mutex> lock(task->mutex);
+        if (!task->done) {
+            if (task->body == token.home->current) {
+                die("wavvix::coroutine 不能 join 自己");
+            }
+            task->waiter = &token;
+            wait = true;
+        }
+    }
+    if (wait) {
+        scheduler_park(token, forever);
+        std::lock_guard<std::mutex> lock(task->mutex);
+        task->waiter = 0;
+    }
+    release_task(task);
+}
+
+void scheduler_task_detach(task_state* task) noexcept {
+    if (!task) {
+        die("wavvix::coroutine::detach() 需要一个 joinable 的协程");
+    }
+    release_task(task);
+}
+
+// ---- 挂起与唤醒 --------------------------------------------------------------------
+
+bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
+    if (!fiber::inside()) {
+        die("wavvix 的挂起只能在协程里调用");
+    }
+    vcpu& self = here();
+
+    token.owner = self.current;
+    token.roused = false;
+    token.parked = false;
+    token.timed = timeout.count() >= 0;
+    if (token.timed) {
+        token.deadline = deadline_after(timeout);
+    }
+    // **不动 token.next**：那是把它串进等待队列的那一方的字段，而那一方是先串好
+    // 再调这里的。动了就会把别人的队列拆开。
+
+    self.park_of_current = &token;
+    fiber::yield();   // 调度器读到 park_of_current 就把我们挪进挂起集合
+    return token.roused;
+}
+
+bool scheduler_wake(park_token& token) {
+    int expected = park_waiting;
+    if (!token.state.compare_exchange_strong(expected, park_woken, std::memory_order_acq_rel,
+                                             std::memory_order_acquire)) {
+        return false;
+    }
+    vcpu* const home = token.home;
+    if (home == current_vcpu) {
+        token.delivered = true;
+        rouse(*home, token);
+        return true;
+    }
+    post_token(*home, token);
+    return true;
+}
+
+bool scheduler_give_up(park_token& token) {
+    int expected = park_waiting;
+    if (token.state.compare_exchange_strong(expected, park_given_up, std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {
+        return true;
+    }
+    // 唤醒已经发出：等它送到再走，对方可能还拿着这个凭据。
+    while (!token.delivered) {
+        scheduler_park(token, forever);
+    }
+    return false;
+}
+
+void scheduler_call_blocking(void (*invoke)(void*), void* body) {
+    background_threads& pool = running().blocking;
+
+    park_token token;
+    token.home = &here();
+    blocking_job job = {invoke, body, &token, 0};
+    {
+        std::lock_guard<std::mutex> lock(pool.mutex);
+        if (pool.tail) {
+            pool.tail->next = &job;
+        } else {
+            pool.head = &job;
+        }
+        pool.tail = &job;
+        ++pool.queued;
+        if (pool.idle < pool.queued && pool.threads.size() < background_limit) {
+            start_background_thread(pool);
+        }
+    }
+    pool.ready.notify_one();
+    scheduler_park(token, forever);
+}
+
+// ---- I/O --------------------------------------------------------------------------
+
+bool scheduler_bind(io_handle handle, const void*& owner) {
+    if (!current_vcpu || !fiber::inside()) {
+        die("wavvix 的 I/O 只能在协程里调用");
+    }
+    vcpu& self = *current_vcpu;
+    if (owner == &self) {
+        return true;
+    }
+    if (owner) {
+        die("wavvix::net: 这个连接已经在另一根工作线程上读写过，不能换线程用；"
+            "要在别的协程里用它，把那根协程派到同一根线程上：coroutine(scheduler::current(), ...)");
+    }
+    if (!io_engine_adopt(self.engine, handle)) {
+        return false;
+    }
+    owner = &self;
+    return true;
+}
+
+void scheduler_io(io_request& request, std::chrono::nanoseconds timeout) {
+    if (!fiber::inside()) {
+        die("wavvix 的 I/O 只能在协程里调用");
+    }
+    vcpu& self = here();
+
+    park_token token;
+    request.waiter = &token;
+    request.next = 0;
+    request.transferred = 0;
+    request.failure = 0;
+    if (!io_engine_arm(self.engine, request)) {
+        return;   // 已经有结果了，不挂起
+    }
+    if (scheduler_park(token, timeout)) {
+        return;   // 引擎叫醒的，结果在 request 里
+    }
+
+    // 到点了。请引擎撤掉这次操作。
+    if (!io_engine_cancel(self.engine, request)) {
+        // **撤销通知还会来**（Windows 的 CancelIoEx）。必须等到它回来，否则
+        // request 连同里面的 OVERLAPPED 会随这个栈帧消失，而内核还握着它的地址。
+        // 这一次不设时限：等的是一个必然会到的通知。
+        scheduler_park(token, forever);
+    }
+    // 不管那个通知里说什么，调用方看到的都是超时——它已经不要这个结果了。
+    request.transferred = -1;
+    request.failure = ETIMEDOUT;
+}
+
+}  // namespace detail
+
+scheduler scheduler::current() {
+    detail::vcpu* const self = detail::current_vcpu;
+    if (!self) {
+        detail::die("wavvix::scheduler::current() 只能在协程里调用");
+    }
+    const detail::worker_ref ref = {self->index, detail::running().generation};
+    return scheduler(ref);
+}
+
+scheduler runtime::worker(unsigned index) const {
+    detail::runtime_state& state = detail::running();
+    if (index >= state.workers.size()) {
+        detail::die("wavvix::runtime::worker: 下标越界");
+    }
+    const detail::worker_ref ref = {index, state.generation};
+    return scheduler(ref);
+}
+
+void yield() {
+    if (detail::fiber::inside()) {
+        detail::fiber::yield();
+        return;
+    }
+    std::this_thread::yield();
+}
+
+void sleep_for(std::chrono::nanoseconds duration) {
+    if (duration.count() <= 0) {
+        return;
+    }
+    if (detail::fiber::inside()) {
+        detail::park_token token;
+        detail::scheduler_park(token, duration);
+        return;
+    }
+    std::this_thread::sleep_for(duration);
 }
 
 }  // namespace wavvix

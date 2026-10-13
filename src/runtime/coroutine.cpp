@@ -1,13 +1,13 @@
-// coroutine 的平台无关部分：控制块、trampoline、每线程状态、ASan 注解。
-// 换栈的汇编在 src/runtime/asm/ 下，栈的分配与复用在 src/mem/ 下。
+// coroutine 的平台无关部分：控制块、trampoline、ASan 注解。
+// 换栈的汇编在 src/runtime/asm/ 下；栈向分配器要，见 src/mem/stack.cpp。
 
 #include <culib/detail/fiber.h>
 
 #include <atomic>
 #include <cstdint>
-#include <limits>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <new>
 
 #include "coroutine_detail.h"
@@ -15,10 +15,8 @@
 // 未实现换栈汇编的目标必须在编译期报错。
 #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
 /* x86_64（SysV / PE，GAS / MASM 四份）和 arm64（AAPCS，ELF / Mach-O 共一份）都有 */
-#elif (defined(__i386__) || defined(_M_IX86)) && defined(_WIN32)
-/* 32 位 Windows：MinGW 用 GAS，MSVC 用 MASM。 */
 #else
-#  error "culib 的协程还没有这个 (平台, 架构) 的换栈汇编。已覆盖：x86_64、arm64、Windows x86。缺：32 位非 Windows。见 src/runtime/asm/"
+#  error "culib 的协程只支持 64 位目标：x86_64 和 arm64。见 src/runtime/asm/"
 #endif
 
 #if WAVVIX_DETAIL_ASAN_FIBERS
@@ -95,53 +93,21 @@ unsigned long long current_thread_serial() noexcept {
     return thread_serial;
 }
 
-struct runtime_thread_state {
-    runtime_thread_state() noexcept : exit_owner(0), exit_cleanup(0) {}
-    mem::detail::stack_pool stacks;
-    void* exit_owner;
-    void (*exit_cleanup)(void*);
-};
-
-runtime_thread_state* current_pool() noexcept {
-    void* const value = runtime_thread_state_current();
-    if (value == &runtime_thread_exit_marker) return 0;
-    if (value) return static_cast<runtime_thread_state*>(value);
-    void* const storage = std::malloc(sizeof(runtime_thread_state));
-    if (!storage) return 0;
-    runtime_thread_state* const state = new (storage) runtime_thread_state();
-    if (!runtime_thread_state_set(state)) {
-        state->~runtime_thread_state();
-        std::free(storage);
-        return 0;
-    }
-    return state;
-}
-
-stack_memory pooled_allocate_stack(std::size_t usable) noexcept {
-    runtime_thread_state* const state = current_pool();
-    return state ? state->stacks.allocate(usable) : mem::detail::allocate_stack(usable);
-}
-
-void pooled_release_stack(const stack_memory& memory) noexcept {
-    if (!memory.base) return;
-    void* const value = runtime_thread_state_current();
-    runtime_thread_state* const state = value == &runtime_thread_exit_marker
-        ? 0 : static_cast<runtime_thread_state*>(value);
-    if (state) state->stacks.release(memory);
-    else mem::detail::release_stack(memory);
-}
-
-void die(const char* what) {
+[[noreturn]] void die(const char* what) {
     // 误用的诊断直接写 stderr：不分配内存、不依赖流
     std::fputs(what, stderr);
     std::fputc('\n', stderr);
     std::abort();
 }
 
-// 对齐到不小于 align 的地址（往低地址取，因为我们是从栈顶往下摆）
 char* align_down(char* pointer, std::size_t align) {
     const std::size_t value = reinterpret_cast<std::size_t>(pointer);
     return reinterpret_cast<char*>(value & ~(align - 1));
+}
+
+char* align_up(char* pointer, std::size_t align) {
+    const std::size_t value = reinterpret_cast<std::size_t>(pointer);
+    return reinterpret_cast<char*>((value + align - 1) & ~(align - 1));
 }
 
 // 新栈的第一帧。入口函数返回就落到 finish（见汇编），所以这里只负责跑 body。
@@ -160,78 +126,60 @@ void trampoline(context_transfer from) {
     die("wavvix::coroutine: 已结束的协程又被切进来了");
 }
 
-}  // namespace
-
-char runtime_thread_exit_marker;
-
-void runtime_thread_exit(void* value) noexcept {
-    // 退出回调可能早于其他线程局部对象的析构；之后直接释放栈，不再建池。
-    if (!runtime_thread_state_set(&runtime_thread_exit_marker)) return;
-    if (value == &runtime_thread_exit_marker) return;
-    runtime_thread_state* const state = static_cast<runtime_thread_state*>(value);
-    if (!state) return;
-    if (state->exit_cleanup) state->exit_cleanup(state->exit_owner);
-    state->~runtime_thread_state();
-    std::free(state);
-}
-
-void release_thread_stack_pool() noexcept {
-    void* const value = runtime_thread_state_current();
-    if (value && value != &runtime_thread_exit_marker)
-        static_cast<runtime_thread_state*>(value)->stacks.drain();
-}
-
-bool register_runtime_thread_exit(void* owner, void (*cleanup)(void*)) noexcept {
-    runtime_thread_state* const state = current_pool();
-    if (!state) return false;
-    state->exit_owner = owner;
-    state->exit_cleanup = cleanup;
-    return true;
-}
-
-void unregister_runtime_thread_exit(void* owner) noexcept {
-    void* const value = runtime_thread_state_current();
-    if (!value || value == &runtime_thread_exit_marker) return;
-    runtime_thread_state* const state = static_cast<runtime_thread_state*>(value);
-    if (state->exit_owner == owner) {
-        state->exit_owner = 0;
-        state->exit_cleanup = 0;
+// 第一次 resume 时在当前线程上分配栈，摆好第一帧。协程从此绑在这根线程上，栈也在这根线程上释放。
+void allocate_stack_for(coroutine_control* control) {
+    const stack_memory memory = mem::detail::allocate_stack(control->usable);
+    if (!memory.base) {
+        die("wavvix::coroutine: 栈内存不够，跑不起协程；检查 ulimit -v、容器的内存上限、vm.overcommit_memory "
+            "或 Windows 的提交限制。debug 构建每根栈的保护页多占 2 个内存映射，"
+            "Linux 默认的 vm.max_map_count 下最多约 3 万根");
     }
+    char* const top = align_down(memory.base + memory.total, 16);
+    control->memory = memory;
+    control->usable = static_cast<std::size_t>(top - (memory.base + memory.guard));
+    control->context = wavvix_make_context(top, control->usable, &trampoline);
 }
+
+}  // namespace
 
 coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_size,
                                     std::size_t body_align, void** body_slot,
                                     fiber_failure* failure) noexcept {
-    if (failure) *failure = fiber_failure::invalid_size;
+    if (failure) {
+        *failure = fiber_failure::invalid_size;
+    }
     const std::size_t max = (std::numeric_limits<std::size_t>::max)();
-    if (stack_size < 16 * 1024 || body_size > max - sizeof(coroutine_control)) return 0;
-    std::size_t extra = sizeof(coroutine_control) + body_size;
-    if (body_align > max - extra) return 0;
-    extra += body_align;
-    if (extra > max - 64 || stack_size > max - (extra + 64)) return 0;
-    extra += 64;
-    const stack_memory memory = pooled_allocate_stack(stack_size + extra);
-    if (!memory.base) {
-        if (failure) *failure = fiber_failure::resource_exhausted;
+    if (stack_size < 16 * 1024 || stack_size > max / 2) {
         return 0;
     }
-    if (failure) *failure = fiber_failure::none;
+    if (body_align > max - sizeof(coroutine_control) || body_size > max - sizeof(coroutine_control) - body_align) {
+        return 0;
+    }
 
-    char* cursor = memory.base + memory.total;
-    cursor = align_down(cursor - sizeof(coroutine_control), sizeof(void*) * 2);
-    coroutine_control* const control = new (cursor) coroutine_control;
+    char* const block = static_cast<char*>(std::malloc(sizeof(coroutine_control) + body_align + body_size));
+    if (!block) {
+        if (failure) {
+            *failure = fiber_failure::resource_exhausted;
+        }
+        return 0;
+    }
+    if (failure) {
+        *failure = fiber_failure::none;
+    }
 
-    cursor = align_down(cursor - body_size, body_align < 16 ? 16 : body_align);
-    *body_slot = cursor;
+    coroutine_control* const control = new (block) coroutine_control;
+    *body_slot = align_up(block + sizeof(coroutine_control), body_align);
 
     control->context = 0;
     control->resumer = 0;
     control->invoke = 0;
     control->destroy = 0;
-    control->body = cursor;
-    control->memory = memory;
-    control->usable = static_cast<std::size_t>(cursor - (memory.base + memory.guard));
-    control->owner = 0;   // 第一次 resume 才绑线程
+    control->body = *body_slot;
+    control->memory.base = 0;
+    control->memory.total = 0;
+    control->memory.guard = 0;
+    control->usable = stack_size;   // 还没有栈：先记下要多大
+    control->owner = 0;             // 第一次 resume 才绑线程
     control->started = false;
     control->finished = false;
 #if WAVVIX_DETAIL_ASAN_FIBERS
@@ -247,29 +195,34 @@ void coroutine_arm(coroutine_control* control, void (*invoke)(void*),
                    void (*destroy)(void*)) noexcept {
     control->invoke = invoke;
     control->destroy = destroy;
-    // 栈顶就是 body 下面那一格：控制块和 body 在它上面，协程的帧从这里往下长
-    control->context =
-        wavvix_make_context(static_cast<char*>(control->body), control->usable, &trampoline);
 }
 
 void coroutine_destroy(coroutine_control* control) noexcept {
-    if (control->started && !control->finished) {
-        // 半路丢掉：栈上的局部对象不会析构。这是已定的语义（设计文档 3.6），
-        // 但 debug 下吭一声，因为它常常是忘了跑完而不是有意放弃。
 #ifndef NDEBUG
+    // 半路丢掉：栈上的局部对象不会析构。这是已定的语义（设计文档 3.6），
+    // 但 debug 下吭一声，因为它常常是忘了跑完而不是有意放弃。
+    if (control->started && !control->finished) {
         std::fputs("wavvix::coroutine: 协程没跑完就销毁了，栈上的局部对象不会析构\n", stderr);
-#endif
     }
-    // 未启动的 body 由销毁路径析构；运行过的 body 已由 trampoline 析构。
-    if (control->destroy && !control->started) control->destroy(control->body);
-    const stack_memory memory = control->memory;
+#endif
+    // 没开始跑的 body 由这里析构；跑过的 body 已由 trampoline 析构。
+    if (control->destroy && !control->started) {
+        control->destroy(control->body);
+    }
+    if (control->memory.base) {
+        mem::detail::release_stack(control->memory);
+    }
     control->~coroutine_control();
-    pooled_release_stack(memory);
+    std::free(control);
 }
 
 bool coroutine_resume(coroutine_control* control) noexcept {
-    if (control->finished) return false;
-    if (current == control) die("wavvix::coroutine: 协程不能 resume 自己");
+    if (control->finished) {
+        return false;
+    }
+    if (current == control) {
+        die("wavvix::coroutine: 协程不能 resume 自己");
+    }
 
     // 首次 resume 绑定线程；跨线程迁移会破坏 TLS 和异常状态。
     const unsigned long long here = current_thread_serial();
@@ -279,9 +232,12 @@ bool coroutine_resume(coroutine_control* control) noexcept {
         std::fprintf(stderr,
                      "wavvix::coroutine: 协程绑定在第 %llu 根线程上，不能从第 %llu 根 resume。\n"
                      "  换线程会让 thread_local 和异常状态在协程脚下变掉，而且不会报错。\n"
-                     "  要跨线程调度就得等 M:N 支持，见 coroutine 设计文档 3.12。\n",
+                     "  见 coroutine 设计文档 3.12。\n",
                      control->owner, here);
         std::abort();
+    }
+    if (!control->started) {
+        allocate_stack_for(control);
     }
 
     // current 由 resume() 独占更新，以便嵌套 resume 后恢复外层协程。
@@ -294,7 +250,9 @@ bool coroutine_resume(coroutine_control* control) noexcept {
     asan_after_switch(leaving);
     current = leaving;
 
-    if (!control->finished) control->context = back.context;
+    if (!control->finished) {
+        control->context = back.context;
+    }
     return !control->finished;
 }
 
@@ -310,7 +268,9 @@ std::uintptr_t coroutine_stack_base_address(const coroutine_control* control) no
 
 void coroutine_yield() noexcept {
     coroutine_control* const self = current;
-    if (!self) die("wavvix::coroutine::yield() 只能在协程里调用");
+    if (!self) {
+        die("wavvix::yield() 只能在协程里调用");
+    }
 
     asan_before_switch(self, 0);
     const context_transfer back = wavvix_jump_context(self->resumer, 0);

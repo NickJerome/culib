@@ -123,31 +123,27 @@ superpowers/specs/2026-10-03-variant-design.md）。
 
 ## [`coroutine.h`](../include/culib/coroutine.h)
 
-公开 `coroutine` 是有栈协程的线程式句柄。`scheduler_scope` 管理当前操作系统线程的 vCPU，创建任务即提交，`join()` 等指定任务结束：
+公开 `coroutine` 是有栈协程的线程式句柄，构造即提交，`join()` 等指定任务结束。协程都跑在 [`runtime`](#runtimeh) 的工作线程上：
 
     #include <culib/coroutine.h>
-    wavvix::scheduler_scope runtime;
+    wavvix::runtime runtime(4);
     wavvix::coroutine worker([&](int count) {
         for (int i = 0; i < count; ++i) {
             produce(i);
-            wavvix::coroutine::yield();
+            wavvix::yield();
         }
     }, 3);
     worker.join();
 
-需要额外工作 vCPU 时，检查 `scheduler_scope::with_workers(n)` 的返回结果；此后新建的 `coroutine` 可在其他系统线程立即开始运行，参见[调度器用法](scheduler.md)。`coroutine` 可移动；仍可 `join()` 的句柄析构会
-`std::terminate()`，所以离开作用域前要 `join()` 或 `detach()`。`detach()` 只放弃句柄，
-本地任务仍需由同一 vCPU 的 `join()`、`run()`、`sleep_for()` 或作用域收尾推进；远端任务由工作 vCPU 执行，外层作用域收尾会等待它。
-构造成功表示任务已提交。栈大小非法会抛出 `std::invalid_argument`，资源不足会抛出 `std::system_error`；无异常构建在这些情况下终止进程。默认构造和移动后的空句柄不可 `join()` 或 `detach()`，误用会打印诊断并终止。
-构造函数与 `std::thread` 一样接受函数及其参数；参数先按值保存，运行时移动到函数中。
-需要自定义栈大小时用 `coroutine::with_stack(bytes, function, args...)`。
-协程只在合作式调度点切换，CPU 密集循环不会自动抢占主线程。
+`coroutine(f, args...)` 排进全局等待队列，空闲的工作线程取走；`coroutine(target, f, args...)` 派给指定的工作线程（`runtime.worker(i)`，或协程里的 `scheduler::current()`）。协程第一次运行后就固定在那根线程上。
 
-`inside()` 判断当前代码是否运行在协程中。协程里执行真正阻塞系统线程的函数会连带阻塞
-同一 vCPU 的其他协程。库提供的 TCP、同步、睡眠接口会在等待时让出协程。
+`coroutine` 可移动；仍可 `join()` 的句柄析构会 `std::terminate()`，所以离开作用域前要 `join()` 或 `detach()`。`join()` 在协程里只挂起当前协程，在协程外阻塞当前线程；`detach()` 只放弃句柄，runtime 析构时照样等它结束。
+构造函数与 `std::thread` 一样接受函数及其参数；参数先按值保存，运行时移动到函数中，传引用用 `std::ref`。需要自定义栈大小时用 `coroutine::with_stack(bytes, function, args...)`。没有 runtime、栈大小不合法、内存不够时打印诊断后终止；默认构造和移动后的空句柄不可 `join()` 或 `detach()`，误用同样打印诊断后终止。
+
+协程只在让出点切换：等 I/O、等锁、`sleep_for`、`yield`、`join`。协程里执行真正阻塞线程的函数会连带卡住同一根工作线程上的其他协程，这种调用交给 `call_blocking`。
 底层手动换栈原语在 `detail::fiber`，不是公开的任务接口。实现背景见
 [协程设计记录](superpowers/specs/2026-10-04-coroutine-design.md)；当前用法见
-[协程调度器](scheduler.md)。
+[协程运行时](runtime.md)。
 
 ## [`defer.h`](../include/culib/defer.h)
 
@@ -367,8 +363,8 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
   - **`fatal` 不会 abort**，它只是最高的一级。一句日志顺手把进程杀掉是「意外」，
     要优雅退出用 `culib/os.h` 的停止标志。
   - **sink 是进程全局的**，所以写的时候用的是 `std::mutex` 而不是
-    `wavvix::mutex`——多个 vCPU 会同时写同一个 sink，而协程锁只在一个 vCPU 内部
-    有效。那一小段会真的挡住 vCPU，但它只是「格式化好的一行交给系统调用」。
+    `wavvix::mutex`——日志在协程外也会写（`main`、普通线程），而 `wavvix::mutex::lock`
+    只能在协程里调用。那一小段会真的挡住工作线程，但它只是「格式化好的一行交给系统调用」。
 
 ## [`net.h`](../include/culib/net.h)
 
@@ -380,7 +376,7 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
         wavvix::net::resolve("localhost", 8080);
 
 `parse` 只接受数字 IPv4/IPv6；输入主机名请用 `resolve`。后者调用系统 DNS 解析器，
-**会阻塞当前线程并分配内存**，所以服务器宜在运行 vCPU 前解析，别在热路径里悄悄调用。
+**会阻塞当前线程并分配内存**，所以在协程外调用，或者在协程里经 `call_blocking` 调用，别在热路径里悄悄调用。
 `resolve` 保留系统返回的地址顺序，不替调用方猜该连哪一个。`endpoint::to_string()`
 把端口一起写出，IPv6 用 `[::1]:8080` 形状。详情见 `examples/net_address.cpp`。
 
@@ -502,45 +498,46 @@ value() / error() 取错分支会打印信息并终止程序，release 同样检
 容器自身不分配内存；值或错误自身可能分配（如 error 的说明字符串）。
 不支持引用类型；需要引用语义时使用指针。
 
-## [`scheduler.h`](../include/culib/scheduler.h)
+## [`runtime.h`](../include/culib/runtime.h)
 
-完整背景见 [设计文档](superpowers/specs/2026-10-04-scheduler-design.md)。
+协程运行时：协程是这个库的并发模型，这个头文件管工作线程。
 
-调度器：协程是这个库的并发模型，这个头文件是它的主入口。
+    int main() {
+        wavvix::runtime runtime(4);                             // 4 根工作线程
+        wavvix::coroutine task([] {
+            wavvix::sleep_for(std::chrono::milliseconds(10));   // 睡的是协程，不是线程
+            do_work();
+        });
+        task.join();
+    }                                                           // 等所有协程结束再停线程
 
-    wavvix::spawn([] {
-        wavvix::sleep_for(std::chrono::milliseconds(10));   // 睡的是协程，不是线程
-        do_work();
-    }).value();
-    wavvix::spawn([] { other_work(); }).value();
-    wavvix::run();                                          // 跑到全部结束
+### 一个进程一个 runtime
 
-`spawn()` 用于不需要句柄的任务，也可写 `spawn(function, args...)`；参数按值保存，传引用要用 `std::ref`。它和 `spawn_with_stack()` 都返回 `result<void>`；失败时不提交任务。非法栈大小是 `out_of_range`，协程对象或栈分配失败是 `resource_exhausted`。示例用 `.value()` 让提交失败立即报错；服务程序可检查 `is_err()` 并处理。指定栈大小时用 `spawn_with_stack(bytes, function, args...)`，整数函数参数不会被误认为栈大小。需要等待指定任务时，用上面的 `coroutine` 和 `join()`。
+`main` 建 runtime、起协程、等协程；协程都在工作线程上跑。一个进程同时只能有一个，析构时等所有协程（含 detach 的）结束，再停掉工作线程。工作线程数没有默认值：容器里 `hardware_concurrency()` 报的是宿主机的核数，只有调用方知道该用几根。
 
-确实只能调用阻塞接口时，可用 [`blocking_pool`](blocking-pool.md) 把该调用交给系统工作线程；等待期间同一 vCPU 的其他协程继续运行。
+### 协程不迁移
 
-### vCPU 模型
+协程排进全局等待队列，空闲的工作线程取走一根；**第一次运行后就绑在那根线程上**，不会再换（为什么不换：换线程会让
+`thread_local` 的地址、`errno` 和异常状态在协程脚下变掉，编译器还会把 `thread_local` 的地址缓存在寄存器里，那条库修不了）。
+要让几根协程在同一根线程上，用 `coroutine(scheduler::current(), ...)` 或 `coroutine(runtime.worker(i), ...)`。
 
-**一根操作系统线程 = 一个 vCPU**，上面跑一个调度器和它的一堆协程。可用
-`scheduler_scope` 管理其生命周期；不用显式作用域时，首次创建任务会按需建立 vCPU。
-要并行使用多核，调用 `scheduler_scope::with_workers(n)` 显式启动 `n` 根额外工作线程；检查返回的 `result`。
-之后新构造的 `coroutine` 轮询提交给工作 vCPU，`spawn()` 仍留在当前 vCPU。
+于是：**不同工作线程上的协程是并行的**，共享数据要加锁；**同一根工作线程上的协程不会并行**，只在让出时切换。
 
-协程**第一次运行后绑在该 vCPU 上**，不会被偷到别的 vCPU 去（为什么不偷：换线程会让
-thread_local 和异常状态在协程脚下变掉，见 coroutine 设计文档 3.12，那条库修不了）。
+### 阻塞调用
 
-### 不 spawn 就什么都不初始化
+`call_blocking(f, args...)` 把没法协作式让出的调用放到后台线程上，等待期间只挂起这根协程，工作线程照常跑别的。
+返回值和异常都带回调用处，参数和直接调用一样传。后台线程整个 runtime 共用，最多 64 根。
 
-不显式初始化时，第一次创建任务才建立当前线程的 vCPU。
+### 不建 runtime 就什么都不初始化
+
 一个不用协程的程序（比如 CLI）一分钱不付，「不在 main 之前执行任何代码」也没破。
 
 ### 当前边界
 
-事件引擎在 Linux、macOS、Windows 上分别使用 epoll、kqueue、IOCP。
-[sync.h](../include/culib/sync.h) 提供协程感知的同步原语，
-[net.h](../include/culib/net.h) 提供 TCP 连接、监听和收发。调度策略是轮转，不承诺抢占或优先级。
-分期和已完成范围见 [调度器设计](superpowers/specs/2026-10-04-scheduler-design.md)
-及 [超时与同步原语](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
+事件引擎在 Linux、macOS、Windows 上分别使用 epoll、kqueue、IOCP，每根工作线程一个，工作线程空闲时就睡在里面。
+[sync.h](../include/culib/sync.h) 提供协程感知的同步原语和 channel，
+[net.h](../include/culib/net.h) 提供 TCP 和 UDP。调度不抢占、没有优先级，全局等待队列先进先出。
+用法细节见[协程运行时](runtime.md)。
 
 ## [`stopwatch.h`](../include/culib/stopwatch.h)
 
@@ -613,38 +610,44 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 
 完整背景见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
 
-协程感知的同步原语：等不到的时候**挂起这根协程，而不是卡住整个 vCPU**。
+协程感知的同步原语：等不到的时候**挂起这根协程，工作线程照常跑别的协程**。等待者和唤醒者可以在不同的工作线程上。
 
     wavvix::mutex lock;
-    wavvix::spawn([&] {
+    wavvix::coroutine task([&] {
         wavvix::lock_guard<wavvix::mutex> held(lock);
         update(shared);                    // 这中间可以放心让出
-    }).value();
+    });
 
-名字和 std:: 对齐（`lock` / `try_lock` / `try_lock_for` / `unlock`、
-`acquire` / `release`、`wait` / `notify_one` / `notify_all`），所以看名字就会用。
+名字和 std:: 对齐（`lock` / `try_lock` / `try_lock_for` / `unlock`、`wait` / `notify_one` / `notify_all`），所以看名字就会用。
+`channel<T>` 是容量固定的先进先出队列：`send` 满了挂起，`receive` 空了挂起，`close` 以后 `receive` 把剩下的取完就返回 `false`。
 
 ### 先问一句：你真的需要锁吗
 
-**同一个 vCPU 上的协程是协作式调度的，不会被抢占。** 所以一段**不让出**的临界区
+**不同工作线程上的协程是并行的**，它们共享的数据要么加锁，要么让用到它的协程都在同一根工作线程上。
+
+**同一根工作线程上的协程是协作式调度的，不会被抢占。** 所以那些协程之间，一段**不让出**的临界区
 本来就是原子的——中间没有任何别的协程能插进来，加锁只是多几条指令。
 
-    ++counter;                             // 不需要锁
-    map[key] = value;                      // 不需要锁
+    ++counter;                             // 只在同一根线程上的协程之间共享：不需要锁
+    map[key] = value;
 
-需要锁的是**临界区中间会让出**的情形，那时别的协程真的会跑起来并看到中间状态：
+需要锁的是**数据跨工作线程共享**，或者**临界区中间会让出**的情形，那时别的协程真的会跑起来并看到中间状态：
 
     auto text = read_file(path);           // 这里会让出
     cache[path] = text;                    // 回来时 cache 可能已经被别人动过
 
-判据就一句：**这段代码从读到写之间，有没有可能让出。** 有就要锁，没有就别加。
+判据就两句：**这段代码从读到写之间，有没有可能让出；有没有别的线程在改它。** 都没有就别加。
 
-### 跨线程不要用这些
+### 和 std::mutex 怎么选
 
-这里的每个类型都**只在自己那个 vCPU 内部有效**：它们一个原子操作都没有，因为
-协程不跨 vCPU 迁移，同一个 vCPU 上不存在并发。要在**线程**之间同步，用
-`std::mutex` 那一套——但注意在协程里调 `std::mutex::lock()` 阻塞住的是整根 vCPU，
-连带卡死它上面所有协程。
+`wavvix::mutex` 拿不到时挂起协程，工作线程去跑别的；`std::mutex` 拿不到时卡住整根工作线程，
+连带它上面所有协程。临界区里会让出（I/O、睡眠、等锁）就只能用 `wavvix::mutex`。
+协程外的线程（`main`、普通线程）也要拿的锁用 `std::mutex`：`wavvix::mutex::lock` 只能在协程里调用，协程外只能 `try_lock`。
+
+### 要 semaphore 时用 channel
+
+限制同时在跑的协程数，用容量为 N 的 `channel`：`send` 占一个名额，满了就挂起；`receive` 还一个。
+[`examples/sync.cpp`](../examples/sync.cpp) 第 5 节是完整写法。原来的 `semaphore` 去掉了：channel 能做它做的事，同一件事只留一种写法。
 
 ### 这里没有 rwlock
 

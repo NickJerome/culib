@@ -4,24 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
-
-#if defined(_WIN32)
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#  ifndef NOMINMAX
-#    define NOMINMAX
-#  endif
-#  define PSAPI_VERSION 2
-#  include <windows.h>
-#  include <psapi.h>
-#endif
 
 #if defined(__SANITIZE_ADDRESS__)
 #  define WAVVIX_TEST_ASAN 1
@@ -50,48 +35,6 @@ struct tracked {
 
 }  // namespace
 
-#if (defined(__linux__) && !WAVVIX_TEST_ASAN) || defined(_WIN32)
-namespace {
-
-std::size_t virtual_memory_kb() {
-#if defined(_WIN32)
-    PROCESS_MEMORY_COUNTERS_EX counters = {};
-    if (!::K32GetProcessMemoryInfo(::GetCurrentProcess(),
-            reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) return 0;
-    return static_cast<std::size_t>(counters.PrivateUsage / 1024);
-#else
-    std::FILE* const input = std::fopen("/proc/self/status", "r");
-    if (!input) return 0;
-    char line[256];
-    std::size_t size = 0;
-    while (std::fgets(line, sizeof(line), input)) {
-        if (std::strncmp(line, "VmSize:", 7) == 0) {
-            unsigned long parsed = 0;
-            if (std::sscanf(line + 7, "%lu", &parsed) == 1) size = parsed;
-            break;
-        }
-    }
-    std::fclose(input);
-    return size;
-#endif
-}
-
-#if defined(_WIN32)
-struct late_fiber_dtor {
-    bool enabled = false;
-    ~late_fiber_dtor() {
-        if (!enabled) return;
-        std::unique_ptr<fiber> fibers[64];
-        for (int i = 0; i < 64; ++i) fibers[i].reset(new fiber([] {}));
-    }
-};
-
-thread_local late_fiber_dtor late_fibers;
-#endif
-
-}  // namespace
-#endif
-
 TEST(fiber, runs_nothing_until_resumed) {
     int ran = 0;
     fiber worker([&] { ++ran; });
@@ -114,7 +57,9 @@ TEST(fiber, resumes_where_it_yielded) {
     });
 
     int resumes = 0;
-    while (worker.resume()) ++resumes;
+    while (worker.resume()) {
+        ++resumes;
+    }
 
     EXPECT(resumes, ==, 3);              // 三次 yield，第四次切进去就跑完了
     EXPECT(produced.size(), ==, 3u);
@@ -128,7 +73,9 @@ TEST(fiber, keeps_its_own_stack_across_yields) {
     fiber worker([] {
         int counter = 0;
         char filler[1024];
-        for (int i = 0; i < 1024; ++i) filler[i] = static_cast<char>(i);
+        for (int i = 0; i < 1024; ++i) {
+            filler[i] = static_cast<char>(i);
+        }
         for (int round = 0; round < 4; ++round) {
             ++counter;
             fiber::yield();
@@ -138,7 +85,8 @@ TEST(fiber, keeps_its_own_stack_across_yields) {
         EXPECT(filler[7], ==, 7);
         EXPECT(filler[1023], ==, static_cast<char>(1023));
     });
-    while (worker.resume()) {}
+    while (worker.resume()) {
+    }
     EXPECT(worker.done(), ==, true);
 }
 
@@ -169,8 +117,7 @@ TEST(fiber, answers_whether_we_are_inside_one) {
     EXPECT(fiber::inside(), ==, false);
 }
 
-TEST(fiber, carries_a_capturing_lambda_without_heap) {
-    // body 就地构造在协程自己的栈顶，所以捕获的东西要能正常用
+TEST(fiber, carries_a_capturing_lambda) {
     const std::string prefix = "前缀";
     std::string collected;
     int times = 0;
@@ -182,7 +129,8 @@ TEST(fiber, carries_a_capturing_lambda_without_heap) {
             fiber::yield();
         }
     });
-    while (worker.resume()) {}
+    while (worker.resume()) {
+    }
 
     EXPECT(times, ==, 3);
     EXPECT(collected, ==, "前缀前缀前缀");
@@ -196,10 +144,31 @@ TEST(fiber, destroys_a_body_that_never_ran) {
         // 因为 lambda 没法写成 T() 的形状。
         fiber worker{tracked()};
         EXPECT(worker.ok(), ==, true);
-        EXPECT(live_bodies, ==, 1);      // 构造时拷进了协程栈
+        EXPECT(live_bodies, ==, 1);      // 构造时拷进了控制块
     }
     // 没 resume 过就销毁 → body 要被析构，否则就漏了
     EXPECT(live_bodies, ==, 0);
+}
+
+TEST(fiber, allocates_its_stack_on_first_resume) {
+    // 排着队还没跑的协程不占栈：栈在第一次 resume 时才分配。
+    std::uintptr_t local_address = 0;
+    fiber worker([&] {
+        int local = 0;
+        local_address = reinterpret_cast<std::uintptr_t>(&local);
+        fiber::yield();
+    });
+    EXPECT(worker.stack_base_address(), ==, std::uintptr_t(0));
+
+    EXPECT(worker.resume(), ==, true);
+    const std::uintptr_t base = worker.stack_base_address();
+    EXPECT(base != 0, ==, true);
+#if !WAVVIX_TEST_ASAN
+    // ASan 会把局部变量放到另一块 fake stack 上，所以只在不开 ASan 时核对地址落在栈里。
+    // 栈底下还有 debug 构建的一页保护页，页最大 64 KiB（arm64 Linux 可以配成这么大）。
+    EXPECT(local_address > base && local_address - base < worker.stack_size() + 64 * 1024, ==, true);
+#endif
+    EXPECT(worker.resume(), ==, false);
 }
 
 TEST(fiber, reports_its_usable_stack) {
@@ -208,15 +177,16 @@ TEST(fiber, reports_its_usable_stack) {
     EXPECT(small.ok(), ==, true);
     EXPECT(large.ok(), ==, true);
 
-    // 至少有要求的那么多（控制块和 body 另外算，所以不会刚好相等）
+    // 第一次 resume 之前就是要求的大小；分配时按页取整，只会更大
+    EXPECT(small.stack_size(), ==, std::size_t(32 * 1024));
+    EXPECT(large.stack_size(), ==, std::size_t(512 * 1024));
+    EXPECT(small.resume(), ==, false);
+    EXPECT(large.resume(), ==, false);
     EXPECT(small.stack_size() >= 32 * 1024, ==, true);
     EXPECT(large.stack_size() >= 512 * 1024, ==, true);
-    EXPECT(large.stack_size() > small.stack_size(), ==, true);
 
-    // 默认那个
     fiber standard([] {});
-    EXPECT(standard.stack_size() >= wavvix::default_stack_size, ==, true);
-    EXPECT(standard.stack_size() < 256 * 1024, ==, true);
+    EXPECT(standard.stack_size(), ==, wavvix::default_stack_size);
 }
 
 TEST(fiber, nests_one_inside_another) {
@@ -233,10 +203,12 @@ TEST(fiber, nests_one_inside_another) {
         trace += "外2";
         fiber::yield();          // 内层还没跑完，外层先让出
         trace += "外3";
-        while (inner.resume()) {}
+        while (inner.resume()) {
+        }
         trace += "外4";
     });
-    while (outer.resume()) {}
+    while (outer.resume()) {
+    }
 
     EXPECT(trace, ==, "外1内1外2外3内2外4");
 }
@@ -263,22 +235,26 @@ TEST(fiber, runs_many_of_them_interleaved) {
     while (any_alive) {
         any_alive = false;
         for (std::size_t i = 0; i < workers.size(); ++i) {
-            if (workers[i]->resume()) any_alive = true;
+            if (workers[i]->resume()) {
+                any_alive = true;
+            }
         }
         ++rounds;
     }
 
     // 8 次迭代，每次以 yield() 结束，所以第 9 轮才是各个 body 返回的那一轮
     EXPECT(rounds, ==, 9);
-    for (std::size_t i = 0; i < ticks.size(); ++i) EXPECT(ticks[i], ==, 8);
-    for (std::size_t i = 0; i < workers.size(); ++i) delete workers[i];
+    for (std::size_t i = 0; i < ticks.size(); ++i) {
+        EXPECT(ticks[i], ==, 8);
+    }
+    for (std::size_t i = 0; i < workers.size(); ++i) {
+        delete workers[i];
+    }
 }
 
 // 协程绑定在**第一次 resume 它的那根线程**上，不是构造它的那根。
 // 所以「主线程造一批、分给工作线程跑」是允许的，而迁移会 abort。
-//
-// **abort 那一侧不在单元测试里**：进程会死，测不了。那条用独立程序验证过，
-// 三种情形（owner 还活着、owner 已退出、允许的首次绑定）的输出贴在设计文档 3.13。
+// abort 那一侧在 tests/fault/runtime_faults.cpp 里。
 TEST(fiber, binds_to_the_thread_that_first_resumes_it) {
     int ran = 0;
     fiber worker([&] {
@@ -289,7 +265,8 @@ TEST(fiber, binds_to_the_thread_that_first_resumes_it) {
 
     // 在工作线程上从头跑到尾：绑定发生在那边，不在主线程
     std::thread worker_thread([&] {
-        while (worker.resume()) {}
+        while (worker.resume()) {
+        }
     });
     worker_thread.join();
 
@@ -297,117 +274,40 @@ TEST(fiber, binds_to_the_thread_that_first_resumes_it) {
     EXPECT(worker.done(), ==, true);
 }
 
-// 直接比较栈分配基址；ASan 的局部变量地址可能落在另一块 fake stack 上。
-TEST(fiber, reuses_minimum_stacks_from_the_pool) {
-    std::uintptr_t first = 0;
-    std::uintptr_t second = 0;
-    {
-        fiber a([] {}, 16 * 1024);
-        first = a.stack_base_address();
-        while (a.resume()) {}
-    }
-    {
-        fiber b([] {}, 16 * 1024);
-        second = b.stack_base_address();
-        while (b.resume()) {}
-    }
-    EXPECT(first != 0, ==, true);
-    EXPECT(first == second, ==, true);
-}
-
-TEST(fiber, rounds_stack_requests_into_buckets) {
-    std::uintptr_t small_first = 0;
-    std::uintptr_t small_again = 0;
-    {
-        fiber a([] {}, 40 * 1024);
-        small_first = a.stack_base_address();
-        while (a.resume()) {}
-    }
-    {
-        fiber b([] {}, 50 * 1024);
-        small_again = b.stack_base_address();
-        while (b.resume()) {}
-    }
-    EXPECT(small_first == small_again, ==, true);
-
-    std::uintptr_t large = 0;
-    {
-        fiber c([] {}, 4 * 1024 * 1024);
-        large = c.stack_base_address();
-        while (c.resume()) {}
-    }
-    EXPECT(large != 0, ==, true);
-    EXPECT(large != small_first, ==, true);
-}
-
-// 大量复用之后每根协程的栈还是干净可用的——池化最怕的是「上一根留下的东西
-// 把下一根搞坏」，所以这里每根都把自己的栈写满再核对。
-TEST(fiber, keeps_pooled_stacks_usable_after_heavy_churn) {
+// 栈来自分配器，释放后会被别的协程复用；每根都把自己的栈写满再核对，
+// 确认上一根留下的东西不会把下一根搞坏。
+TEST(fiber, keeps_reused_stacks_usable_after_heavy_churn) {
     for (int round = 0; round < 200; ++round) {
         bool verified = false;
         fiber worker([&] {
             char filler[4096];
-            for (int i = 0; i < 4096; ++i) filler[i] = static_cast<char>(round + i);
+            for (int i = 0; i < 4096; ++i) {
+                filler[i] = static_cast<char>(round + i);
+            }
             fiber::yield();
             bool ok = true;
             for (int i = 0; i < 4096; ++i) {
-                if (filler[i] != static_cast<char>(round + i)) ok = false;
+                if (filler[i] != static_cast<char>(round + i)) {
+                    ok = false;
+                }
             }
             verified = ok;
         }, 64 * 1024);
-        while (worker.resume()) {}
+        while (worker.resume()) {
+        }
         EXPECT(verified, ==, true);
     }
 }
-
-#if (defined(__linux__) && !WAVVIX_TEST_ASAN) || defined(_WIN32)
-TEST(fiber, releases_cached_stacks_when_runtime_closes) {
-    std::size_t cached = 0;
-    {
-        wavvix::scheduler_scope runtime;
-        wavvix::coroutine worker = wavvix::coroutine::with_stack(
-            7u * 1024 * 1024, [] {});
-        if (!EXPECT(worker.joinable(), ==, true)) return;
-        worker.join();
-        cached = virtual_memory_kb();
-    }
-    const std::size_t after = virtual_memory_kb();
-    EXPECT(cached != 0, ==, true);
-    EXPECT(after != 0, ==, true);
-    EXPECT(cached > after && cached - after >= 4u * 1024, ==, true);
-
-    wavvix::scheduler_scope next_runtime;
-    wavvix::coroutine next([] {});
-    if (!EXPECT(next.joinable(), ==, true)) return;
-    next.join();
-}
-
-TEST(fiber, releases_cached_stacks_when_threads_exit) {
-    const std::size_t before = virtual_memory_kb();
-    EXPECT(before != 0, ==, true);
-    for (int round = 0; round < 20; ++round) {
-        std::thread worker([] {
-#if defined(_WIN32)
-            late_fibers.enabled = true;
-#endif
-            std::unique_ptr<fiber> fibers[64];
-            for (int i = 0; i < 64; ++i) fibers[i].reset(new fiber([] {}));
-        });
-        worker.join();
-    }
-    const std::size_t after = virtual_memory_kb();
-    EXPECT(after != 0, ==, true);
-    // 未清理时每根线程至少留下 8 MiB；容忍系统分配器的地址空间保留。
-    EXPECT(after <= before || after - before < 128u * 1024, ==, true);
-}
-#endif
 
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
 TEST(fiber, restores_resumer_stack_for_exceptions) {
     int caught = 0;
     const auto throw_and_catch = [&] {
-        try { throw 7; }
-        catch (int) { ++caught; }
+        try {
+            throw 7;
+        } catch (int) {
+            ++caught;
+        }
     };
     fiber outer([&] {
         fiber inner([&] {
@@ -440,7 +340,8 @@ TEST(fiber, lets_exceptions_throw_and_catch_inside) {
             caught = error;
         }
     });
-    while (worker.resume()) {}
+    while (worker.resume()) {
+    }
     EXPECT(caught, ==, "协程里的异常");
 }
 #endif

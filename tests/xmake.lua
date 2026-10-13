@@ -57,27 +57,16 @@ target("os_stop_test")
     end
 target_end()
 
-target("scheduler_deadlock_test")
+-- 运行时的误用和内存耗尽都是打印诊断后终止，每种情形在子进程里跑；还替换了全局 nothrow new。
+target("runtime_faults_test")
     set_kind("binary")
     set_default(false)
     set_group("tests")
     if not is_plat("windows") then set_languages("c++11") end
     set_warnings("allextra", "pedantic", "error")
-    if is_plat("windows") then add_defines("_CRT_SECURE_NO_WARNINGS") end
-    add_files("fault/scheduler_deadlock.cpp")
-    add_deps("culib")
-    add_tests("default")
-target_end()
-
--- 独立进程替换 nothrow new，验证提交前分配失败不会留下半个协程。
-target("coroutine_allocation_test")
-    set_kind("binary")
-    set_default(false)
-    set_group("tests")
-    if not is_plat("windows") then set_languages("c++11") end
-    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
     add_includedirs("../src")
-    add_files("fault/coroutine_allocation.cpp")
+    add_files("fault/runtime_faults.cpp")
     add_deps("culib")
-    add_tests("default")
+    add_tests("default", {run_timeout = 120000})
 target_end()

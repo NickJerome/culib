@@ -1,6 +1,6 @@
 # culib API 与用法
 
-本文按 2026-10-10 的公共头文件整理，覆盖 `include/culib/` 的公共类型、函数、成员、枚举、常量和使用宏。接口以当前源码为准；`detail` 命名空间、`WAVVIX_DETAIL_*` 宏和 `src/` 内部接口不属于公共 API。
+本文按 2026-10-13 的公共头文件整理，覆盖 `include/culib/` 的公共类型、函数、成员、枚举、常量和使用宏。接口以当前源码为准；`detail` 命名空间、`WAVVIX_DETAIL_*` 宏和 `src/` 内部接口不属于公共 API。
 
 签名块用于查阅，省略实现和模板约束的展开；模板允许的类型、所有权与失败行为在正文说明。标为“示例”的 C++ 代码块都是独立程序，可保存成 `.cpp` 编译；输出中的时间、路径、进程号等动态值会随环境变化。
 
@@ -16,10 +16,9 @@
 - [字节缓冲 buffer](#bytes)
 - [命令行 flag](#flag)
 - [配置文件 config](#config)
+- [运行时 runtime](#runtime)
 - [协程句柄 coroutine](#coroutine)
-- [调度器 scheduler](#scheduler)
 - [协程同步 sync](#sync)
-- [阻塞任务池 blocking_pool](#blocking-pool)
 - [网络 net](#net)
 - [文件系统 fs](#fs)
 - [内存分配 mem](#mem)
@@ -34,7 +33,7 @@
 <a id="integration"></a>
 ## 接入与共同约定
 
-culib 是 C++11 静态库，命名空间为 `wavvix`。各公共头文件可独立包含。`<culib/culib.h>` 汇总普通公共头文件，**测试需另行包含 `<culib/test.h>`**；32 位平台的汇总头文件不包含 `mem.h`。
+culib 是 C++11 静态库，命名空间为 `wavvix`，只支持 64 位目标（x86_64、arm64）。各公共头文件可独立包含。`<culib/culib.h>` 汇总普通公共头文件，**测试需另行包含 `<culib/test.h>`**。
 
 假设源码放在应用的 `third_party/culib/`：
 
@@ -65,13 +64,12 @@ target("app")
 | `bytes.h` | `buffer` | `wavvix` |
 | `flag.h` | `option<T>`、五种选项别名、`init`、`parse` | `wavvix::flag` |
 | `config.h` | `config` | `wavvix` |
+| `runtime.h` | `runtime`、`scheduler`、`yield`、`sleep_for`、`call_blocking` | `wavvix` |
 | `coroutine.h` | `coroutine` | `wavvix` |
-| `scheduler.h` | `scheduler_scope`、`spawn`、`yield`、`sleep_for`、`run` | `wavvix` |
-| `sync.h` | `mutex`、`semaphore`、`condition_variable`、`lock_guard` | `wavvix` |
-| `blocking_pool.h` | `blocking_pool` | `wavvix` |
+| `sync.h` | `mutex`、`condition_variable`、`channel`、`lock_guard` | `wavvix` |
 | `net.h` | `endpoint`、`resolve`、TCP 与 UDP 类型 | `wavvix::net` |
 | `fs.h` | 路径、文件、目录、`output_file`、`entry` | `wavvix::fs` |
-| `mem.h` | `alloc`、`free` 等七个函数，仅支持 64 位 | `wavvix::mem` |
+| `mem.h` | `alloc`、`free` 等七个函数 | `wavvix::mem` |
 | `time.h` | `timestamp`、`date_time`、时间解析和格式化 | `wavvix` |
 | `stopwatch.h` | `stopwatch`、`format_duration` | `wavvix` |
 | `log.h` | 日志配置、`level`、`LOG_*` | `wavvix::log` 与宏 |
@@ -84,8 +82,8 @@ target("app")
 
 - 文本和路径使用 UTF-8。`string_view` 不拥有数据；原字符串销毁、移动或重新分配后，不应继续使用旧视图。
 - 可恢复错误通常返回 `result<T>`，先检查 `is_err()` / `is_ok()` 再取对应分支；空值用 `optional<T>`。取错分支、越界等编程错误会诊断并终止。
-- `result` 不保证捕获所有 C++ 异常：例如 `std::string`、`std::vector` 分配和用户回调仍可能抛出异常。协程函数和工作线程函数不得让异常逃出。
-- 同步文件 I/O、DNS 和用户的阻塞函数可能阻塞系统线程；协程中需要让出时使用协程网络接口，或交给 `blocking_pool`。
+- `result` 不保证捕获所有 C++ 异常：例如 `std::string`、`std::vector` 分配和用户回调仍可能抛出异常。协程函数不得让异常逃出，逃出会 `std::terminate()`；`call_blocking` 把函数抛出的异常带回调用处。
+- 同步文件 I/O、DNS 和用户的阻塞函数可能阻塞系统线程；协程中需要让出时使用协程网络接口，或交给 `call_blocking`。
 - 普通值类型可复制；资源句柄的可复制、可移动性在各节列出。库不隐式替换全局 `malloc/new`。
 
 <a id="result"></a>
@@ -578,15 +576,81 @@ int main() {
 
 输出：`8080 true`。文件加载与 flag 组合见 [examples/config.cpp](examples/config.cpp)。
 
+<a id="runtime"></a>
+## 运行时：`<culib/runtime.h>`
+
+命名空间：`wavvix`。`runtime` 起一组工作线程，协程都在工作线程上跑；`main` 只起协程、等协程。
+
+```cpp
+class runtime {
+public:
+    explicit runtime(unsigned workers);
+    ~runtime();
+    scheduler worker(unsigned index) const;
+};
+
+class scheduler {
+public:
+    static scheduler current();
+};
+
+void yield();
+void sleep_for(std::chrono::nanoseconds duration);
+
+template<class F, class... Args>
+auto call_blocking(F&& function, Args&&... args) -> decltype(function(args...));
+```
+
+| API | 用法与边界 |
+| --- | --- |
+| `runtime(n)` | 起 `n` 根工作线程，`n` 没有默认值。一个进程同时只能有一个，前一个析构后可以再建；析构等所有协程（含 detach 的）结束，再停掉工作线程和后台线程。不可复制。`n` 为 0、已经有一个、在协程里析构，都打印诊断后终止 |
+| `worker(i)` | 第 `i` 根工作线程的句柄，从 0 数起；越界打印诊断后终止 |
+| `scheduler` | 一根工作线程的句柄，用来派协程：`coroutine(target, f)`。可复制，可交给别的线程；拿已经结束的 runtime 的句柄派协程，打印诊断后终止 |
+| `scheduler::current()` | 当前协程所在的工作线程；协程外调用打印诊断后终止 |
+| `yield()` | 协程里让出，排到本线程就绪队列的末尾；协程外等同 `std::this_thread::yield()` |
+| `sleep_for(d)` | 协程里只挂起当前协程；协程外睡当前线程。零或负时长立即返回 |
+| `call_blocking(f, args...)` | 在后台线程上调用 `f(args...)`，等待期间只挂起当前协程。返回 `f` 的返回值，`f` 抛出的异常在这里重新抛出；参数和直接调用一样传，不拷贝。后台线程整个 runtime 共用，最多 64 根。协程外直接调用。没有超时也不能取消 |
+
+协程第一次运行后固定在那根工作线程上。不同工作线程上的协程是并行的，共享数据要加锁；同一根工作线程上的协程只在让出时切换，不会并行。库不检测死锁：所有协程都挂起、谁也叫不醒谁时，`runtime` 析构会一直等。生命周期、内存和栈溢出的说明见 [docs/runtime.md](docs/runtime.md)。
+
+示例：阻塞的调用交给后台线程，工作线程同时跑别的协程。
+
+```cpp
+#include <culib/coroutine.h>
+#include <chrono>
+#include <iostream>
+#include <thread>
+
+int slow_square(int x) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    return x * x;
+}
+
+int main() {
+    wavvix::runtime runtime(1);
+    int square = 0;
+    int other = 0;
+    wavvix::coroutine caller([&] { square = wavvix::call_blocking(slow_square, 7); });
+    wavvix::coroutine busy([&] { other = 1; });
+    caller.join();
+    busy.join();
+    std::cout << square << ' ' << other << '\n';
+}
+```
+
+输出：`49 1`。只有一根工作线程，`busy` 是在 `caller` 等后台线程的那 20 ms 里跑完的。
+
 <a id="coroutine"></a>
 ## 协程句柄：`<culib/coroutine.h>`
 
-命名空间：`wavvix`。`coroutine` 提供类似 `std::thread` 的持有型句柄，构造即提交。
+命名空间：`wavvix`。`coroutine` 提供类似 `std::thread` 的持有型句柄，构造即提交。`coroutine.h` 包含了 `runtime.h`。
 
 ```cpp
 coroutine() noexcept;
 template<class F, class... Args>
 explicit coroutine(F&& body, Args&&... args);
+template<class F, class... Args>
+coroutine(scheduler target, F&& body, Args&&... args);
 template<class F, class... Args>
 static coroutine with_stack(std::size_t stack_size, F&& body, Args&&... args);
 ~coroutine() noexcept;
@@ -595,21 +659,18 @@ coroutine& operator=(coroutine&& other) noexcept;
 bool joinable() const noexcept;
 void join();
 void detach() noexcept;
-static bool inside() noexcept;
-static void yield();
 
-// 包含 coroutine.h 或 scheduler.h 后可见
 const std::size_t default_stack_size = 240 * 1024;
 ```
 
+- `coroutine(f, args...)` 和 `with_stack` 排进全局等待队列，由空闲的工作线程取走；`coroutine(target, f, args...)` 派给 `target` 那根工作线程。
 - 默认构造和移出后的句柄为空。禁止复制；向仍持有任务的句柄移动赋值会终止。
-- `joinable()` 表示持有待 `join/detach` 的句柄，并不表示函数还在运行。`join()` 等该任务完成，`detach()` 放弃句柄，两者都会使句柄变空。
-- **仍可 join 的对象析构会 `std::terminate()`**，必须先 `join()` 或 `detach()`。空句柄调用这两个操作也是误用。
-- `join/detach` 须在创建句柄的 vCPU 上调用，并早于其调度器关闭；不能自己 join 自己。`inside()` 判断当前是否在协程栈上，`yield()` 主动让出。
-- 参数按值保存、运行时移动传入；引用参数用 `std::ref`。引用捕获必须活到任务完成。
-- 构造时栈大小非法抛 `std::invalid_argument`，资源不足抛 `std::system_error`；无异常构建中终止。用户函数的异常须在函数内处理。需要显式处理提交失败时用 `spawn()`。
-- 默认请求 240 KiB 可用栈，实际分配还包含对齐和回调存储的开销。用 `with_stack(bytes, fn, args...)` 指定更大的栈。
-- **release 构建里栈溢出不会被检测**：没有保护页，用超了会写坏别的协程的内存；debug 构建有保护页，溢出当场崩溃。递归深度随输入增长的代码要自己限制深度，规则见[调度器文档](docs/scheduler.md#栈溢出)。
+- `joinable()` 表示持有待 `join/detach` 的句柄，并不表示函数还在运行。`join()` 等该任务完成，`detach()` 放弃句柄，两者都会使句柄变空。`join()` 在协程里只挂起当前协程，在协程外阻塞当前线程；哪根线程都可以 join，但不能 join 自己。
+- **仍可 join 的对象析构会 `std::terminate()`**，必须先 `join()` 或 `detach()`。空句柄调用这两个操作也是误用，打印诊断后终止。
+- 参数按值保存、运行时移动传入；引用参数用 `std::ref`。新协程可能马上在别的线程上开始跑，引用和捕获的对象必须活到任务完成。
+- 没有 runtime、栈大小非法（小于 16 KiB）、内存不够时打印诊断后终止。用户函数的异常须在函数内处理，逃出会 `std::terminate()`。
+- 默认请求 240 KiB 可用栈，栈在协程第一次运行时才分配。用 `with_stack(bytes, fn, args...)` 指定更大的栈，整数参数不会和栈大小混淆。
+- **release 构建里栈溢出不会被检测**：没有保护页，用超了会写坏别的内存；debug 构建有保护页，溢出当场崩溃。递归深度随输入增长的代码要自己限制深度，规则见[运行时文档](docs/runtime.md#栈溢出)。
 
 示例：
 
@@ -621,7 +682,7 @@ const std::size_t default_stack_size = 240 * 1024;
 void add(int& total, int amount) { total += amount; }
 
 int main() {
-    wavvix::scheduler_scope runtime;
+    wavvix::runtime runtime(2);
     int total = 0;
     wavvix::coroutine task(add, std::ref(total), 3);
     task.join();
@@ -629,76 +690,12 @@ int main() {
 }
 ```
 
-输出：`3`。调度是协作式的：单 vCPU 下，创建本身不立即切走当前执行流；`join/yield/sleep_for`、协程 I/O 或作用域收尾会推进任务。
-
-<a id="scheduler"></a>
-## 调度器：`<culib/scheduler.h>`
-
-命名空间：`wavvix`。一根承载协程的系统线程称为一个 vCPU。
-
-```cpp
-class scheduler_scope {
-public:
-    scheduler_scope();
-    static result<scheduler_scope> with_workers(unsigned workers);
-    ~scheduler_scope() noexcept;
-    scheduler_scope(scheduler_scope&& other) noexcept;
-};
-
-template<class F> result<void> spawn(F&& body);
-template<class F, class Arg, class... Args>
-result<void> spawn(F&& body, Arg&& arg, Args&&... args);
-template<class F> result<void> spawn_with_stack(std::size_t stack_size, F&& body);
-template<class F, class Arg, class... Args>
-result<void> spawn_with_stack(std::size_t stack_size, F&& body, Arg&& arg, Args&&... args);
-
-void yield();
-void sleep_for(std::chrono::nanoseconds duration);
-std::size_t run();
-std::size_t scheduled() noexcept;
-```
-
-| API | 用法与边界 |
-| --- | --- |
-| `scheduler_scope()` | 管理当前线程运行时；可嵌套，最外层析构跑完任务并清理。可移动构造，不可复制或赋值，须在创建线程析构 |
-| `with_workers(n)` | 建立额外 `n` 根工作系统线程，`n > 0`；检查返回结果。此后该 vCPU 创建的 `coroutine` 轮询分发到工作 vCPU |
-| `spawn` / `spawn_with_stack` | 提交到当前 vCPU，不返回句柄；参数规则与 `coroutine` 相同。非法栈大小为 `out_of_range`，资源不足为 `resource_exhausted`，失败时任务不提交 |
-| `yield` | 协程中让出；已初始化 vCPU 的主栈上推进一轮就绪任务 |
-| `sleep_for` | 协程中挂起自身，vCPU 主栈上调度其他任务；无 vCPU 时阻塞系统线程。零或负时长立即返回 |
-| `run` | 运行当前 vCPU 的任务直到完成，返回本次完成数量；无任务返回 `0`。不能从协程内调用 |
-| `scheduled` | 当前 vCPU 排队或挂起的协程数，包含本轮还没运行的任务，不含当前正在执行的协程 |
-
-`spawn` 始终留在调用它的 vCPU；启用工作池后，工作 vCPU 内创建的子协程也留在该线程。任务首次执行后不迁移。多 vCPU 共享数据须使用系统线程同步（如 `std::mutex`），`wavvix::mutex` 仅用于单 vCPU。
-
-RAII 收尾会等待任务，**不会取消无限循环或无限等待**；应用须先让任务退出。启用工作池的作用域析构会停止该池，即使外面还有普通作用域。省略 `scheduler_scope` 时可 `spawn` 后调用 `run()`，但必须在系统线程退出前完成所有挂起任务。
-
-示例：在两个工作 vCPU 上执行任务。
-
-```cpp
-#include <culib/coroutine.h>
-#include <iostream>
-#include <utility>
-
-int main() {
-    auto created = wavvix::scheduler_scope::with_workers(2);
-    if (created.is_err()) { std::cerr << created.error() << '\n'; return 1; }
-    wavvix::scheduler_scope runtime = std::move(created).value();
-    int first = 0;
-    int second = 0;
-    wavvix::coroutine a([&] { first = 1; });
-    wavvix::coroutine b([&] { second = 2; });
-    a.join();
-    b.join();
-    std::cout << first + second << '\n';
-}
-```
-
-输出：`3`。本地不持有句柄的用法见 [examples/scheduler.cpp](examples/scheduler.cpp)，详细生命周期见 [docs/scheduler.md](docs/scheduler.md)。
+输出：`3`。全局队列、派到指定线程、detach 的用法见 [examples/runtime.cpp](examples/runtime.cpp)。
 
 <a id="sync"></a>
 ## 协程同步：`<culib/sync.h>`
 
-命名空间：`wavvix`。这些对象不可复制或移动，供**同一个 vCPU** 内协程使用；等待时让出系统线程上的执行机会，不用于跨线程同步。对象必须活到所有持有者、等待者结束。
+命名空间：`wavvix`。这些对象不可复制或移动；等不到时挂起当前协程，工作线程照常跑别的协程。等待者和唤醒者可以在不同的工作线程上。对象必须活到所有持有者、等待者结束，析构时还有协程在等它，打印诊断后终止。
 
 ```cpp
 class mutex {
@@ -711,17 +708,6 @@ public:
     void unlock();
 };
 
-class semaphore {
-public:
-    explicit semaphore(std::ptrdiff_t initial);
-    ~semaphore();
-    void acquire();
-    bool try_acquire();
-    bool try_acquire_for(std::chrono::nanoseconds timeout);
-    void release(std::ptrdiff_t amount = 1);
-    std::ptrdiff_t count() const;
-};
-
 class condition_variable {
 public:
     condition_variable();
@@ -732,6 +718,14 @@ public:
     void notify_all();
 };
 
+template<class T> class channel {
+public:
+    explicit channel(std::size_t capacity);
+    void send(T value);
+    bool receive(T& out);
+    void close();
+};
+
 template<class Mutex> class lock_guard {
 public:
     explicit lock_guard(Mutex& target);
@@ -739,11 +733,11 @@ public:
 };
 ```
 
-`mutex` 非递归，按等待顺序交接。`lock/acquire/wait` 和带时限的等待只能在协程内调用；`try_lock/try_acquire` 不挂起，可在同 vCPU 主栈上调用。`try_*_for` 的零或负时长只尝试一次，返回 `false` 表示没拿到。
-
-`semaphore` 初值与释放数量须非负，计数溢出会终止；`count()` 返回当前可用计数。限制并发时先 `acquire()`，完成后 `release()`，可用 `defer` 保证归还。
+`mutex` 非递归，`unlock` 把锁直接交给排在最前面的等待者，所以不会饿死。`lock`、`try_lock_for`、`wait`、`wait_for` 只能在协程里调用，在协程外打印诊断后终止；`try_lock`、`unlock`、`notify_one`、`notify_all` 不挂起，在哪里都能调用。`try_lock_for` 的零或负时长只尝试一次，返回 `false` 表示没拿到。
 
 条件变量等待前须持有传入的锁；等待期间释放，返回前重新持有。`wait_for` 超时返回 `false`，零或负时长立即返回 `false` 且仍持有锁。用 `while` 重查条件；重新拿锁可能继续等待，超时时长不是严格的函数返回上限。`lock_guard` 构造加锁、析构解锁。
+
+`channel<T>` 是容量固定的先进先出队列，`capacity` 至少为 1。`send` 满了挂起，`receive` 空了挂起，这两个只能在协程里调用；`close` 在哪里都能调用，叫醒所有在等的协程，之后 `receive` 把剩下的取完就返回 `false`。往已经关闭的 channel `send`、重复 `close`、容量为 0，都打印诊断后终止。限制同时在跑的协程数用容量为 N 的 channel：`send` 占一个名额，`receive` 还一个。
 
 示例：
 
@@ -753,81 +747,28 @@ public:
 #include <iostream>
 
 int main() {
-    wavvix::mutex lock;
-    wavvix::condition_variable changed;
-    bool ready = false;
-    int value = 0;
-    wavvix::scheduler_scope runtime;
-    wavvix::coroutine consumer([&] {
-        wavvix::lock_guard<wavvix::mutex> held(lock);
-        while (!ready) changed.wait(lock);
-        std::cout << value << '\n';
-    });
+    wavvix::runtime runtime(2);
+    wavvix::channel<int> numbers(4);
+    long sum = 0;
     wavvix::coroutine producer([&] {
-        wavvix::lock_guard<wavvix::mutex> held(lock);
-        value = 42;
-        ready = true;
-        changed.notify_one();
+        for (int i = 1; i <= 100; ++i) {
+            numbers.send(i);
+        }
+        numbers.close();
     });
-    consumer.join();
+    wavvix::coroutine consumer([&] {
+        int value = 0;
+        while (numbers.receive(value)) {
+            sum += value;
+        }
+    });
     producer.join();
+    consumer.join();
+    std::cout << sum << '\n';
 }
 ```
 
-输出：`42`。信号量与时限等待的更多用法见 [examples/sync.cpp](examples/sync.cpp)。
-
-<a id="blocking-pool"></a>
-## 阻塞任务池：`<culib/blocking_pool.h>`
-
-命名空间：`wavvix`。`blocking_pool` 支持移动构造、移动赋值，禁止复制；通过工厂创建，没有公共默认构造。
-
-```cpp
-static result<blocking_pool> create(unsigned workers = 1);
-~blocking_pool() noexcept;
-blocking_pool(blocking_pool&& other) noexcept;
-blocking_pool& operator=(blocking_pool&& other) noexcept;
-unsigned size() const noexcept;
-template<class F> result<void> run(F&& function);
-template<class F, class Arg, class... Args>
-result<void> run(F&& function, Arg&& arg, Args&&... args);
-```
-
-`create(0)` 返回错误。`run()` 只能由 culib 协程调用：把函数交给系统工作线程，挂起调用者，完成后回到原 vCPU；多个 vCPU 可以共享池。函数返回值不会通过 `run()` 传回，需要结果时捕获局部变量写入，等 `run()` 成功后读取。
-
-参数按值保存，引用用 `std::ref`。任务函数不得让异常逃出，也不能调用要求在 culib 协程内运行的等待接口。没有超时或取消；池必须活到全部 `run()` 返回，析构会等待任务完成。推荐先创建池，再创建调度器作用域。
-
-示例：把一个阻塞等待交给工作线程。
-
-```cpp
-#include <culib/blocking_pool.h>
-#include <culib/coroutine.h>
-#include <chrono>
-#include <iostream>
-#include <thread>
-#include <utility>
-
-int main() {
-    auto created = wavvix::blocking_pool::create(2);
-    if (created.is_err()) return 1;
-    wavvix::blocking_pool pool = std::move(created).value();
-    bool ok = false;
-    wavvix::scheduler_scope runtime;
-    wavvix::coroutine task([&] {
-        int answer = 0;
-        auto done = pool.run([&] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            answer = 42;
-        });
-        if (done.is_err()) return;
-        std::cout << answer << '\n';
-        ok = true;
-    });
-    task.join();
-    return ok ? 0 : 1;
-}
-```
-
-输出：`42`。实际使用可把系统解析器、同步文件操作或第三方阻塞函数放进任务。
+输出：`5050`。锁、条件变量与时限等待的更多用法见 [examples/sync.cpp](examples/sync.cpp)。
 
 <a id="net"></a>
 ## 网络：`<culib/net.h>`
@@ -851,7 +792,7 @@ public:
 result<std::vector<endpoint>> resolve(string_view host, std::uint16_t port);
 ```
 
-`endpoint` 无公共默认构造；`parse` 接受数字 IPv4/IPv6，端口单独传入。IPv6 可带数字 scope ID，如 `fe80::1%3`。`to_string` 带端口，IPv6 用方括号包住地址。`resolve` 是显式的同步系统解析，可能阻塞并分配内存；返回结果保持系统顺序，由调用者选择地址。可在启动协程前解析，或交给 `blocking_pool`。
+`endpoint` 无公共默认构造；`parse` 接受数字 IPv4/IPv6，端口单独传入。IPv6 可带数字 scope ID，如 `fe80::1%3`。`to_string` 带端口，IPv6 用方括号包住地址。`resolve` 是显式的同步系统解析，可能阻塞并分配内存；返回结果保持系统顺序，由调用者选择地址。在协程外直接调用；在协程里用 `call_blocking(wavvix::net::resolve, host, port)`，免得卡住工作线程。
 
 ### TCP
 
@@ -882,13 +823,13 @@ public:
 };
 ```
 
-两个句柄均不可复制；默认构造为关闭状态，移动转移所有权，析构关闭。`listen`、`local_endpoint` 可在协程外调用；`connect/accept/read/write` 供调度器协程调用。
+两个句柄均不可复制；默认构造为关闭状态，移动转移所有权，析构关闭。`listen`、`local_endpoint` 可在协程外调用；`connect/accept/read/write` 只能在协程里调用。
 
 `listen` 的端口为 `0` 时由系统分配，再用 `local_endpoint` 查询实际端口。IPv6 监听仅接收 IPv6，IPv4 需单独监听。
 
 每次 I/O 必须显式传入超时，任意负时长表示一直等，超时返回 `error_kind::timeout`。TCP 读写可只完成一部分：完整发送或按长度接收须循环，超时预算也需由调用方决定是否共享。非零长度的 `read` 成功返回 `0` 表示 EOF；零长度读写直接返回 `0`。非零长度配空指针返回错误。
 
-监听器首次 `accept` 关联 vCPU；新接受的流首次读写前可以移交工作 vCPU。关联后须在同一 vCPU 使用。关闭、销毁或移动覆盖句柄前，必须结束该句柄上的等待操作；缓冲区须活到 I/O 返回。
+套接字第一次读写（监听器是第一次 `accept`，`connect` 出来的流在连接时）绑到当时所在的工作线程，之后在别的工作线程上读写打印诊断后终止。要在另一根协程里用同一个连接，把那根协程派到同一根线程上：`coroutine(scheduler::current(), ...)`。`accept` 出来、还没读写过的连接可以交给任何一根线程上的协程。关闭、销毁或移动覆盖句柄前，必须结束该句柄上的等待操作；缓冲区须活到 I/O 返回。
 
 示例：本机建立连接并传输一个字节，不依赖外部服务器。
 
@@ -908,7 +849,7 @@ int main() {
     if (local.is_err()) return 1;
     bool received = false;
     bool sent = false;
-    wavvix::scheduler_scope runtime;
+    wavvix::runtime runtime(2);
     wavvix::coroutine server([&] {
         auto incoming = opened.value().accept(seconds(2));
         if (incoming.is_err()) return;
@@ -956,7 +897,7 @@ public:
 };
 ```
 
-不可复制，默认关闭，可移动，析构关闭。绑定、查询可在协程外调用，收发须在协程中。时限、线程归属与缓冲区生命周期规则同 TCP。`udp_datagram::from` 是来源地址，`size` 是接收到的字节数，数据写入调用方缓冲区。
+不可复制，默认关闭，可移动，析构关闭。绑定、查询可在协程外调用，收发只能在协程里。时限、绑定工作线程与缓冲区生命周期规则同 TCP。`udp_datagram::from` 是来源地址，`size` 是接收到的字节数，数据写入调用方缓冲区。
 
 一次发送对应一个完整报文，不拆成多包。缓冲区太小会消费该报文并返回 `out_of_range`。UDP 没有 EOF：零字节报文也是真报文，`send_to(nullptr, 0, ...)` 会发送，`recv_from(nullptr, 0, ...)` 会接收零字节报文；非空报文用零容量接收会因截断报错。
 
@@ -979,7 +920,7 @@ int main() {
     if (destination.is_err()) return 1;
     bool received = false;
     bool sent = false;
-    wavvix::scheduler_scope runtime;
+    wavvix::runtime runtime(2);
     wavvix::coroutine receiver([&] {
         char bytes[32];
         auto packet = server.value().recv_from(bytes, sizeof bytes, seconds(2));
@@ -1099,7 +1040,7 @@ int main() {
 <a id="mem"></a>
 ## 内存分配：`<culib/mem.h>`
 
-命名空间：`wavvix::mem`，当前仅支持 64 位 Linux、macOS、Windows。
+命名空间：`wavvix::mem`，支持 Linux、macOS、Windows。协程栈也由它分配。
 
 想让标准容器和 `new` 改用本分配器，依赖 `culib_new_override` 即可，代码不用改（见下文「显式覆盖全局分配」）；下面这组函数是 C 语义的底层接口。
 
@@ -1152,7 +1093,7 @@ int main() {
 
 | xmake 目标 | 范围与接入 |
 | --- | --- |
-| `culib_new_override` | 支持的 64 位平台上的对象目标；应用添加 `add_deps("culib", "culib_new_override")`，覆盖全局 `new/delete`；Windows 上只对链接了它的模块生效 |
+| `culib_new_override` | 对象目标；应用添加 `add_deps("culib", "culib_new_override")`，覆盖全局 `new/delete`；Windows 上只对链接了它的模块生效 |
 | `culib_malloc_override` | Linux 共享库；`xmake build culib_malloc_override` 后，在进程启动时用 `LD_PRELOAD=/绝对路径/libculib_malloc_override.so ./app`，覆盖 C 分配入口。C++ 的 `new/delete` 由 libstdc++ 转到 `malloc/free`，同样走本分配器；共享库只依赖 libc |
 
 一次只选一套全局覆盖，不能再链接另一套同名覆盖。Windows/macOS 的 `culib_new_override` 不等于替换全部 C `malloc/free`。Linux 覆盖中的 C11 `aligned_alloc` 按标准要求大小是对齐倍数，和上面的 `mem::aligned_alloc` 不同。
@@ -1473,10 +1414,10 @@ int main() {
 | `WAVVIX_NO_LOG_SHORT_NAMES` | 关闭 `LOG_*`，保留 `WAVVIX_LOG_*` |
 | `WAVVIX_NO_TEST_SHORT_NAMES` | 关闭 `TEST/EXPECT`，保留正式宏 |
 
-`WAVVIX_NODISCARD` 是内部属性适配宏，使用方不应直接依赖或重新定义。协程 `init/shutdown`、手动 `resume`、文件监听、TLS、HTTP 等没有列入本文，因为当前没有相应公共接口；运行时生命周期使用 `scheduler_scope`。
+`WAVVIX_NODISCARD` 是内部属性适配宏，使用方不应直接依赖或重新定义。协程 `init/shutdown`、手动 `resume`、文件监听、TLS、HTTP 等没有列入本文，因为当前没有相应公共接口；运行时的生命周期由 `runtime` 对象管理。
 
 ## 本文示例验证
 
-本文的 24 个独立 C++ 程序已作为 xmake 源码依赖消费方，在 Linux x86_64 GCC（`-std=c++11`）和 Windows x64 MSVC 上以警告即错误编译、逐个运行并核对输出。每个平台还检查了 flag 的别名、布尔假值、帮助、版本、缺少必填项、非法数值、未知选项及测试过滤，共 31 次运行全部通过。网络示例只使用本机回环地址，文件示例只读目录。
+本文的 23 个独立 C++ 程序在 Linux x86_64 GCC 11.4（`-std=c++11`）和 Windows x64 MSVC 上以警告即错误编译、逐个运行，输出与正文一致（2026-10-13，改写运行时、协程、同步、网络几节之后）。flag 示例的别名、布尔假值、帮助、版本、缺少必填项、非法数值、未知选项及测试过滤沿用 2026-10-10 那一次的验证，这次只重跑了缺少必填项和正常传参两种。网络示例只使用本机回环地址，文件示例只读目录。
 
 这项验证覆盖本文示例，不代表单独穷尽测试了所有重载；库本身的测试与 CI 检查方式见 [docs/ci.md](docs/ci.md)。

@@ -21,10 +21,11 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 
 | 平台 | 编译器 | 架构 |
 | --- | --- | --- |
-| Windows 10 及以上 | MSVC、MinGW-w64 | x86、x64 |
+| Windows 10 及以上 | MSVC、MinGW-w64 | x64 |
 | Linux | GCC、Clang | x86_64、arm64 |
 | macOS | Apple Clang（Xcode / Command Line Tools） | x86_64、arm64 |
 
+- 只支持 64 位：协程的换栈汇编只有 x86_64 和 arm64 两种，栈来自只支持 64 位的分配器，32 位目标在编译期报错。
 - 常规 CI 使用托管 runner 的工具链，另有 GCC 4.8 专项构建与测试。VS2015、Clang 3.3 等旧版本尚未验证；C++11 语言要求不等于对所有 C++11 编译器版本的兼容承诺。
 - 构建工具：[xmake](https://xmake.io) 2.8.5 及以上（`xmake test` 自该版本起提供），推荐使用最新版。
 
@@ -43,12 +44,11 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | term | 终端彩色输出：`fg::red("x")` 形状，样式是可组合的值类型（**漏掉括号就编译报错**，所以不会出现「设了颜色没恢复」）；自动判断是否该上色（终端 / `NO_COLOR` / `TERM`） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-01-test-term-table-design.md) 第 5 节。测试框架的彩色报告就是它的第一个消费者。Windows 走 VT 模式，开不起来就降级成纯文字（不做旧版控制台 API，理由见[实现说明](docs/implementation-notes.md)） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
-| 调度器与 I/O | vCPU 调度器、三个事件后端（`epoll` / `kqueue` / `IOCP`）、超时与协程感知的同步原语 | **可用**：TCP/UDP 和显式多 vCPU 分发已通过三平台 CI，包括 GCC 4.8、MinGW i686 和无异常构建。见 [调度器用法](docs/scheduler.md)和[网络用法](docs/net.md) |
-| blocking_pool | 让必须阻塞的操作在系统工作线程上执行，等待期间只挂起调用它的协程 | **初版已实现**；[三平台 CI](https://github.com/NickJerome/culib/actions/runs/37870009886) 21/21 通过，含 GCC 4.8、MinGW i686 与无异常构建。见 [用法](docs/blocking-pool.md) |
+| runtime 与 I/O | `runtime(n)` 起一组工作线程，协程都在上面跑：全局等待队列、派到指定线程、跨线程可用的 mutex / condition_variable / channel、`call_blocking` 共用的后台线程；三个事件后端（`epoll` / `kqueue` / `IOCP`）与超时 | **可用**。2026-10-13 从 vCPU 调度器改成 runtime：本机验证过 Linux GCC / Clang（含 ASan + UBSan、ThreadSanitizer、无异常构建）和 Windows MSVC x64，还没有 CI 结果。见[协程运行时](docs/runtime.md)和[网络用法](docs/net.md) |
 | log | 日志：`LOG_INFO << ...`，级别不足时不求值参数；多个输出目标与文件轮转。消息使用固定栈缓冲，文件整行拼接可能分配；文件写入不使用 stdio 缓冲 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-log-design.md) |
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
-| coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，调度器见下一行 | 公开接口为构造即提交、`join()` / `detach()` 的线程式句柄；底层换栈原语已覆盖 x86_64、arm64 与 Windows x86。Windows x86 已在 MSVC 本机和 CI 运行验证 |
-| mem | 自带通用分配器 `wavvix::mem`：依赖 `culib_new_override` 就让全局 `new/delete` 和标准容器改用它，代码不用改；Linux 还可以覆盖 `malloc/free`；另有 C 语义的显式接口 | 64 位 Linux、macOS、Windows。本机验证过 Linux（GCC、Clang、ASan + UBSan）和 Windows（MSVC）；[`09f952d` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38219833032) 27/27 通过，含 macOS arm64 / x86_64 和 GCC 4.8。平台边界与覆盖方式见[分配器用法](docs/mem.md) |
+| coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，跑在 runtime 的工作线程上 | 构造即提交、`join()` / `detach()` 的线程式句柄；第一次运行后绑在那根工作线程上，栈在那时才向 `mem` 要。换栈汇编覆盖 x86_64 和 arm64 |
+| mem | 自带通用分配器 `wavvix::mem`：依赖 `culib_new_override` 就让全局 `new/delete` 和标准容器改用它，代码不用改；Linux 还可以覆盖 `malloc/free`；另有 C 语义的显式接口。协程栈也向它要 | 64 位 Linux、macOS、Windows。本机验证过 Linux（GCC、Clang、ASan + UBSan）和 Windows（MSVC）；[`09f952d` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38219833032) 27/27 通过，含 macOS arm64 / x86_64 和 GCC 4.8。平台边界与覆盖方式见[分配器用法](docs/mem.md) |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发已落地。见[网络用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
 
@@ -86,7 +86,6 @@ xmake                          # 重新构建
 
 ```bash
 xmake f -p windows -a x64      # Windows 64 位（MSVC）
-xmake f -p windows -a x86      # Windows 32 位（MSVC）
 xmake f -p mingw               # MinGW
 xmake f -p macosx -a arm64     # macOS Apple Silicon
 xmake f -p macosx -a x86_64    # macOS Intel
@@ -265,7 +264,7 @@ culib/
 
 ## 错误处理
 
-可能失败的操作通常通过 `result` 返回错误，由调用方显式检查。线程式的 `coroutine` 构造函数是例外：构造失败时抛出异常；无异常构建会终止进程。库不依赖 RTTI。
+可能失败的操作通常通过 `result` 返回错误，由调用方显式检查。线程式的 `coroutine` 构造函数是例外：它没法返回错误，没有 runtime、栈大小不合法或内存不够时打印诊断后终止进程。库不依赖 RTTI。
 
 可能失败的函数返回 `wavvix::result<T>`：成功直接返回值，失败返回 `make_error(...)`。
 
@@ -317,7 +316,7 @@ wavvix::result<config> load(const std::string& path) {
 
 ## 对使用方的保证
 
-- **可关闭异常和 RTTI**：除 `coroutine` 构造失败的条件编译分支外，公共头文件不使用 `throw`、`try`、`dynamic_cast`、`typeid`；`-fno-exceptions` / `-fno-rtti` 下仍可构建和使用全库。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 在这两个选项下构建库和示例，并运行测试。
+- **可关闭异常和 RTTI**：除 `runtime.h` 里 `call_blocking` 按异常开关转发异常的分支外，公共头文件不使用 `throw`、`try`、`dynamic_cast`、`typeid`；`-fno-exceptions` / `-fno-rtti` 下仍可构建和使用全库。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 在这两个选项下构建库和示例，并运行测试。
 - **全局登记成本可见**：定义全局 `flag` 选项或使用 `TEST` 会在 `main` 前登记；不使用这两个功能时不会产生这两笔登记成本。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **字符串一律 UTF-8**：包括文件路径；Windows 下由库内部转成 UTF-16 调用 `W` 系列 API。
@@ -347,7 +346,7 @@ python .github/ci_report.py # 检查当前提交的 CI 状态和测试输出
 
 CI 报告支持指定运行链接、筛选 job，并区分完整日志与公开摘要，见 [检查 CI 输出](docs/ci.md)。
 
-三个平台都是警告即错误（MSVC 上是 `/W4` 加 `/WX`）；[CI](https://github.com/NickJerome/culib/actions/runs/37877826017) 覆盖 Linux GCC、Linux Clang、macOS Clang、Windows MSVC 各 debug / release 两种模式，以及 MinGW-w64 x86_64/i686、GCC 4.8、公共头文件和源码依赖引入场景。MinGW 两种架构均运行测试并编译全部示例。
+三个平台都是警告即错误（MSVC 上是 `/W4` 加 `/WX`）；CI 覆盖 Linux GCC、Linux Clang、macOS Clang、Windows MSVC x64 各 debug / release 两种模式，以及 MinGW-w64 x86_64、GCC 4.8、公共头文件和源码依赖引入场景，MinGW 运行测试并编译全部示例。去掉 32 位以后的矩阵还没有运行结果，之前带 32 位的矩阵见[这次运行](https://github.com/NickJerome/culib/actions/runs/37877826017)。
 
 ## 已确定的项目约定
 

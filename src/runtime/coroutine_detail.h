@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-#include "../mem/stack_pool.h"
+#include "../mem/stack.h"
 
 #define WAVVIX_DETAIL_ASAN_FIBERS 0
 #if defined(__SANITIZE_ADDRESS__)
@@ -43,7 +43,8 @@ context_transfer wavvix_jump_context(void* to, void* data) noexcept;
 
 using mem::detail::stack_memory;
 
-// 控制块位于协程栈顶；调度器用 next_ready 串起就绪队列。
+// 控制块和可调用对象放在同一块堆内存里，栈在第一次 resume 时才分配（memory.base 在那之前为空）。
+// 调度器用 next_ready 串起就绪队列。
 struct coroutine_control {
     void* context;
     void* resumer;
@@ -62,15 +63,6 @@ struct coroutine_control {
 #endif
     coroutine_control* next_ready;
 };
-
-// OS 线程槽保存栈池和可选的调度器清理回调。
-extern char runtime_thread_exit_marker;
-void* runtime_thread_state_current() noexcept;
-bool runtime_thread_state_set(void* state) noexcept;
-void runtime_thread_exit(void* state) noexcept;
-bool register_runtime_thread_exit(void* owner, void (*cleanup)(void*)) noexcept;
-void unregister_runtime_thread_exit(void* owner) noexcept;
-void release_thread_stack_pool() noexcept;
 
 }  // namespace detail
 }  // namespace wavvix

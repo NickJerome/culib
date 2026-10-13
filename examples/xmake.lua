@@ -18,9 +18,8 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "*.cpp"))) do
         set_encodings("utf-8")
         add_files(file)
         add_deps("culib")
-        -- mem 示例演示「代码不用改」：接上全局 new/delete 覆盖。条件和 src/mem/xmake.lua 定义覆盖目标的一样
-        if path.basename(file) == "mem" and is_plat("linux", "macosx", "windows", "mingw") and
-                is_arch("x86_64", "x64", "arm64", "arm64-v8a") then
+        -- mem 示例演示「代码不用改」：接上全局 new/delete 覆盖
+        if path.basename(file) == "mem" then
             add_deps("culib_new_override")
         end
     target_end()

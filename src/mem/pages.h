@@ -19,5 +19,7 @@ bool commit(void* address, std::size_t size) noexcept;
 bool decommit(void* address, std::size_t size) noexcept;
 // 保留内容但禁止访问，例如协程栈的保护页。
 bool protect(void* address, std::size_t size) noexcept;
+// 撤销 protect，恢复成可读写。
+bool unprotect(void* address, std::size_t size) noexcept;
 
 } } } } // namespace wavvix::mem::detail::pages

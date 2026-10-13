@@ -10,18 +10,18 @@ namespace net {
 udp_socket::~udp_socket() { close(); }
 
 udp_socket::udp_socket(udp_socket&& other) noexcept
-    : native_(other.native_), adopted_(other.adopted_) {
+    : native_(other.native_), owner_(other.owner_) {
     other.native_ = invalid_handle();
-    other.adopted_ = false;
+    other.owner_ = 0;
 }
 
 udp_socket& udp_socket::operator=(udp_socket&& other) noexcept {
     if (this != &other) {
         close();
         native_ = other.native_;
-        adopted_ = other.adopted_;
+        owner_ = other.owner_;
         other.native_ = invalid_handle();
-        other.adopted_ = false;
+        other.owner_ = 0;
     }
     return *this;
 }
@@ -40,7 +40,7 @@ result<endpoint> udp_socket::local_endpoint() const {
 void udp_socket::close() noexcept {
     if (is_open()) detail::udp_close_socket(native_);
     native_ = invalid_handle();
-    adopted_ = false;
+    owner_ = 0;
 }
 
 result<std::size_t> udp_socket::send_to(const void* buffer, std::size_t size,
@@ -51,10 +51,8 @@ result<std::size_t> udp_socket::send_to(const void* buffer, std::size_t size,
         return make_error(error_kind::invalid_argument, "send buffer is null");
     if (size > static_cast<std::size_t>(UINT_MAX))
         return make_error(error_kind::out_of_range, "UDP datagram is too large");
-    if (!adopted_) {
-        if (!wavvix::detail::scheduler_adopt(detail::udp_io_handle(native_)))
-            return make_error(error_kind::io, "cannot adopt UDP socket");
-        adopted_ = true;
+    if (!wavvix::detail::scheduler_bind(detail::udp_io_handle(native_), owner_)) {
+        return make_error(error_kind::io, "cannot adopt UDP socket");
     }
     detail::socket_address address;
     detail::encode_address(peer, address);
@@ -81,10 +79,8 @@ result<udp_datagram> udp_socket::recv_from(void* buffer, std::size_t size,
         return make_error(error_kind::invalid_argument, "receive buffer is null");
     if (size > static_cast<std::size_t>(UINT_MAX))
         return make_error(error_kind::out_of_range, "receive buffer is too large");
-    if (!adopted_) {
-        if (!wavvix::detail::scheduler_adopt(detail::udp_io_handle(native_)))
-            return make_error(error_kind::io, "cannot adopt UDP socket");
-        adopted_ = true;
+    if (!wavvix::detail::scheduler_bind(detail::udp_io_handle(native_), owner_)) {
+        return make_error(error_kind::io, "cannot adopt UDP socket");
     }
     detail::socket_address address;
     address.length = static_cast<int>(sizeof address.storage);

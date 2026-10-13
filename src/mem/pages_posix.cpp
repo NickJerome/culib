@@ -135,4 +135,8 @@ bool protect(void* address, std::size_t size) noexcept {
     return ::mprotect(address, size, PROT_NONE) == 0;
 }
 
+bool unprotect(void* address, std::size_t size) noexcept {
+    return ::mprotect(address, size, PROT_READ | PROT_WRITE) == 0;
+}
+
 } } } } // namespace wavvix::mem::detail::pages

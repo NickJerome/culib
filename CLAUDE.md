@@ -50,8 +50,8 @@
 
 ## 错误处理
 
-- 可恢复的失败通常返回 `result`，由调用方显式检查。线程式的 `coroutine(fn)` 构造函数不能返回错误：栈大小非法时抛 `std::invalid_argument`，资源不足时抛 `std::system_error`；无异常构建会终止。需要可恢复的提交失败时使用返回 `result` 的 `spawn()`。`mem` 的分配函数沿用 `malloc` 的语义，失败返回空指针、由调用方手动释放：两个全局覆盖目标直接用它们实现 `malloc` 和 `new`，应用代码一般经覆盖后的 `new` 间接使用。
-- 不依赖 RTTI。除 `coroutine.h` 中按异常开关编译的构造失败分支外，公共头文件不出现 `throw`、`try`、`dynamic_cast`、`typeid`；关闭异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程仍可使用全库。
+- 可恢复的失败通常返回 `result`，由调用方显式检查。线程式的 `coroutine(fn)` 构造函数不能返回错误：没有 runtime、栈大小非法、内存不够都和其他运行时误用一样，打印诊断后终止；没有另一种返回 `result` 的提交方式。`mem` 的分配函数沿用 `malloc` 的语义，失败返回空指针、由调用方手动释放：两个全局覆盖目标直接用它们实现 `malloc` 和 `new`，应用代码一般经覆盖后的 `new` 间接使用。
+- 不依赖 RTTI。除 `runtime.h` 里 `call_blocking` 按异常开关转发异常的分支外，公共头文件不出现 `throw`、`try`、`dynamic_cast`、`typeid`；关闭异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程仍可使用全库。
 - **错误类型只有一种：默认的 `error`。** 不为「性能敏感」的接口另开 `enum class` ——量过了，枚举的优势在本库的场景里兑现不了（见下），而两种错误类型会让每个层边界上多一次显式转换，也让每个调用点都要先做一次选择。
 - **跨层传播时在层边界上补上下文。** 底层只知道「不是合法整数」，它永远不知道「这是 /etc/app.conf 的 port 字段」——那个信息只有中间那层同时持有，所以必须在那里拼进消息里。不补的话 `main` 拿到的是一句没有主语的话。
 - 运行时的误用（取错分支、越界等）打印一行诊断后 `std::abort()`，release 同样检查。诊断直接写 stderr，不分配内存、不依赖流。
@@ -72,7 +72,7 @@
 
 - **热路径可内联**：热路径上的小函数放在头文件中（`inline` / 模板）。静态库里的普通函数在不开启 LTO 时无法被跨库内联。
 - **少分配、少拷贝**：避免不必要的堆分配和拷贝；参数优先传引用或字符串视图（`wavvix::string_view`，第一程第一项，在那之前只能用 `const std::string&`），支持移动语义；需要反复产出结果的接口，额外提供写入调用方缓冲区的重载。
-- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。异构任务也不必直接使用 `std::function`：`blocking_pool::run` 把可调用对象留在等待协程的栈上，队列只传函数指针和对象地址。另一处要小心的是「模板回调」与「公共头文件不含平台头」的冲突，`fs` 的目录遍历就卡在这里，解法见预期接口第 5 节。
+- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。异构任务也不必直接使用 `std::function`：`call_blocking` 把可调用对象留在等待协程的栈上，队列只传函数指针和对象地址。另一处要小心的是「模板回调」与「公共头文件不含平台头」的冲突，`fs` 的目录遍历就卡在这里，解法见预期接口第 5 节。
 - **无启动开销**：不在 `main` 之前执行任何代码，避免需要动态初始化的全局对象。两处例外：测试程序里 `TEST` 的自动注册（正式程序不受影响）、以及 `flag` 的全局选项对象在 `main` 之前登记（那是 Go 风格 flag 包的用法前提，见 [flag 设计](docs/superpowers/specs/2026-10-04-flag-design.md) 第 1 节）。登记表用函数内静态变量，因为文件级全局的初始化顺序跨翻译单元不确定。
 - **按需同步**：只在必要处加锁，不让单线程使用者为同步付出代价。
 - **目标存储包含 HDD 和网络挂载，它们对开销极其敏感。** 同一个系统调用的代价差几个数量级：
@@ -118,6 +118,7 @@
 
 - **简单的底层能力先独立，功能与优化在上面组合。** 每个模块拥有自己的状态，只依赖下层的小接口；不能靠一个总头文件共享所有内部结构。分桶、缓存、工作池等优化不能反向进入底层资源操作。这个原则适用于全库，不限于 mem；当前边界与重构范围见 [实现分层](docs/architecture.md)。只搬文件、不减少模块间依赖，不算简化。
 
+- **只支持 64 位**（2026-10-13 定）：换栈汇编只有 x86_64 和 arm64，分配器的地址布局也只按 64 位设计；32 位目标在编译期报错。要支持时得补汇编、分配器和 CI，到时再说。
 - **最低支持 Windows 10**（2026-10-07 定，见路线图第 6 节）。`xmake.lua` 给 culib 定义 `_WIN32_WINNT=0x0A00`，各文件不再自己定。Win10 某个更新才有的 API（如 1803 的 AF_UNIX）要在模块的设计文档里写明需要哪一版。
 - **字符串编码**：对外接口中的字符串（包括文件路径）一律使用 UTF-8；Windows 下由库内部转换为 UTF-16 后调用 `W` 系列 API。
 - **公共头文件保持干净**：不包含 `<windows.h>`、`<unistd.h>` 等平台头文件，避免把 `min` / `max` 之类的宏泄漏给使用方。
@@ -179,17 +180,17 @@
 
 | 约定 | 机制 | 覆盖范围 |
 | --- | --- | --- |
-| 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 七个目标 × debug/release（同上） |
+| 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 六个目标 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/37877826017) **22/22 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64/x86 × debug/release，加 GCC 4.8、MinGW x64/i686、公共头文件及源码依赖检查。VS2015 尚未覆盖 |
-| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与两种 MinGW 架构都编译全部 29 个示例 |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、公共头文件及源码依赖检查。2026-10-13 去掉 32 位（MSVC x86、MinGW i686）后**还没有运行结果**；之前带 32 位的[矩阵](https://github.com/NickJerome/culib/actions/runs/37877826017) 22/22 绿。VS2015 尚未覆盖 |
+| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 22 个） |
 | CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
 | 关异常 / RTTI 可用 | `.github/workflows/build.yml` 的 `no-exceptions-rtti` job | [Linux GCC/Clang release CI](https://github.com/NickJerome/culib/actions/runs/37845192319)：库、测试和全部示例均在 `-fno-exceptions -fno-rtti` 下构建，测试通过 |
-| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，以及 Windows CI | MinGW-w64 x86_64 和 i686 各运行 362 项测试并编译 29 个示例。**MinGW 不能代替 MSVC**（头文件和警告集都不同），后者由独立 CI 任务覆盖 |
+| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，以及 Windows CI | MinGW-w64 x86_64 运行全部测试并编译全部示例；2026-10-13 改成 runtime 之后本机没装 MinGW，还没有新结果。**MinGW 不能代替 MSVC**（头文件和警告集都不同），后者由独立 CI 任务覆盖 |
 | macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
 
 **CI 的结果只在看过那次运行之后才写进文档，并写上是哪个提交。** 运行 `python .github/ci_report.py`，检查测试汇总、SKIP 原因和诊断，不能只看 job conclusion。没有完整日志时，只能报告已取得的摘要；不要把“状态通过”写成“日志已完整核验”。历史上曾在两个 CI 都已失败时写下“全绿”，也曾因只发布失败日志而漏看成功作业中的异常输出。
@@ -198,8 +199,7 @@
 
 ```bash
 apt-get install -y mingw-w64 wine64
-bash tests/mingw_windows.sh x86_64
-bash tests/mingw_windows.sh i686
+bash tests/mingw_windows.sh
 ```
 
 **`LANG=C.UTF-8` 不能省**：wine 要靠 Unix locale 才能把 UTF-16 文件名映射到文件系统，空 locale 下中文文件名的 `CreateFileW` 会返回 `ERROR_FILE_NOT_FOUND`。这一点用绕开 culib 的裸 `CreateFileW` 程序确认过，是 wine 的局限而不是库的 bug——**遇到只在某个环境里失败的测试，先确认那是被测代码的问题还是环境的问题。**
@@ -234,7 +234,7 @@ static const int per_vcpu = 50;
 std::thread([slot] { for (int i = 0; i < per_vcpu; ++i) ... });   // 两边都过
 ```
 
-这一条是 `examples/scheduler.cpp` 踩出来的，而且**踩了两次**：先按 MSVC 的要求加上捕获，于是 linux-clang 从绿变红；才明白要换第三种写法。遇到「按一个编译器的要求改完，另一个就红了」的时候，先确认两边要的是不是相反的——是的话别在两种写法之间来回切。
+这一条是 `examples/scheduler.cpp`（已随调度器改写删除）踩出来的，而且**踩了两次**：先按 MSVC 的要求加上捕获，于是 linux-clang 从绿变红；才明白要换第三种写法。后来 `tests/io_engine_test.cpp` 里拿 `const int` 当 lambda 内数组的长度，MSVC 报 C2131，同样改成 `static const int` 解决。遇到「按一个编译器的要求改完，另一个就红了」的时候，先确认两边要的是不是相反的——是的话别在两种写法之间来回切。
 
 **一条关于诊断机制本身的教训**：`report-failure.sh` 原先只认编译器诊断的式样（`error:` / `error C2039:`），而本库测试框架失败时打的是
 

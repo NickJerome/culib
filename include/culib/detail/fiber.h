@@ -16,7 +16,7 @@ namespace detail {
 struct coroutine_control;
 enum class fiber_failure { none, invalid_size, resource_exhausted };
 
-// 分配栈和可调用对象槽；失败返回 0。
+// 分配控制块和可调用对象槽；栈等第一次 resume 时才分配。失败返回 0。
 coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_size,
                                     std::size_t body_align, void** body_slot,
                                     fiber_failure* failure) noexcept;
@@ -32,16 +32,16 @@ bool coroutine_inside() noexcept;
 
 }  // namespace detail
 
-// 默认可用栈大小。栈不会增长。release 构建没有保护页，用超了不报错，直接写坏别的协程的内存；
+// 默认可用栈大小。栈不会增长。release 构建没有保护页，用超了不报错，直接写坏相邻的内存；
 // debug 构建在栈底有保护页，溢出当场崩溃。递归深度随输入增长的代码（解析嵌套数据、
-// 对外部输入用 std::regex）要自己限制深度，见 docs/scheduler.md。
+// 对外部输入用 std::regex）要自己限制深度，见 docs/runtime.md。
 const std::size_t default_stack_size = 240 * 1024;
 
 namespace detail {
 
 class fiber {
 public:
-    // 可调用对象就地存储在协程栈上；resume() 才运行。
+    // 可调用对象存在堆上的控制块里；栈在第一次 resume() 时由那根线程分配，之后不能换线程 resume。
     template <typename F>
     explicit fiber(F&& body, std::size_t stack_size = default_stack_size,
                    fiber_failure* failure = 0)
@@ -50,7 +50,9 @@ public:
         void* slot = 0;
         control_ = coroutine_create(stack_size, sizeof(stored_type), alignof(stored_type),
                                     &slot, failure);
-        if (!control_) return;
+        if (!control_) {
+            return;
+        }
         std::unique_ptr<coroutine_control, void (*)(coroutine_control*)> guard(
             control_, &coroutine_destroy);
         new (slot) stored_type(std::forward<F>(body));
@@ -59,10 +61,12 @@ public:
     }
 
     ~fiber() {
-        if (control_) coroutine_destroy(control_);
+        if (control_) {
+            coroutine_destroy(control_);
+        }
     }
 
-    // 栈分配失败时，resume() 返回 false，done() 返回 true。
+    // 控制块分配失败或栈大小不合法时为 false；这时 resume() 返回 false，done() 返回 true。
     bool ok() const noexcept { return control_ != 0; }
 
     coroutine_control* release() noexcept {
@@ -76,11 +80,12 @@ public:
 
     bool done() const noexcept { return control_ ? coroutine_done(control_) : true; }
 
-    // 可用栈字节数，不含 debug 构建的保护页。
+    // 可用栈字节数，不含 debug 构建的保护页。第一次 resume 之前是请求的大小。
     std::size_t stack_size() const noexcept {
         return control_ ? coroutine_stack_size(control_) : 0;
     }
 
+    // 栈的起始地址；第一次 resume 之前还没有栈，为 0。
     std::uintptr_t stack_base_address() const noexcept {
         return control_ ? coroutine_stack_base_address(control_) : 0;
     }

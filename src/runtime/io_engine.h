@@ -25,7 +25,7 @@ enum io_operation {
 
 // 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
 // 而 Windows 要求 OVERLAPPED 活到完成包取回来为止，协程挂起期间栈不会动，
-// 正好满足（协程绑 vCPU，见 coroutine 设计 3.13）。
+// 正好满足（协程绑在第一次运行它的工作线程上，见 coroutine 设计 3.13）。
 struct io_request {
     io_request() noexcept
         : operation(io_transfer), address(0), address_length(0), truncated(false),
@@ -109,8 +109,8 @@ class io_engine;
 io_engine* io_engine_create() noexcept;
 void io_engine_destroy(io_engine* engine) noexcept;
 
-// 为跨线程提交任务启用唤醒源。只由 vCPU 线程调用一次；成功后其他线程可调用
-// io_engine_notify() 打断 io_engine_wait()。普通 I/O 不启用，也不为它付唤醒源开销。
+// 启用唤醒源，成功后其他线程可调用 io_engine_notify() 打断 io_engine_wait()。
+// 每根工作线程启动时调用一次；不调用的引擎（测试里直接建的那种）没有唤醒源。
 bool io_engine_enable_notify(io_engine* engine) noexcept;
 bool io_engine_notify(io_engine* engine) noexcept;
 
@@ -135,15 +135,15 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
 // false：完成通知仍会到来，调用方必须等到通知后才能释放 request 及其 OVERLAPPED。
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept;
 
-// 还有几个操作没回来。调度器用它判断「这根 vCPU 是不是还有活」，所以它就是
-// **阻塞在 I/O 上的协程数**——调度器不另记一份。给 0 就是都回来了。
+// 还有几个操作没回来，也就是**阻塞在 I/O 上的协程数**——调度器不另记一份。
+// 就绪队列一直不空时，调度器靠它决定要不要不等待地收一次完成。给 0 就是都回来了。
 std::size_t io_engine_pending(const io_engine* engine) noexcept;
 
 // 把纳秒超时折成毫秒，给 epoll_wait 和 GetQueuedCompletionStatusEx 用（两边都要毫秒）。
 // 返回负数表示无限等，各后端自己转成 -1 或者 INFINITE。
 //
 // **不足 1 毫秒的正超时进成 1**：截断成 0 的话 epoll_wait 立刻返回，于是「还有 100
-// 微秒就该醒的定时器」会把 vCPU 变成忙转。
+// 微秒就该醒的定时器」会把工作线程变成忙转。
 long io_timeout_ms(std::chrono::nanoseconds timeout) noexcept;
 
 }  // namespace detail

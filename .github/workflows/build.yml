@@ -16,40 +16,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  mingw-i686:
-    name: MinGW i686 C++11
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: xmake-io/github-action-setup-xmake@v1.2.5
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW32
-          install: mingw-w64-i686-gcc python
-          suppress-deprecation-warnings: msystem-mingw32
-      - name: locate MinGW
-        id: mingw
-        shell: msys2 {0}
-        run: echo "path=$(cygpath -w "$MINGW_PREFIX")" >> "$GITHUB_OUTPUT"
-      - name: build 32-bit library and tests with xmake
-        shell: pwsh
-        env:
-          MINGW_HOME: ${{ steps.mingw.outputs.path }}
-        run: |
-          function Invoke-CheckedXmake {
-            & xmake @args 2>&1 | Tee-Object -Variable lines
-            if ($LASTEXITCODE -ne 0) {
-              $code = $LASTEXITCODE
-              $lines | Select-Object -Last 40 | ForEach-Object { Write-Output "::error::$_" }
-              exit $code
-            }
-          }
-          Invoke-CheckedXmake f -c -p mingw -a i686 -m release "--mingw=$env:MINGW_HOME" -y
-          Invoke-CheckedXmake build -y culib culib_test
-      - name: build 32-bit tests and examples, run tests
-        shell: msys2 {0}
-        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh i686
-
   mingw-x86_64:
     name: MinGW x86_64 C++11
     runs-on: windows-latest
@@ -61,7 +27,7 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc python
       - name: build 64-bit tests and examples, run tests
         shell: msys2 {0}
-        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh x86_64
+        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh
 
   legacy-gcc:
     name: GCC 4.8 C++11
@@ -187,7 +153,6 @@ jobs:
           - { name: macos-clang, os: macos-latest, toolchain: clang }
           - { name: macos-clang-x86_64, os: macos-15-intel, toolchain: clang }
           - { name: windows-msvc, os: windows-latest, toolchain: msvc }
-          - { name: windows-msvc-x86, os: windows-latest, toolchain: msvc, arch_arg: '-a x86' }
 
     steps:
       - uses: actions/checkout@v5
@@ -198,7 +163,7 @@ jobs:
           xmake-version: latest
 
       - name: configure
-        run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} ${{ matrix.target.arch_arg }} -y
+        run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
 
       # 命令输出由 report-failure.sh 提取并发布，查询方式见 docs/ci.md。
 
@@ -290,7 +255,9 @@ jobs:
           // 错误传播手写 if，不用宏：曾经有个 WAVVIX_TRY，因为藏了一个 return 被删掉了
           static wavvix::result<int> doubled_port(int port) {
               wavvix::result<int> checked = checked_port(port);
-              if (checked.is_err()) return std::move(checked).error();
+              if (checked.is_err()) {
+                  return std::move(checked).error();
+              }
               return checked.value() * 2;
           }
 
@@ -305,19 +272,27 @@ jobs:
               static_assert(!std::is_same<wavvix::string_view, std::string_view>::value,
                             "wavvix::string_view must stay a distinct type from std::string_view");
               wavvix::string_view empty = std::string_view();
-              if (!empty.data() || empty.begin() != empty.end()) return 1;
+              if (!empty.data() || empty.begin() != empty.end()) {
+                  return 1;
+              }
           #else
               wavvix::string_view ours = "from C++11";
           #endif
 
-              wavvix::scheduler_scope runtime;
+              wavvix::runtime runtime(2);
               int completed = 0;
               wavvix::coroutine worker([&] { ++completed; });
-              if (!worker.joinable()) return 1;
+              if (!worker.joinable()) {
+                  return 1;
+              }
               worker.join();
-              if (completed != 1) return 1;
+              if (completed != 1) {
+                  return 1;
+              }
               void* block = wavvix::mem::alloc(64);
-              if (!block) return 1;
+              if (!block) {
+                  return 1;
+              }
               wavvix::mem::free(block);
 
               const wavvix::result<int> parsed = wavvix::lexical_cast<int>("42");

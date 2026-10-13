@@ -1,5 +1,6 @@
+#include <culib/coroutine.h>
 #include <culib/mem.h>
-#include <culib/scheduler.h>
+#include <culib/runtime.h>
 
 #include <atomic>
 #include <cstdio>
@@ -93,21 +94,25 @@ int main() {
     }
 #endif
 
+    // 16 根线程同时起协程：任务状态和栈都经覆盖后的分配器，跨线程分配、释放。
     std::atomic<int> completed(0);
-    for (int round = 0; round < 4; ++round) {
-        std::thread carriers[16];
-        for (int i = 0; i < 16; ++i) {
-            carriers[i] = std::thread([&] {
-                wavvix::spawn([&] { completed.fetch_add(1); }).value();
-                wavvix::run();
-            });
-        }
-        for (int i = 0; i < 16; ++i) {
-            carriers[i].join();
+    {
+        wavvix::runtime runtime(4);
+        for (int round = 0; round < 4; ++round) {
+            std::thread carriers[16];
+            for (int i = 0; i < 16; ++i) {
+                carriers[i] = std::thread([&] {
+                    wavvix::coroutine task([&] { completed.fetch_add(1); });
+                    task.join();
+                });
+            }
+            for (int i = 0; i < 16; ++i) {
+                carriers[i].join();
+            }
         }
     }
     if (completed.load() != 64) {
-        std::fprintf(stderr, "scheduler lost work with global new/delete override\n");
+        std::fprintf(stderr, "runtime lost work with global new/delete override\n");
         return 1;
     }
     return 0;

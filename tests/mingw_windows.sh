@@ -1,24 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-arch="${1:-}"
-case "$arch" in
-    i686)
-        default_compiler=i686-w64-mingw32-g++
-        context=src/runtime/asm/context_i386_pe.S
-        ;;
-    x86_64)
-        default_compiler=x86_64-w64-mingw32-g++
-        context=src/runtime/asm/context_x86_64_pe.S
-        ;;
-    *)
-        echo "usage: bash tests/mingw_windows.sh i686|x86_64" >&2
-        exit 2
-        ;;
-esac
-
-compiler="${CXX:-$default_compiler}"
-output="build/mingw-$arch-standalone"
+compiler="${CXX:-x86_64-w64-mingw32-g++}"
+output="build/mingw-x86_64-standalone"
 mkdir -p "$output"
 
 flags=(-std=c++11 -Wall -Wextra -Wpedantic -Werror
@@ -28,7 +12,6 @@ library_objects=()
 while IFS= read -r source; do
     case "$source" in
         *_posix.cpp|*_linux.cpp|*_macos.cpp|src/mem/override/*) continue ;;
-        src/mem/allocator/*) [[ "$arch" == x86_64 ]] || continue ;;
     esac
     object="$output/${source//\//_}.o"
     "$compiler" "${flags[@]}" -c "$source" -o "$object"
@@ -36,7 +19,7 @@ while IFS= read -r source; do
 done < <(find src -type f -name '*.cpp' | sort)
 
 context_object="$output/context.S.o"
-"$compiler" -c "$context" -o "$context_object"
+"$compiler" -c src/runtime/asm/context_x86_64_pe.S -o "$context_object"
 library_objects+=("$context_object")
 
 test_objects=()
@@ -58,12 +41,10 @@ done
 "$output/os_stop_test.exe" ctrl-c
 "$output/os_stop_test.exe" ctrl-break
 
-if [[ "$arch" == x86_64 ]]; then
-    "$compiler" "${flags[@]}" -Isrc/mem/allocator -static \
-        tests/mem/test_stress.cpp "${library_objects[@]}" -lws2_32 \
-        -o "$output/mem_test_stress.exe"
-    "$output/mem_test_stress.exe"
-fi
+"$compiler" "${flags[@]}" -Isrc/mem/allocator -static \
+    tests/mem/test_stress.cpp "${library_objects[@]}" -lws2_32 \
+    -o "$output/mem_test_stress.exe"
+"$output/mem_test_stress.exe"
 
 for source in examples/*.cpp; do
     example="$output/example_$(basename "$source" .cpp).exe"
