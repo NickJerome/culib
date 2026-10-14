@@ -9,12 +9,37 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 
 namespace {
 
 // result 带 warn_unused_result；清理路上失败了也没什么可做的。
 template <typename T>
 void ignore(const wavvix::result<T>&) {}
+
+namespace fs = wavvix::fs;
+
+// culib 没有 read_file 这类整文件便捷函数——读是「打开、逐块读、关闭」，自己攒一个。
+wavvix::result<std::string> read_all(const fs::path& target) {
+    wavvix::result<fs::file> opened = fs::open(target, fs::open_mode::read);
+    if (opened.is_err()) {
+        return std::move(opened).error();
+    }
+    fs::file handle = std::move(opened).value();
+    std::string content;
+    char buffer[4096];
+    for (;;) {
+        const wavvix::result<std::size_t> got = handle.read(buffer, sizeof buffer);
+        if (got.is_err()) {
+            return std::move(got).error();
+        }
+        if (got.value() == 0) {   // 0 是 EOF，不是错误
+            break;
+        }
+        content.append(buffer, got.value());
+    }
+    return content;
+}
 
 }  // namespace
 
@@ -55,45 +80,52 @@ int main() {
 
     std::printf("\n4. 再加一个文件输出，两边都写\n");
     {
-        const wavvix::result<std::string> temp = wavvix::fs::temp_directory();
         const std::string path =
-            wavvix::fs::join(temp.is_ok() ? temp.value() : ".", "culib_example.log");
-        ignore(wavvix::fs::remove_file(path));
+            (wavvix::fs::temp_directory_path().value_or(".") / "culib_example.log").string();
+        ignore(wavvix::fs::remove(path));
 
         if (!wavvix::log::add_file_sink(path).is_ok()) {
             std::printf("   文件开不起来，跳过\n");
         } else {
             LOG_INFO << "这一行同时去了 stderr 和文件";
-            const wavvix::result<std::string> got = wavvix::fs::read_file(path);
+            const wavvix::result<std::string> got = read_all(path);
             std::printf("   文件里现在是：%s", got.is_ok() ? got.value().c_str() : "(读不到)\n");
             std::printf("   文件那一路**没有用户态缓冲**，所以崩了也不会丢已经写出的行。\n");
-            ignore(wavvix::fs::remove_file(path));
+            ignore(wavvix::fs::remove(path));
         }
     }
 
     std::printf("\n5. 轮转：超过上限就改名，留几个旧的\n");
     {
-        const wavvix::result<std::string> temp = wavvix::fs::temp_directory();
         const std::string path =
-            wavvix::fs::join(temp.is_ok() ? temp.value() : ".", "culib_example_rotate.log");
+            (wavvix::fs::temp_directory_path().value_or(".") / "culib_example_rotate.log")
+                .string();
         wavvix::log::clear_sinks();
-        ignore(wavvix::fs::remove_file(path));
-        for (int i = 1; i <= 4; ++i) ignore(wavvix::fs::remove_file(path + "." + wavvix::to_string(i)));
+        ignore(wavvix::fs::remove(path));
+        for (int i = 1; i <= 4; ++i) {
+            ignore(wavvix::fs::remove(path + "." + wavvix::to_string(i)));
+        }
 
         if (wavvix::log::add_file_sink(path, 300, 2).is_ok()) {
-            for (int i = 0; i < 30; ++i) LOG_INFO << "line number " << i;
+            for (int i = 0; i < 30; ++i) {
+                LOG_INFO << "line number " << i;
+            }
             std::printf("   上限 300 字节、留 2 个旧文件，写了 30 行之后：\n");
-            std::printf("   %-28s %s\n", "当前", wavvix::fs::exists(path) ? "在" : "不在");
+            // exists 返回 result<bool>：「不在」是 ok(false)，问不成才是错误
+            std::printf("   %-28s %s\n", "当前",
+                        wavvix::fs::exists(path).value_or(false) ? "在" : "不在");
             std::printf("   %-28s %s\n", "上一个 (.1)",
-                        wavvix::fs::exists(path + ".1") ? "在" : "不在");
+                        wavvix::fs::exists(path + ".1").value_or(false) ? "在" : "不在");
             std::printf("   %-28s %s\n", "上上一个 (.2)",
-                        wavvix::fs::exists(path + ".2") ? "在" : "不在");
+                        wavvix::fs::exists(path + ".2").value_or(false) ? "在" : "不在");
             std::printf("   %-28s %s\n", "更早的 (.3)",
-                        wavvix::fs::exists(path + ".3") ? "在" : "不在（被删了）");
+                        wavvix::fs::exists(path + ".3").value_or(false) ? "在" : "不在（被删了）");
         }
         wavvix::log::clear_sinks();
-        ignore(wavvix::fs::remove_file(path));
-        for (int i = 1; i <= 4; ++i) ignore(wavvix::fs::remove_file(path + "." + wavvix::to_string(i)));
+        ignore(wavvix::fs::remove(path));
+        for (int i = 1; i <= 4; ++i) {
+            ignore(wavvix::fs::remove(path + "." + wavvix::to_string(i)));
+        }
     }
 
     std::printf("\n6. 颜色的事交给 term\n");

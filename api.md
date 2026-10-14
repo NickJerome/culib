@@ -1,6 +1,6 @@
 # culib API 与用法
 
-本文按 2026-10-13 的公共头文件整理，覆盖 `include/culib/` 的公共类型、函数、成员、枚举、常量和使用宏。接口以当前源码为准；`detail` 命名空间、`WAVVIX_DETAIL_*` 宏和 `src/` 内部接口不属于公共 API。
+本文按 2026-10-14 的公共头文件整理，覆盖 `include/culib/` 的公共类型、函数、成员、枚举、常量和使用宏；fs 一节按当日定稿的标准接口改写，实现已完成并通过本地验证（见文末说明；CI 未运行）。接口以当前源码为准；`detail` 命名空间、`WAVVIX_DETAIL_*` 宏和 `src/` 内部接口不属于公共 API。
 
 签名块用于查阅，省略实现和模板约束的展开；模板允许的类型、所有权与失败行为在正文说明。标为“示例”的 C++ 代码块都是独立程序，可保存成 `.cpp` 编译；输出中的时间、路径、进程号等动态值会随环境变化。
 
@@ -68,7 +68,8 @@ target("app")
 | `coroutine.h` | `coroutine` | `wavvix` |
 | `sync.h` | `mutex`、`condition_variable`、`channel`、`lock_guard` | `wavvix` |
 | `net.h` | `endpoint`、`resolve`、`protocol`、`socket`、`datagram` | `wavvix::net` |
-| `fs.h` | 路径、文件、目录、`output_file`、`entry` | `wavvix::fs` |
+| `fs.h` | `path`、查询、目录操作、`directory_iterator`、`file`、`open` | `wavvix::fs` |
+| `fs_stream.h` | `ofstream`（标准流状态的输出文件流） | `wavvix::fs` |
 | `mem.h` | `alloc`、`free` 等七个函数 | `wavvix::mem` |
 | `time.h` | `timestamp`、`date_time`、时间解析和格式化 | `wavvix` |
 | `stopwatch.h` | `stopwatch`、`format_duration` | `wavvix` |
@@ -83,7 +84,7 @@ target("app")
 - 文本和路径使用 UTF-8。`string_view` 不拥有数据；原字符串销毁、移动或重新分配后，不应继续使用旧视图。
 - 可恢复错误通常返回 `result<T>`，先检查 `is_err()` / `is_ok()` 再取对应分支；空值用 `optional<T>`。取错分支、越界等编程错误会诊断并终止。
 - `result` 不保证捕获所有 C++ 异常：例如 `std::string`、`std::vector` 分配和用户回调仍可能抛出异常。协程函数不得让异常逃出，逃出会 `std::terminate()`；`call_blocking` 把函数抛出的异常带回调用处。
-- 同步文件 I/O 和用户的阻塞函数可能阻塞系统线程；协程中需要让出时使用协程网络接口，或交给 `call_blocking`。`net` 的主机名解析由库内部处理，协程里自动经 `call_blocking`。
+- 协程内的 `fs` 操作和 `net` 的主机名解析由库内部处理：自动经 `call_blocking` 放到后台线程执行，只挂起当前协程，工作线程照常跑别的协程；协程外同步执行。用户自己的阻塞函数仍要自己交给 `call_blocking`。
 - 普通值类型可复制；资源句柄的可复制、可移动性在各节列出。库不隐式替换全局 `malloc/new`。
 
 <a id="result"></a>
@@ -951,101 +952,185 @@ int main() {
 预期输出：`udp ok`。更多约束见 [docs/net.md](docs/net.md)。
 
 <a id="fs"></a>
-## 文件系统：`<culib/fs.h>`
+## 文件系统：`<culib/fs.h>` 与 `<culib/fs_stream.h>`
 
-命名空间：`wavvix::fs`。所有路径为 UTF-8，整文件读写按二进制处理；实际 I/O 是同步操作。
+命名空间：`wavvix::fs`。路径是值类型 `fs::path`，值一律 UTF-8；读写一律二进制。会碰磁盘的接口返回 `result`：「不存在」是答案不是失败——`exists` 返回 `ok(false)` 表示「没有」，「问不成」（权限、I/O）才是错误。路径里含内嵌 `'\0'` 一律报 `invalid_argument`，动手之前磁盘碰不到。协程内的文件操作自动经 `call_blocking` 放到后台线程执行，只挂起当前协程；协程外同步执行。取舍见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
 
-### 路径与查询
-
-```cpp
-std::string join(string_view a, string_view b);
-string_view parent(string_view path) noexcept;
-string_view filename(string_view path) noexcept;
-string_view stem(string_view path) noexcept;
-string_view extension(string_view path) noexcept;
-bool is_absolute(string_view path) noexcept;
-std::string normalize(string_view path);
-result<std::string> absolute(string_view path);
-
-bool exists(string_view path) noexcept;
-bool is_file(string_view path) noexcept;
-bool is_directory(string_view path) noexcept;
-result<std::uint64_t> file_size(string_view path);
-result<timestamp> last_write_time(string_view path);
-```
-
-`parent/filename/stem/extension` 返回输入视图；`extension` 包含点号，`.bashrc` 这样的点文件没有扩展名。`join(a,b)` 在 `b` 为绝对路径时返回 `b`。`normalize` 是纯字符串处理，整理分隔符、`.` 和 `..`，不解析符号链接；`absolute` 基于当前工作目录得到绝对路径。
-
-Windows 接受 `/` 与 `\`，POSIX 只把 `/` 视为分隔符。`join` 仅为新插入的分隔符选本机字符，不重写原输入。查询默认跟随符号链接；布尔查询失败返回 `false`，不能据此区分不存在和权限错误。文件操作拒绝内嵌 NUL 路径。
-
-### 文件读写与目录操作
+### 路径：纯字符串操作
 
 ```cpp
-result<std::string> read_file(string_view path);
-result<void> read_file(string_view path, std::string& out);
-result<void> write_file(string_view path, string_view content);
-result<void> append_file(string_view path, string_view content);
-
-enum class recursive { no, yes };
-enum class overwrite { no, yes };
-result<void> create_directory(string_view path, recursive mode = recursive::no);
-result<void> remove_file(string_view path);
-result<void> remove_directory(string_view path, recursive mode = recursive::no);
-result<void> copy_file(string_view from, string_view to, overwrite mode = overwrite::no);
-result<void> rename(string_view from, string_view to);
-result<std::string> temp_directory();
-result<std::string> current_directory();
-result<void> set_current_directory(string_view path);
-```
-
-`read_file(path,out)` 覆盖输出并复用容量；失败时不要使用其部分内容。`write_file` 创建或截断文件，`append_file` 创建或追加。`create_directory` 在目标已是目录时成功，`recursive::yes` 创建缺失的父目录。递归删除不跟随符号链接。`copy_file` 默认不覆盖，覆盖须显式传 `overwrite::yes`。修改当前工作目录影响整个进程。
-
-### 持续追加与遍历
-
-```cpp
-class output_file {
+class path {
 public:
-    output_file() noexcept;
-    ~output_file();
-    output_file(output_file&& other) noexcept;
-    output_file& operator=(output_file&& other) noexcept;
-    result<void> open(string_view path);
-    bool is_open() const noexcept;
-    void close() noexcept;
-    result<void> write(string_view content);
-    std::uint64_t size() const noexcept;
+    path() noexcept;
+    path(const char* value);
+    path(string_view value);
+    path(std::string value);
+
+    const std::string& string() const noexcept;
+    bool empty() const noexcept;
+    bool is_absolute() const noexcept;
+
+    path parent_path() const;      // "/a" -> "/"，"a" -> ""
+    path filename() const;         // 以分隔符结尾表示目录本身，文件名为空
+    path stem() const;             // 文件名去掉扩展名
+    path extension() const;        // 含 '.'；点文件（如 .bashrc）扩展名为空
+    path lexically_normal() const; // 消掉 "." 和 ".."；空路径归一成 "."
+
+    path& operator/=(const path& piece);   // piece 绝对时整体替换，piece 为空什么都不做
 };
-struct entry {
-    string_view name;
-    bool is_directory;
-};
-template<class F> result<void> list_directory(string_view path, F&& callback);
-result<std::vector<std::string>> list_directory(string_view path);
+
+path operator/(const path& base, const path& piece);
+bool operator==(const path& a, const path& b) noexcept;   // 精确字符串比较，不做归一
+bool operator!=(const path& a, const path& b) noexcept;
 ```
 
-`output_file` 不可复制，可移动。`open` 以追加方式打开，已经打开时先关闭旧句柄；析构自动关闭。`size` 是打开时大小加上经本句柄写入的字节，不会实时查询其他写入者。`write` 使用系统写入，不提供额外的 stdio 缓冲或落盘持久化保证。
-
-回调形式接收 `const entry&`，返回 `true` 继续，`false` 提前结束；遍历顺序不保证，`name` 仅为文件名且在回调返回后失效，需保存时调用 `to_string()`。无回调的版本一次返回当前目录的全部名字并排序。两者均只遍历一级。
-
-示例：只查询和列举当前目录。
+`path` 拥有自己的字符串（内部 `std::string`），复制、移动都安全，没有视图悬垂的问题。以上路径操作全部是纯字符串处理：不解析符号链接、不访问当前目录、不碰磁盘。Windows 接受 `/` 与 `\`，POSIX 只把 `/` 视为分隔符；拼接**只为新插入的那一个分隔符**用平台原生字符，不改写输入里已有的。
 
 ```cpp
+result<path> absolute(const path& target);        // 相对路径接到当前目录后面
+result<path> current_path();                      // 查询当前目录
+result<void> current_path(const path& directory); // 修改当前目录，影响整个进程
+result<path> temp_directory_path();
+```
+
+### 查询与目录操作
+
+```cpp
+result<bool> exists(const path& target);            // 不存在是 ok(false)
+result<bool> is_regular_file(const path& target);
+result<bool> is_directory(const path& target);
+result<std::uint64_t> file_size(const path& target);
+result<wavvix::timestamp> last_write_time(const path& target);
+
+result<bool> create_directory(const path& directory);     // 新建 true，已存在 false
+result<bool> create_directories(const path& directory);   // 逐级创建，已存在的级别同样 false
+result<bool> remove(const path& target);                  // 不存在返回 false
+result<std::uint64_t> remove_all(const path& root);       // 返回删掉的条目数，不存在是 0
+
+enum class copy_options { none = 0, overwrite_existing = 1 };
+result<void> copy_file(const path& from, const path& to,
+                       copy_options options = copy_options::none);
+result<void> rename(const path& from, const path& to);
+```
+
+查询跟随符号链接，问的是「那里有个能打开的文件吗」。`remove` 删文件、空目录或链接本身，不跟进链接；对非空目录报 `already_exists`，这是安全阀，整棵树交给 `remove_all`——目录树保持稳定时，后者递归删除链接本身而不进入链接目标；如果其他进程同时把目录替换成链接，基于路径的操作不能保证隔离，因此不要用它清理不可信进程可并发修改的树。`create_directories` 被同名文件挡住时报 `already_exists`，不删文件让路。`copy_file` 默认不覆盖（目标已存在报 `already_exists`；要跳过就先自己 `exists`），源与目标指向同一文件时报错且不改动内容；Windows 覆盖复制若无法确认文件身份，也会报错而不冒险写盘。`rename` 在同一文件系统内是原子操作。`last_write_time` 返回 `wavvix::timestamp`。
+
+### 遍历：`directory_iterator`
+
+```cpp
+class directory_entry {
+public:
+    directory_entry() = default;
+    explicit directory_entry(const path& target);
+
+    const path& path() const noexcept;
+    result<bool> is_regular_file() const;   // 跟随符号链接；不存在是 ok(false)
+    result<bool> is_directory() const;
+};
+
+class directory_iterator {   // 输入迭代器：拷贝共享同一个流式遍历位置
+public:
+    directory_iterator() noexcept;                     // 尾迭代器
+    explicit directory_iterator(const path& directory);
+    const result<directory_entry>& operator*() const;
+    directory_iterator& operator++();
+    bool operator==(const directory_iterator& other) const noexcept;
+    bool operator!=(const directory_iterator& other) const noexcept;
+};
+```
+
+range-for 直接遍历目录，元素是 `const result<directory_entry>&`（见下面示例的 `for` 循环）。打开失败在**第一个元素**里报出来（之后遍历结束），不是异常也不是静默的空遍历；中途读取出错在这一项报出错误元素，错误元素之后即到尾（错误只报一次）。遍历顺序不保证、不排序，只遍历一级；类型判断按需查询，建条目不多做一次 stat。
+
+### 文件句柄与文件流
+
+```cpp
+// <culib/fs.h>
+enum class open_mode { read, write, append };
+// read：只读，不存在报错；write：只写，不存在创建、已存在清空；append：只写，写入落末尾
+
+class file {   // 移动 only 句柄；析构关闭但错误无法上报，要确认关闭结果就显式 close()
+public:
+    bool is_open() const noexcept;
+    result<std::size_t> read(void* data, std::size_t size);   // 读到的字节数，0 是文件末尾
+    result<void> write(const void* data, std::size_t size);   // 写满为止：成功即全部写入
+    result<void> close();
+};
+
+result<file> open(const path& target, open_mode mode);
+
+// <culib/fs_stream.h>
+class ofstream : public std::ostream {   // 标准流状态的输出文件流
+public:
+    explicit ofstream(const path& target,
+                      std::ios_base::openmode mode = std::ios_base::out);
+    bool is_open() const noexcept;
+    void close();   // void：关闭结果和写错误都看流状态
+};
+```
+
+`file` 是原生字节句柄：一律二进制，不做换行转换，内嵌 `'\0'` 原样保留；分块读写的循环由调用方写。`ofstream` 继承 `std::ostream`，用 `<<` 写，也可以绑到 `std::ostream&` 交给通用代码；默认截断，带 `std::ios::app` 追加到当时的末尾，写一律二进制。**它的失败只走标准流状态**：用 `good()` / `fail()` / `operator bool` 判断，`close()` 返回 `void`，接口里没有 `std::error_code`，也没有成员 `open()` 重开——要重开就构造新对象。打开失败（目录不存在、路径含 NUL 等）反映在流状态上：坏流上的写入是 no-op，不会把 NUL 截掉去开前缀路径。
+
+示例：建临时目录，用两种方式写文件、原始句柄读回、列目录。这个程序按 2026-10-14 定稿的接口写成，已在 Linux x86_64 GCC 11.4（`-std=c++11`）与 Windows x64 MSVC 2022 下警告即错误编译并运行，输出见「本文示例验证」。
+
+```cpp
+#include <culib/defer.h>
 #include <culib/fs.h>
+#include <culib/fs_stream.h>
 #include <iostream>
+#include <string>
+#include <utility>
+
+namespace fs = wavvix::fs;
 
 int main() {
-    auto current = wavvix::fs::current_directory();
-    if (current.is_err()) return 1;
-    std::cout << "cwd: " << current.value() << '\n';
-    auto listed = wavvix::fs::list_directory(current.value(), [](const wavvix::fs::entry& item) {
-        std::cout << (item.is_directory ? "dir  " : "file ") << item.name << '\n';
-        return true;
-    });
-    if (listed.is_err()) { std::cerr << listed.error() << '\n'; return 1; }
+    const fs::path dir = fs::temp_directory_path().value_or(fs::path("/tmp"))
+                       / "culib_api_fs_demo";
+    (void)fs::remove_all(dir);
+    if (fs::create_directories(dir).is_err()) return 1;
+    defer { (void)fs::remove_all(dir); };
+
+    const fs::path file = dir / "notes.txt";
+    {
+        fs::ofstream out(file);              // 默认截断
+        out << "line 1\n" << 42;
+        out.close();                         // void close：状态看流本身
+        if (out.fail()) return 1;
+    }
+    {
+        fs::ofstream out(file, std::ios::app);
+        out << "\nappended";
+        out.close();
+        if (out.fail()) return 1;
+    }
+
+    std::string content;
+    {
+        wavvix::result<fs::file> opened = fs::open(file, fs::open_mode::read);
+        if (opened.is_err()) return 1;
+        fs::file handle = std::move(opened).value();
+        char buffer[64];
+        for (;;) {
+            wavvix::result<std::size_t> chunk = handle.read(buffer, sizeof buffer);
+            if (chunk.is_err()) return 1;
+            if (chunk.value() == 0) break;   // 0 是文件末尾，不是错误
+            content.append(buffer, chunk.value());
+        }
+        if (handle.close().is_err()) return 1;
+    }
+    std::cout << "content: " << content << '\n';
+    std::cout << "size: " << fs::file_size(file).value_or(0) << " bytes  "
+              << "stem: " << file.stem().string()
+              << "  ext: " << file.extension().string() << '\n';
+
+    for (const wavvix::result<fs::directory_entry>& item : fs::directory_iterator(dir)) {
+        if (item.is_err()) { std::cerr << item.error() << '\n'; return 1; }
+        std::cout << "entry: " << item.value().path().filename().string()
+                  << (item.value().is_directory().value_or(false) ? "/" : "") << '\n';
+    }
 }
 ```
 
-输出随目录内容变化。文件创建、读写和清理的完整示例见 [examples/fs.cpp](examples/fs.cpp)。
+实测输出（两平台一致，逐行）：`content: line 1`、`42`、`appended`、`size: 18 bytes  stem: notes  ext: .txt`、`entry: notes.txt`（18 字节 = `line 1\n42` 的 9 字节加 `\nappended` 的 9 字节）。完整可运行示例见 [examples/fs.cpp](examples/fs.cpp)。
 
 <a id="mem"></a>
 ## 内存分配：`<culib/mem.h>`
@@ -1433,3 +1518,5 @@ int main() {
 这项验证覆盖本文示例，不代表单独穷尽测试了所有重载；库本身的测试与 CI 检查方式见 [docs/ci.md](docs/ci.md)。
 
 上条记录之后，本文网络几节按统一 `net::socket` 重写。TCP、UDP 两个完整程序已重新以 Linux GCC C++11 和 Windows MSVC `/W4 /WX /execution-charset:.1252` 编译运行，分别输出 `tcp ok`、`udp ok`；Windows 消费程序未加 `/utf-8`。这次仅重跑这两段，不把上一条或旧 CI 当作新接口的验证。完整本地矩阵见[统一 socket 设计](docs/superpowers/specs/2026-10-13-unified-socket-design.md#实现验证)。
+
+2026-10-14：`fs` 按定稿的标准接口整体重写（`path` 值类型、`result` 三态查询、`directory_iterator`、`file` 句柄与 `fs::ofstream`，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)）。fs 一节全部提取重验：本文 23 个独立 C++ 程序从当前文档提取，在 Linux x86_64 GCC 11.4（`-std=c++11`，全部警告即错误）与 Windows x64 MSVC 2022（全部警告即错误）下编译并运行，30 次调用的退出码与输出均与正文一致；fs 示例实测输出即上文 fs 一节「实测输出」所列五行。2026-10-13 及更早的两段验证记录针对的是旧 fs 接口，不能替代本段新接口的重验。本段的文档示例验证不代表新接口的 CI——**新接口 CI 未运行**，本地验证范围与未覆盖项见[fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md) 第 5 节。

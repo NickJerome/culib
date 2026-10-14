@@ -1,225 +1,593 @@
+// fs 公共层的可移植实现：公共 API 的校验、result 化组合与目录遍历的共享状态。
+// 平台原语（detail::query / make_directory / remove_empty_directory /
+// remove_link_or_file / directory_handle）来自 directory.h，由 fs_posix.cpp 和
+// fs_win.cpp 实现；路径的纯字符串操作在 path.cpp。
+// 会碰磁盘的公共函数统一走 call_blocking：整段组合操作（含 remove_all 的递归）
+// 一次下放到后台线程，不在协程里时 call_blocking 直接内联执行。
+// 路径含 '\0' 在公共层就挡下，后端的契约是「到这里不必再查」。
+
 #include <culib/fs.h>
-#include <culib/defer.h>
-#include "file.h"
+#include <culib/runtime.h>
+
+#include "directory.h"
 #include "path.h"
 
-#include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstring>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace wavvix { namespace fs {
 
-using detail::is_separator;
-using detail::kNativeSeparator;
-using detail::root_name_length;
-
 namespace {
 
-result<void> write_all(std::intptr_t handle, string_view content, std::uint64_t& written,
-                       string_view path) {
-    std::size_t offset = 0;
-    while (offset < content.size()) {
-        result<std::size_t> moved = detail::write_some(
-            handle, content.data() + offset, content.size() - offset, path);
-        if (moved.is_err()) return std::move(moved).error();
-        if (moved.value() == 0) return make_error(error_kind::io, path.to_string() + " 写入未前进");
-        offset += moved.value();
-        written += moved.value();
+bool has_nul(const std::string& text) noexcept {
+    return std::memchr(text.data(), 0, text.size()) != nullptr;
+}
+
+error nul_error(string_view target) {
+    return make_error(error_kind::invalid_argument, "路径包含 NUL 字节: " + target.to_string());
+}
+
+// 拼接只为插入的那一个分隔符用平台原生字符；base 已以分隔符结尾时不重复插。
+// 遍历出来的名字活不过下一次 next()，所以在这里当场拷成完整路径。
+std::string join_native(const std::string& base, string_view piece) {
+    std::string joined;
+    joined.reserve(base.size() + 1 + piece.size());
+    joined.assign(base);
+    if (joined.empty() || !detail::is_separator(joined[joined.size() - 1])) {
+        joined.push_back(detail::kNativeSeparator);
     }
+    joined.append(piece.data(), piece.size());
+    return joined;
+}
+
+// --- 查询：缺失是 ok(false)，错误只留给「问不成」 -------------------------------
+
+enum class kind_test {
+    exists,
+    regular_file,
+    directory,
+};
+
+result<bool> query_flag_sync(std::string target, kind_test test) {
+    // 公共查询跟随符号链接；link 不会从 follow::yes 的 query 里出来。
+    result<detail::entry_kind> kind = detail::query(target, detail::follow_links::yes);
+    if (kind.is_err()) {
+        return std::move(kind).error();
+    }
+    switch (kind.value()) {
+        case detail::entry_kind::missing:
+            return false;
+        case detail::entry_kind::regular_file:
+            return test == kind_test::exists || test == kind_test::regular_file;
+        case detail::entry_kind::directory:
+            return test == kind_test::exists || test == kind_test::directory;
+        default:
+            // 管道设备之类「other」：存在，但既不是文件也不是目录。
+            return test == kind_test::exists;
+    }
+}
+
+// --- 建目录 -----------------------------------------------------------------------
+
+result<bool> create_one_sync(std::string target) {
+    if (target.empty()) {
+        return make_error(error_kind::invalid_argument, "目录路径是空的");
+    }
+    result<void> made = detail::make_directory(target);
+    if (made.is_ok()) {
+        return true;
+    }
+    if (made.error().kind() != error_kind::already_exists) {
+        return std::move(made).error();
+    }
+    // already_exists 是平台原语「那里有东西」的信号，是目录才算幂等成功。
+    // 两轮是给并发删除留的余地：查询说没了、再建一次；还不行就如实报。
+    for (int attempt = 0; attempt != 2; ++attempt) {
+        result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
+        if (kind.is_err()) {
+            return std::move(kind).error();
+        }
+        if (kind.value() == detail::entry_kind::directory) {
+            return false;   // 已存在的同名目录：没新建，不算错
+        }
+        if (kind.value() != detail::entry_kind::missing) {
+            return make_error(error_kind::already_exists, target + " 已存在但不是目录");
+        }
+        result<void> again = detail::make_directory(target);
+        if (again.is_ok()) {
+            return true;
+        }
+        if (again.error().kind() != error_kind::already_exists) {
+            return std::move(again).error();
+        }
+    }
+    return make_error(error_kind::already_exists, target + " 已存在但不是目录");
+}
+
+// 确保一级前缀是目录：是就过，缺就建（建了置 created），被别的什么挡着就报
+// already_exists——安全阀，不许删掉挡路的东西让位。
+// 前缀用 follow::yes 查：中间一级是指向目录的符号链接时照走（比如 macOS 的 /tmp）。
+result<void> ensure_prefix(const std::string& part, bool& created) {
+    for (int attempt = 0; attempt != 2; ++attempt) {
+        result<detail::entry_kind> kind = detail::query(part, detail::follow_links::yes);
+        if (kind.is_err()) {
+            return std::move(kind).error();
+        }
+        if (kind.value() == detail::entry_kind::directory) {
+            return result<void>();
+        }
+        if (kind.value() != detail::entry_kind::missing) {
+            return make_error(error_kind::already_exists, part + " 已存在但不是目录");
+        }
+        result<void> made = detail::make_directory(part);
+        if (made.is_ok()) {
+            created = true;
+            return result<void>();
+        }
+        if (made.error().kind() != error_kind::already_exists) {
+            return std::move(made).error();
+        }
+        // 并发里别人刚建了什么：回到开头重新归类。
+    }
+    return make_error(error_kind::already_exists, part + " 已存在但不是目录");
+}
+
+result<bool> create_tree_sync(std::string target) {
+    if (target.empty()) {
+        return make_error(error_kind::invalid_argument, "目录路径是空的");
+    }
+    // Windows 根文法里整段不可创建的根前缀（"C:\"、"\\?\C:\"、"\\server\share"）
+    // 一次磁盘都不许碰；partial 在每个边界上的长度就是 target 的对应前缀长度，
+    // 直接比。非 Windows 恒为 0，这条规则整体不生效。
+    const std::size_t root = detail::root_prefix_length(target);
+    bool created = false;
+    std::string partial;
+    partial.reserve(target.size());
+    for (std::size_t i = 0; i <= target.size(); ++i) {
+        if (i != target.size() && !detail::is_separator(target[i])) {
+            partial.push_back(target[i]);
+            continue;
+        }
+        // 根前缀内的段（"C:"、"\\?"、"\\server" 这类半截根）不是能创建的目录，
+        // 整段跳过；词法根名（"C:" / "\\\\"）的旧判定留着兜底不成形的路径。
+        const bool root_only = partial.size() <= root ||
+            (!partial.empty() && detail::root_name_length(partial) == partial.size());
+        if (!partial.empty() && !root_only) {
+            const result<void> status = ensure_prefix(partial, created);
+            if (status.is_err()) {
+                return std::move(status).error();
+            }
+        }
+        if (i < target.size()) {
+            partial.push_back(detail::kNativeSeparator);
+        }
+    }
+    return created;
+}
+
+// --- 删除 -------------------------------------------------------------------------
+
+result<void> remove_leaf_sync(const std::string& target, std::uint64_t& count) {
+    const result<void> removed = detail::remove_link_or_file(target);
+    if (removed.is_err() && removed.error().kind() != error_kind::not_found) {
+        return std::move(removed).error();
+    }
+    ++count;   // 并发里已经被别人删掉也算这一项没了
     return result<void>();
 }
 
-result<void> write_with_mode(string_view path, string_view content, detail::file_mode mode) {
-    result<std::intptr_t> opened = detail::open_file(path, mode);
-    if (opened.is_err()) return std::move(opened).error();
-    std::intptr_t handle = opened.value();
-    WAVVIX_DEFER { detail::close_file(handle); };
-    std::uint64_t written = 0;
-    result<void> status = write_all(handle, content, written, path);
-    if (status.is_err()) return status;
-    const unsigned long code = detail::close_file(handle);
-    if (code != 0) return detail::file_error("关闭", path, code);
+// 整棵树一次下放；稳定目录树中的链接只删链接本身。
+// 路径在操作期间若被并发替换，不能保证不进入替换后的目标。
+result<void> remove_tree_sync(const std::string& target, std::uint64_t& count) {
+    const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
+    if (kind.is_err()) {
+        return std::move(kind).error();
+    }
+    if (kind.value() == detail::entry_kind::missing) {
+        return result<void>();
+    }
+    if (kind.value() != detail::entry_kind::directory) {
+        // 普通文件、链接（含指向目录的链接、悬空链接）、管道设备：删条目自己。
+        return remove_leaf_sync(target, count);
+    }
+
+    // readdir 对枚举期间被增删的条目没有稳定性保证；先收本层名字，
+    // 关闭枚举句柄后再删除，避免自己的删除干扰枚举。
+    std::vector<std::pair<std::string, detail::entry_kind> > children;
+    {
+        result<detail::directory_handle> opened = detail::directory_handle::open(target);
+        if (opened.is_err()) {
+            return std::move(opened).error();
+        }
+        detail::directory_handle handle = std::move(opened).value();
+        for (;;) {
+            string_view name;
+            detail::entry_kind hint = detail::entry_kind::unknown;
+            const result<bool> got = handle.next(name, hint);
+            if (got.is_err()) {
+                return std::move(got).error();
+            }
+            if (!got.value()) {
+                break;
+            }
+            if (name == "." || name == "..") {
+                continue;
+            }
+            // 名字只活到下一次 next()：当场拷进向量。
+            children.push_back(std::make_pair(std::string(name.data(), name.size()), hint));
+        }
+    }   // 关闭枚举句柄后再删子项。
+
+    for (std::size_t i = 0; i != children.size(); ++i) {
+        const std::string& name = children[i].first;
+        detail::entry_kind hint = children[i].second;
+        const std::string child = join_native(target, name);
+        if (hint == detail::entry_kind::directory) {
+            const result<void> status = remove_tree_sync(child, count);
+            if (status.is_err()) {
+                return status;
+            }
+            continue;
+        }
+        if (hint == detail::entry_kind::unknown) {
+            // 原生枚举给不出类型（POSIX 的 DT_UNKNOWN）：查过才敢下潜。
+            const result<detail::entry_kind> child_kind =
+                detail::query(child, detail::follow_links::no);
+            if (child_kind.is_err()) {
+                return std::move(child_kind).error();
+            }
+            if (child_kind.value() == detail::entry_kind::missing) {
+                continue;   // 并发里已经没了
+            }
+            if (child_kind.value() == detail::entry_kind::directory) {
+                const result<void> status = remove_tree_sync(child, count);
+                if (status.is_err()) {
+                    return status;
+                }
+                continue;
+            }
+        }
+        // hint 是 link / regular_file / other：删条目自己，链接绝不跟进。
+        const result<void> status = remove_leaf_sync(child, count);
+        if (status.is_err()) {
+            return status;
+        }
+    }
+
+    // 子项都清了，删根目录；中途又冒出东西（already_exists）就如实报，不硬来。
+    const result<void> removed = detail::remove_empty_directory(target);
+    if (removed.is_err()) {
+        return std::move(removed).error();
+    }
+    ++count;
     return result<void>();
+}
+
+result<std::uint64_t> remove_all_sync(std::string target) {
+    std::uint64_t count = 0;
+    const result<void> status = remove_tree_sync(target, count);
+    if (status.is_err()) {
+        return std::move(status).error();
+    }
+    return count;
+}
+
+result<bool> remove_one_sync(std::string target) {
+    const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
+    if (kind.is_err()) {
+        return std::move(kind).error();
+    }
+    if (kind.value() == detail::entry_kind::missing) {
+        return false;
+    }
+    // 目录走 rmdir 语义（非空报 already_exists 的安全阀），其余删条目自己——
+    // follow::no 的 query 已把链接归 link，绝不会被当成目录跟进删。
+    const result<void> removed = kind.value() == detail::entry_kind::directory
+                                     ? detail::remove_empty_directory(target)
+                                     : detail::remove_link_or_file(target);
+    if (removed.is_err()) {
+        if (removed.error().kind() == error_kind::not_found) {
+            return false;   // 并发里刚被别人删掉
+        }
+        return std::move(removed).error();
+    }
+    return true;
 }
 
 }  // namespace
 
-output_file::output_file() noexcept : handle_(-1), written_(0) {}
+// --- 当前目录与绝对路径 -----------------------------------------------------------
 
-output_file::~output_file() { close(); }
-
-output_file::output_file(output_file&& other) noexcept
-    : handle_(other.handle_), written_(other.written_) {
-    other.handle_ = -1;
-    other.written_ = 0;
+// 后台线程上：取当前目录 + 拼接 + 归一，整段一次下放。current_path 自带的下放
+// 在后台线程上是内联执行（不在纤程里），整次 absolute 只挂起协程一次。
+result<path> absolute_sync(std::string target) {
+    const path relative(std::move(target));
+    if (relative.is_absolute()) {
+        return relative.lexically_normal();
+    }
+    result<path> base = current_path();
+    if (base.is_err()) {
+        return std::move(base).error();
+    }
+    return (base.value() / relative).lexically_normal();
 }
 
-output_file& output_file::operator=(output_file&& other) noexcept {
-    if (this == &other) return *this;
-    close();
-    handle_ = other.handle_;
-    written_ = other.written_;
-    other.handle_ = -1;
-    other.written_ = 0;
+result<path> absolute(const path& target) {
+    if (has_nul(target.string())) {
+        return nul_error(target.string());
+    }
+    if (target.is_absolute()) {
+        return target.lexically_normal();   // 纯字符串，一个系统调用都不发
+    }
+    return call_blocking(&absolute_sync, std::string(target.string()));
+}
+
+// --- 查询 -------------------------------------------------------------------------
+
+result<bool> exists(const path& target) {
+    if (has_nul(target.string())) {
+        return nul_error(target.string());
+    }
+    return call_blocking(&query_flag_sync, std::string(target.string()), kind_test::exists);
+}
+
+result<bool> is_regular_file(const path& target) {
+    if (has_nul(target.string())) {
+        return nul_error(target.string());
+    }
+    return call_blocking(&query_flag_sync, std::string(target.string()), kind_test::regular_file);
+}
+
+result<bool> is_directory(const path& target) {
+    if (has_nul(target.string())) {
+        return nul_error(target.string());
+    }
+    return call_blocking(&query_flag_sync, std::string(target.string()), kind_test::directory);
+}
+
+// --- 目录与文件操作 ---------------------------------------------------------------
+
+result<bool> create_directory(const path& directory) {
+    if (has_nul(directory.string())) {
+        return nul_error(directory.string());
+    }
+    return call_blocking(&create_one_sync, std::string(directory.string()));
+}
+
+result<bool> create_directories(const path& directory) {
+    // 整串先查 NUL：路径里任何一段带 NUL 都在碰到磁盘之前挡下，
+    // 于是 "new/child\0tail" 不会先把 "new" 建出来。
+    if (has_nul(directory.string())) {
+        return nul_error(directory.string());
+    }
+    return call_blocking(&create_tree_sync, std::string(directory.string()));
+}
+
+result<bool> remove(const path& target) {
+    if (has_nul(target.string())) {
+        return nul_error(target.string());
+    }
+    return call_blocking(&remove_one_sync, std::string(target.string()));
+}
+
+result<std::uint64_t> remove_all(const path& root) {
+    if (has_nul(root.string())) {
+        return nul_error(root.string());
+    }
+    return call_blocking(&remove_all_sync, std::string(root.string()));
+}
+
+// --- 遍历 -------------------------------------------------------------------------
+
+// 成员函数 path() 遮蔽了类型名 path，这里必须写全限定名。
+directory_entry::directory_entry(const wavvix::fs::path& target) : path_(target) {}
+
+const wavvix::fs::path& directory_entry::path() const noexcept { return path_; }
+
+result<bool> directory_entry::is_regular_file() const {
+    if (has_nul(path_.string())) {
+        return nul_error(path_.string());
+    }
+    return call_blocking(&query_flag_sync, std::string(path_.string()), kind_test::regular_file);
+}
+
+result<bool> directory_entry::is_directory() const {
+    if (has_nul(path_.string())) {
+        return nul_error(path_.string());
+    }
+    return call_blocking(&query_flag_sync, std::string(path_.string()), kind_test::directory);
+}
+
+namespace detail {
+
+// 引用计数的遍历状态：原生目录句柄 + 共享的流式位置 + 当前元素。
+// 所有推进都发生在 call_blocking 放到后台线程的那一次调用里；gate 只在那期间、
+// 只在后台线程上持有——绝不跨挂起的协程。
+struct directory_state {
+    explicit directory_state(std::string directory)
+        : refs(1), base(std::move(directory)), handle(nullptr) {}
+    ~directory_state() { delete handle; }
+
+    directory_state(const directory_state&) = delete;
+    directory_state& operator=(const directory_state&) = delete;
+
+    void close_handle() noexcept {
+        delete handle;
+        handle = nullptr;
+    }
+
+    std::atomic<std::size_t> refs;
+    std::mutex gate;
+    const std::string base;
+    // 指堆上的 move-only 句柄：directory_handle 没有默认构造，只在打开成功时 new 出来。
+    directory_handle* handle;
+    // 当前元素：值或「这一项读失败了」；空指针表示已经到尾。
+    std::unique_ptr<result<directory_entry> > current;
+};
+
+}  // namespace detail
+
+namespace {
+
+// 取下一项（跳过 "." 与 ".."）直到有结果、到尾或出错。调用方保证独占
+// （构造期还没发布，或已持有 gate）。读出错时顺手关掉句柄，错误之后就是尾。
+void read_next_locked(detail::directory_state& state) {
+    if (state.current && state.current->is_err()) {
+        // 错误元素只报一次：报过就收尾，下一跳直接到尾。
+        state.close_handle();
+        state.current.reset();
+        return;
+    }
+    for (;;) {
+        if (state.handle == nullptr) {
+            state.current.reset();
+            return;
+        }
+        string_view name;
+        detail::entry_kind hint = detail::entry_kind::unknown;
+        result<bool> got = state.handle->next(name, hint);
+        if (got.is_err()) {
+            state.close_handle();
+            state.current.reset(new result<directory_entry>(std::move(got).error()));
+            return;
+        }
+        if (!got.value()) {
+            state.close_handle();   // 读完就关，不留着占目录
+            state.current.reset();
+            return;
+        }
+        if (name == "." || name == "..") {
+            continue;
+        }
+        // 名字只活到下一次 next()：当场拼成完整路径拷进条目。
+        std::string full = join_native(state.base, name);
+        state.current.reset(
+            new result<directory_entry>(directory_entry(path(std::move(full)))));
+        return;
+    }
+}
+
+// 后台线程上：打开 + 预读第一项一次做完。打开失败不是异常也不是空遍历，
+// 而是把错误装进当前元素——第一个元素报出去，之后到尾。
+detail::directory_state* open_stream(std::string directory) {
+    detail::directory_state* state = new detail::directory_state(std::move(directory));
+    result<detail::directory_handle> opened = detail::directory_handle::open(state->base);
+    if (opened.is_err()) {
+        state->current.reset(new result<directory_entry>(std::move(opened).error()));
+        return state;
+    }
+    state->handle = new detail::directory_handle(std::move(opened).value());
+    read_next_locked(*state);   // 此刻还没有第二个引用，不用锁
+    return state;
+}
+
+// 后台线程上：推进一格，一次 next 一个元素，不整目录预读。
+void advance_stream(detail::directory_state* state) {
+    std::lock_guard<std::mutex> guard(state->gate);
+    if (!state->current) {
+        return;   // 已经在尾上
+    }
+    read_next_locked(*state);
+}
+
+// 后台线程上：最后一个引用放下时关掉原生句柄并销毁状态。
+// 引用已归零，锁只是给「还有人在推进」的窗口兜底；句柄在锁内关，状态在锁外删。
+void destroy_stream(detail::directory_state* state) {
+    {
+        std::lock_guard<std::mutex> guard(state->gate);
+        state->close_handle();
+    }
+    delete state;
+}
+
+}  // namespace
+
+directory_iterator::directory_iterator() noexcept : state_(nullptr) {}
+
+directory_iterator::directory_iterator(const path& directory) : state_(nullptr) {
+    if (has_nul(directory.string())) {
+        // NUL 在后台调用之前就挡下：错误照样走「第一个元素报出、随后到尾」。
+        state_ = new detail::directory_state(std::string());
+        state_->current.reset(
+            new result<directory_entry>(nul_error(directory.string())));
+        return;
+    }
+    state_ = call_blocking(&open_stream, std::string(directory.string()));
+}
+
+directory_iterator::directory_iterator(const directory_iterator& other) : state_(other.state_) {
+    if (state_ != nullptr) {
+        state_->refs.fetch_add(1);
+    }
+}
+
+directory_iterator& directory_iterator::operator=(const directory_iterator& other) {
+    if (this == &other) {
+        return *this;
+    }
+    detail::directory_state* next = other.state_;
+    if (next != nullptr) {
+        next->refs.fetch_add(1);
+    }
+    detail::directory_state* previous = state_;
+    state_ = next;
+    if (previous != nullptr && previous->refs.fetch_sub(1) == 1) {
+        call_blocking(&destroy_stream, previous);
+    }
     return *this;
 }
 
-bool output_file::is_open() const noexcept { return handle_ != -1; }
-
-void output_file::close() noexcept {
-    detail::close_file(handle_);
-    written_ = 0;
-}
-
-result<void> output_file::open(string_view path) {
-    close();
-    result<std::intptr_t> opened = detail::open_file(path, detail::file_mode::append);
-    if (opened.is_err()) return std::move(opened).error();
-    handle_ = opened.value();
-    written_ = detail::file_size_hint(handle_);
-    return result<void>();
-}
-
-result<void> output_file::write(string_view content) {
-    if (!is_open()) return make_error(error_kind::invalid_argument, "写入前要先 open");
-    return write_all(handle_, content, written_, "");
-}
-
-result<void> read_file(string_view path, std::string& out) {
-    result<std::intptr_t> opened = detail::open_file(path, detail::file_mode::read);
-    if (opened.is_err()) return std::move(opened).error();
-    std::intptr_t handle = opened.value();
-    WAVVIX_DEFER { detail::close_file(handle); };
-    out.clear();
-    const std::uint64_t size = detail::file_size_hint(handle);
-    if (size > out.max_size())
-        return make_error(error_kind::out_of_range, path.to_string() + " 文件过大，无法一次读入内存");
-    if (size != 0) {
-        out.resize(static_cast<std::size_t>(size));
-        std::size_t offset = 0;
-        while (offset < out.size()) {
-            result<std::size_t> got = detail::read_some(
-                handle, &out[offset], out.size() - offset, path);
-            if (got.is_err()) {
-                out.resize(offset);
-                return std::move(got).error();
-            }
-            if (got.value() == 0) break;
-            offset += got.value();
-        }
-        out.resize(offset);
-        return result<void>();
+directory_iterator::~directory_iterator() {
+    if (state_ == nullptr) {
+        return;
     }
-    char chunk[8192];
-    for (;;) {
-        result<std::size_t> got = detail::read_some(handle, chunk, sizeof chunk, path);
-        if (got.is_err()) return std::move(got).error();
-        if (got.value() == 0) return result<void>();
-        out.append(chunk, got.value());
+    if (state_->refs.fetch_sub(1) != 1) {
+        return;
     }
+    call_blocking(&destroy_stream, state_);
 }
 
-result<void> write_file(string_view path, string_view content) {
-    return write_with_mode(path, content, detail::file_mode::truncate);
-}
-
-result<void> append_file(string_view path, string_view content) {
-    return write_with_mode(path, content, detail::file_mode::append);
-}
-
-result<std::string> absolute(string_view path) {
-    if (!path.empty() && std::memchr(path.data(), 0, path.size()))
-        return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
-    if (is_absolute(path)) return normalize(path);
-    result<std::string> here = current_directory();
-    if (here.is_err()) return std::move(here).error();
-    return normalize(join(here.value(), path));
-}
-
-// --- 由平台原语拼起来的组合操作 -----------------------------------------------
-
-result<void> create_directory(string_view path, recursive mode) {
-    if (path.empty()) return make_error(error_kind::invalid_argument, "路径是空的");
-    if (std::memchr(path.data(), 0, path.size()))
-        return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
-
-    if (mode == recursive::yes) {
-        // 逐级建。中间某级已存在是正常情况，所以只有「不是已存在」的错误才中断。
-        std::string partial;
-        partial.reserve(path.size());
-        for (std::size_t i = 0; i <= path.size(); ++i) {
-            if (i != path.size() && !is_separator(path.data()[i])) {
-                partial.push_back(path.data()[i]);
-                continue;
-            }
-            // Windows 上 "C:" 这一级不是能创建的目录，用已有的 root_name_length 判断，
-            // 不需要在平台文件里另写一套盘符逻辑。
-            const bool root_only = !partial.empty() && root_name_length(partial) == partial.size();
-            if (!partial.empty() && !root_only) {
-                const result<void> made = detail::make_directory(partial);
-                if (made.is_err() && made.error().kind() != error_kind::already_exists) {
-                    return made;
-                }
-            }
-            if (i < path.size()) partial.push_back(kNativeSeparator);
-        }
-        // 只在最后查一次：路上每级都查会在网络盘上多付 N 次往返
-        if (!is_directory(path)) {
-            return make_error(error_kind::already_exists, path.to_string() + " 已存在但不是目录");
-        }
-        return result<void>();
+const result<directory_entry>& directory_iterator::operator*() const {
+    if (state_ == nullptr || !state_->current) {
+        // 到尾还解引用是误用；给个可诊断的错误元素，不踩空指针。
+        static const result<directory_entry> past_the_end(
+            make_error(error_kind::invalid_argument, "已过尾的目录迭代器被解引用"));
+        return past_the_end;
     }
+    return *state_->current;
+}
 
-    const result<void> made = detail::make_directory(path);
-    if (made.is_ok()) return made;
-    if (made.error().kind() == error_kind::already_exists) {
-        if (is_directory(path)) return result<void>();   // 幂等
-        return make_error(error_kind::already_exists, path.to_string() + " 已存在但不是目录");
+directory_iterator& directory_iterator::operator++() {
+    if (state_ == nullptr || !state_->current) {
+        return *this;   // 尾上前进：什么都不做，连系统调用都不发
     }
-    return made;
+    call_blocking(&advance_stream, state_);
+    return *this;
 }
 
-result<void> remove_directory(string_view path, recursive mode) {
-    if (mode == recursive::yes) {
-        // 先收集再删：一边遍历一边改目录在部分文件系统上行为未定义。
-        std::vector<std::string> children;
-        const result<void> listed = list_directory(path, [&children](const entry& item) {
-            children.push_back(item.name.to_string());
-            return true;
-        });
-        if (listed.is_err()) return listed;
-        for (std::size_t i = 0; i < children.size(); ++i) {
-            const std::string child = join(path, children[i]);
-            // 指向目录的符号链接要删链接本身，不跟进去
-            const result<void> removed = detail::is_directory_not_link(child)
-                                             ? remove_directory(child, recursive::yes)
-                                             : remove_file(child);
-            if (removed.is_err()) return removed;
-        }
+bool directory_iterator::operator==(const directory_iterator& other) const noexcept {
+    // 输入迭代器的相等：共享同一个遍历状态，或者两个都在尾上（尾彼此相等）。
+    const bool at_end = state_ == nullptr || !state_->current;
+    const bool other_at_end = other.state_ == nullptr || !other.state_->current;
+    if (at_end || other_at_end) {
+        return at_end == other_at_end;
     }
-    return detail::remove_empty_directory(path);
+    return state_ == other.state_;
 }
 
-// --- 平台实现的薄包装 ---------------------------------------------------------
-
-result<std::string> read_file(string_view path) {
-    std::string out;
-    result<void> status = read_file(path, out);
-    if (status.is_err()) return std::move(status).error();
-    return out;
+bool directory_iterator::operator!=(const directory_iterator& other) const noexcept {
+    return !(*this == other);
 }
 
-result<std::vector<std::string>> list_directory(string_view path) {
-    std::vector<std::string> names;
-    result<void> status = list_directory(path, [&names](const entry& item) {
-        names.push_back(item.name.to_string());
-        return true;
-    });
-    if (status.is_err()) return std::move(status).error();
-    // 操作系统给的顺序不保证，排一下让输出可重现
-    std::sort(names.begin(), names.end());
-    return names;
-}
+directory_iterator begin(directory_iterator it) { return it; }
+
+directory_iterator end(const directory_iterator&) { return directory_iterator(); }
 
 }  // namespace fs
 }  // namespace wavvix

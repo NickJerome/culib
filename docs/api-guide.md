@@ -35,8 +35,9 @@
 不用 `result` 是因为「数据还没到齐」不是错误——那是流式解析的常态，不该为它付一次
 错误消息的分配。而 `optional` 正是本库表达「可能没有值」的那个类型。
 
-**不用「返回 bool + 出参」**，虽然那是本库别处的习惯（`fs::read_file`）。那种写法
-在这里有个真陷阱：把调用和读出参写进同一个表达式时，求值顺序是未定义的——
+**不用「返回 bool + 出参」**（旧 `fs::read_file` 曾有一个 `std::string&` 出参重载，
+已随 2026-10-14 的 fs 改版删除）。那种写法在这里有个真陷阱：把调用和读出参写进同一个
+表达式时，求值顺序是未定义的——
 
     std::printf("%s 值是 %u", in.read_u16_be(v) ? "成了" : "不够", v);   // v 可能先被读
 
@@ -239,62 +240,101 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 
 ## [`fs.h`](../include/culib/fs.h)
 
-完整背景见 [设计文档](superpowers/specs/2026-10-04-fs-design.md)。
+完整背景见 [fs 标准接口设计](superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
+[2026-10-04 的 fs 设计](superpowers/specs/2026-10-04-fs-design.md)描述的是被取代的旧接口
+（string_view 路径、整文件读写、`output_file`、回调式 `list_directory`），保留作历史记录。
 
 文件系统。C++11 没有 std::filesystem，这是缺失感最强的一块。
 
-    wavvix::result<std::string> text = wavvix::fs::read_file("config.toml");
-    if (text.is_err()) return std::move(text).error();
+    const wavvix::fs::path config = dir / "app.conf";
+    const wavvix::result<bool> present = wavvix::fs::exists(config);
+    if (present.is_err()) return std::move(present).error();
+    if (!present.value()) return use_defaults();
 
-    for (const std::string& name : wavvix::fs::list_directory("/tmp").value_or({})) { ... }
+    for (const wavvix::result<wavvix::fs::directory_entry>& item :
+         wavvix::fs::directory_iterator(dir)) { ... }
 
 约定：
 
-- 路径一律是 UTF-8 的 std::string / string_view，没有专门的 path 类型。代价是路径
-  和普通字符串混用时编译器发现不了，好处是每个接口少一层转换。
-- 文件系统操作拒绝含内嵌 NUL 的路径：返回 `invalid_argument`；`exists` / `is_file` /
-  `is_directory` 等布尔查询返回 `false`。不会把 NUL 前的路径误当成目标文件。
+- 路径是值类型 `fs::path`，拥有自己的 UTF-8 字符串（内部 `std::string`），复制、移动
+  都安全。名字对齐 `std::filesystem`：`parent_path` / `filename` / `stem` /
+  `extension` / `lexically_normal` / `is_absolute` / `operator/`，看名字就会用。
+  相等比较是精确字符串比较，不做归一；要先统一形状再比就先 `lexically_normal()`。
+- 碰磁盘的接口一律返回 `result`，路径里含内嵌 NUL 的一律报 `invalid_argument`，
+  动手之前磁盘碰不到，也不会把 NUL 前的路径误当成目标文件。
+- **「不存在」和「问不成」分开**：`exists` / `is_regular_file` / `is_directory` 返回
+  `result<bool>`，不存在是 `ok(false)`，权限不足之类才是错误。旧版那种「bool 查询、
+  失败返回 false」把两种情况压成一个答案，已经废掉。
 - Windows 接受 '/' 和 '\\' 两种分隔符；POSIX 上 '\\' 是普通文件名字符。
-  **join 只为自己插入的那一个分隔符用平台原生字符，
-  不改写输入里已有的**：Windows 上 join("/a", "b") 是 "/a\\b" 而不是 "\\a\\b"。混用在
-  Windows 上是合法的（"C:/foo\\bar" 能用）；要全部统一成原生分隔符就用 normalize，
-  它是按段重建路径的。这条是 CI 第一次在 Windows 上跑时，被一个写错的测试暴露出来的。
-- 整文件读写一律二进制，不做换行转换：读到的就是磁盘上的字节。
-- **符号链接默认跟随**（用 stat 而不是 lstat）：exists / is_file / file_size 问的是
-  「那里有个能打开的文件吗」。唯一的例外是 remove_directory(recursive::yes)，它**不**
-  跟进符号链接——跟进去会删掉链接指向的别处内容，那个代价太大。
+  **`operator/` 只为自己插入的那一个分隔符用平台原生字符，不改写输入里已有的**：
+  Windows 上 `path("/a") / "b"` 是 `"/a\\b"` 而不是 `"\\a\\b"`。混用在 Windows 上是
+  合法的（"C:/foo\\bar" 能用）；要把形状统一就 `lexically_normal()`。这条是 CI 第一次
+  在 Windows 上跑时，被一个写错的测试暴露出来的。POSIX 上 `/b` 是绝对路径，Windows
+  上它只是当前盘的根，完整的绝对路径须带盘符或 UNC 前缀。
+- 路径运算全是纯字符串操作，零系统调用：`lexically_normal()` 消去 `.`、`..` 和重复
+  分隔符，不解析符号链接；`absolute()` 把相对路径接到当前目录后再做同样的词法整理，
+  也不解析符号链接。
+- **符号链接默认跟随**（用 stat 而不是 lstat）：`exists` / `is_regular_file` /
+  `file_size` 问的是「那里有个能打开的文件吗」。例外全在删除一侧：`remove` 删链接
+  本身不跟进，目录树保持稳定时，`remove_all` 递归删除链接本身，不进入链接目标。
+  如果其他进程同时把目录替换成链接，基于路径的删除无法保证隔离；不要用它
+  清理可被不可信进程并发修改的树。
 - Windows 上接近 `MAX_PATH` 的普通长路径会在调用系统 API 前转成扩展长度的绝对路径；
   调用方无需手写 `\\?\` 前缀。短路径不额外查询完整路径。输入很短但当前工作目录极深
   的相对路径仍可能碰到 Win32 长度限制。
 - 目标存储包含 HDD 和网络挂载。一次 stat 在本地缓存热时 ~475 ns，在冷的 HDD 上
   5–10 ms，在 NFS 上 0.2–1 ms。**所以这里每个函数都只做它名字说的那件事**，
-  不替调用方多问一次磁盘，见 CLAUDE.md「性能与占用」。
+  不替调用方多问一次磁盘：需要类型就直接 `is_regular_file` / `is_directory`，不用先问
+  `exists`；`directory_entry` 建条目不多做一次 stat。见 CLAUDE.md「性能与占用」。
+- 读写一律二进制，不做换行转换：读到的就是磁盘上的字节，内嵌 `'\0'` 保留。
+- **协程里的文件操作自动经 `call_blocking`** 放到 runtime 的后台线程执行，等待期间
+  只挂起当前协程，工作线程照常跑别的协程；协程外同步执行，调用方不用自己包。
 
-路径拆分函数返回输入的视图，不复制字符：`parent("/a/b/c")` 为 `"/a/b"`，
-`filename("/a/b/")` 为空，`stem("a.tar.gz")` 为 `"a.tar"`，`extension(".bashrc")`
-为空。`join(a, b)` 只在两段之间按需插入分隔符；若 `b` 按当前平台规则是绝对路径，
-则直接返回 `b`。POSIX 上 `/b` 是绝对路径，Windows 上它只是当前盘的根，完整的绝对
-路径须带盘符或 UNC 前缀。`normalize()` 只消去 `.`、`..` 和重复分隔符，不访问磁盘。
-`absolute()` 把相对路径接到当前目录后再做同样的词法整理；两者都不解析符号链接。
+`fs::file` 是原生字节句柄（`fs::open(path, open_mode::read/write/append)`）：
+移动 only，析构关闭；`read` 返回读到的字节数、0 表示末尾，`write` 写满为止
+（`result<void>`，内部处理短写），`close` 返回 `result<void>`。整文件读写这种组合
+由调用方用分块循环写出来，库不再提供 `read_file` / `write_file`——那三个函数每种都要
+先分配再拷贝一次，而且对管道、`/proc` 这类无大小目标反而碍事。`open_mode::append`
+使用系统的追加模式，每次底层写入都落在当时的文件末尾；大内容可能拆成多次写入，
+不保证整段内容与其他进程的写入互不交错。
 
-`exists`、`is_file`、`is_directory` 各自查询一次；需要知道类型时直接选类型查询，
-不用先问 `exists`。`last_write_time` 只保证秒精度；Windows 上纪元前的修改时间也返回
-负 Unix 秒，向过去取整。`read_file`、`write_file` 和
-`append_file` 按二进制处理内容；带 `std::string&` 出参的 `read_file` 可以复用缓冲区。
-追加写入使用系统的追加模式；每次底层写入都落在当时的文件末尾。大内容可能拆成多次写入，不保证整段内容与其他进程的写入互不交错。
-可查询到的文件大小若超过 `std::string::max_size()`，读取前返回 `out_of_range`，不会截断。
-`output_file` 持有常开的追加写句柄，`open()` 会先关掉旧句柄，析构时自动关闭；
-`write()` 无用户态缓冲，每次直接写给操作系统。它的 `size()` 是打开时的大小加上
-此句柄后续写入的字节数，不会每次重新查询磁盘，因此不计入其他进程同时写入的内容。
+`directory_iterator` 是输入迭代器：拷贝共享同一个遍历位置，不是各自一份快照。
+range-for 的元素是 `const result<directory_entry>&`——打开失败在第一个元素里报出，
+中途出错在这一项报出错误元素、错误元素之后即到尾（错误只报一次），永远不会「静默的空目录」和「目录项、错误分两种通道」
+并存。遍历顺序不保证、不排序，只遍历一级，要递归自己套。旧的回调式
+`list_directory`（模板回调 + 提前返回 `false`）和「一次取全并排序」的版本都已删除：
+回调的提前退出、名字视图的生命周期这些规矩，range-for + `break` 不需要。
 
-`create_directory` 在目标已经是目录时成功；`recursive::yes` 会逐级创建。
-`remove_directory(recursive::yes)` 会删除目录下全部内容，但不会进入符号链接指向的
-目录。`copy_file` 默认不覆盖已有目标；POSIX 上目标即使是悬空符号链接也视为已存在。
-POSIX 复制会保留权限位；若设置权限失败则返回错误，此时目标可能已有复制内容。
-复制不保证保留权限以外的元数据。`rename` 在同一文件系统内是原子操作；POSIX 跨
-文件系统会返回错误。回调版 `list_directory` 在回调
-返回 `false` 时停止；条目顺序不保证，`entry::name` 视图只在本次回调内有效。
-返回 `std::vector<std::string>` 的重载一次取全并按名字排序。
+`create_directory` 新建返回 true、已存在返回 false；`create_directories` 逐级创建，
+被同名文件挡住报 `already_exists`，不删文件让路。`remove` 对不存在返回 false，
+对非空目录报 `already_exists`——这是安全阀，整棵树交给 `remove_all`（返回删掉的条目
+数，不存在是 0）。`copy_file` 默认不覆盖，覆盖必须显式写 `copy_options::overwrite_existing`；Windows 上如果卷无法提供可靠的文件身份，覆盖操作会返回错误而不是冒险清空可能相同的源文件。
+「跳过已存在的目标」不是复制的选项，先自己 `exists` 判断。POSIX 复制会保留权限位；
+若设置权限失败则返回错误，此时目标可能已有复制内容；复制不保证保留权限以外的元数据。
+`rename` 在同一文件系统内是原子操作；POSIX 跨文件系统会返回错误。
+
+## [`fs_stream.h`](../include/culib/fs_stream.h)
+
+`fs::ofstream`：继承 `std::ostream` 的输出文件流，取代旧的 `fs::output_file`。
+
+    wavvix::fs::ofstream report(path);              // 默认截断，写一律二进制
+    report << "count=" << n << '\n';
+    report.close();                                 // void：成没成看流状态
+    if (report.fail()) return report_failure();
+
+    wavvix::fs::ofstream again(path, std::ios::app);  // 追加到当时的末尾
+    static_cast<std::ostream&>(again) << "line\n";    // 走通用的 std::ostream& 路径
+
+**它的失败只有标准流状态这一种说法**：打开失败、写入失败、`close()` 失败都反映在
+`good()` / `fail()` / `operator bool` 上；`close()` 返回 `void`，接口里没有
+`std::error_code`，也没有成员 `open()` 可以重开——要换目标或重开就构造新对象。
+这是和 `fs::file` 的分工，不是两套并存的选择：碰原生字节用 `file`，每个操作自己查
+`result`；要 `<<`、要交给收 `std::ostream&` 的通用代码，用 `ofstream`，它按标准流的
+规矩报告失败。同一段代码里不存在「这一行看 result、下一行看流状态」的先想一下。
+
+缓冲与 `flush()` 的行为跟着 `std::ostream` 走；`close()` 会先 flush，失败置失败位。
+坏流上的写入是 no-op：打开失败（比如路径含 NUL）之后继续 `<<` 不会崩，也不会把
+NUL 截掉去打开前缀路径。
 
 ## [`lexical_cast.h`](../include/culib/lexical_cast.h)
 
@@ -403,7 +443,7 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
 
 **没有 operator bool、operator*、operator->**，和 `result` 一致：判断有无和取值
 各只保留一种写法。标准库那套 `if (opt)` / `*opt` 更短，但这两个类型会并排出现在
-同一个函数里（`fs::read_file` 返回 result、`os::getenv` 返回 optional），那时
+同一个函数里（`fs::exists` 返回 `result`、`os::getenv` 返回 optional），那时
 `if (opt)` 紧挨着 `if (text.is_ok())` 就是「同一件事两种写法」。
 
 其余行为和 std::optional 一致：
@@ -632,8 +672,8 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 
 需要锁的是**数据跨工作线程共享**，或者**临界区中间会让出**的情形，那时别的协程真的会跑起来并看到中间状态：
 
-    auto text = read_file(path);           // 这里会让出
-    cache[path] = text;                    // 回来时 cache 可能已经被别人动过
+    auto info = wavvix::fs::file_size(p);  // 协程里走 call_blocking，这里会让出
+    cache[p] = info;                       // 回来时 cache 可能已经被别人动过
 
 判据就两句：**这段代码从读到写之间，有没有可能让出；有没有别的线程在改它。** 都没有就别加。
 

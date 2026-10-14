@@ -41,7 +41,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | lexical_cast | 字符串 ⇄ 数值 / 布尔。`lexical_cast<T>` 严格解析（整个输入必须被消费）、`to_string` / `to_chars` 反向 | **已完成** |
 | flag | 命令行参数：`flag::int64`、`flag::string` 等类型，必填项检查，自带 `--help` 和 `--version`；位置参数、GNU 风格重排、`set()` 和按名字问的 `was_given()` 给配置文件用 | **已完成**（`was_given(string_view)` 是 `config` 逼出来的） |
 | strings | 操作字符串的自由函数：split / join / trim / 大小写 / replace、UTF-8 ⇄ UTF-16 转换。**不是字符串类**，全库一律用 `std::string`；大小写只做 ASCII，格式化另行缩范围 | **已完成**（East Asian Width 推后） |
-| fs | 路径拆分与拼接、文件与目录操作、整文件读写、目录遍历（C++11 没有 `std::filesystem`）、**常开的追加写句柄** `output_file`（日志那种连续写同一个文件的场合，比每行开关一次快 7.7 倍） | **已完成**。`output_file` 和 Windows 共享模式那处修复是 `log` 那一期逼出来的 |
+| fs | 路径值类型 `fs::path`（UTF-8，名字对齐 `std::filesystem`）、`result` 三态查询（「不存在」是 `false`，「问不成」才是错误）、目录与文件操作、`directory_iterator` 遍历、`fs::file` 句柄与 `fs::ofstream` 流（C++11 没有 `std::filesystem`） | 接口 2026-10-14 定稿为[标准接口改版](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)：`path` 值类型取代字符串自由函数，整文件读写 / `output_file` / 回调式遍历被句柄、流和迭代器取代，不留兼容；接口已实现，最终 POSIX FIFO 复制修复后在 Linux x86_64 GCC debug、Clang release 和 GCC 无异常 / 无 RTTI release 跑过完整本地构建、测试与示例；Windows MSVC debug 与 release 在这次仅涉及 POSIX 的修复之前跑过，之后未重跑。**新接口 CI 未运行**，macOS、MinGW、GCC 4.8 待补（见[设计文档](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)第 5 节）。Windows 共享模式那处修复随新句柄保留 |
 | term | 终端彩色输出：`fg::red("x")` 形状，样式是可组合的值类型（**漏掉括号就编译报错**，所以不会出现「设了颜色没恢复」）；自动判断是否该上色（终端 / `NO_COLOR` / `TERM`） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-01-test-term-table-design.md) 第 5 节。测试框架的彩色报告就是它的第一个消费者。Windows 走 VT 模式，开不起来就降级成纯文字（不做旧版控制台 API，理由见[实现说明](docs/implementation-notes.md)） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
@@ -300,7 +300,7 @@ use(port.value());
 
 ```cpp
 wavvix::result<config> load(const std::string& path) {
-    wavvix::result<std::string> text = read_file(path);
+    wavvix::result<std::string> text = read_text(path);
     if (text.is_err()) return std::move(text).error();
 
     wavvix::result<int> port = parse_port(text.value());

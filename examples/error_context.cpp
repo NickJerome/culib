@@ -39,7 +39,7 @@ struct settings {
     int port;
 };
 
-// 假装这是从文件里读出来的一行，等 fs 做完就换成 fs::read_file。
+// 假装这是从文件里读出来的一行；真实写法是 fs::open(read) + file.read，见 examples/fs.cpp。
 std::string value_of(const std::string& key) {
     if (key == "port") {
         return "80x";

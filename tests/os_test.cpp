@@ -78,13 +78,14 @@ TEST(os, reports_its_own_executable_path) {
     EXPECT(path.is_ok(), ==, true);
     if (path.is_err()) return;
     EXPECT(path.value().empty(), ==, false);
+    const wavvix::fs::path self(path.value());
     // 必须是绝对路径，否则「找可执行文件旁边的资源」就不成立
-    EXPECT(wavvix::fs::is_absolute(path.value()), ==, true);
+    EXPECT(self.is_absolute(), ==, true);
     // 而且那个文件真的存在
-    EXPECT(wavvix::fs::is_file(path.value()), ==, true);
+    const wavvix::result<bool> regular = wavvix::fs::is_regular_file(self);
+    EXPECT(regular.is_ok() && regular.value(), ==, true);
     // 名字里应该有测试程序的名字
-    EXPECT(wavvix::fs::stem(path.value()).to_string().find("culib_test") != std::string::npos,
-           ==, true);
+    EXPECT(self.stem().string().find("culib_test") != std::string::npos, ==, true);
 }
 
 TEST(os, reports_the_hostname) {

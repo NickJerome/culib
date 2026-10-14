@@ -11,7 +11,7 @@ int main() {
     wavvix::result<wavvix::config> parsed = wavvix::config::parse("[server]\nport=8080\n");
     if (parsed.is_err() || parsed.value().get_int64("server.port").value() != 8080)
         return 1;
-    if (wavvix::fs::filename(wavvix::fs::normalize("a/b/../server.ini")) != "server.ini")
+    if (wavvix::fs::path("a/b/../server.ini").lexically_normal().filename() != "server.ini")
         return 2;
     wavvix::flag::int64 port(80, "listen port", {"port"});
     char program[] = "a/server";

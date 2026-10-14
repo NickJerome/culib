@@ -36,7 +36,7 @@
 与 C++ 标准库保持一致（参考 C++ Core Guidelines 的 NL.10），和 `std::`、Boost 等库一起使用时风格统一：
 
 - **命名空间**：全小写，即 `wavvix`；内部实现放在 `wavvix::detail`，使用方不应依赖。
-- **类型、函数、变量、参数**：全部 snake_case，如 `thread_pool`、`read_file()`、`is_ok()`、`buffer_size`。
+- **类型、函数、变量、参数**：全部 snake_case，如 `thread_pool`、`file_size()`、`is_ok()`、`buffer_size`。
 - **私有成员变量**：snake_case 加尾下划线，如 `count_`。
 - **枚举值**：snake_case，如 `log_level::warning`；与关键字冲突时换一个词，如用 `automatic` 代替 `auto`。
 - **模板参数**：大驼峰，如 `T`、`Allocator`，与标准库相同。
@@ -72,7 +72,7 @@
 
 - **热路径可内联**：热路径上的小函数放在头文件中（`inline` / 模板）。静态库里的普通函数在不开启 LTO 时无法被跨库内联。
 - **少分配、少拷贝**：避免不必要的堆分配和拷贝；参数优先传引用或字符串视图（`wavvix::string_view`，第一程第一项，在那之前只能用 `const std::string&`），支持移动语义；需要反复产出结果的接口，额外提供写入调用方缓冲区的重载。
-- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。异构任务也不必直接使用 `std::function`：`call_blocking` 把可调用对象留在等待协程的栈上，队列只传函数指针和对象地址。另一处要小心的是「模板回调」与「公共头文件不含平台头」的冲突，`fs` 的目录遍历就卡在这里，解法见预期接口第 5 节。
+- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。异构任务也不必直接使用 `std::function`：`call_blocking` 把可调用对象留在等待协程的栈上，队列只传函数指针和对象地址。另一处曾卡在这里的是「模板回调」与「公共头文件不含平台头」的冲突，`fs` 的目录遍历早年就是模板回调。2026-10-14 改版把它换成 `directory_iterator`：公共头文件里只有一个指向引用计数共享状态的指针成员（状态定义在 `src/fs`），遍历走 range-for，错误放进 `result<directory_entry>` 元素——冲突随回调一起消失了，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
 - **无启动开销**：不在 `main` 之前执行任何代码，避免需要动态初始化的全局对象。两处例外：测试程序里 `TEST` 的自动注册（正式程序不受影响）、以及 `flag` 的全局选项对象在 `main` 之前登记（那是 Go 风格 flag 包的用法前提，见 [flag 设计](docs/superpowers/specs/2026-10-04-flag-design.md) 第 1 节）。登记表用函数内静态变量，因为文件级全局的初始化顺序跨翻译单元不确定。
 - **按需同步**：只在必要处加锁，不让单线程使用者为同步付出代价。
 - **目标存储包含 HDD 和网络挂载，它们对开销极其敏感。** 同一个系统调用的代价差几个数量级：
@@ -101,13 +101,13 @@
 - **全库一致**：同类问题只用同一种方式处理，如可能失败的操作一律返回 `result`（例外见「错误处理」），字符串一律 UTF-8，参数一律输入在前、输出在后。
 - **简单的事一行完成**：常用功能一行调用即可，提供合理的默认值。
 - **名字描述行为，不标性能档次**（参考 `std::vector` 的 `push_back` / `emplace_back` / `reserve`）：
-  - 同一件事、只是结果放的位置不同，用同名重载，两个版本平级：`read_file(path)` 返回新字符串，`read_file(path, buffer)` 覆盖写入已有的 buffer 并复用其容量；
+  - 同一件事、只是结果放的位置不同，用同名重载，两个版本平级：`to_upper(text)` 返回新字符串，`to_upper(text, out)` 覆盖写入已有的 out 并复用其容量（这条规则原先的例子是 `fs::read_file` 的两个重载，已随 2026-10-14 fs 改版删除）；
   - 行为确实不同时才换名字，且名字说明做了什么（如 push 放入已有对象、emplace 就地构造），而不是标注「快速版」；
   - 能自动生效的优化直接做进接口（如移动语义、右值重载），使用者无需知道它的存在；
   - 调优类接口（类似 `reserve`）只是可选的附加操作，不用也完全正确；
   - 任何一个版本都不能比其他版本更容易用错。
 - **零配置、零管理**：包含头文件即可使用，无需 `init()` / `cleanup()`，无需预定义宏；资源全部由 RAII 管理，接口中不出现需要使用者手动释放的指针（`mem` 的 C 语义接口是例外，见「错误处理」）。
-- **难以误用**：用 `enum class` 代替 bool / 整数开关，如 `copy_file(src, dst, overwrite::yes)` 而不是 `copy_file(src, dst, true)`；编译器支持时，忽略 `result` 返回值会产生警告。
+- **难以误用**：用 `enum class` 代替 bool / 整数开关，如 `copy_file(from, to, copy_options::overwrite_existing)` 而不是 `copy_file(from, to, true)`；编译器支持时，忽略 `result` 返回值会产生警告。
 - **报错看得懂**：模板用错时用 `static_assert` 给出明确提示，而不是一长串模板错误；运行时错误可以直接取得可读的描述。
 - **没有意外**：行为符合直觉；会阻塞、会分配内存、非线程安全等需要留意的地方，在接口注释中写明。
 - **头文件即文档**：每个公共头文件都能单独包含、不依赖包含顺序；公共接口在头文件中有简短注释，主要模块在 `examples/` 中有可直接运行的示例。
@@ -274,7 +274,7 @@ g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc \
 
 | 哪次 | 写的什么 | Windows 上为什么不行 | 改法 |
 | --- | --- | --- | --- |
-| `examples/os.cpp` | `std::fopen` 攥一个 `FILE*` 写记录 | MSVC 的 CRT 把 `fopen` / `sprintf` / `strcpy` / `getenv` / `strtok` / `localtime` 一族标成弃用（C4996），警告即错误就编不过 | 改用 `fs::append_file`，不越过库的边界 |
+| `examples/os.cpp` | `std::fopen` 攥一个 `FILE*` 写记录 | MSVC 的 CRT 把 `fopen` / `sprintf` / `strcpy` / `getenv` / `strtok` / `localtime` 一族标成弃用（C4996），警告即错误就编不过 | 改用 `fs::append_file`，不越过库的边界（该函数已随 2026-10-14 fs 改版由 `fs::open(open_mode::append)` 和 `fs::ofstream` 取代，结论不变） |
 | `examples/time.cpp` | `gmtime_r` 做基准测试的参照物 | **`gmtime_r` 在 Windows 上根本不存在**（只有 `gmtime_s`），而 `gmtime` 又在上面那张弃用名单里 | **把基准测试从示例里删掉**，测量放设计文档 |
 | `src/cli/term.cpp` | `std::getenv` 读 `NO_COLOR` / `TERM` | 同第一行的弃用名单。而且 CRT 的 `getenv` 读的是启动时拷下的那份环境，看不到 `os::setenv`（`SetEnvironmentVariableW`）后来改的值 | 读环境变量挪进平台文件，Windows 侧用 `GetEnvironmentVariableW` |
 

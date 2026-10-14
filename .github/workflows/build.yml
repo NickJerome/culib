@@ -325,8 +325,8 @@ jobs:
 
               const wavvix::result<int> parsed = wavvix::lexical_cast<int>("42");
               const std::vector<wavvix::string_view> parts = wavvix::split("a,b,c", ',');
-              const wavvix::result<std::string> temporary = wavvix::fs::temp_directory();
-              const wavvix::string_view suffix = wavvix::fs::extension("archive.tar.gz");
+              const wavvix::result<wavvix::fs::path> temporary = wavvix::fs::temp_directory_path();
+              const wavvix::fs::path archive("archive.tar.gz");
 
               const wavvix::result<int> port = doubled_port(8080);
               if (port.is_err()) {
@@ -335,8 +335,8 @@ jobs:
               }
               std::printf("culib %s port %d view %zu parsed %d parts %zu temp %s ext %s in %s\n",
                           wavvix::version(), port.value(), ours.size(), parsed.value_or(-1),
-                          parts.size(), temporary.value_or("?").c_str(),
-                          suffix.to_string().c_str(),
+                          parts.size(), temporary.value_or("?").string().c_str(),
+                          archive.extension().string().c_str(),
                           wavvix::format_duration(watch.elapsed()).c_str());
               return doubled_port(-1).is_err() ? 0 : 1;
           }

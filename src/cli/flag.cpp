@@ -53,12 +53,15 @@ struct parse_attempt {
     }
 
     ~parse_attempt() {
-        if (state.parsed) return;
+        if (state.parsed) {
+            return;
+        }
         state.positional.clear();
         state.help_requested = false;
         state.version_requested = false;
-        for (std::size_t i = 0; i < state.entries.size(); ++i)
+        for (std::size_t i = 0; i < state.entries.size(); ++i) {
             state.entries[i].on_command_line = false;
+        }
     }
 
     registry& state;
@@ -66,9 +69,13 @@ struct parse_attempt {
 
 entry* find_by_name(registry& self, string_view name) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        if (name == self.entries[i].name) return &self.entries[i];
+        if (name == self.entries[i].name) {
+            return &self.entries[i];
+        }
         for (std::size_t j = 0; j < self.entries[i].aliases.size(); ++j) {
-            if (name == self.entries[i].aliases[j]) return &self.entries[i];
+            if (name == self.entries[i].aliases[j]) {
+                return &self.entries[i];
+            }
         }
     }
     return 0;
@@ -92,7 +99,9 @@ error prefixed(const entry& which, const error& cause) {
 template <typename T>
 result<void> assign_as(entry& which, string_view text) {
     result<T> value = lexical_cast<T>(text);
-    if (value.is_err()) return prefixed(which, value.error());
+    if (value.is_err()) {
+        return prefixed(which, value.error());
+    }
     *static_cast<T*>(which.storage) = value.value();
     return result<void>();
 }
@@ -126,13 +135,17 @@ result<void> apply_defaults(registry& self) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
         self.entries[i].on_command_line = false;
         const result<void> applied = assign(self.entries[i], self.entries[i].default_text);
-        if (applied.is_err()) return applied;   // 默认值自己都转换不了，是编程错误
+        if (applied.is_err()) {
+            return applied;   // 默认值自己都转换不了，是编程错误
+        }
     }
     return result<void>();
 }
 
 result<void> check_required(const registry& self) {
-    if (self.help_requested || self.version_requested) return result<void>();
+    if (self.help_requested || self.version_requested) {
+        return result<void>();
+    }
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
         if (self.entries[i].is_required && !self.entries[i].on_command_line) {
             return make_error(error_kind::invalid_argument,
@@ -181,7 +194,9 @@ void register_flag(kind which, void* storage, const char* help,
                    std::initializer_list<const char*> names, bool is_required,
                    std::string default_text) {
     registry& self = table();
-    if (names.size() == 0) reject("选项至少需要一个名字");
+    if (names.size() == 0) {
+        reject("选项至少需要一个名字");
+    }
     const char* const name = *names.begin();
     reject_bad_name(self, name, name);
     for (std::initializer_list<const char*>::const_iterator it = names.begin() + 1;
@@ -189,8 +204,9 @@ void register_flag(kind which, void* storage, const char* help,
         reject_bad_name(self, *it, name);
         for (std::initializer_list<const char*>::const_iterator previous = names.begin();
              previous != it; ++previous) {
-            if (string_view(*previous) == *it)
+            if (string_view(*previous) == *it) {
                 reject(std::string("\"") + *it + "\" 在同一个选项中重复");
+            }
         }
     }
     entry added;
@@ -208,8 +224,9 @@ void register_flag(kind which, void* storage, const char* help,
     self.positional.clear();
     self.help_requested = false;
     self.version_requested = false;
-    for (std::size_t i = 0; i < self.entries.size(); ++i)
+    for (std::size_t i = 0; i < self.entries.size(); ++i) {
         self.entries[i].on_command_line = false;
+    }
 }
 
 void unregister_flag(const void* storage) noexcept {
@@ -242,7 +259,9 @@ void read_before_parse(const void* storage) noexcept {
 bool was_given(const void* storage) noexcept {
     registry& self = table();
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        if (self.entries[i].storage == storage) return self.entries[i].on_command_line;
+        if (self.entries[i].storage == storage) {
+            return self.entries[i].on_command_line;
+        }
     }
     return false;
 }
@@ -255,11 +274,13 @@ result<void> parse(int argc, char* argv[], string_view version) {
     registry& self = table();
     parse_attempt attempt(self);
     self.version = version.to_string();
-    self.program = (argc > 0 && argv[0]) ? fs::filename(argv[0]).to_string()
+    self.program = (argc > 0 && argv[0]) ? fs::path(argv[0]).filename().string()
                                         : std::string("program");
 
     const result<void> defaults = apply_defaults(self);
-    if (defaults.is_err()) return defaults;
+    if (defaults.is_err()) {
+        return defaults;
+    }
 
     bool only_positional = false;
     for (int i = 1; i < argc; ++i) {
@@ -294,11 +315,15 @@ result<void> parse(int argc, char* argv[], string_view version) {
 
         if (body == "help" || body == "h" ||
             (body == "version" && !self.version.empty())) {
-            if (has_inline)
+            if (has_inline) {
                 return make_error(error_kind::invalid_argument,
                                   token.to_string() + " 不接受值");
-            if (body == "version") self.version_requested = true;
-            else self.help_requested = true;
+            }
+            if (body == "version") {
+                self.version_requested = true;
+            } else {
+                self.help_requested = true;
+            }
             continue;
         }
 
@@ -325,12 +350,16 @@ result<void> parse(int argc, char* argv[], string_view version) {
             text = string_view(argv[++i]);
         }
         const result<void> assigned = assign(*which, text);
-        if (assigned.is_err()) return assigned;
+        if (assigned.is_err()) {
+            return assigned;
+        }
         which->on_command_line = true;
     }
 
     const result<void> missing = check_required(self);
-    if (missing.is_err()) return missing;
+    if (missing.is_err()) {
+        return missing;
+    }
     self.parsed = true;
     return result<void>();
 }
@@ -379,13 +408,19 @@ std::string usage() {
             head += " ";
             head += label;
         }
-        if (head.size() > widest) widest = head.size();
+        if (head.size() > widest) {
+            widest = head.size();
+        }
         heads.push_back(head);
     }
     const std::string help_head = "  -h, --help";
     const std::string version_head = "  --version";
-    if (help_head.size() > widest) widest = help_head.size();
-    if (!self.version.empty() && version_head.size() > widest) widest = version_head.size();
+    if (help_head.size() > widest) {
+        widest = help_head.size();
+    }
+    if (!self.version.empty() && version_head.size() > widest) {
+        widest = version_head.size();
+    }
 
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
         const entry& which = self.entries[i];
@@ -427,7 +462,9 @@ result<void> set(string_view name, string_view text) {
         return make_error(error_kind::not_found, "没有这个选项：" + name.to_string());
     }
     const result<void> assigned = assign(*which, text);
-    if (assigned.is_err()) return assigned;
+    if (assigned.is_err()) {
+        return assigned;
+    }
     return result<void>();
 }
 

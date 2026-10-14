@@ -84,7 +84,7 @@ int main() {
     std::printf("\n和 fs 搭起来用：\n");
     const result<std::string> self = wavvix::os::executable_path();
     if (self.is_ok()) {
-        const result<timestamp> when = fs::last_write_time(self.value());
+        const result<timestamp> when = fs::last_write_time(fs::path(self.value()));
         if (when.is_ok()) {
             std::printf("  可执行文件的修改时间 %s\n", format_time(when.value()).c_str());
             const std::int64_t age = now.unix_seconds() - when.value().unix_seconds();

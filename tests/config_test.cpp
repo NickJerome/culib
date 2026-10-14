@@ -8,7 +8,9 @@
 #include <culib/fs.h>
 #include <culib/test.h>
 
+#include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -17,6 +19,15 @@ using wavvix::config;
 
 template <typename T>
 void ignore(const wavvix::result<T>&) {}
+
+// 往测试用的配置文件里整份写入。建不出来就随它去，后面的 load 会报。
+void write_fixture(const wavvix::fs::path& target, const char* text) {
+    wavvix::result<wavvix::fs::file> opened =
+        wavvix::fs::open(target, wavvix::fs::open_mode::write);
+    if (!opened.is_ok()) return;
+    wavvix::fs::file out = std::move(opened).value();
+    ignore(out.write(text, std::strlen(text)));
+}
 
 // 解析成功时拿到 config，失败时测试直接失败。
 config parsed(const char* text) {
@@ -189,26 +200,26 @@ TEST(config, parses_an_empty_file) {
 }
 
 TEST(config, loads_from_a_file_and_says_which_file_was_wrong) {
-    const wavvix::result<std::string> temp = wavvix::fs::temp_directory();
-    const std::string path =
-        wavvix::fs::join(temp.is_ok() ? temp.value() : ".", "culib_config_test.conf");
+    const wavvix::result<wavvix::fs::path> temp = wavvix::fs::temp_directory_path();
+    const wavvix::fs::path base = temp.is_ok() ? temp.value() : wavvix::fs::path(".");
+    const wavvix::fs::path target = base / "culib_config_test.conf";
 
-    ignore(wavvix::fs::write_file(path, "[server]\nport = 9000\n"));
-    const wavvix::result<config> good = config::load(path);
+    write_fixture(target, "[server]\nport = 9000\n");
+    const wavvix::result<config> good = config::load(target.string());
     if (EXPECT(good.is_ok(), ==, true)) {
         EXPECT(good.value().get_int64("server.port", 0).value(), ==, 9000);
     }
 
     // 文件里有错时，错误要同时带上**文件名**和**行号**——底层只知道第几行。
-    ignore(wavvix::fs::write_file(path, "ok = 1\nbroken\n"));
-    const wavvix::result<config> bad = config::load(path);
+    write_fixture(target, "ok = 1\nbroken\n");
+    const wavvix::result<config> bad = config::load(target.string());
     if (EXPECT(bad.is_ok(), ==, false)) {
         EXPECT(bad.error().message().find("第 2 行") != std::string::npos, ==, true);
         EXPECT(bad.error().message().find("culib_config_test.conf") != std::string::npos, ==,
                true);
     }
 
-    ignore(wavvix::fs::remove_file(path));
+    ignore(wavvix::fs::remove(target));
 }
 
 TEST(config, reports_a_file_that_is_not_there) {

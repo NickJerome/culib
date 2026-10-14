@@ -6,6 +6,7 @@
 #include <culib/config.h>
 #include <culib/flag.h>
 #include <culib/fs.h>
+#include <culib/fs_stream.h>
 
 #include <cstdio>
 #include <string>
@@ -37,8 +38,12 @@ const char* const sample =
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    if (!wavvix::flag::parse(argc, argv).is_ok()) return 1;
-    if (wavvix::flag::help_requested()) return 0;
+    if (!wavvix::flag::parse(argc, argv).is_ok()) {
+        return 1;
+    }
+    if (wavvix::flag::help_requested()) {
+        return 0;
+    }
 
     std::printf("1. 一个 ini 子集，段变成 section.key 这种扁平键\n");
     const wavvix::result<wavvix::config> loaded = wavvix::config::parse(sample);
@@ -69,7 +74,9 @@ int main(int argc, char* argv[]) {
             const wavvix::result<long long> bad = broken.value().get_int64("port", 8080);
             std::printf("   写错的 port = \"80 80\"：%s\n",
                         bad.is_ok() ? "悄悄用了默认值（不该这样）" : "报错了");
-            if (!bad.is_ok()) std::printf("     %s\n", bad.error().message().c_str());
+            if (!bad.is_ok()) {
+                std::printf("     %s\n", bad.error().message().c_str());
+            }
         }
         std::printf("   **`port = 80 80` 静默变成 8080 是那种要查一下午的事。**\n");
     }
@@ -78,7 +85,9 @@ int main(int argc, char* argv[]) {
     {
         const wavvix::result<wavvix::config> bad =
             wavvix::config::parse("ok = 1\n[unterminated\n");
-        if (!bad.is_ok()) std::printf("   %s\n", bad.error().message().c_str());
+        if (!bad.is_ok()) {
+            std::printf("   %s\n", bad.error().message().c_str());
+        }
     }
 
     std::printf("\n4. 和命令行共用一套定义，命令行优先\n");
@@ -86,7 +95,9 @@ int main(int argc, char* argv[]) {
         const bool port_from_command_line = wavvix::flag::was_given("port");
         const wavvix::result<wavvix::config> from_text =
             wavvix::config::parse("port = 9999\nhost = 10.0.0.1\n");
-        if (from_text.is_ok()) ignore(from_text.value().apply_to_flags());
+        if (from_text.is_ok()) {
+            ignore(from_text.value().apply_to_flags());
+        }
 
         std::printf("   配置文件里写的是 port = 9999\n");
         std::printf("   命令行上给过 --port 吗：%s\n", port_from_command_line ? "给过" : "没给");
@@ -96,13 +107,17 @@ int main(int argc, char* argv[]) {
 
     std::printf("\n5. 从文件读的时候，错误里会同时带上文件名和行号\n");
     {
-        const wavvix::result<std::string> temp = wavvix::fs::temp_directory();
-        const std::string path =
-            wavvix::fs::join(temp.is_ok() ? temp.value() : ".", "culib_example.conf");
-        ignore(wavvix::fs::write_file(path, "fine = 1\nthis line has no equals sign\n"));
-        const wavvix::result<wavvix::config> bad = wavvix::config::load(path);
-        if (!bad.is_ok()) std::printf("   %s\n", bad.error().message().c_str());
-        ignore(wavvix::fs::remove_file(path));
+        const wavvix::fs::path path =
+            wavvix::fs::temp_directory_path().value_or(".") / "culib_example.conf";
+        {
+            wavvix::fs::ofstream stream(path);   // 开不起来也无妨，load 的报错会说明一切
+            stream << "fine = 1\nthis line has no equals sign\n";
+        }
+        const wavvix::result<wavvix::config> bad = wavvix::config::load(path.string());
+        if (!bad.is_ok()) {
+            std::printf("   %s\n", bad.error().message().c_str());
+        }
+        ignore(wavvix::fs::remove(path));
     }
 
     std::printf("\n6. 没做的三样，以及为什么\n");

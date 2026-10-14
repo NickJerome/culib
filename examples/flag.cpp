@@ -26,12 +26,17 @@ namespace {
 
 // 示范「选项是全局的」这个前提：这个函数一个参数都不要，照样读得到配置
 void process(wavvix::string_view input) {
-    const std::string name = wavvix::fs::stem(input).to_string();
-    const std::string target = wavvix::fs::join(output.value(), name + "." + format.value());
+    const std::string name = wavvix::fs::path(input).stem().string();
+    const std::string target =
+        (wavvix::fs::path(output.value()) / (name + "." + format.value())).string();
     std::printf("  %-14s -> %-28s %lldx%lld", input.to_string().c_str(), target.c_str(),
                 width.value(), height.value());
-    if (format.value() == "jpg") std::printf(" q=%lld", quality.value());
-    if (dry_run) std::printf("   （dry-run，没有真的写）");
+    if (format.value() == "jpg") {
+        std::printf(" q=%lld", quality.value());
+    }
+    if (dry_run) {
+        std::printf("   （dry-run，没有真的写）");
+    }
     std::printf("\n");
 }
 
@@ -64,12 +69,24 @@ int main(int argc, char* argv[]) {
 
     // was_given 区分「用户显式给了」和「用的默认值」，配置文件要据此决定谁覆盖谁
     std::printf("  显式给了的选项：");
-    if (width.was_given()) std::printf(" --width");
-    if (height.was_given()) std::printf(" --height");
-    if (format.was_given()) std::printf(" --format");
-    if (quality.was_given()) std::printf(" --quality");
-    if (dry_run.was_given()) std::printf(" --dry-run");
-    if (output.was_given()) std::printf(" --output");
+    if (width.was_given()) {
+        std::printf(" --width");
+    }
+    if (height.was_given()) {
+        std::printf(" --height");
+    }
+    if (format.was_given()) {
+        std::printf(" --format");
+    }
+    if (quality.was_given()) {
+        std::printf(" --quality");
+    }
+    if (dry_run.was_given()) {
+        std::printf(" --dry-run");
+    }
+    if (output.was_given()) {
+        std::printf(" --output");
+    }
     std::printf("\n");
 
     // 位置参数就是要处理的文件列表，视图指向 argv，没有拷字符串

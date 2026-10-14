@@ -1,26 +1,32 @@
+// fs::path 的纯字符串实现：只碰字符串，不碰磁盘，不依赖任何 fs I/O 原语，
+// 所以只用它的项目可以单独链接这个文件（见 tests/xmake.lua 的 layers_test）。
+
 #include <culib/fs.h>
 #include "path.h"
 
+#include <utility>
 #include <vector>
 
 namespace wavvix { namespace fs {
 
 namespace detail {
 
-// 最后一个分隔符的位置，没有则 npos。
 std::size_t last_separator(string_view path) {
     for (std::size_t i = path.size(); i > 0; --i) {
-        if (is_separator(path.data()[i - 1])) return i - 1;
+        if (is_separator(path.data()[i - 1])) {
+            return i - 1;
+        }
     }
     return string_view::npos;
 }
 
-// Windows 的盘符前缀 "X:" 的长度（0 或 2）。POSIX 恒为 0。
 std::size_t root_name_length(string_view path) {
 #if defined(_WIN32)
     if (path.size() >= 2 && path.data()[1] == ':') {
         const char drive = path.data()[0];
-        if ((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) return 2;
+        if ((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
+            return 2;
+        }
     }
     if (path.size() >= 2 && is_separator(path.data()[0]) && is_separator(path.data()[1])) {
         return 2;   // UNC 的 "\\\\"
@@ -31,6 +37,89 @@ std::size_t root_name_length(string_view path) {
     return 0;
 }
 
+namespace {
+
+#if defined(_WIN32)
+
+bool is_drive_letter(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
+
+// 从 start 起的一段名字（不含分隔符）的结束位置。
+std::size_t name_end(string_view path, std::size_t start) {
+    std::size_t i = start;
+    while (i < path.size() && !is_separator(path.data()[i])) {
+        ++i;
+    }
+    return i;
+}
+
+// "\\?\UNC\" 字面量（大小写不敏感）。
+bool is_extended_unc_prefix(string_view path) {
+    const char* const literal = "UNC\\";
+    if (path.size() < 8) {
+        return false;
+    }
+    for (int i = 0; i != 4; ++i) {
+        char ch = path.data()[4 + i];
+        if (ch >= 'a' && ch <= 'z') {
+            ch = static_cast<char>(ch - 'a' + 'A');
+        }
+        if (ch != literal[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#endif  // _WIN32
+
+}  // namespace
+
+std::size_t root_prefix_length(string_view path) {
+#if defined(_WIN32)
+    const std::size_t size = path.size();
+    // "C:" / "C:\"——盘符相对没有根分隔符，根就只有 2 个字符
+    if (size >= 2 && path.data()[1] == ':' && is_drive_letter(path.data()[0])) {
+        return (size > 2 && is_separator(path.data()[2])) ? 3 : 2;
+    }
+    if (size < 2 || !is_separator(path.data()[0]) || !is_separator(path.data()[1])) {
+        return 0;
+    }
+    if (size >= 4 && (path.data()[2] == '?' || path.data()[2] == '.') &&
+        is_separator(path.data()[3])) {
+        // 未解析命名空间：前缀本身不可创建，其后的段归设备自己
+        // "\\?\C:" / "\\?\C:\"
+        if (size >= 6 && path.data()[5] == ':' && is_drive_letter(path.data()[4])) {
+            return (size > 6 && is_separator(path.data()[6])) ? 7 : 6;
+        }
+        // "\\?\UNC\server\share"
+        if (path.data()[2] == '?' && is_extended_unc_prefix(path)) {
+            const std::size_t server = name_end(path, 8);
+            if (server == 8 || server == size) {
+                return size;   // 缺 server 或只到 server：整段都是根
+            }
+            const std::size_t share = name_end(path, server + 1);
+            return share == server + 1 ? server + 1 : share;
+        }
+        return 4;
+    }
+    // "\\server\share"——根要到 share 一级才问得成、建得成
+    const std::size_t server = name_end(path, 2);
+    if (server == 2) {
+        return 0;   // "\\" 或三斜杠开头：不成形的 UNC，交回逐段流程
+    }
+    if (server == size) {
+        return size;   // 只到 "\\server"：整段都是根
+    }
+    const std::size_t share = name_end(path, server + 1);
+    return share == server + 1 ? server + 1 : share;
+#else
+    (void)path;
+    return 0;
+#endif
+}
+
 }  // namespace detail
 
 using detail::is_separator;
@@ -38,47 +127,18 @@ using detail::kNativeSeparator;
 using detail::last_separator;
 using detail::root_name_length;
 
-// --- 路径 ---------------------------------------------------------------------
+namespace {
 
-std::string join(string_view a, string_view b) {
-    if (a.empty()) return b.to_string();
-    if (b.empty()) return a.to_string();
-    if (is_absolute(b)) return b.to_string();
+// 拆分规则先以 string_view 写清楚，path 成员只是薄包装，避免中间多拷一份。
 
-    std::string joined;
-    joined.reserve(a.size() + b.size() + 1);
-    joined.append(a.data(), a.size());
-    if (!is_separator(a.data()[a.size() - 1])) joined.push_back(kNativeSeparator);
-    // b 以分隔符开头时去掉，否则会出现 "a//b"
-    std::size_t start = 0;
-    while (start < b.size() && is_separator(b.data()[start])) ++start;
-    joined.append(b.data() + start, b.size() - start);
-    return joined;
+string_view filename_of(string_view text) {
+    const std::size_t at = last_separator(text);
+    const std::size_t start = (at == string_view::npos) ? root_name_length(text) : at + 1;
+    return string_view(text.data() + start, text.size() - start);
 }
 
-string_view parent(string_view path) noexcept {
-    const std::size_t root = root_name_length(path);
-    // 去掉尾部分隔符再找，这样 "/a/b/" 的父目录是 "/a" 而不是 "/a/b"
-    std::size_t size = path.size();
-    while (size > root + 1 && is_separator(path.data()[size - 1])) --size;
-    const string_view trimmed(path.data(), size);
-    const std::size_t at = last_separator(trimmed);
-    if (at == string_view::npos || at < root) {
-        // 没有分隔符（"a"），或者只剩根名（"C:a"）
-        return string_view(path.data(), root);
-    }
-    if (at == root) return string_view(path.data(), root + 1);   // "/a" -> "/"
-    return string_view(path.data(), at);
-}
-
-string_view filename(string_view path) noexcept {
-    const std::size_t at = last_separator(path);
-    const std::size_t start = (at == string_view::npos) ? root_name_length(path) : at + 1;
-    return string_view(path.data() + start, path.size() - start);
-}
-
-string_view extension(string_view path) noexcept {
-    const string_view name = filename(path);
+string_view extension_of(string_view text) {
+    const string_view name = filename_of(text);
     // 从第 1 个字符开始找，所以 ".bashrc" 整体是名字、没有扩展名
     for (std::size_t i = name.size(); i > 1; --i) {
         if (name.data()[i - 1] == '.') {
@@ -88,27 +148,87 @@ string_view extension(string_view path) noexcept {
     return string_view(name.data() + name.size(), 0);
 }
 
-string_view stem(string_view path) noexcept {
-    const string_view name = filename(path);
-    const string_view suffix = extension(path);
-    return string_view(name.data(), name.size() - suffix.size());
-}
-
-bool is_absolute(string_view path) noexcept {
-    if (path.empty()) return false;
+bool is_absolute_of(string_view text) {
+    if (text.empty()) {
+        return false;
+    }
 #if defined(_WIN32)
-    const std::size_t root = root_name_length(path);
-    if (root == 0) return false;
-    if (is_separator(path.data()[0])) return true;              // UNC
-    return path.size() > root && is_separator(path.data()[root]);   // "C:\" 才算绝对
+    const std::size_t root = root_name_length(text);
+    if (root == 0) {
+        return false;
+    }
+    if (is_separator(text.data()[0])) {
+        return true;   // UNC
+    }
+    // "C:" 只是盘符相对，"C:\" 才算绝对
+    return text.size() > root && is_separator(text.data()[root]);
 #else
-    return is_separator(path.data()[0]);
+    return is_separator(text.data()[0]);
 #endif
 }
 
-std::string normalize(string_view path) {
-    const std::size_t root = root_name_length(path);
-    const string_view rest(path.data() + root, path.size() - root);
+}  // namespace
+
+// --- 构造与观测 ---------------------------------------------------------------------
+
+path::path(const char* value) : value_(value != nullptr ? std::string(value) : std::string()) {}
+
+path::path(string_view value) : value_(value.to_string()) {}
+
+path::path(std::string value) : value_(std::move(value)) {}
+
+const std::string& path::string() const noexcept {
+    return value_;
+}
+
+bool path::empty() const noexcept {
+    return value_.empty();
+}
+
+bool path::is_absolute() const noexcept {
+    return is_absolute_of(string_view(value_));
+}
+
+// --- 拆分 ---------------------------------------------------------------------------
+
+path path::parent_path() const {
+    const string_view text(value_);
+    const std::size_t root = root_name_length(text);
+    // 去掉尾部分隔符再找，这样 "/a/b/" 的父目录是 "/a" 而不是 "/a/b"
+    std::size_t size = text.size();
+    while (size > root + 1 && is_separator(text.data()[size - 1])) {
+        --size;
+    }
+    const string_view trimmed(text.data(), size);
+    const std::size_t at = last_separator(trimmed);
+    if (at == string_view::npos || at < root) {
+        // 没有分隔符（"a"），或者只剩根名（"C:a"）
+        return path(string_view(text.data(), root));
+    }
+    if (at == root) {
+        return path(string_view(text.data(), root + 1));   // "/a" -> "/"
+    }
+    return path(string_view(text.data(), at));
+}
+
+path path::filename() const {
+    return path(filename_of(string_view(value_)));
+}
+
+path path::stem() const {
+    const string_view name = filename_of(string_view(value_));
+    const string_view suffix = extension_of(string_view(value_));
+    return path(string_view(name.data(), name.size() - suffix.size()));
+}
+
+path path::extension() const {
+    return path(extension_of(string_view(value_)));
+}
+
+path path::lexically_normal() const {
+    const string_view text(value_);
+    const std::size_t root = root_name_length(text);
+    const string_view rest(text.data() + root, text.size() - root);
     const bool rooted = !rest.empty() && is_separator(rest.data()[0]);
 
     // 按分隔符拆成段，就地消掉 "." 和 ".."
@@ -136,15 +256,67 @@ std::string normalize(string_view path) {
     }
 
     std::string out;
-    out.reserve(path.size());
-    out.append(path.data(), root);
-    if (rooted) out.push_back(kNativeSeparator);
+    out.reserve(text.size());
+    out.append(text.data(), root);
+    if (rooted) {
+        out.push_back(kNativeSeparator);
+    }
     for (std::size_t i = 0; i < segments.size(); ++i) {
-        if (i != 0) out.push_back(kNativeSeparator);
+        if (i != 0) {
+            out.push_back(kNativeSeparator);
+        }
         out.append(segments[i].data(), segments[i].size());
     }
-    if (out.empty()) out = ".";     // normalize("") 和 normalize("a/..") 都是当前目录
-    return out;
+    if (out.empty()) {
+        out = ".";   // lexically_normal("") 和 "a/.." 都是当前目录
+    }
+    return path(std::move(out));
+}
+
+// --- 拼接与比较 ---------------------------------------------------------------------
+
+path& path::operator/=(const path& piece) {
+    if (piece.value_.empty()) {
+        return *this;
+    }
+    if (is_absolute_of(string_view(piece.value_))) {
+        value_ = piece.value_;
+        return *this;
+    }
+    if (value_.empty()) {
+        value_ = piece.value_;
+        return *this;
+    }
+
+    std::string joined;
+    joined.reserve(value_.size() + piece.value_.size() + 1);
+    joined.append(value_);
+    // 只为插入的那一个分隔符用平台原生字符，不改写已有的
+    if (!is_separator(joined[joined.size() - 1])) {
+        joined.push_back(kNativeSeparator);
+    }
+    // piece 以分隔符开头时去掉，否则会出现 "a//b"
+    std::size_t start = 0;
+    while (start < piece.value_.size() && is_separator(piece.value_[start])) {
+        ++start;
+    }
+    joined.append(piece.value_, start, std::string::npos);
+    value_.swap(joined);
+    return *this;
+}
+
+path operator/(const path& base, const path& piece) {
+    path joined = base;
+    joined /= piece;
+    return joined;
+}
+
+bool operator==(const path& a, const path& b) noexcept {
+    return a.string() == b.string();
+}
+
+bool operator!=(const path& a, const path& b) noexcept {
+    return !(a == b);
 }
 
 } }
