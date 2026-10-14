@@ -171,6 +171,8 @@ bool is_absolute_of(string_view text) {
 
 // --- 构造与观测 ---------------------------------------------------------------------
 
+path::path() noexcept = default;
+
 path::path(const char* value) : value_(value != nullptr ? std::string(value) : std::string()) {}
 
 path::path(string_view value) : value_(value.to_string()) {}

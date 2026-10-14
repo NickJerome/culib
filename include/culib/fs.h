@@ -23,7 +23,7 @@ struct directory_state;   // 遍历的共享状态，定义在 src/fs，公共�
 
 class path {
 public:
-    path() noexcept = default;
+    path() noexcept;
     path(const char* value);
     path(string_view value);
     path(std::string value);
