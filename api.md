@@ -1,6 +1,6 @@
 # culib API 与用法
 
-本文按 2026-10-14 的公共头文件整理，覆盖 `include/culib/` 的公共类型、函数、成员、枚举、常量和使用宏；fs 一节按当日定稿的标准接口改写，实现已完成并通过本地验证（见文末说明；CI 未运行）。接口以当前源码为准；`detail` 命名空间、`WAVVIX_DETAIL_*` 宏和 `src/` 内部接口不属于公共 API。
+本文按 2026-10-14 的公共头文件整理，覆盖 `include/culib/` 的公共类型、函数、成员、枚举、常量和使用宏；fs 一节按当日定稿的标准接口改写，实现已完成，提交 `e7b6b8e` 的三平台 CI 24/24 通过（见文末说明）。接口以当前源码为准；`detail` 命名空间、`WAVVIX_DETAIL_*` 宏和 `src/` 内部接口不属于公共 API。
 
 签名块用于查阅，省略实现和模板约束的展开；模板允许的类型、所有权与失败行为在正文说明。标为“示例”的 C++ 代码块都是独立程序，可保存成 `.cpp` 编译；输出中的时间、路径、进程号等动态值会随环境变化。
 
@@ -1519,4 +1519,4 @@ int main() {
 
 上条记录之后，本文网络几节按统一 `net::socket` 重写。TCP、UDP 两个完整程序已重新以 Linux GCC C++11 和 Windows MSVC `/W4 /WX /execution-charset:.1252` 编译运行，分别输出 `tcp ok`、`udp ok`；Windows 消费程序未加 `/utf-8`。这次仅重跑这两段，不把上一条或旧 CI 当作新接口的验证。完整本地矩阵见[统一 socket 设计](docs/superpowers/specs/2026-10-13-unified-socket-design.md#实现验证)。
 
-2026-10-14：`fs` 按定稿的标准接口整体重写（`path` 值类型、`result` 三态查询、`directory_iterator`、`file` 句柄与 `fs::ofstream`，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)）。fs 一节全部提取重验：本文 23 个独立 C++ 程序从当前文档提取，在 Linux x86_64 GCC 11.4（`-std=c++11`，全部警告即错误）与 Windows x64 MSVC 2022（全部警告即错误）下编译并运行，30 次调用的退出码与输出均与正文一致；fs 示例实测输出即上文 fs 一节「实测输出」所列五行。2026-10-13 及更早的两段验证记录针对的是旧 fs 接口，不能替代本段新接口的重验。本段的文档示例验证不代表新接口的 CI——**新接口 CI 未运行**，本地验证范围与未覆盖项见[fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md) 第 5 节。
+2026-10-14：`fs` 按定稿的标准接口整体重写（`path` 值类型、`result` 三态查询、`directory_iterator`、`file` 句柄与 `fs::ofstream`，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)）。fs 一节全部提取重验：本文 23 个独立 C++ 程序从当前文档提取，在 Linux x86_64 GCC 11.4（`-std=c++11`，全部警告即错误）与 Windows x64 MSVC 2022（全部警告即错误）下编译并运行，30 次调用的退出码与输出均与正文一致；fs 示例实测输出即上文 fs 一节「实测输出」所列五行。2026-10-13 及更早的两段验证记录针对的是旧 fs 接口，不能替代本段新接口的重验。本段的文档示例验证与远程 CI 是两项独立检查：[提交 `e7b6b8e` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38567733275) 24/24 job 通过；完整日志核对、测试项数和未覆盖边界见[fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md) 第 5 节。

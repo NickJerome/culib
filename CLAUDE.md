@@ -183,7 +183,7 @@
 | --- | --- | --- |
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 六个目标 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/38411545278)（`60417e4`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/38567733275)（`e7b6b8e`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 22 个） |
 | CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |
@@ -191,8 +191,8 @@
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
 | 公共头文件的字符串字面量只用 ASCII | CI 的 `consumed-as-dependency` job：Windows 上的使用方不加 `/utf-8`，MSVC 按 runner 的代码页 1252 编译，`/WX` | 经 `culib.h` 包含到的全部头文件。**实际拦下过一次**：`6047a49` 里 `sync.h` 的 channel 诊断是中文字面量，两个 Windows 任务报 C4566 |
-| 关异常 / RTTI 可用 | `.github/workflows/build.yml` 的 `no-exceptions-rtti` job | [Linux GCC/Clang release CI](https://github.com/NickJerome/culib/actions/runs/38411545278)：库、测试和全部示例均在 `-fno-exceptions -fno-rtti` 下构建，测试通过 |
-| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，以及 Windows CI | MinGW-w64 x86_64 运行全部测试并编译全部示例（[`60417e4` 的 CI](https://github.com/NickJerome/culib/actions/runs/38411545278)：354 项通过）。**MinGW 不能代替 MSVC**（头文件和警告集都不同），后者由独立 CI 任务覆盖 |
+| 关异常 / RTTI 可用 | `.github/workflows/build.yml` 的 `no-exceptions-rtti` job | [Linux GCC/Clang release CI（`e7b6b8e`）](https://github.com/NickJerome/culib/actions/runs/38567733275)：库、测试和全部示例均在 `-fno-exceptions -fno-rtti` 下构建，测试通过 |
+| Windows 代码能编译并通过测试 | 本机交叉编译 + wine，以及 Windows CI | MinGW-w64 x86_64 运行全部测试并编译全部示例（[`e7b6b8e` 的 CI](https://github.com/NickJerome/culib/actions/runs/38567733275)：`culib_test` 404 项通过）。**MinGW 不能代替 MSVC**（头文件和警告集都不同），后者由独立 CI 任务覆盖 |
 | macOS 代码能通过类型检查 | 照 SDK 原型手抄一份头文件桩，`-fsyntax-only`，见下 | 目前只有 kqueue 后端。**抓不到真头文件的怪癖**，那一侧只有 CI |
 
 **CI 的结果只在看过那次运行之后才写进文档，并写上是哪个提交。** 运行 `python .github/ci_report.py`，检查测试汇总、SKIP 原因和诊断，不能只看 job conclusion。没有完整日志时，只能报告已取得的摘要；不要把“状态通过”写成“日志已完整核验”。历史上曾在两个 CI 都已失败时写下“全绿”，也曾因只发布失败日志而漏看成功作业中的异常输出。

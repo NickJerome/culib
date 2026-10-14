@@ -1,7 +1,7 @@
 ﻿# fs 标准接口设计
 
 - 日期：2026-10-14
-- 状态：**接口已实现；本地验证通过（见第 5 节）；CI 未运行。** `include/culib/fs.h`、`include/culib/fs_stream.h`、`src/fs/`、测试与示例已按本文落地。按 [CLAUDE.md](../../../CLAUDE.md) 的约定，第 5 节记录本地跑过与没跑过的配置；CI 未运行，任何文档不得声称新接口通过了 CI。
+- 状态：**接口已实现；本地验证与提交 `e7b6b8e` 的三平台 CI 已通过（见第 5 节）。** `include/culib/fs.h`、`include/culib/fs_stream.h`、`src/fs/`、测试与示例已按本文落地。第 5 节分别记录改动期间的本地验证和最终提交的远程验证，不将旧接口的 CI 算作新接口的结果。
 - 取代 [2026-10-04 fs 设计](2026-10-04-fs-design.md)。那份文档保留作历史记录：它文中的「已实现」「CI 通过」只适用于旧接口。`fs::watcher` / `fs::poller` 的移除结论不变（历史见 [fs watcher 设计](2026-10-08-fs-watcher-design.md)）。
 
 ## 1. 动机
@@ -97,10 +97,11 @@
 
 ## 5. 实现验证
 
-实现与迁移已完成：`include/culib/fs.h`、`include/culib/fs_stream.h`、`src/fs/`（`directory_iterator` 共享状态、`file_streambuf`），`culib.h` 汇总包含，测试（`fs_test.cpp`、`fs_stream_test.cpp`、`fs_copy_source_test.cpp`、`fs_win_edge_test.cpp`）与调用方（`src/cli/`、`examples/`）均已切到新接口（未提交）。本地验证（2026-10-14，在本地检出上跑，未提交）：
+实现与迁移已完成：`include/culib/fs.h`、`include/culib/fs_stream.h`、`src/fs/`（`directory_iterator` 共享状态、`file_streambuf`），`culib.h` 汇总包含，测试（`fs_test.cpp`、`fs_stream_test.cpp`、`fs_copy_source_test.cpp`、`fs_win_edge_test.cpp`）与调用方（`src/cli/`、`examples/`）均已切到新接口。本地验证（2026-10-14，提交和远程 CI 之前在本地检出上跑）：
 
-- **最终 POSIX FIFO 复制修复后的集成复测**：Linux x86_64 GCC 11.4 debug 与 Clang 14 release 的 `xmake` 库、全部示例构建及 13/13 测试目标通过；GCC debug 的 `culib_test` 为 406/406。复制源、覆盖目标为 FIFO 的两个专项用例在修复前分别被 5 秒超时中止，修复后在 GCC 与 Clang release 中各通过 2/2；无读者的目标 FIFO 可返回 `ENXIO` 对应的 `io` 错误，测试只要求及时报错且文件内容不变。Windows MSVC 2022 x64 debug 与 release 在这次仅涉及 POSIX 的复制修复**之前**通过库、示例构建和各 12/12 测试目标，修复之后没有再次运行 Windows。`include/` 全部 30 个公共头文件的 C++11 独立编译与 BOM 检查通过。`tests/fs_stream_test.cpp` 的 POSIX FIFO 夹具曾漏建管道，导致一次无异常配置测试因普通文件打开竞态失败；补 `mkfifo` 后该用例单独重复 30 次及完整无异常测试通过。
+- **最终 POSIX FIFO 复制修复后的集成复测**：Linux x86_64 GCC 11.4 debug 与 Clang 14 release 的 `xmake` 库、全部示例构建及 13/13 测试目标通过；GCC debug 的 `culib_test` 为 406/406。复制源、覆盖目标为 FIFO 的两个专项用例在修复前分别被 5 秒超时中止，修复后在 GCC 与 Clang release 中各通过 2/2；无读者的目标 FIFO 可返回 `ENXIO` 对应的 `io` 错误，测试只要求及时报错且文件内容不变。Windows MSVC 2022 x64 debug 与 release 在这次仅涉及 POSIX 的复制修复**之前**通过本地库、示例构建和各 12/12 测试目标，修复之后没有在本地重跑 Windows；最终提交的 Windows 远程验证见下文。`include/` 全部 30 个公共头文件的 C++11 独立编译与 BOM 检查通过。`tests/fs_stream_test.cpp` 的 POSIX FIFO 夹具曾漏建管道，导致一次无异常配置测试因普通文件打开竞态失败；补 `mkfifo` 后该用例单独重复 30 次及完整无异常测试通过。
 - **最终 POSIX FIFO 复制修复后重跑并通过**：Linux x86_64 GCC 11.4 release `-fno-exceptions -fno-rtti` 的库、全部示例构建与 13/13 测试目标。
 - **Sanitizer**：最后两条 POSIX FIFO 复制回归加入并修复后，Linux GCC debug 以 `-fsanitize=address,undefined -fno-sanitize-recover=all` 重新编译；按 CI 的限定目标运行 10/10 测试目标，`culib_test` 的 406/406 用例通过。ThreadSanitizer 按 CI 的进程级检查构建并运行 `threads`、`sigint`、`sigterm` 三种模式，均通过；没有在 TSan 下运行全部文件系统测试。此项是本地运行，不是 CI 结果。
 - **api.md 示例**：从 [api.md](../../../api.md) 提取的全部 23 个独立 C++ 程序（含 fs 一节）在 Linux x86_64 GCC 11.4（`-std=c++11`）与 Windows x64 MSVC 2022 下警告即错误编译并运行，30 次调用的退出码与输出均与正文一致；`examples/fs.cpp` 同日在两个平台编译运行成功。记录见 api.md「本文示例验证」。
-- **没覆盖什么**：**CI 未运行**——新接口还没有任何三平台矩阵结果；macOS、MinGW、GCC 4.8 未在新接口下验证。旧接口的 CI 与验证记录（2026-10-04 设计文档第 4 节）不适用于本文。
+- **最终远程 CI**：[GitHub Actions build 运行](https://github.com/NickJerome/culib/actions/runs/38567733275) 对应提交 `e7b6b8e`（2026-10-14），**24/24 job 通过**。使用 `python .github/ci_report.py 38567733275` 取得并检查了 24/24 完整日志：Linux GCC/Clang x86_64、GCC arm64、macOS Clang arm64/x86_64、Windows MSVC x64 的 debug/release；MinGW x86_64、GCC 4.8、公共头文件、无异常/无 RTTI、ASan + UBSan + 进程级 TSan 以及三平台 C++11/C++17 源码依赖消费均通过。标准测试目标 Linux 13/13、macOS 与 Windows 各 12/12；`culib_test` 标准 Linux 矩阵 406、macOS 401、Windows/MinGW 404、GCC 4.8 406 项通过；Linux GCC/Clang 无异常/无 RTTI 配置各 399 项，Sanitizer job 的限定测试目标 10/10。日志提取无 SKIP；唯一诊断是 Linux C++11 消费 job 的缓存未命中警告（未找到 `.xmake-build-cache`，随后构建通过），因此报告脚本按严格诊断规则退出 1，**不是 CI 失败**。源码依赖消费 job 只做编译/运行检查，不从缺失的测试摘要推断单元测试项数。此前 `9c46198` 的第一次 CI 为 23/24（GCC 4.8 编译失败）；默认构造函数移到源文件定义后以本次成功运行作最终依据。
+- **边界**：旧接口的 CI 与验证记录（2026-10-04 设计文档第 4 节）不适用于本文；本次远程 CI 不能代替未在矩阵覆盖的 VS2015 或 Windows 零索引卷实测。
