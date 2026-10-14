@@ -52,6 +52,16 @@ Linux runner 上 setup-xmake 从源码编译 xmake，它自身源码（`core/src
 查询不自动轮询。整包模式通常只需 3–4 次 API 请求；按 job 下载或匿名读取 annotations 时，
 每个 job 还需一次请求。匿名 GitHub API 通常限制每小时 60 次。不要把退出码 2 当作测试失败或测试通过。
 
+## 工具与编译缓存
+
+所有 xmake 作业固定使用 `3.1.1`。setup-xmake 的 `actions-cache-folder` 持久化已安装的工具，避免 Linux / macOS 在每个临时 runner 上重复拉源码并编译 xmake；工具缓存键由 action 加入版本、源码 SHA、系统与架构，macOS 还包含系统版本。
+
+普通 POSIX 构建和 POSIX 源码依赖消费作业开启 `build-cache`，只保存 xmake 的编译缓存，不保存整个构建目录或 `.xmake` 配置。键区分 runner 类型、镜像版本、实际编译器版本、模式、消费工程的语言标准和构建脚本；缓存条目再由 xmake 按预处理内容与编译参数匹配。消费工程尚未生成时无法推断目录，所以显式指定 `consumer/build/.build_cache`。
+
+Windows 缓存 xmake 工具，不强开项目编译缓存：xmake 3.1.1 对 MSVC 默认禁用它，原因是预处理成本可能高于收益。无异常和 sanitizer 作业保留 `--ccache=n`，只复用工具；MSYS2 继续用自己的包缓存。库没有第三方包，不开启 xmake `package-cache`。
+
+缓存命中也不跳过配置、构建检查和测试。工具缓存允许不同构建配置共享，项目缓存不能跨配置盲目复用；首次运行仍有冷启动成本。检查日志里的工具 `cache path`、`Restore build cache` 与命中信息，而不是仅看是否声明了缓存步骤。
+
 ## 本地验证报告脚本
 
 ```sh

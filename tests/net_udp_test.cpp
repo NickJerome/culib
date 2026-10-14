@@ -297,7 +297,7 @@ TEST(net_udp, timeout_does_not_consume_later_datagram) {
     EXPECT(sent, ==, true);
 }
 
-TEST(net_udp, zero_timeout_receives_prequeued_packet_but_does_not_wait) {
+TEST(net_udp, zero_timeout_can_be_polled_until_a_packet_arrives) {
     socket receiver(protocol::udp);
     socket sender(protocol::udp);
     if (!EXPECT(bind_pair("127.0.0.1", receiver, sender), ==, true)) {
@@ -308,19 +308,40 @@ TEST(net_udp, zero_timeout_receives_prequeued_packet_but_does_not_wait) {
     bool empty_timed_out = false;
     bool sent = false;
     bool received = false;
+    bool drained_timed_out = false;
     wavvix::coroutine task([&] {
         char byte = 0;
         const wavvix::result<datagram> empty = receiver.recv_from(&byte, 1, ms(0));
         empty_timed_out = empty.is_err() && empty.error().kind() == error_kind::timeout;
         sent = sender.send_to("z", 1, target, ms(0)).is_ok();
-        const wavvix::result<datagram> packet = receiver.recv_from(&byte, 1, ms(0));
-        received = packet.is_ok() && packet.value().size == 1 && byte == 'z';
+        if (!sent) {
+            return;
+        }
+
+        // 发送成功只表示本地内核收下报文，不保证回环接收队列已就绪。
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + ms(1000);
+        do {
+            const wavvix::result<datagram> packet = receiver.recv_from(&byte, 1, ms(0));
+            if (packet.is_ok()) {
+                received = packet.value().size == 1 && byte == 'z';
+                break;
+            }
+            if (!EXPECT(packet.error().kind(), ==, error_kind::timeout)) {
+                return;
+            }
+            wavvix::yield();
+        } while (std::chrono::steady_clock::now() < deadline);
+
+        const wavvix::result<datagram> drained = receiver.recv_from(&byte, 1, ms(0));
+        drained_timed_out = drained.is_err() && drained.error().kind() == error_kind::timeout;
     });
     task.join();
 
     EXPECT(empty_timed_out, ==, true);
     EXPECT(sent, ==, true);
     EXPECT(received, ==, true);
+    EXPECT(drained_timed_out, ==, true);
 }
 
 TEST(net_udp, ipv6_loopback_when_available) {
