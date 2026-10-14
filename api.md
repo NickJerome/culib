@@ -67,7 +67,7 @@ target("app")
 | `runtime.h` | `runtime`、`scheduler`、`yield`、`sleep_for`、`call_blocking` | `wavvix` |
 | `coroutine.h` | `coroutine` | `wavvix` |
 | `sync.h` | `mutex`、`condition_variable`、`channel`、`lock_guard` | `wavvix` |
-| `net.h` | `endpoint`、`resolve`、TCP 与 UDP 类型 | `wavvix::net` |
+| `net.h` | `endpoint`、`resolve`、`protocol`、`socket`、`datagram` | `wavvix::net` |
 | `fs.h` | 路径、文件、目录、`output_file`、`entry` | `wavvix::fs` |
 | `mem.h` | `alloc`、`free` 等七个函数 | `wavvix::mem` |
 | `time.h` | `timestamp`、`date_time`、时间解析和格式化 | `wavvix` |
@@ -83,7 +83,7 @@ target("app")
 - 文本和路径使用 UTF-8。`string_view` 不拥有数据；原字符串销毁、移动或重新分配后，不应继续使用旧视图。
 - 可恢复错误通常返回 `result<T>`，先检查 `is_err()` / `is_ok()` 再取对应分支；空值用 `optional<T>`。取错分支、越界等编程错误会诊断并终止。
 - `result` 不保证捕获所有 C++ 异常：例如 `std::string`、`std::vector` 分配和用户回调仍可能抛出异常。协程函数不得让异常逃出，逃出会 `std::terminate()`；`call_blocking` 把函数抛出的异常带回调用处。
-- 同步文件 I/O、DNS 和用户的阻塞函数可能阻塞系统线程；协程中需要让出时使用协程网络接口，或交给 `call_blocking`。
+- 同步文件 I/O 和用户的阻塞函数可能阻塞系统线程；协程中需要让出时使用协程网络接口，或交给 `call_blocking`。`net` 的主机名解析由库内部处理，协程里自动经 `call_blocking`。
 - 普通值类型可复制；资源句柄的可复制、可移动性在各节列出。库不隐式替换全局 `malloc/new`。
 
 <a id="result"></a>
@@ -792,44 +792,64 @@ public:
 result<std::vector<endpoint>> resolve(string_view host, std::uint16_t port);
 ```
 
-`endpoint` 无公共默认构造；`parse` 接受数字 IPv4/IPv6，端口单独传入。IPv6 可带数字 scope ID，如 `fe80::1%3`。`to_string` 带端口，IPv6 用方括号包住地址。`resolve` 是显式的同步系统解析，可能阻塞并分配内存；返回结果保持系统顺序，由调用者选择地址。在协程外直接调用；在协程里用 `call_blocking(wavvix::net::resolve, host, port)`，免得卡住工作线程。
+`endpoint` 无公共默认构造；`parse` 接受数字 IPv4/IPv6，端口单独传入。IPv6 可带数字 scope ID，如 `fe80::1%3`。`to_string` 带端口，IPv6 用方括号包住地址。`resolve` 调用系统解析器，可能阻塞并分配内存：协程内自动经 `call_blocking` 执行，不卡工作线程；协程外同步执行，调用方无需再包一层。返回结果保持系统顺序，由调用者选择地址。
 
-### TCP
+### 统一套接字：`protocol`、`socket` 与 `datagram`
 
 ```cpp
-class tcp_stream {
+enum class protocol : std::uint8_t { tcp, udp };
+struct datagram;
+
+class socket {
 public:
-    tcp_stream() noexcept;
-    ~tcp_stream();
-    tcp_stream(tcp_stream&& other) noexcept;
-    tcp_stream& operator=(tcp_stream&& other) noexcept;
-    static result<tcp_stream> connect(const endpoint& peer, std::chrono::nanoseconds timeout);
-    result<std::size_t> read(void* buffer, std::size_t size, std::chrono::nanoseconds timeout);
-    result<std::size_t> write(const void* buffer, std::size_t size, std::chrono::nanoseconds timeout);
-    void close() noexcept;
-    bool is_open() const noexcept;
-};
-class tcp_listener {
-public:
-    tcp_listener() noexcept;
-    ~tcp_listener();
-    tcp_listener(tcp_listener&& other) noexcept;
-    tcp_listener& operator=(tcp_listener&& other) noexcept;
-    static result<tcp_listener> listen(const endpoint& local, int backlog = 128);
-    result<tcp_stream> accept(std::chrono::nanoseconds timeout);
+    explicit socket(protocol proto = protocol::tcp) noexcept;
+    ~socket();
+    socket(socket&& other) noexcept;
+    socket& operator=(socket&& other) noexcept;
+    result<void> bind(const endpoint& local);
+    result<void> bind(string_view numeric_ip, std::uint16_t port);
+    result<void> listen(int backlog = 128);
+    result<void> connect(const endpoint& peer,
+                         std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+    result<void> connect(string_view host, std::uint16_t port,
+                         std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+    result<socket> accept(std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+    result<std::size_t> read(void* buffer, std::size_t size,
+                             std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+    result<void> read_exactly(void* buffer, std::size_t size,
+                              std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+    result<void> write(const void* buffer, std::size_t size,
+                       std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+    result<void> send_to(const void* buffer, std::size_t size, const endpoint& peer,
+                         std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+    result<datagram> recv_from(void* buffer, std::size_t size,
+                               std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
     result<endpoint> local_endpoint() const;
-    void close() noexcept;
+    result<endpoint> peer_endpoint() const;
     bool is_open() const noexcept;
+    void close() noexcept;
+};
+
+struct datagram {
+    datagram(std::size_t count, endpoint source);
+    std::size_t size;
+    endpoint from;
 };
 ```
 
-两个句柄均不可复制；默认构造为关闭状态，移动转移所有权，析构关闭。`listen`、`local_endpoint` 可在协程外调用；`connect/accept/read/write` 只能在协程里调用。
+`socket` 不可复制，可移动，析构关闭。构造只记下协议（默认 TCP）并保持关闭，原生套接字要到 `bind` 或 `connect` 时才创建（`bind` 的地址族决定建哪族套接字）；`close()` 后协议保留，同一对象可再次 `bind` / `connect`。`bind(numeric_ip, port)` 是数字地址的便捷写法。`bind`、`listen`、两个查询和 `close` 可在协程外调用；`connect`、`accept`、`read` / `read_exactly` / `write`、`send_to` / `recv_from` 只能在协程里调用。
 
-`listen` 的端口为 `0` 时由系统分配，再用 `local_endpoint` 查询实际端口。IPv6 监听仅接收 IPv6，IPv4 需单独监听。
+协议和阶段决定操作可用：`listen` 要求 TCP 且已 `bind`；`accept` 要求正在监听的 TCP；`read` / `read_exactly` / `write` / `peer_endpoint` 要求已连接的 TCP；`send_to` / `recv_from` 要求已 `bind` 的 UDP（UDP 没有对端，`peer_endpoint` 报错）。用错协议或阶段返回错误，已有连接保持原样。没有连接式 UDP、用户态缓冲、自动重连或旧类型别名。
 
-每次 I/O 必须显式传入超时，任意负时长表示一直等，超时返回 `error_kind::timeout`。TCP 读写可只完成一部分：完整发送或按长度接收须循环，超时预算也需由调用方决定是否共享。非零长度的 `read` 成功返回 `0` 表示 EOF；零长度读写直接返回 `0`。非零长度配空指针返回错误。
+`bind` 的端口为 `0` 时由系统分配，再用 `local_endpoint` 查询实际端口。IPv6 监听仅接收 IPv6，IPv4 需单独监听。
 
-套接字第一次读写（监听器是第一次 `accept`，`connect` 出来的流在连接时）绑到当时所在的工作线程，之后在别的工作线程上读写打印诊断后终止。要在另一根协程里用同一个连接，把那根协程派到同一根线程上：`coroutine(scheduler::current(), ...)`。`accept` 出来、还没读写过的连接可以交给任何一根线程上的协程。关闭、销毁或移动覆盖句柄前，必须结束该句柄上的等待操作；缓冲区须活到 I/O 返回。
+超时参数默认 `std::chrono::nanoseconds(-1)`：任意负数表示一直等，超时返回 `error_kind::timeout`；`0` 不等待数据就绪，只做不等待的尝试，仍拿不到结果就返回超时——已完成操作和撤销确认仍由引擎收尾；正数是**整个操作**的预算——`read_exactly` 与 `write` 内部多次读写合用这一份。`read` 交付已读到的部分并返回字节数，成功返回 `0` 表示对端有序关闭；`read_exactly` 读满才成功，中途 EOF 返回 `io`；`write` 写完整个缓冲区才成功。完整传输失败时可能已消费或发出前缀，不回滚、没有进度字段；失败的完整传输不隐式关闭套接字。TCP 零长度读写直接成功（`read` 返回 0，`read_exactly` / `write` 返回成功）；非零长度配空指针返回 `invalid_argument`。
+
+`send_to` 一次发送一个完整报文，成功返回 `result<void>`；`recv_from` 消费一个报文，返回 `datagram{size, from}`（来源地址与字节数），数据写入调用方缓冲区。零字节报文有效；缓冲区小于报文时报文已被消费并返回 `out_of_range`。
+
+主机名版 `connect` 先解析再按系统顺序尝试候选，DNS 不计入超时，候选共用同一份超时；协程里解析经 `call_blocking`，协程外同步。已显式绑定的套接字只尝试地址族一致的候选，重试前按实际本地端点重新绑定，做不到就报错，绝不悄悄换本地源地址。endpoint 版 `connect` 不解析；已绑定时要求地址族一致；监听中或已连接时拒绝。连接失败会关掉失败的原生句柄。
+
+套接字第一次 I/O（`connect` 在连接时，监听器是第一次 `accept`）绑到当时所在的工作线程，之后在别的工作线程上操作打印诊断后终止。要在另一根协程里用同一个连接，把那根协程派到同一根线程上：`coroutine(scheduler::current(), ...)`。`accept` 出来、还没做过 I/O 的连接可以交给任何一根线程上的协程。句柄上还有未完成的操作时不得 `close`、移动覆盖或析构；缓冲区须活到 I/O 返回。
 
 示例：本机建立连接并传输一个字节，不依赖外部服务器。
 
@@ -841,104 +861,94 @@ public:
 
 int main() {
     using seconds = std::chrono::seconds;
-    auto address = wavvix::net::endpoint::parse("127.0.0.1", 0);
-    if (address.is_err()) return 1;
-    auto opened = wavvix::net::tcp_listener::listen(address.value());
-    if (opened.is_err()) return 1;
-    auto local = opened.value().local_endpoint();
-    if (local.is_err()) return 1;
+    wavvix::net::socket listener(wavvix::net::protocol::tcp);
+    if (listener.bind("127.0.0.1", 0).is_err()) {
+        return 1;
+    }
+    if (listener.listen().is_err()) {
+        return 1;
+    }
+    auto local = listener.local_endpoint();
+    if (local.is_err()) {
+        return 1;
+    }
     bool received = false;
     bool sent = false;
     wavvix::runtime runtime(2);
     wavvix::coroutine server([&] {
-        auto incoming = opened.value().accept(seconds(2));
-        if (incoming.is_err()) return;
+        auto incoming = listener.accept(seconds(2));
+        if (incoming.is_err()) {
+            return;
+        }
         char byte = 0;
-        auto read = incoming.value().read(&byte, 1, seconds(2));
-        received = read.is_ok() && read.value() == 1 && byte == 'x';
+        auto read = incoming.value().read_exactly(&byte, 1, seconds(2));
+        received = read.is_ok() && byte == 'x';
     });
     wavvix::coroutine client([&] {
-        auto outgoing = wavvix::net::tcp_stream::connect(local.value(), seconds(2));
-        if (outgoing.is_err()) return;
-        auto written = outgoing.value().write("x", 1, seconds(2));
-        sent = written.is_ok() && written.value() == 1;
+        wavvix::net::socket stream;
+        if (stream.connect(local.value(), seconds(2)).is_err()) {
+            return;
+        }
+        sent = stream.write("x", 1, seconds(2)).is_ok();
     });
     server.join();
     client.join();
-    if (!received || !sent) return 1;
+    if (!received || !sent) {
+        return 1;
+    }
     std::cout << "tcp ok\n";
 }
 ```
 
-输出：`tcp ok`。包含完整读写循环的例子见 [examples/net_echo.cpp](examples/net_echo.cpp)。
+预期输出：`tcp ok`。例子见 [examples/net_echo.cpp](examples/net_echo.cpp)。
 
-### UDP
-
-```cpp
-struct udp_datagram {
-    udp_datagram(std::size_t count, endpoint source);
-    std::size_t size;
-    endpoint from;
-};
-class udp_socket {
-public:
-    udp_socket() noexcept;
-    ~udp_socket();
-    udp_socket(udp_socket&& other) noexcept;
-    udp_socket& operator=(udp_socket&& other) noexcept;
-    static result<udp_socket> bind(const endpoint& local);
-    result<endpoint> local_endpoint() const;
-    result<std::size_t> send_to(const void* buffer, std::size_t size,
-                              const endpoint& peer, std::chrono::nanoseconds timeout);
-    result<udp_datagram> recv_from(void* buffer, std::size_t size,
-                                 std::chrono::nanoseconds timeout);
-    void close() noexcept;
-    bool is_open() const noexcept;
-};
-```
-
-不可复制，默认关闭，可移动，析构关闭。绑定、查询可在协程外调用，收发只能在协程里。时限、绑定工作线程与缓冲区生命周期规则同 TCP。`udp_datagram::from` 是来源地址，`size` 是接收到的字节数，数据写入调用方缓冲区。
-
-一次发送对应一个完整报文，不拆成多包。缓冲区太小会消费该报文并返回 `out_of_range`。UDP 没有 EOF：零字节报文也是真报文，`send_to(nullptr, 0, ...)` 会发送，`recv_from(nullptr, 0, ...)` 会接收零字节报文；非空报文用零容量接收会因截断报错。
-
-示例：
+UDP 示例：
 
 ```cpp
 #include <culib/coroutine.h>
 #include <culib/net.h>
+#include <culib/string_view.h>
 #include <chrono>
 #include <iostream>
 
 int main() {
     using seconds = std::chrono::seconds;
-    auto address = wavvix::net::endpoint::parse("127.0.0.1", 0);
-    if (address.is_err()) return 1;
-    auto server = wavvix::net::udp_socket::bind(address.value());
-    auto client = wavvix::net::udp_socket::bind(address.value());
-    if (server.is_err() || client.is_err()) return 1;
-    auto destination = server.value().local_endpoint();
-    if (destination.is_err()) return 1;
+    wavvix::net::socket server(wavvix::net::protocol::udp);
+    wavvix::net::socket client(wavvix::net::protocol::udp);
+    if (server.bind("127.0.0.1", 0).is_err()) {
+        return 1;
+    }
+    if (client.bind("127.0.0.1", 0).is_err()) {
+        return 1;
+    }
+    auto destination = server.local_endpoint();
+    if (destination.is_err()) {
+        return 1;
+    }
     bool received = false;
     bool sent = false;
     wavvix::runtime runtime(2);
     wavvix::coroutine receiver([&] {
         char bytes[32];
-        auto packet = server.value().recv_from(bytes, sizeof bytes, seconds(2));
-        if (packet.is_err()) return;
+        auto packet = server.recv_from(bytes, sizeof bytes, seconds(2));
+        if (packet.is_err()) {
+            return;
+        }
         received = wavvix::string_view(bytes, packet.value().size) == "ping";
     });
     wavvix::coroutine sender([&] {
-        auto size = client.value().send_to("ping", 4, destination.value(), seconds(2));
-        sent = size.is_ok() && size.value() == 4;
+        sent = client.send_to("ping", 4, destination.value(), seconds(2)).is_ok();
     });
     receiver.join();
     sender.join();
-    if (!received || !sent) return 1;
+    if (!received || !sent) {
+        return 1;
+    }
     std::cout << "udp ok\n";
 }
 ```
 
-输出：`udp ok`。更多约束见 [docs/net.md](docs/net.md)。
+预期输出：`udp ok`。更多约束见 [docs/net.md](docs/net.md)。
 
 <a id="fs"></a>
 ## 文件系统：`<culib/fs.h>`
@@ -1421,3 +1431,5 @@ int main() {
 本文的 23 个独立 C++ 程序在 Linux x86_64 GCC 11.4（`-std=c++11`）和 Windows x64 MSVC 上以警告即错误编译、逐个运行，输出与正文一致（2026-10-13，改写运行时、协程、同步、网络几节之后）。flag 示例的别名、布尔假值、帮助、版本、缺少必填项、非法数值、未知选项及测试过滤沿用 2026-10-10 那一次的验证，这次只重跑了缺少必填项和正常传参两种。网络示例只使用本机回环地址，文件示例只读目录。
 
 这项验证覆盖本文示例，不代表单独穷尽测试了所有重载；库本身的测试与 CI 检查方式见 [docs/ci.md](docs/ci.md)。
+
+上条记录之后，本文网络几节按统一 `net::socket` 重写。TCP、UDP 两个完整程序已重新以 Linux GCC C++11 和 Windows MSVC `/W4 /WX /execution-charset:.1252` 编译运行，分别输出 `tcp ok`、`udp ok`；Windows 消费程序未加 `/utf-8`。这次仅重跑这两段，不把上一条或旧 CI 当作新接口的验证。完整本地矩阵见[统一 socket 设计](docs/superpowers/specs/2026-10-13-unified-socket-design.md#实现验证)。

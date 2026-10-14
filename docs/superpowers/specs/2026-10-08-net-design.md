@@ -4,6 +4,8 @@
 - 状态：地址层、TCP 与 UDP 公共类型已通过 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37761276843)。用法见 [网络模块文档](../../net.md)。
 - 前置：[调度器](2026-10-04-scheduler-design.md)、[事件引擎](2026-10-05-event-engine-design.md)、[io_uring](2026-10-08-io-uring-design.md)、[bytes](2026-10-05-bytes-design.md)。
 
+> **已被取代（2026-10-13）**：本文的 `tcp_listener` / `tcp_stream` / `udp_socket` 公共接口已合并为统一的 `net::socket`，理由与接口见 [统一 socket 设计](2026-10-13-unified-socket-design.md)，当前用法见 [网络模块文档](../../net.md)。以下接口部分描述的是旧形状，作为设计与验证的历史记录保留，不再维护。
+
 ## 要解决的事
 
 服务器需要能监听、连接、收发并同时服务多条连接。调用点保持普通的顺序代码；在协程中，等待套接字时由现有调度器让出 vCPU。`net` 持有句柄并负责非阻塞模式、关闭和 IOCP 的一次性关联，不把原生句柄类型或平台头文件放入公共接口。

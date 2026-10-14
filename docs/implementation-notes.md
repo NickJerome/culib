@@ -388,6 +388,20 @@ TCP 两行是另一组运行的范围。短连接的头几遍两边都只有约 
 
 channel 不交棒：放进元素或腾出位置时叫醒一个等待者，它醒来后在锁里重新检查，被别的协程抢先了就再排队。值的次序由缓冲区保证，不靠等待者的次序。
 
+## [`net_socket.cpp`](../src/net/net_socket.cpp)
+
+相关设计见 [统一 socket 设计](superpowers/specs/2026-10-13-unified-socket-design.md)。
+
+统一 `socket` 的公共组合层：所有权与移动、惰性创建、协议与阶段校验、完整传输循环、报文语义。公共行为见[网络用法](net.md)。
+
+原先 `tcp_listener` / `tcp_stream` / `udp_socket` 各写一份句柄生命周期、绑工规则、超时形状和错误处理，三份高度重复。合并后对象里要紧的状态就几样：原生句柄、所属工作线程、协议，和一个内部阶段值（closed、bound、connecting、listening、connected 等，connecting 保护还在进行中的 connect；具体枚举是实现细节）。公开操作入口比较阶段，不合法就返回错误——不引入状态机或取消框架，阶段校验是几次整数比较。
+
+`read_exactly` 和 `write` 在库内循环，整个循环共享一份单调时钟预算，每轮不重置截止时间。失败时已消费或已发出的前缀不回滚，也不提供进度字段；不隐式关闭套接字，因为对向可能还有别的协程在等同一个连接。`recv_from` 的截断保持旧语义：报文已被消费并返回 `out_of_range`。
+
+主机名 `connect` 先解析、后计时：协程里经现成的 `call_blocking`，协程外同步；`getaddrinfo` 无法按时限中止、`call_blocking` 也不能取消，所以 DNS 不计入连接超时，候选按系统顺序共用同一份超时。已显式绑定的套接字只尝试地址族一致的候选，每次重试前按当前实际本地端点重新绑定，绑不上就报错——绝不悄悄换本地源地址。每次失败的尝试都关掉那次用的原生句柄；已有连接不受无效参数或不支持操作的影响。`close()` 只还句柄、保留协议，同一对象可再次 `bind` / `connect`。
+
+平台资源操作（建套接字、绑定、accept、connect、端点查询、Windows overlapped 调用与 AcceptEx / ConnectEx 上下文、UDP ICMP 抑制、POSIX 非阻塞与 close-on-exec）集中在 `net_socket_posix.cpp` / `net_socket_win.cpp`，经私有的 `net_socket_detail.h` 相接；公共 `net.h` 不包含平台头文件；内部地址编解码使用平台的 sockaddr。旧的 `net_tcp*` / `net_udp*` 实现随合并删除，不留并行旧路径。这批改动尚未取得 CI 结果，不能沿用 2026-10-08 那套接口的绿色记录。
+
 ## [`term_win.cpp`](../src/cli/term_win.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-01-test-term-table-design.md)。

@@ -82,8 +82,7 @@ void operator delete[](void* memory) noexcept {
 namespace {
 
 using wavvix::net::endpoint;
-using wavvix::net::tcp_listener;
-using wavvix::net::tcp_stream;
+namespace net = wavvix::net;
 
 // ---- 每种情形：都应当打印诊断后终止 ------------------------------------------------
 
@@ -184,13 +183,16 @@ void fiber_moved_to_another_thread() {
 
 void socket_used_on_two_workers() {
     wavvix::runtime runtime(2);
-    tcp_listener listener = tcp_listener::listen(endpoint::parse("127.0.0.1", 0).value()).value();
+    net::socket listener;
+    listener.bind("127.0.0.1", 0).value();
+    listener.listen().value();
     const endpoint local = listener.local_endpoint().value();
     wavvix::coroutine first(runtime.worker(0), [&] {
-        tcp_stream stream = tcp_stream::connect(local, std::chrono::seconds(1)).value();
+        net::socket stream;
+        stream.connect(local, std::chrono::seconds(1)).value();
         wavvix::coroutine second(runtime.worker(1), [&] {
             const char byte = 'x';
-            const wavvix::result<std::size_t> sent = stream.write(&byte, 1, std::chrono::seconds(1));
+            const wavvix::result<void> sent = stream.write(&byte, 1, std::chrono::seconds(1));
             (void)sent;
         });
         second.join();

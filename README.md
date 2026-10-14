@@ -51,7 +51,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，跑在 runtime 的工作线程上 | 构造即提交、`join()` / `detach()` 的线程式句柄；第一次运行后绑在那根工作线程上，栈在那时才向 `mem` 要。换栈汇编覆盖 x86_64 和 arm64 |
 | mem | 自带通用分配器 `wavvix::mem`：依赖 `culib_new_override` 就让全局 `new/delete` 和标准容器改用它，代码不用改；Linux 还可以覆盖 `malloc/free`；另有 C 语义的显式接口。协程栈也向它要 | 64 位 Linux、macOS、Windows。本机验证过 Linux（GCC、Clang、ASan + UBSan）和 Windows（MSVC）；[`09f952d` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38219833032) 27/27 通过，含 macOS arm64 / x86_64 和 GCC 4.8。平台边界与覆盖方式见[分配器用法](docs/mem.md) |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
-| net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在协程调度器里 | 数字 IP 的 `endpoint`、显式同步 `resolve()`、TCP/UDP 收发已落地。见[网络用法](docs/net.md)和[设计](docs/superpowers/specs/2026-10-08-net-design.md) |
+| net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在 runtime 工作线程的事件引擎里 | 数字 IP 的 `endpoint`、显式 `resolve()`（协程内自动经 `call_blocking`，不卡工作线程）、TCP/UDP 收发已落地。2026-10-13 把 `tcp_listener` / `tcp_stream` / `udp_socket` 合并为统一的 `net::socket`（协议构造时指定，惰性建套接字），见[网络用法](docs/net.md)和[统一 socket 设计](docs/superpowers/specs/2026-10-13-unified-socket-design.md)；[2026-10-08 的网络](docs/superpowers/specs/2026-10-08-net-design.md)与 [UDP 设计](docs/superpowers/specs/2026-10-08-udp-design.md)描述被取代的旧接口，保留作历史 |
 
 顺序与理由见 [路线图](docs/superpowers/specs/2026-10-03-roadmap.md)。`table` 已从计划中移除，`variant` 评估后不做。
 

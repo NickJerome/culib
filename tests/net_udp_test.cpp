@@ -1,3 +1,6 @@
+// UDP 测试：统一 net::socket(protocol::udp) 的报文语义。
+// 覆盖报文边界、空报文、缓冲截断、超时恢复、源地址保留；构造只选协议，bind 才创建句柄。
+
 #include <culib/coroutine.h>
 #include <culib/net.h>
 #include <culib/runtime.h>
@@ -12,24 +15,26 @@
 namespace {
 
 using wavvix::error_kind;
+using wavvix::net::datagram;
 using wavvix::net::endpoint;
-using wavvix::net::udp_datagram;
-using wavvix::net::udp_socket;
+using wavvix::net::protocol;
+using wavvix::net::socket;
 typedef std::chrono::milliseconds ms;
 
-// 在回环上绑两个套接字；失败返回 false。
-bool bind_pair(const char* host, udp_socket& first, udp_socket& second) {
+// 在回环上绑两个 UDP 套接字；失败返回 false。
+bool bind_pair(const char* host, socket& first, socket& second) {
     const wavvix::result<endpoint> loopback = endpoint::parse(host, 0);
     if (loopback.is_err()) {
         return false;
     }
-    wavvix::result<udp_socket> first_open = udp_socket::bind(loopback.value());
-    wavvix::result<udp_socket> second_open = udp_socket::bind(loopback.value());
-    if (first_open.is_err() || second_open.is_err()) {
+    first = socket(protocol::udp);
+    second = socket(protocol::udp);
+    if (first.bind(loopback.value()).is_err()) {
         return false;
     }
-    first = std::move(first_open).value();
-    second = std::move(second_open).value();
+    if (second.bind(loopback.value()).is_err()) {
+        return false;
+    }
     return true;
 }
 
@@ -43,14 +48,13 @@ TEST(net_udp, ipv6_socket_does_not_claim_the_ipv4_port) {
     }
     bool independent = false;
     for (int attempt = 0; attempt < 8; ++attempt) {
-        wavvix::result<udp_socket> opened_v6 = udp_socket::bind(any_v6.value());
-        if (opened_v6.is_err()) {
+        socket socket_v6(protocol::udp);
+        if (socket_v6.bind(any_v6.value()).is_err()) {
             if (attempt == 0) {
                 return;   // IPv6 may be disabled by the test environment.
             }
             continue;
         }
-        udp_socket socket_v6 = std::move(opened_v6).value();
         const wavvix::result<endpoint> local_v6 = socket_v6.local_endpoint();
         EXPECT(local_v6.is_ok(), ==, true);
         if (local_v6.is_err()) {
@@ -62,7 +66,8 @@ TEST(net_udp, ipv6_socket_does_not_claim_the_ipv4_port) {
         if (any_v4.is_err()) {
             return;
         }
-        independent = udp_socket::bind(any_v4.value()).is_ok();
+        socket socket_v4(protocol::udp);
+        independent = socket_v4.bind(any_v4.value()).is_ok();
         if (independent) {
             break;
         }
@@ -71,8 +76,8 @@ TEST(net_udp, ipv6_socket_does_not_claim_the_ipv4_port) {
 }
 
 TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
-    udp_socket server;
-    udp_socket client;
+    socket server;
+    socket client;
     if (!EXPECT(bind_pair("127.0.0.1", server, client), ==, true)) {
         return;
     }
@@ -94,22 +99,20 @@ TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
     std::uint16_t client_saw_port = 0;
     wavvix::coroutine server_side([&] {
         char data[8] = {};
-        const wavvix::result<udp_datagram> received = server.recv_from(data, sizeof data, ms(1000));
+        const wavvix::result<datagram> received = server.recv_from(data, sizeof data, ms(1000));
         if (received.is_err()) {
             return;
         }
         server_got.assign(data, received.value().size);
         server_saw_port = received.value().from.port();
-        const wavvix::result<std::size_t> sent = server.send_to("pong", 4, received.value().from, ms(1000));
-        server_replied = sent.is_ok() && sent.value() == 4;
+        server_replied = server.send_to("pong", 4, received.value().from, ms(1000)).is_ok();
     });
     wavvix::coroutine client_side([&] {
-        const wavvix::result<std::size_t> sent = client.send_to("ping", 4, server_local.value(), ms(1000));
-        if (sent.is_err()) {
+        if (client.send_to("ping", 4, server_local.value(), ms(1000)).is_err()) {
             return;
         }
         char data[8] = {};
-        const wavvix::result<udp_datagram> received = client.recv_from(data, sizeof data, ms(1000));
+        const wavvix::result<datagram> received = client.recv_from(data, sizeof data, ms(1000));
         if (received.is_err()) {
             return;
         }
@@ -126,9 +129,25 @@ TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
     EXPECT(client_saw_port, ==, server_local.value().port());
 }
 
+TEST(net_udp, unbound_socket_requires_bind_first) {
+    socket closed(protocol::udp);
+    EXPECT(closed.is_open(), ==, false);
+    const wavvix::result<endpoint> loopback = endpoint::parse("127.0.0.1", 9);
+    EXPECT(loopback.is_ok(), ==, true);
+    if (loopback.is_err()) {
+        return;
+    }
+    char byte = 0;
+    EXPECT(closed.send_to("x", 1, loopback.value(), ms(1)).is_err(), ==, true);
+    EXPECT(closed.recv_from(&byte, 1, ms(1)).is_err(), ==, true);
+    EXPECT(closed.is_open(), ==, false);
+    EXPECT(closed.bind("127.0.0.1", 0).is_ok(), ==, true);
+    EXPECT(closed.is_open(), ==, true);
+}
+
 TEST(net_udp, zero_length_datagram_is_not_eof) {
-    udp_socket receiver;
-    udp_socket sender;
+    socket receiver;
+    socket sender;
     if (!EXPECT(bind_pair("127.0.0.1", receiver, sender), ==, true)) {
         return;
     }
@@ -143,14 +162,13 @@ TEST(net_udp, zero_length_datagram_is_not_eof) {
     bool empty_sent = false;
     bool next_sent = false;
     wavvix::coroutine receiving([&] {
-        const wavvix::result<udp_datagram> packet = receiver.recv_from(0, 0, ms(1000));
+        const wavvix::result<datagram> packet = receiver.recv_from(0, 0, ms(1000));
         empty_received = packet.is_ok() && packet.value().size == 0;
-        const wavvix::result<udp_datagram> nonempty = receiver.recv_from(0, 0, ms(1000));
+        const wavvix::result<datagram> nonempty = receiver.recv_from(0, 0, ms(1000));
         nonempty_rejected = nonempty.is_err() && nonempty.error().kind() == error_kind::out_of_range;
     });
     wavvix::coroutine sending([&] {
-        const wavvix::result<std::size_t> sent = sender.send_to(0, 0, target.value(), ms(1000));
-        empty_sent = sent.is_ok() && sent.value() == 0;
+        empty_sent = sender.send_to(0, 0, target.value(), ms(1000)).is_ok();
         next_sent = sender.send_to("x", 1, target.value(), ms(1000)).is_ok();
     });
     receiving.join();
@@ -162,9 +180,52 @@ TEST(net_udp, zero_length_datagram_is_not_eof) {
     EXPECT(next_sent, ==, true);
 }
 
+TEST(net_udp, zero_capacity_recv_leaves_the_byte_untouched) {
+    socket receiver;
+    socket sender;
+    if (!EXPECT(bind_pair("127.0.0.1", receiver, sender), ==, true)) {
+        return;
+    }
+    const wavvix::result<endpoint> target = receiver.local_endpoint();
+    if (target.is_err()) {
+        return;
+    }
+
+    wavvix::runtime runtime(2);
+    bool rejected = false;
+    bool kind_is_out_of_range = false;
+    bool byte_untouched = false;
+    bool followup_ok = false;
+    char probe = 'U';
+    wavvix::coroutine receiving([&] {
+        // 容量 0、缓冲区非空：截断走内部缓冲，那一个字节不许被写。
+        const wavvix::result<datagram> truncated = receiver.recv_from(&probe, 0, ms(1000));
+        rejected = truncated.is_err();
+        kind_is_out_of_range = rejected && truncated.error().kind() == error_kind::out_of_range;
+        byte_untouched = probe == 'U';
+        char data[8] = {};
+        const wavvix::result<datagram> next = receiver.recv_from(data, sizeof data, ms(1000));
+        followup_ok = next.is_ok() && next.value().size == 3;
+    });
+    wavvix::coroutine sending([&] {
+        // 两个报文：第一个给零容量接收当截断，第二个留给随后的正常接收。
+        if (sender.send_to("abc", 3, target.value(), ms(1000)).is_err()) {
+            return;
+        }
+        sender.send_to("def", 3, target.value(), ms(1000)).value();
+    });
+    receiving.join();
+    sending.join();
+
+    EXPECT(rejected, ==, true);
+    EXPECT(kind_is_out_of_range, ==, true);
+    EXPECT(byte_untouched, ==, true);
+    EXPECT(followup_ok, ==, true);
+}
+
 TEST(net_udp, reports_truncation_and_receives_next_datagram) {
-    udp_socket receiver;
-    udp_socket sender;
+    socket receiver;
+    socket sender;
     if (!EXPECT(bind_pair("127.0.0.1", receiver, sender), ==, true)) {
         return;
     }
@@ -179,10 +240,10 @@ TEST(net_udp, reports_truncation_and_receives_next_datagram) {
     bool both_sent = false;
     wavvix::coroutine receiving([&] {
         char short_buffer[2] = {};
-        const wavvix::result<udp_datagram> truncated = receiver.recv_from(short_buffer, sizeof short_buffer, ms(1000));
+        const wavvix::result<datagram> truncated = receiver.recv_from(short_buffer, sizeof short_buffer, ms(1000));
         truncation_reported = truncated.is_err() && truncated.error().kind() == error_kind::out_of_range;
         char data[4] = {};
-        const wavvix::result<udp_datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
+        const wavvix::result<datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
         if (received.is_ok()) {
             next.assign(data, received.value().size);
         }
@@ -201,8 +262,8 @@ TEST(net_udp, reports_truncation_and_receives_next_datagram) {
 }
 
 TEST(net_udp, timeout_does_not_consume_later_datagram) {
-    udp_socket receiver;
-    udp_socket sender;
+    socket receiver;
+    socket sender;
     if (!EXPECT(bind_pair("127.0.0.1", receiver, sender), ==, true)) {
         return;
     }
@@ -217,9 +278,9 @@ TEST(net_udp, timeout_does_not_consume_later_datagram) {
     bool sent = false;
     wavvix::coroutine receiving([&] {
         char data[4] = {};
-        const wavvix::result<udp_datagram> timed = receiver.recv_from(data, sizeof data, ms(10));
+        const wavvix::result<datagram> timed = receiver.recv_from(data, sizeof data, ms(10));
         timed_out = timed.is_err() && timed.error().kind() == error_kind::timeout;
-        const wavvix::result<udp_datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
+        const wavvix::result<datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
         if (received.is_ok()) {
             later.assign(data, received.value().size);
         }
@@ -236,9 +297,35 @@ TEST(net_udp, timeout_does_not_consume_later_datagram) {
     EXPECT(sent, ==, true);
 }
 
+TEST(net_udp, zero_timeout_receives_prequeued_packet_but_does_not_wait) {
+    socket receiver(protocol::udp);
+    socket sender(protocol::udp);
+    if (!EXPECT(bind_pair("127.0.0.1", receiver, sender), ==, true)) {
+        return;
+    }
+    const endpoint target = receiver.local_endpoint().value();
+    wavvix::runtime runtime(1);
+    bool empty_timed_out = false;
+    bool sent = false;
+    bool received = false;
+    wavvix::coroutine task([&] {
+        char byte = 0;
+        const wavvix::result<datagram> empty = receiver.recv_from(&byte, 1, ms(0));
+        empty_timed_out = empty.is_err() && empty.error().kind() == error_kind::timeout;
+        sent = sender.send_to("z", 1, target, ms(0)).is_ok();
+        const wavvix::result<datagram> packet = receiver.recv_from(&byte, 1, ms(0));
+        received = packet.is_ok() && packet.value().size == 1 && byte == 'z';
+    });
+    task.join();
+
+    EXPECT(empty_timed_out, ==, true);
+    EXPECT(sent, ==, true);
+    EXPECT(received, ==, true);
+}
+
 TEST(net_udp, ipv6_loopback_when_available) {
-    udp_socket receiver;
-    udp_socket sender;
+    socket receiver;
+    socket sender;
     if (!bind_pair("::1", receiver, sender)) {
         return;   // IPv6 可能在测试环境中关闭。
     }
@@ -253,7 +340,7 @@ TEST(net_udp, ipv6_loopback_when_available) {
     bool sent = false;
     wavvix::coroutine receiving([&] {
         char data[4] = {};
-        const wavvix::result<udp_datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
+        const wavvix::result<datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
         if (received.is_ok()) {
             from_ipv6 = received.value().from.family() == wavvix::net::address_family::ipv6;
             got.assign(data, received.value().size);
@@ -270,21 +357,20 @@ TEST(net_udp, ipv6_loopback_when_available) {
 
 TEST(net_udp, invalid_buffers_fail_before_submission) {
     // 参数错误在提交 I/O 之前就返回，所以在协程外调用也只是拿到错误。
-    udp_socket closed;
+    socket closed(protocol::udp);
     const wavvix::result<endpoint> loopback = endpoint::parse("127.0.0.1", 0);
     if (loopback.is_err()) {
         return;
     }
-    const wavvix::result<std::size_t> closed_send = closed.send_to("x", 1, loopback.value(), ms(1));
+    const wavvix::result<void> closed_send = closed.send_to("x", 1, loopback.value(), ms(1));
     EXPECT(closed_send.is_err(), ==, true);
-    wavvix::result<udp_socket> opened = udp_socket::bind(loopback.value());
-    EXPECT(opened.is_ok(), ==, true);
-    if (opened.is_err()) {
+    socket opened(protocol::udp);
+    EXPECT(opened.bind(loopback.value()).is_ok(), ==, true);
+    if (!opened.is_open()) {
         return;
     }
-    udp_socket socket = std::move(opened).value();
-    const wavvix::result<std::size_t> bad_send = socket.send_to(0, 1, loopback.value(), ms(1));
-    const wavvix::result<udp_datagram> bad_receive = socket.recv_from(0, 1, ms(1));
+    const wavvix::result<void> bad_send = opened.send_to(0, 1, loopback.value(), ms(1));
+    const wavvix::result<datagram> bad_receive = opened.recv_from(0, 1, ms(1));
     EXPECT(bad_send.is_err(), ==, true);
     EXPECT(bad_receive.is_err(), ==, true);
     if (bad_send.is_err()) {
@@ -297,9 +383,9 @@ TEST(net_udp, invalid_buffers_fail_before_submission) {
 
 #ifdef _WIN32
 TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
-    udp_socket probe;
-    udp_socket reply;
-    udp_socket unused;
+    socket probe(protocol::udp);
+    socket reply(protocol::udp);
+    socket unused(protocol::udp);
     if (!EXPECT(bind_pair("127.0.0.1", probe, reply), ==, true)) {
         return;
     }
@@ -307,11 +393,9 @@ TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
     if (loopback.is_err()) {
         return;
     }
-    wavvix::result<udp_socket> unused_open = udp_socket::bind(loopback.value());
-    if (!EXPECT(unused_open.is_ok(), ==, true)) {
+    if (!EXPECT(unused.bind(loopback.value()).is_ok(), ==, true)) {
         return;
     }
-    unused = std::move(unused_open).value();
     const wavvix::result<endpoint> dead = unused.local_endpoint();
     const wavvix::result<endpoint> live = probe.local_endpoint();
     if (dead.is_err() || live.is_err()) {
@@ -329,7 +413,7 @@ TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
         wavvix::sleep_for(ms(50));
         reply_sent = reply.send_to("ok", 2, live.value(), ms(1000)).is_ok();
         char bytes[8] = {};
-        const wavvix::result<udp_datagram> received = probe.recv_from(bytes, sizeof bytes, ms(1000));
+        const wavvix::result<datagram> received = probe.recv_from(bytes, sizeof bytes, ms(1000));
         if (received.is_ok()) {
             got.assign(bytes, received.value().size);
         }

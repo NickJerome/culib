@@ -4,6 +4,8 @@
 - 状态：实现已通过 Windows/MSVC、Linux epoll 与 io_uring 本地回环测试及 [三平台 CI](https://github.com/NickJerome/culib/actions/runs/37761276843)。
 - 前置：[网络模块](2026-10-08-net-design.md)与[事件引擎](2026-10-05-event-engine-design.md)。
 
+> **已被取代（2026-10-13）**：`udp_socket` / `udp_datagram` 已由统一的 `net::socket` 与 `net::datagram` 取代（`send_to` 成功返回 `void`，其余报文语义保留），见 [统一 socket 设计](2026-10-13-unified-socket-design.md)与 [网络模块文档](../../net.md)。以下接口部分描述的是旧形状，作为设计与验证的历史记录保留，不再维护。
+
 ## 范围与调用点
 
 UDP 是报文而非字节流：一次 `send_to` 发送一整个报文，一次 `recv_from` 消费一整个报文并返回来源。零字节也是合法报文，因此不能照搬 TCP 的“长度为零立即返回”或“读到零表示 EOF”。这期支持 IPv4/IPv6 单播、绑定端口 0、回环、显式超时和多协程并发。广播、组播、批量收发、连接式 UDP、Unix 域套接字与跨 vCPU 迁移等有具体消费者时再设计。

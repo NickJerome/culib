@@ -1,4 +1,4 @@
-// 地址解析是同步操作；服务器可在启动协程调度器之前做。
+// 协程外同步解析；协程内调用同一个 resolve 会自动让出工作线程。
 //     xmake run example_net_address
 
 #include <culib/net.h>
@@ -21,7 +21,8 @@ int main() {
         std::fprintf(stderr, "%s\n", found.error().to_string().c_str());
         return 1;
     }
-    for (std::size_t i = 0; i < found.value().size(); ++i)
+    for (std::size_t i = 0; i < found.value().size(); ++i) {
         std::printf("候选地址：%s\n", found.value()[i].to_string().c_str());
+    }
     return 0;
 }

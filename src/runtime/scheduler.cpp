@@ -414,6 +414,10 @@ void worker_loop(runtime_state& state, vcpu& self) {
         instant nearest = instant();
         if (self.waiting.next() != 0) {
             const instant now = clock_type::now();
+            // IOCP 的立即完成也有通知包；到期前先取已到达的结果，零超时才不会误报。
+            if (self.waiting.next()->deadline <= now && io_engine_pending(self.engine) != 0) {
+                wait_io(self, std::chrono::nanoseconds(0));
+            }
             while (self.waiting.next() != 0 && self.waiting.next()->deadline <= now) {
                 park_token* const token = self.waiting.next();
                 self.waiting.remove(*token);

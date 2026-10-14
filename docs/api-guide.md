@@ -368,19 +368,18 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
 
 ## [`net.h`](../include/culib/net.h)
 
-完整范围见[网络设计](superpowers/specs/2026-10-08-net-design.md)和[UDP 设计](superpowers/specs/2026-10-08-udp-design.md)。地址层用法：
+监听、连接和收发由一个统一的 `net::socket` 承担（`protocol::tcp` / `protocol::udp`，默认 TCP；构造只记协议，`bind` / `connect` 时才建原生套接字），取代原先的 `tcp_listener` / `tcp_stream` / `udp_socket`。取舍见[统一 socket 设计](superpowers/specs/2026-10-13-unified-socket-design.md)；[网络设计](superpowers/specs/2026-10-08-net-design.md)和 [UDP 设计](superpowers/specs/2026-10-08-udp-design.md) 描述的是被取代的旧接口，保留作历史记录。地址层用法不变：
 
     wavvix::result<wavvix::net::endpoint> local =
         wavvix::net::endpoint::parse("127.0.0.1", 8080);
     wavvix::result<std::vector<wavvix::net::endpoint>> candidates =
         wavvix::net::resolve("localhost", 8080);
 
-`parse` 只接受数字 IPv4/IPv6；输入主机名请用 `resolve`。后者调用系统 DNS 解析器，
-**会阻塞当前线程并分配内存**，所以在协程外调用，或者在协程里经 `call_blocking` 调用，别在热路径里悄悄调用。
+`parse` 只接受数字 IPv4/IPv6；输入主机名用 `resolve`，或直接把主机名交给 `connect(host, port)`。`resolve` 调用系统 DNS 解析器，**会阻塞并分配内存**：协程内自动经 `call_blocking` 执行、不卡工作线程，协程外同步执行，调用方无需再包一层；别在热路径里频繁解析。
 `resolve` 保留系统返回的地址顺序，不替调用方猜该连哪一个。`endpoint::to_string()`
 把端口一起写出，IPv6 用 `[::1]:8080` 形状。详情见 `examples/net_address.cpp`。
 
-`tcp_listener` / `tcp_stream` 提供连接式收发；`udp_socket` 的 `send_to` / `recv_from` 保留报文边界与来源地址。完整可运行示例见 [`net_echo.cpp`](../examples/net_echo.cpp) 和 [`net_udp.cpp`](../examples/net_udp.cpp)，边界行为见[网络用法](net.md)。
+`socket` 一个类型覆盖监听器、连接和报文套接字：`bind` → `listen` → `accept` 是服务端，`connect` 是客户端，`send_to` / `recv_from` 保留报文边界与来源地址。`read` 可能只交付一部分，`read_exactly` / `write` 把完整传输的循环收进库里、共用一份超时预算。完整可运行示例见 [`net_echo.cpp`](../examples/net_echo.cpp) 和 [`net_udp.cpp`](../examples/net_udp.cpp)，边界行为见[网络用法](net.md)。
 
 ## [`optional.h`](../include/culib/optional.h)
 
@@ -536,7 +535,7 @@ value() / error() 取错分支会打印信息并终止程序，release 同样检
 
 事件引擎在 Linux、macOS、Windows 上分别使用 epoll、kqueue、IOCP，每根工作线程一个，工作线程空闲时就睡在里面。
 [sync.h](../include/culib/sync.h) 提供协程感知的同步原语和 channel，
-[net.h](../include/culib/net.h) 提供 TCP 和 UDP。调度不抢占、没有优先级，全局等待队列先进先出。
+[net.h](../include/culib/net.h) 提供统一的 `net::socket`（TCP 与 UDP）。调度不抢占、没有优先级，全局等待队列先进先出。
 用法细节见[协程运行时](runtime.md)。
 
 ## [`stopwatch.h`](../include/culib/stopwatch.h)
