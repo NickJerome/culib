@@ -129,7 +129,8 @@ jobs:
           CULIB_CI_STRICT: '1'
         # ASan 自己接管 malloc/new；全局覆盖计数测试在此配置下无法观察 culib 的入口。
         # 该覆盖测试仍在普通 Linux debug/release 作业中执行。
-        run: bash .github/report-failure.sh xmake test -v culib_test/default os_stop_test/threads os_stop_test/sigint os_stop_test/sigterm mem_test_abandoned/default mem_test_new_override/default mem_test_rss/default mem_test_security/default mem_test_stress/default mem_test_unit/default
+        # file_uring_test/faults 由 xmake test 自动按本任务配置构建后运行。
+        run: bash .github/report-failure.sh xmake test -v culib_test/default os_stop_test/threads os_stop_test/sigint os_stop_test/sigterm file_uring_test/faults mem_test_abandoned/default mem_test_new_override/default mem_test_rss/default mem_test_security/default mem_test_stress/default mem_test_unit/default
       - name: check stop requests under ThreadSanitizer
         shell: bash
         env:
@@ -193,6 +194,17 @@ jobs:
         shell: bash
         # 成功和失败都打印测试输出，供报告脚本提取。
         run: bash .github/report-failure.sh xmake test -v
+
+      # Linux 文件 io_uring 的两条补充验证（faults 已注册进 xmake test，上一步已跑）：
+      # 私有 UAPI 对照现代真实内核头的编译期断言，以及 required-native 门禁——
+      # native 模式在 io_uring 不可用时非零退出，缺 native 的环境不允许这项变绿。
+      # 不注册进 xmake test 正是为了让受限环境的普通 suite 保持可用。
+      - name: io_uring file UAPI comparison and native-required gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bash .github/report-failure.sh xmake build -y file_uring_uapi_check
+          bash .github/report-failure.sh xmake run file_uring_test native
 
       # 示例默认不参与构建，这里显式编译：接口改了而示例没跟着改时就会在这一步失败。
       # 这一步抓到过 examples/os.cpp 的 std::fopen 在 MSVC 上是 C4996。

@@ -2,6 +2,7 @@
 // fd 关闭时内核自动把它从 epoll 里摘掉。
 
 #include "io_engine_posix.h"
+#include "io_uring_linux.h"
 
 #include <cerrno>
 #include <cstdint>
@@ -20,7 +21,9 @@ public:
     int epoll_fd;
     int wake_fd;
     io_fd_table slots;
-    std::size_t pending;    // 还在等的请求数
+    std::size_t pending;    // 还在等的请求数（epoll 排队；文件在途另在 files 里计）
+    file_ring files;        // 本线程私有的文件环；prepare 判定不可用后一直是空的
+    int file_state;         // 文件路径准备结果：2 还没试过，1 native，0 阻塞池，负 errno 初始化错误
 };
 
 namespace {
@@ -49,6 +52,7 @@ io_engine* io_engine_create() noexcept {
     engine->epoll_fd = epoll_fd;
     engine->wake_fd = -1;
     engine->pending = 0;
+    engine->file_state = 2;
     return engine;
 }
 
@@ -114,12 +118,28 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         request.failure = EBADF;
         return false;
     }
+    // 文件读写不进 epoll 的 fd 表，也不绑 worker：直接提交进本线程的环。
+    if (request.operation == io_file_transfer) {
+        return engine->files.arm(request);
+    }
     return io_enqueue(engine->slots, engine->pending, request);
 }
 
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept {
-    if (!engine) return;
+    if (!engine) {
+        return;
+    }
+
+    // 阻塞前先收一轮：很多文件完成项在进内核之前就躺在 CQ 环里了。
+    engine->files.reap(completed);
+
+    // 已经有完成项也不早退：仍做一次零超时 epoll poll，
+    // 连续的热文件完成不能饿死 socket 事件和远程唤醒。
+    if (!completed.empty()) {
+        timeout = std::chrono::nanoseconds(0);
+    }
+
     const bool finite = timeout.count() >= 0;
     const std::chrono::steady_clock::time_point started = finite
         ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
@@ -148,6 +168,10 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
             ::eventfd_read(fd, &count);   // 读空计数；非阻塞，读不到就算了
             continue;
         }
+        if (engine->files.fd() >= 0 && fd == engine->files.fd()) {
+            // ring fd 的可读事件在收尾那轮统一收；运行期不因它终止进程。
+            continue;
+        }
 
         // EPOLLERR / EPOLLHUP 两个方向都去做一次系统调用，让它把错误报出来
         const std::uint32_t got = events[i].events;
@@ -155,9 +179,16 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         const bool writable = (got & (static_cast<std::uint32_t>(EPOLLOUT) | failed)) != 0;
         io_dispatch(engine->slots, engine->pending, fd, readable, writable, completed);
     }
+
+    // epoll 醒来后再收一轮：socket 事件可能带着文件完成项一起到。
+    engine->files.reap(completed);
 }
 
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
+    if (engine && request.operation == io_file_transfer) {
+        // 文件：排队未提交的可摘干净；在途的必须等自然完成。
+        return engine->files.cancel(request);
+    }
     if (engine) {
         io_dequeue(engine->slots, engine->pending, request);
     }
@@ -167,7 +198,32 @@ bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {
     if (!engine) return 0;
-    return engine->pending;
+    return engine->pending + engine->files.pending();
+}
+
+int io_engine_prepare_file(io_engine* engine) noexcept {
+    if (!engine) {
+        return -EINVAL;
+    }
+    if (engine->file_state != 2) {
+        return engine->file_state;
+    }
+
+    if (engine->files.open(engine->epoll_fd)) {
+        engine->file_state = 1;
+        return 1;
+    }
+
+    // open 契约保证失败时 errno 非零；这里再防御一个零（不可达），
+    // 按未知实现错误缓存，不静默降级。
+    const int code = errno != 0 ? errno : EIO;
+    if (code == ENOSYS || code == EPERM || code == EACCES || code == EOPNOTSUPP) {
+        engine->file_state = 0;
+        return 0;
+    }
+
+    engine->file_state = -code;
+    return engine->file_state;
 }
 
 }  // namespace detail

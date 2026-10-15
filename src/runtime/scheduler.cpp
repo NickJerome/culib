@@ -802,6 +802,14 @@ bool scheduler_bind(io_handle handle, const void*& owner) {
     return true;
 }
 
+#if defined(__linux__)
+int scheduler_prepare_file() noexcept {
+    // here() 在协程外调用时自己会拦下。文件路径不绑 worker：顺序跨 worker 使用合法，
+    // 每个 worker 的引擎各自缓存自己的准备结果。
+    return io_engine_prepare_file(here().engine);
+}
+#endif
+
 void scheduler_io(io_request& request, std::chrono::nanoseconds timeout) {
     if (!fiber::inside()) {
         die("wavvix 的 I/O 只能在协程里调用");
