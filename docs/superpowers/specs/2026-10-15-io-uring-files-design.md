@@ -1,7 +1,7 @@
 # Linux 文件 io_uring 接入
 
 - 日期：2026-10-15
-- 状态：已按用户批准的方案使用 subagent 完成实现、独立审查和本地验证；用户随后授权提交、推送并完成远程CI收尾，远程结果另行记录。
+- 状态：实现、独立审查、本地验证及用户授权的提交推送已完成；实现提交 `97b1338` 的远程CI为24/24成功，全部24份完整日志已核验。实际覆盖与跳过项见末节。
 - 依据：文件与后端选择实测分别见 `build/perf-file-uring-20261015/findings.md`、`build/perf-backend-choice-20261015/findings.md`；不恢复历史整套 socket io_uring 后端。
 
 ## 边界
@@ -70,6 +70,29 @@ Linux环境为WSL2 Ubuntu22.04、内核6.18.54.1、x86_64；矩阵实际使用xm
 
 正式代码与实施前线程池快照用同一harness的两个二进制交错对照，两次独立执行、每次六轮，共72对144行。WSL ext4、热缓存、buffered I/O、无fsync，生产路径由strace确认；不是冷盘或持久化吞吐。吞吐比的两次中位数：4KiB单协程读24.84/23.95倍，16协程写2.79/3.16倍，128B的16协程追加4.48/4.51倍；串行写1.07/1.07倍，串行追加1.06/1.03倍。收益主要在读取和并发写入，不据此声称同步日志加速。波动与原始数据见 `build/io-uring-implementation-20261015/performance/findings.md`。
 
-本轮未取得GCC4.8、macOS、Linux arm64、旧内核或远程CI运行结果，未安装或拉取额外环境。CI已接入Linux原生必需门禁和sanitizer故障测试，但尚未执行远程任务。Windows验证初期路径误定向覆盖了旧的被忽略构建产物并再生了xmake缓存；源码未受影响，构建目录字段已恢复，无法重建的旧产物及配置字节差异已记录在本地验证报告中。
+本地验证阶段未取得GCC4.8、macOS、Linux arm64或旧内核运行结果，未安装或拉取额外环境；后续远程验证见下一节。Windows验证初期路径误定向覆盖了旧的被忽略构建产物并再生了xmake缓存；源码未受影响，构建目录字段已恢复，无法重建的旧产物及配置字节差异已记录在本地验证报告中。
 
 完整命令、日志与环境限制见 `build/io-uring-implementation-20261015/validation-summary.md`。
+
+## 远程CI收尾（2026-10-15）
+
+用户授权后，实现提交 `97b1338d410b0177756eabe4ec6b40692f584ccc` 已推送到 `refactor/unified-socket`。通过 `workflow_dispatch` 运行 [build #38749108405](https://github.com/NickJerome/culib/actions/runs/38749108405)，attempt 1：**24/24作业成功，24/24完整日志取得并核验**，所有作业检出的SHA均与该实现提交一致。本节为随后补充的文档记录，不把文档提交声称为该次CI的被测提交。
+
+| 配置 | 实际结果 |
+| --- | --- |
+| Linux x86_64 GCC/Clang、arm64 GCC，各debug/release，共6项 | 各422项普通测试、14个xmake测试入口通过；各自实际通过现代内核头UAPI对照与required-native门禁，8项文件故障测试通过 |
+| Linux GCC/Clang，关闭异常和RTTI | 各415项普通测试、14个入口通过；文件测试及故障测试无native跳过 |
+| Linux GCC ASan+UBSan | 422项普通测试、显式选择的11个入口通过，包含文件故障测试，无sanitizer诊断或native跳过 |
+| TSan停止标志测试 | threads/sigint/sigterm三种模式通过；不代表整个协程调度器经过TSan验证 |
+| Windows MSVC x64，各debug/release | 各404项普通测试、12个入口通过 |
+| Windows MinGW x86_64 | 404项普通测试、停止标志三种模式及分配器压力测试通过 |
+| macOS arm64/x86_64 Clang，各debug/release | 各401项普通测试、12个入口通过 |
+| GCC4.8 C++11容器 | runner汇总422项通过，但其中14项原生文件测试因能力不可用提前返回；只计旧编译器构建、公开语义与回退覆盖，不计为原生io_uring通过；停止标志三种模式通过 |
+| Linux/macOS/Windows源码依赖消费者，各C++11/C++17 | 6项均实际编译并运行成功，不要求有单元测试汇总 |
+| 公共头与报告脚本 | BOM及独立C++11包含检查通过，15项CI报告脚本测试通过 |
+
+普通矩阵与MinGW的示例编译通过。required-native门禁只配置在6项常规Linux矩阵中；无异常和ASan作业虽实际执行了原生测试，但没有独立的native必需门禁。ASan/UBSan的11个入口不含 `layers_test`、`mem_test_malloc_override` 和 `runtime_faults_test`。
+
+完整日志扫描报告返回1，原因是14条 `No cached files found at path .../.xmake-build-cache` 警告。逐项核验均发生在恢复编译缓存时未命中；这些作业后续均成功保存并上传缓存，不是编译或测试失败。未修改扫描器来隐藏警告，未发现本库编译、运行或sanitizer失败。报告脚本当前未识别带说明文字的 `[SKIP native io_file: capability unavailable]` 格式，因此另查原始日志，确认14条native跳过均来自GCC4.8容器，其他作业无此跳过。
+
+原始日志及扫描报告保存在 `build/ci/38749108405-1/`，属于本地忽略产物。尚未认证最早可用的Linux5.x原生内核版本；GCC4.8产物在原生io_uring可用环境中的执行也仍未覆盖。本轮没有放宽容器安全策略、修改日志模块或调整每worker环的设计。

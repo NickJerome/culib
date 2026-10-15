@@ -50,7 +50,7 @@
 - [x] 新Linux测试目标和native-required/fallback两条验证接入现有构建，保留旧GCC容器普通测试；没有native不能让required检查变绿。
 - [x] 私有UAPI与现代真实内核头size/offsetof/常量对照编译；旧GCC编译不include新头。
 - [x] 更新“普通文件全走call_blocking”描述为平台与能力分工，不改日志、不宣称日志加速、不写未跑远程CI结果。
-- [x] 核查GCC4.8本地可用性：无可用编译器/镜像，本轮未运行；旧内核/macOS/arm64也明确未覆盖，未拉镜像或放宽seccomp。
+- [x] 核查GCC4.8本地可用性：无可用编译器/镜像，本地阶段未运行；旧内核/macOS/arm64也未在本地覆盖，未拉镜像或放宽seccomp。后续远程验证另记于Task 5。
 
 ## Task 4: 独立审查、全量验证和正式性能复测
 
@@ -58,4 +58,10 @@
 - [x] 当前Linux GCC/Clang debug/release、无异常/RTTI、ASan/UBSan，全部普通测试与示例；专用native/fallback故障测试。
 - [x] 可用Windows MSVC debug/release与示例，公共头检查；macOS没有runner不声称通过。
 - [x] 正式代码与此前baseline快照交错复测热读、串行写、并发写/追加，包含至少两次独立运行并报告波动。
-- [x] git diff --check、日志哈希不变、独立最终审查；交付修改/验证/限制，不提交推送。
+- [x] git diff --check、日志哈希不变、独立最终审查；交付修改/验证/限制，实施阶段未提交推送。
+
+## Task 5: 用户授权后的提交与远程CI收尾
+
+- [x] 提交实现为 `97b1338d410b0177756eabe4ec6b40692f584ccc` 并推送到 `refactor/unified-socket`；不合并默认分支，不提交.zcode或日志草案。
+- [x] 核验 [CI #38749108405](https://github.com/NickJerome/culib/actions/runs/38749108405)：24/24作业成功、24/24完整日志已检查，6项Linux原生门禁通过；GCC4.8容器14项原生测试跳过、14条缓存恢复未命中警告及后续保存成功均已记录到设计文档。
+- 收尾文档单独提交并推送，CI证据对应实现提交 `97b1338`；文档提交不冒充已被该运行验证。
