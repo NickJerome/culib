@@ -1,19 +1,13 @@
 // fs::file 与 fs::open：公共层的 result 化包装。
-// 默认路径：每个会碰磁盘的公共函数在最外层恰好下放一次 call_blocking，完整操作
-// （含 write 的写满循环）在后台线程里跑完，协程里只挂起调用者。
-// Linux 协程例外：读写先问当前工作线程的准备结果（file_linux.h），原生可用时留在
-// 协程里走 io_uring，语义与同步路径一致。
+// file.h 的原生原语（open_file / close_file / read_some / write_some）是 RAW 的，
+// 自己不下放；每个会碰磁盘的公共函数在最外层恰好下放一次 call_blocking，
+// 完整操作（含 write 的写满循环）整段在后台线程里跑完，协程里只挂起调用者。
 // 路径含 '\0' 在公共层就挡下，后端的契约是「到这里不必再查」。
 
 #include <culib/fs.h>
 #include <culib/runtime.h>
 
 #include "file.h"
-
-#if defined(__linux__)
-#  include "file_linux.h"
-#  include <culib/detail/fiber.h>
-#endif
 
 #include <cstdint>
 #include <cstring>
@@ -128,21 +122,6 @@ result<std::size_t> file::read(void* data, std::size_t size) {
     if (size == 0) {
         return std::size_t(0);   // 零字节读不发系统调用，也不算 EOF 判定
     }
-#if defined(__linux__)
-    // 零长度已在上面拦下：走到这里的第一个非零长度操作触发一次初始化判定，结果
-    // 缓存在当前工作线程的引擎里。判定为阻塞池或不在协程里，落到原有的后台线程路径。
-    if (wavvix::detail::fiber::inside()) {
-        const int prepared = detail::prepare_file();
-        if (prepared < 0) {
-            return detail::file_error("读取", path_.string(),
-                                      static_cast<unsigned long>(-prepared));
-        }
-        if (prepared > 0) {
-            return detail::native_read(handle_, static_cast<char*>(data), size,
-                                       path_.string());
-        }
-    }
-#endif
     return call_blocking(&read_sync, handle_, std::string(path_.string()),
                          static_cast<char*>(data), size);
 }
@@ -154,18 +133,6 @@ result<void> file::write(const void* data, std::size_t size) {
     if (size == 0) {
         return result<void>();   // 空写是 no-op，不产生原生写
     }
-#if defined(__linux__)
-    if (wavvix::detail::fiber::inside()) {
-        const int prepared = detail::prepare_file();
-        if (prepared < 0) {
-            return detail::file_error("写入", path_.string(),
-                                      static_cast<unsigned long>(-prepared));
-        }
-        if (prepared > 0) {
-            return detail::native_write(handle_, data, size, path_.string());
-        }
-    }
-#endif
     return call_blocking(&write_sync, handle_, std::string(path_.string()),
                          static_cast<const char*>(data), size);
 }

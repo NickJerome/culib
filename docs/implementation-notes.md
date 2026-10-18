@@ -96,7 +96,7 @@ macOS 只验证了从最终源码提取的套接字 helper 在 GCC / Clang 下�
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
 
-Linux 的 epoll 后端。此前曾实现 io_uring；它只服务于套接字公共接口，普通文件 I/O 没有接入公共 API，额外的环管理、运行期探测和每请求字段没有实际调用方，因此移除。x86_64 / GCC 11.4 下 `sizeof(io_request)` 从 160 字节降到 88 字节。历史设计仍在 [io_uring 设计](superpowers/specs/2026-10-08-io-uring-design.md)。2026-10-15 起文件 I/O 以一个作用面窄得多的私有环重新接入（只覆盖协程文件读写，见本页 `io_uring_linux.cpp` 一节）；上面那段历史结论针对的是当时的套接字后端，不适用于它。
+Linux 的 epoll 后端。此前曾实现 io_uring；它只服务于套接字公共接口，普通文件 I/O 没有接入公共 API，额外的环管理、运行期探测和每请求字段没有实际调用方，因此移除。x86_64 / GCC 11.4 下 `sizeof(io_request)` 从 160 字节降到 88 字节。历史设计仍在 [io_uring 设计](superpowers/specs/2026-10-08-io-uring-design.md)；有明确的性能需求与对照测量后再考虑恢复。
 
 「完成」形状在一个「就绪」后端上要多做的事，就是**醒来之后当场做一次系统调用**——
 那段在 io_engine_posix.h 的 io_complete() 里，和 kqueue 后端共用同一份。本文件只管
@@ -119,43 +119,6 @@ epoll 独有的那件事：怎么登记。
 少掉的正是每次等待时登记、撤销兴趣的 4 次 `epoll_ctl`。代码也少了一套「已登记掩码」的状态。
 
 fd 关闭时内核自动把它从 epoll 里摘掉；号码被复用后，新句柄第一次 I/O 前会再接管一次。
-
-## [`io_uring_uapi.h`](../src/runtime/io_uring_uapi.h)
-
-Linux 文件环用的固定 UAPI 布局与常量。不是公共头文件，使用方不该包含；`#error` 把目标限定在 Linux x86_64 / arm64。
-
-**单份固定布局，不因系统头是否存在换实现。** 旧用户态的内核头（GCC 4.8 那个 Debian 7 容器是 3.2 时代的）没有 io_uring 的声明，新头又随内核版本增长；io_uring 的 mmap 偏移、SQE / CQE 布局和 425 / 426 两个系统调用号在 x86_64 / arm64 上是稳定的 ABI，所以库自带一份最小布局（`io_uring_params`、SQ / CQ offsets、SQE、CQE），布局断言全在编译期。与现代真实内核头的对照编译在 `tests/process/io_uring_uapi.cpp`：逐字段 `offsetof`、`sizeof` 与常量（系统调用号、mmap 偏移、READ / WRITE opcode、NODROP 与 RW_CUR_POS 特性位）对着 `<linux/io_uring.h>` 断言，只在装有现代内核头的环境由 xmake 目标 `file_uring_uapi_check` 显式构建（CI 的 Linux 任务各跑一次）。旧 GCC 容器不编这个对照：它没有现代头，也不需要——它编译生产代码时只见到私有头。这也是当年移除套接字后端时缺的一块：那时布局跟着 `<liburing.h>` 或系统头走，旧环境的头装不出新常量。
-
-生产代码经 libc 的 `syscall()` 取 425 / 426，不引第三方库，不注册文件描述符、不用 SQPOLL。
-
-## [`io_uring_linux.cpp`](../src/runtime/io_uring_linux.cpp) 与 [`fs/file_linux.cpp`](../src/fs/file_linux.cpp)
-
-Linux 协程文件读写的原生路径。接口与语义的权威描述见 [io_uring 文件接入设计](superpowers/specs/2026-10-15-io-uring-files-design.md)；这里记结构与平台取舍。
-
-### 只在初始化选择一次
-
-`io_engine_prepare_file()` / `scheduler_prepare_file()` 返回三态：1 是 native，0 是阻塞池，负数是初始化的 errno；2 只是引擎内部「还没初始化」的哨兵。选择发生在每根工作线程首次非零长度的协程文件读写前：建环、按 `io_uring_params` 的特性位和一次无副作用的 opcode 探测（无效 fd 的 READ / WRITE，不引用用户缓冲区；支持的 opcode 应回 EBADF，回 EINVAL 时归一成 EOPNOTSUPP）确认能力，结果缓存到引擎销毁。`fs::file::read` / `write` 在提交任何真实请求前只读一次缓存。
-
-错误分两类，**不算同一件事**：
-
-- `ENOSYS`、`EPERM`、`EACCES`、`EOPNOTSUPP`：内核不支持或被 seccomp / 权限拦下，是**能力**问题——清掉环，缓存 0，这次和之后的读写都走 `call_blocking`。旧内核与受限容器因此照常可用，全库的 Linux 内核下限不变。
-- `ENOMEM`、`EMFILE` 等其余错误：资源或实现问题——清掉环，缓存负 errno，由这一次读写经 `fs` 的 `result` 报出去，不静默降级成阻塞池。
-
-初始化成功后**运行期绝不切换后端**：真实 I/O 错误、提交失败都直接从 `result` 报出来，失败不重发到另一个后端；协程外的调用与 Windows / macOS 一直走 `call_blocking`。
-
-### 环的结构
-
-每根工作线程一个固定 256 项的环：原始 `syscall` + `mmap`，SQ / CQ 两个独立映射按各自的 offsets 取头（SQ 间接数组初始化成恒等映射），SQE 数组第三个映射。acquire / release 配对读写头尾。一个请求一个 SQE、一次 `enter`，没有文件合批。未收完成的请求数不超过 min(SQ, CQ) 容量，超额沿 `request.next` 排 FIFO，没有每请求分配；收完成时释放名额、推进 FIFO，失败项也交回完成队列，不卡后继。
-
-`enter` 失败先看 `sq_head`：已前进说明内核已消费 SQE，请求仍在途，等 CQE，不重提；未前进才回滚本次 `sq_tail` 并报告错误（EINTR 未消费可重试）。cancel 只能摘下还没提交的排队项；在途的必须等自然完成。
-
-### 与套接字同轮公平
-
-环建好时以 `EPOLLIN` 加入该线程既有的 epoll 集合，套接字路径一行不改。`epoll_wait` 报出的环 fd 事件不在事件循环里逐个处理——唤醒后收尾那一轮统一收 CQ，运行期不因它终止进程；等待前后各收一轮 CQ，已有完成时仍做零超时的 `epoll_wait`，热文件请求不会饿死套接字，也不会错过远程唤醒。引擎的 pending 计数是套接字与文件之和。
-
-### 不做的
-
-不恢复套接字 io_uring 后端，不加公开后端选择、环境变量、liburing、SQPOLL、注册缓冲区、fixed files、调用方合批、每操作探测或失败后重提交；日志代码与日志草案不动，也没有任何「日志路径因此加速」的说法。性能要有正式路径对原 baseline 的对照测量后才谈，原型的数字不作数。
 
 ## [`io_engine_macos.cpp`](../src/runtime/io_engine_macos.cpp)
 

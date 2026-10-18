@@ -27,7 +27,6 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 
 - 只支持 64 位：协程的换栈汇编只有 x86_64 和 arm64 两种，栈来自只支持 64 位的分配器，32 位目标在编译期报错。
 - Linux 需要 glibc 2.10、内核 2.6.28 以上（建套接字用了 `accept4` 和 `SOCK_CLOEXEC`）。CI 里最老的是 GCC 4.8 那个任务：Debian 7，glibc 2.13。
-- Linux 协程内的文件读写另外会用 io_uring（内核 5.1 起才有，且未被 seccomp 拦截）：每根工作线程首次使用前探测一次，可用走原生环，不可用自动退回 `call_blocking`，初始化的资源错误按错误返回。这是能力探测不是内核下限：不支持 io_uring 的内核上全部功能照常可用。
 - 常规 CI 使用托管 runner 的工具链，另有 GCC 4.8 专项构建与测试。VS2015、Clang 3.3 等旧版本尚未验证；C++11 语言要求不等于对所有 C++11 编译器版本的兼容承诺。
 - 构建工具：[xmake](https://xmake.io) 2.8.5 及以上（`xmake test` 自该版本起提供），推荐使用最新版。
 
@@ -46,7 +45,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | term | 终端彩色输出：`fg::red("x")` 形状，样式是可组合的值类型（**漏掉括号就编译报错**，所以不会出现「设了颜色没恢复」）；自动判断是否该上色（终端 / `NO_COLOR` / `TERM`） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-01-test-term-table-design.md) 第 5 节。测试框架的彩色报告就是它的第一个消费者。Windows 走 VT 模式，开不起来就降级成纯文字（不做旧版控制台 API，理由见[实现说明](docs/implementation-notes.md)） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
-| runtime 与 I/O | `runtime(n)` 起一组工作线程，协程都在上面跑：全局等待队列、派到指定线程、跨线程可用的 mutex / condition_variable / channel、`call_blocking` 共用的后台线程；三个事件后端（`epoll` / `kqueue` / `IOCP`）与超时。Linux 协程文件读写优先 io_uring（每工作线程初始化时探测一次），能力不可用退回 `call_blocking` | **可用**。2026-10-13 从 vCPU 调度器改成 runtime：[`60417e4` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38411545278) 24/24 通过，含 GCC 4.8、MinGW、无异常构建和 ASan + UBSan；当时 ThreadSanitizer 只在本机跑过；最新 [`e7b6b8e` 的 CI](https://github.com/NickJerome/culib/actions/runs/38567733275) 已含进程级 TSan 检查。文件 io_uring 部分见[协程运行时](docs/runtime.md)与[实现说明](docs/implementation-notes.md)，其 CI 结果以实际运行为准，下方「参与开发」列出的运行记录早于这部分改动 |
+| runtime 与 I/O | `runtime(n)` 起一组工作线程，协程都在上面跑：全局等待队列、派到指定线程、跨线程可用的 mutex / condition_variable / channel、`call_blocking` 共用的后台线程；三个事件后端（`epoll` / `kqueue` / `IOCP`）与超时 | **可用**。2026-10-13 从 vCPU 调度器改成 runtime：[`60417e4` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38411545278) 24/24 通过，含 GCC 4.8、MinGW、无异常构建和 ASan + UBSan；当时 ThreadSanitizer 只在本机跑过；最新 [`e7b6b8e` 的 CI](https://github.com/NickJerome/culib/actions/runs/38567733275) 已含进程级 TSan 检查。见[协程运行时](docs/runtime.md)和[网络用法](docs/net.md) |
 | log | 日志：`LOG_INFO << ...`，级别不足时不求值参数；多个输出目标与文件轮转。消息使用固定栈缓冲，文件整行拼接可能分配；文件写入不使用 stdio 缓冲 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-log-design.md) |
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，跑在 runtime 的工作线程上 | 构造即提交、`join()` / `detach()` 的线程式句柄；第一次运行后绑在那根工作线程上，栈在那时才向 `mem` 要。换栈汇编覆盖 x86_64 和 arm64 |
@@ -104,13 +103,6 @@ xmake test -v                             # 有失败时显示完整报告
 xmake run culib_test                      # 在终端里查看完整报告：分组、每个测试和每组的耗时
 xmake run culib_test --filter="defer.*"   # 只运行 defer 组（zsh 下模式要加引号）
 xmake run culib_test --list               # 列出所有测试
-```
-
-Linux 上另有文件 io_uring 的独立 CLI（不进 `xmake test` 的部分）：
-
-```bash
-xmake run file_uring_test faults   # 故障矩阵：任何 Linux 内核都必须通过（已随 xmake test 运行）
-xmake run file_uring_test native   # required 门禁：io_uring 不可用时非零退出，用于 CI 与开发机核对
 ```
 
 ### 4. 安装

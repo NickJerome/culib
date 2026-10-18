@@ -20,8 +20,7 @@ typedef int io_handle;
 
 enum io_direction { io_read, io_write };
 enum io_operation {
-    io_transfer, io_socket_transfer, io_datagram_transfer, io_accept, io_connect,
-    io_file_transfer
+    io_transfer, io_socket_transfer, io_datagram_transfer, io_accept, io_connect
 };
 
 // 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
@@ -118,7 +117,6 @@ bool io_engine_notify(io_engine* engine) noexcept;
 // 在句柄第一次参与 I/O 前调用，**必须调**：IOCP 在这里关联完成端口；epoll / kqueue 在这里
 // 用边沿触发登记读写两个方向，之后不再改，没接管的 fd 永远等不到事件。
 // 持有句柄生命周期的调用方负责调用，不能按会被系统复用的句柄值缓存关联状态。
-// Linux 的 io_file_transfer 直接向 ring 提交，不登记文件 fd，也不绑定到 worker。
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 
 #if !defined(_WIN32)
@@ -140,24 +138,12 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept;
 
 // 撤销已提交的操作。true：已撤干净，不再有通知，可释放 request。
-// false：调用方必须等原操作完成后才能释放 request 及其缓冲区。
-// 只对已成功 arm 且尚未经完成队列交付的 request 调用，交付之后不再调用——
-// true 是「完全撤销」的保证，而不是对所有已完成请求都必须 true。
-// Linux 文件请求只撤销尚未提交的排队项；在途操作等自然完成，可能超过 timeout。
-// 公共 file 仅使用无限等待，不承诺可抢占磁盘或 FIFO 读写。
+// false：完成通知仍会到来，调用方必须等到通知后才能释放 request 及其 OVERLAPPED。
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept;
 
 // 还有几个操作没回来，也就是**阻塞在 I/O 上的协程数**——调度器不另记一份。
 // 就绪队列一直不空时，调度器靠它决定要不要不等待地收一次完成。给 0 就是都回来了。
 std::size_t io_engine_pending(const io_engine* engine) noexcept;
-
-#if defined(__linux__)
-// Linux 文件路径的初始化选择：首次调用在本引擎上建环并做无副作用能力探测，结果
-// 缓存到引擎销毁，之后只是读一个数。1 = 原生 io_uring 可用；0 = 能力/策略不可用
-// （ENOSYS/EPERM/EACCES/EOPNOTSUPP），这个引擎固定走阻塞池；负数 = 资源或实现错误
-// （负 errno），如实报告，不静默降级。
-int io_engine_prepare_file(io_engine* engine) noexcept;
-#endif
 
 // 把纳秒超时折成毫秒，给 epoll_wait 和 GetQueuedCompletionStatusEx 用（两边都要毫秒）。
 // 返回负数表示无限等，各后端自己转成 -1 或者 INFINITE。

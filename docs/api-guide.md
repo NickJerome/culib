@@ -287,13 +287,7 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
   不替调用方多问一次磁盘：需要类型就直接 `is_regular_file` / `is_directory`，不用先问
   `exists`；`directory_entry` 建条目不多做一次 stat。见 CLAUDE.md「性能与占用」。
 - 读写一律二进制，不做换行转换：读到的就是磁盘上的字节，内嵌 `'\0'` 保留。
-- **协程里的文件操作按平台与能力分工**。Linux 协程内的 `fs::file::read` / `write`
-  （含 `ofstream` 的写出）优先用 io_uring 原生提交：每根工作线程首次非零长度的
-  文件读写前建环并探测一次能力，结果缓存到引擎销毁——内核不支持或被 seccomp /
-  权限拦下（`ENOSYS`、`EPERM`、`EACCES`、`EOPNOTSUPP`）就缓存为阻塞池选择，
-  这次和之后的读写都走后台线程；`ENOMEM`、`EMFILE` 等资源与实现错误则如实缓存
-  成负 errno，由这一次读写报错，不静默降级。其余文件操作（打开、关闭、元数据、
-  目录）在所有平台自动经 `call_blocking` 放到 runtime 的后台线程执行，等待期间
+- **协程里的文件操作自动经 `call_blocking`** 放到 runtime 的后台线程执行，等待期间
   只挂起当前协程，工作线程照常跑别的协程；协程外同步执行，调用方不用自己包。
 
 `fs::file` 是原生字节句柄（`fs::open(path, open_mode::read/write/append)`）：
@@ -302,10 +296,7 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
 由调用方用分块循环写出来，库不再提供 `read_file` / `write_file`——那三个函数每种都要
 先分配再拷贝一次，而且对管道、`/proc` 这类无大小目标反而碍事。`open_mode::append`
 使用系统的追加模式，每次底层写入都落在当时的文件末尾；大内容可能拆成多次写入，
-不保证整段内容与其他进程的写入互不交错。Linux 原生路径的语义约束（初始化探测
-一次、运行期绝不换后端重发、负 errno 如实报错、无超时无在途取消）见上一条和
-[api.md](../api.md#fs) 的文件句柄一节；`ENOSYS` / `EPERM` 降级到阻塞池是能力和
-权限问题，`ENOMEM` / `EMFILE` 是错误——两种情形在文档里从来不算同一件事。
+不保证整段内容与其他进程的写入互不交错。
 
 `directory_iterator` 是输入迭代器：拷贝共享同一个遍历位置，不是各自一份快照。
 range-for 的元素是 `const result<directory_entry>&`——打开失败在第一个元素里报出，

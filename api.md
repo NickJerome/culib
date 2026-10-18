@@ -84,7 +84,7 @@ target("app")
 - 文本和路径使用 UTF-8。`string_view` 不拥有数据；原字符串销毁、移动或重新分配后，不应继续使用旧视图。
 - 可恢复错误通常返回 `result<T>`，先检查 `is_err()` / `is_ok()` 再取对应分支；空值用 `optional<T>`。取错分支、越界等编程错误会诊断并终止。
 - `result` 不保证捕获所有 C++ 异常：例如 `std::string`、`std::vector` 分配和用户回调仍可能抛出异常。协程函数不得让异常逃出，逃出会 `std::terminate()`；`call_blocking` 把函数抛出的异常带回调用处。
-- 协程内的 `fs` 操作和 `net` 的主机名解析由库内部处理，只挂起当前协程，工作线程照常跑别的协程；协程外同步执行。Linux 协程内的文件读写优先用 io_uring 原生提交，见[文件系统](#fs)；其余文件操作（打开、关闭、元数据、目录）与所有平台的主机名解析自动经 `call_blocking` 放到后台线程执行。用户自己的阻塞函数仍要自己交给 `call_blocking`。
+- 协程内的 `fs` 操作和 `net` 的主机名解析由库内部处理：自动经 `call_blocking` 放到后台线程执行，只挂起当前协程，工作线程照常跑别的协程；协程外同步执行。用户自己的阻塞函数仍要自己交给 `call_blocking`。
 - 普通值类型可复制；资源句柄的可复制、可移动性在各节列出。库不隐式替换全局 `malloc/new`。
 
 <a id="result"></a>
@@ -954,7 +954,7 @@ int main() {
 <a id="fs"></a>
 ## 文件系统：`<culib/fs.h>` 与 `<culib/fs_stream.h>`
 
-命名空间：`wavvix::fs`。路径是值类型 `fs::path`，值一律 UTF-8；读写一律二进制。会碰磁盘的接口返回 `result`：「不存在」是答案不是失败——`exists` 返回 `ok(false)` 表示「没有」，「问不成」（权限、I/O）才是错误。路径里含内嵌 `'\0'` 一律报 `invalid_argument`，动手之前磁盘碰不到。协程内的文件操作按平台与能力分工：Linux 协程内的 `file::read` / `file::write`（含 `ofstream` 的写出）优先用 io_uring 原生提交，能力不可用时经 `call_blocking` 走后台线程，见下面「文件句柄与文件流」；其余文件操作（打开、关闭、元数据、目录、复制、重命名）在所有平台都自动经 `call_blocking` 放到后台线程执行，只挂起当前协程；协程外同步执行。取舍见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
+命名空间：`wavvix::fs`。路径是值类型 `fs::path`，值一律 UTF-8；读写一律二进制。会碰磁盘的接口返回 `result`：「不存在」是答案不是失败——`exists` 返回 `ok(false)` 表示「没有」，「问不成」（权限、I/O）才是错误。路径里含内嵌 `'\0'` 一律报 `invalid_argument`，动手之前磁盘碰不到。协程内的文件操作自动经 `call_blocking` 放到后台线程执行，只挂起当前协程；协程外同步执行。取舍见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
 
 ### 路径：纯字符串操作
 
@@ -1069,8 +1069,6 @@ public:
 ```
 
 `file` 是原生字节句柄：一律二进制，不做换行转换，内嵌 `'\0'` 原样保留；分块读写的循环由调用方写。`ofstream` 继承 `std::ostream`，用 `<<` 写，也可以绑到 `std::ostream&` 交给通用代码；默认截断，带 `std::ios::app` 追加到当时的末尾，写一律二进制。**它的失败只走标准流状态**：用 `good()` / `fail()` / `operator bool` 判断，`close()` 返回 `void`，接口里没有 `std::error_code`，也没有成员 `open()` 重开——要重开就构造新对象。打开失败（目录不存在、路径含 NUL 等）反映在流状态上：坏流上的写入是 no-op，不会把 NUL 截掉去开前缀路径。
-
-**Linux 协程内的读写在 io_uring 能力可用时走原生环**，公开语义原样保持：写入用并推进内核的当前偏移，`O_APPEND` 由内核执行；短读是答案、0 是末尾，写满为止；EINTR 自动重试；单次长度上限 0x40000000；错误文案与阻塞路径同一份。后端选择只在初始化发生：每根工作线程首次非零长度的文件读写前创建环并探测一次能力（探测用无效 fd、不引用用户缓冲区），结果缓存到引擎销毁。内核不支持或被 seccomp / 权限拦下（ENOSYS、EPERM、EACCES、EOPNOTSUPP）时缓存为阻塞池选择，这次和之后的读写都经 `call_blocking`；ENOMEM、EMFILE 等资源与实现错误如实缓存成负 errno，由这一次读写返回错误，不静默降级。初始化成功后运行期不再切换后端：真实 I/O 与提交失败的错误直接从返回的 `result` 报出来。没有超时，也不承诺取消一个在途的磁盘或 FIFO 请求。普通线程（协程外）与 Windows / macOS 的读写一直走 `call_blocking`。
 
 示例：建临时目录，用两种方式写文件、原始句柄读回、列目录。这个程序按 2026-10-14 定稿的接口写成，已在 Linux x86_64 GCC 11.4（`-std=c++11`）与 Windows x64 MSVC 2022 下警告即错误编译并运行，输出见「本文示例验证」。
 

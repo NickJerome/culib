@@ -52,7 +52,7 @@ int main() {
 - **不同工作线程上的协程是并行的。** 共享的数据要加锁（[`wavvix::mutex`](../include/culib/sync.h) 跨线程可用），或者用原子量。
 - **同一根工作线程上的协程不会并行，也不会被抢占**，只在让出时切换。派到同一个 `scheduler::current()` 的协程之间，不让出的临界区不用锁。
 
-协程里调用真正阻塞线程的函数（自己写的同步 I/O、`std::this_thread::sleep_for`、长时间持有 `std::mutex`、算个不停的循环）会连带卡住同一根工作线程上的所有协程。库自己的文件读写不卡工作线程：Linux 协程内优先走 io_uring，能力不可用或其他平台经 `call_blocking`，见 [api.md](../api.md#fs)。用户自己的阻塞调用交给 `call_blocking`，长循环里适时 `yield()`。
+协程里调用真正阻塞线程的函数（同步文件读写、`std::this_thread::sleep_for`、长时间持有 `std::mutex`、算个不停的循环）会连带卡住同一根工作线程上的所有协程。阻塞调用交给 `call_blocking`，长循环里适时 `yield()`。
 
 ### 内存
 
@@ -68,7 +68,7 @@ int main() {
 
 ## call_blocking
 
-没法协作式让出的调用（`getaddrinfo`、第三方库的同步接口、调用方自己打开的 `FILE*` 或描述符上的读写）用 `call_blocking(f, args...)` 放到后台线程上，等待期间只挂起调用它的协程：
+没法协作式让出的调用（`getaddrinfo`、第三方库的同步接口、普通文件读写）用 `call_blocking(f, args...)` 放到后台线程上，等待期间只挂起调用它的协程：
 
 ```cpp
 std::string text = wavvix::call_blocking(read_config, path);
