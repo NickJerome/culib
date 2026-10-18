@@ -133,11 +133,13 @@ void socket_used_on_two_workers() {
     const endpoint local = listener.local_endpoint().value();
     net::socket stream;
     std::atomic<bool> connected(false);
+    std::atomic<bool> never(false);
     wavvix::go([&] {
         stream.connect(local, std::chrono::seconds(1)).value();
         connected.store(true);
-        for (;;) {
-            // 不让出：这根工作线程一直被占着
+        // 不让出：这根工作线程一直被占着。循环里必须有原子读——没有副作用的死循环在 C++
+        // 里是未定义行为，Clang 会把它整个删掉，协程就落到后面的代码里去了。
+        while (!never.load()) {
         }
     });
     while (!connected.load()) {
