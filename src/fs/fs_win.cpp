@@ -17,7 +17,7 @@
 #include <culib/fs.h>
 #include <culib/defer.h>
 #include <culib/lexical_cast.h>   // to_string
-#include <culib/runtime.h>
+#include <culib/coroutine.h>
 #include <culib/strings.h>
 
 #include "directory.h"

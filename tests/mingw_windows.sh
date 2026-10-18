@@ -35,6 +35,19 @@ done
 
 "$output/culib_test.exe"
 
+order_objects=()
+for source in tests/order/*.cpp; do
+    object="$output/${source//\//_}.o"
+    "$compiler" "${flags[@]}" -c "$source" -o "$object"
+    order_objects+=("$object")
+done
+
+"$compiler" -static -o "$output/runtime_order_test.exe" \
+    "${library_objects[@]}" "${order_objects[@]}" \
+    -lws2_32
+
+"$output/runtime_order_test.exe"
+
 "$compiler" "${flags[@]}" -static -o "$output/os_stop_test.exe" \
     tests/process/os_stop.cpp "${library_objects[@]}" -lws2_32
 "$output/os_stop_test.exe" threads

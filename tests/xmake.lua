@@ -39,6 +39,21 @@ target("culib_test")
     add_tests("default")
 target_end()
 
+-- 断言执行次序的测试：只开一根工作线程（main 里设 WAVVIX_MAXPROCS=1），次序才确定。
+-- culib_test 那边开 4 根，两个程序的运行时互不影响。
+target("runtime_order_test")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests")
+    if not is_plat("windows") then set_languages("c++11") end
+    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
+    add_files("order/*.cpp")
+    add_includedirs("../src")
+    add_deps("culib")
+    add_tests("default")
+target_end()
+
 target("os_stop_test")
     set_kind("binary")
     set_default(false)

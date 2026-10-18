@@ -3,7 +3,6 @@
 
 #include <culib/coroutine.h>
 #include <culib/net.h>
-#include <culib/runtime.h>
 
 #include <chrono>
 #include <cstdio>
@@ -22,10 +21,10 @@ int main() {
         return 1;
     }
 
-    wavvix::runtime runtime(2);
     std::string answer;
     bool echoed = false;
-    wavvix::coroutine server([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         wavvix::result<net::socket> accepted = listener.accept(seconds(10));
         if (accepted.is_err()) {
             return;
@@ -36,7 +35,7 @@ int main() {
         }
         echoed = accepted.value().write(buffer, sizeof buffer, seconds(10)).is_ok();
     });
-    wavvix::coroutine client([&] {
+    group.go([&] {
         net::socket stream;
         if (stream.connect("localhost", local.value().port(), seconds(10)).is_err()) {
             return;
@@ -50,8 +49,7 @@ int main() {
         }
         answer.assign(buffer, sizeof buffer);
     });
-    server.join();
-    client.join();
+    group.wait();
 
     std::printf("echo: %s\n", answer.c_str());
     return echoed && answer == "hello" ? 0 : 1;

@@ -1,10 +1,10 @@
-// 协程感知的同步原语：mutex、condition_variable、channel。
+// 协程感知的同步原语：mutex、condition_variable、channel、wait_group。
 //
-// 这些测试按真实用法写：临界区里会让出，否则用不着协程锁。要断言次序的只开一根工作线程，
-// 由一根协程把其余的派到 scheduler::current()（见 runtime_test.cpp 开头）；跨线程的用法各有一条。
+// 这里是跨线程的用法和普通线程（main、std::thread）上的用法。断言次序的测试在只开一根
+// 工作线程的 runtime_order_test 里（tests/order/sync_order_test.cpp）。
 
 #include <culib/coroutine.h>
-#include <culib/runtime.h>
+#include <culib/stopwatch.h>
 #include <culib/sync.h>
 #include <culib/test.h>
 
@@ -25,136 +25,25 @@ using wavvix::mutex;
 
 typedef std::chrono::milliseconds ms;
 
-template <typename F>
-void on_one_worker(F body) {
-    wavvix::runtime runtime(1);
-    wavvix::coroutine first(body);
-    first.join();
-}
-
-void join_all(std::vector<wavvix::coroutine>& workers) {
-    for (std::size_t i = 0; i < workers.size(); ++i) {
-        workers[i].join();
-    }
-}
-
 }  // namespace
 
 // ---- mutex ------------------------------------------------------------------------
 
-TEST(mutex, serializes_critical_sections_that_yield) {
-    // 锁真正要解决的那件事：临界区中间让出，别人跑起来看到了中间状态。
-    mutex lock;
-    std::string trace;
-    on_one_worker([&] {
-        std::vector<wavvix::coroutine> workers;
-        for (int i = 0; i < 2; ++i) {
-            const char name = static_cast<char>('a' + i);
-            workers.push_back(wavvix::coroutine(wavvix::scheduler::current(), [&trace, &lock, name] {
-                lock_guard<mutex> held(lock);
-                trace += name;
-                wavvix::sleep_for(ms(5));   // 临界区中间让出
-                trace += name;
-            }));
-        }
-        join_all(workers);
-    });
-
-    EXPECT(trace, ==, "aabb");   // 不是 "abab"
-}
-
-TEST(mutex, hands_the_lock_over_in_arrival_order) {
-    // 公平性：unlock 把锁交给队首，而不是放开让大家抢，所以排队的不会被插队的饿死。
-    mutex lock;
-    std::string order;
-    on_one_worker([&] {
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        std::vector<wavvix::coroutine> workers;
-        workers.push_back(wavvix::coroutine(here, [&] {
-            lock.lock();
-            wavvix::sleep_for(ms(20));   // 占着，让后面三根都排上队
-            lock.unlock();
-        }));
-        const char* names = "ABC";
-        for (int i = 0; i < 3; ++i) {
-            const char name = names[i];
-            workers.push_back(wavvix::coroutine(here, [&order, &lock, name] {
-                lock.lock();
-                order += name;
-                lock.unlock();
-            }));
-        }
-        join_all(workers);
-    });
-
-    EXPECT(order, ==, "ABC");
-}
-
-TEST(mutex, try_lock_never_suspends_and_works_outside_a_coroutine) {
+TEST(mutex, try_lock_never_waits) {
     mutex lock;
     EXPECT(lock.try_lock(), ==, true);
-    EXPECT(lock.try_lock(), ==, false);   // 已经被持有：拿不到，但不挂起
+    EXPECT(lock.try_lock(), ==, false);   // 已经被持有：拿不到，但不等
     lock.unlock();
     EXPECT(lock.try_lock(), ==, true);
     lock.unlock();
-}
-
-TEST(mutex, try_lock_for_gives_up_when_the_time_is_up) {
-    mutex lock;
-    bool got = true;
-    on_one_worker([&] {
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine holder(here, [&] {
-            lock.lock();
-            wavvix::sleep_for(ms(40));
-            lock.unlock();
-        });
-        wavvix::coroutine waiter(here, [&] { got = lock.try_lock_for(ms(10)); });
-        holder.join();
-        waiter.join();
-    });
-
-    EXPECT(got, ==, false);
-}
-
-TEST(mutex, does_not_lose_the_lock_when_a_waiter_times_out) {
-    // 交棒给一个刚好超时走掉的等待者就是死锁：锁交出去了，那根协程却不会再来拿。
-    // 这一条故意把「甲的时限到」和「持有者放锁」排在同一个时刻；不管甲最后是超时还是拿到，
-    // 乙都必须拿得到。
-    mutex lock;
-    bool second_got_it = false;
-    on_one_worker([&] {
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine holder(here, [&] {
-            lock.lock();
-            wavvix::sleep_for(ms(20));
-            lock.unlock();
-        });
-        wavvix::coroutine first(here, [&] {
-            if (lock.try_lock_for(ms(20))) {
-                lock.unlock();
-            }
-        });
-        wavvix::coroutine second(here, [&] {
-            lock.lock();
-            second_got_it = true;
-            lock.unlock();
-        });
-        holder.join();
-        first.join();
-        second.join();
-    });
-
-    EXPECT(second_got_it, ==, true);
 }
 
 TEST(mutex, protects_state_shared_by_several_workers) {
-    wavvix::runtime runtime(4);
     mutex lock;
     long total = 0;
-    std::vector<wavvix::coroutine> workers;
+    wavvix::wait_group group;
     for (int i = 0; i < 8; ++i) {
-        workers.push_back(wavvix::coroutine([&] {
+        group.go([&] {
             for (int n = 0; n < 2000; ++n) {
                 lock_guard<mutex> held(lock);
                 const long seen = total;
@@ -163,9 +52,9 @@ TEST(mutex, protects_state_shared_by_several_workers) {
                 }
                 total = seen + 1;
             }
-        }));
+        });
     }
-    join_all(workers);
+    group.wait();
 
     EXPECT(total, ==, 16000L);
 }
@@ -173,13 +62,12 @@ TEST(mutex, protects_state_shared_by_several_workers) {
 TEST(mutex, timed_waiters_on_several_workers_never_lose_the_lock) {
     // 放锁的线程交棒、等待者在自己的线程上到点，两件事可能同时发生，只能有一方生效：
     // 要么等待者拿到锁，要么超时，锁不能交给一个已经走掉的等待者。
-    wavvix::runtime runtime(4);
     mutex lock;
     long entered = 0;
     std::atomic<long> timeouts(0);
-    std::vector<wavvix::coroutine> workers;
+    wavvix::wait_group group;
     for (int i = 0; i < 8; ++i) {
-        workers.push_back(wavvix::coroutine([&] {
+        group.go([&] {
             for (int n = 0; n < 2000; ++n) {
                 if (!lock.try_lock_for(std::chrono::microseconds(20))) {
                     timeouts.fetch_add(1);
@@ -190,32 +78,119 @@ TEST(mutex, timed_waiters_on_several_workers_never_lose_the_lock) {
                 entered = seen + 1;
                 lock.unlock();
             }
-        }));
+        });
     }
-    join_all(workers);
+    group.wait();
 
     EXPECT(entered + timeouts.load(), ==, 16000L);
     EXPECT(lock.try_lock(), ==, true);   // 锁没有丢在一个走掉的等待者手里
     lock.unlock();
 }
 
+TEST(mutex, is_shared_by_plain_threads_and_coroutines) {
+    // 一边是普通线程，一边是协程：等锁的普通线程阻塞，等锁的协程挂起，谁都不丢锁。
+    mutex lock;
+    long total = 0;
+    wavvix::wait_group group;
+    for (int i = 0; i < 4; ++i) {
+        group.go([&] {
+            for (int n = 0; n < 1000; ++n) {
+                lock_guard<mutex> held(lock);
+                const long seen = total;
+                if (n % 64 == 0) {
+                    wavvix::yield();
+                }
+                total = seen + 1;
+            }
+        });
+    }
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 2; ++i) {
+        threads.push_back(std::thread([&] {
+            for (int n = 0; n < 1000; ++n) {
+                lock_guard<mutex> held(lock);
+                ++total;
+            }
+        }));
+    }
+    for (std::size_t i = 0; i < threads.size(); ++i) {
+        threads[i].join();
+    }
+    group.wait();
+
+    EXPECT(total, ==, 6000L);
+}
+
+TEST(mutex, a_plain_thread_waits_until_a_coroutine_unlocks) {
+    mutex lock;
+    std::atomic<bool> held_by_coroutine(false);
+    std::atomic<bool> released(false);
+    wavvix::wait_group group;
+    group.go([&] {
+        lock.lock();
+        held_by_coroutine.store(true);
+        wavvix::sleep_for(ms(20));
+        released.store(true);
+        lock.unlock();
+    });
+    while (!held_by_coroutine.load()) {
+        std::this_thread::yield();
+    }
+
+    lock.lock();   // main 线程在这里阻塞，直到协程放锁
+    const bool after_release = released.load();
+    lock.unlock();
+    group.wait();
+
+    EXPECT(after_release, ==, true);
+}
+
+TEST(mutex, try_lock_for_on_a_plain_thread_gives_up_in_time) {
+    mutex lock;
+    std::atomic<bool> held(false);
+    std::atomic<bool> done(false);
+    wavvix::wait_group group;
+    group.go([&] {
+        lock.lock();
+        held.store(true);
+        while (!done.load()) {
+            wavvix::sleep_for(ms(1));
+        }
+        lock.unlock();
+    });
+    while (!held.load()) {
+        std::this_thread::yield();
+    }
+
+    const wavvix::stopwatch watch;
+    const bool got = lock.try_lock_for(ms(20));
+    const std::chrono::nanoseconds waited = watch.elapsed();
+    done.store(true);
+    group.wait();
+
+    EXPECT(got, ==, false);
+    EXPECT(waited >= ms(18), ==, true);
+    EXPECT(lock.try_lock(), ==, true);   // 超时走掉的普通线程没把锁带走
+    lock.unlock();
+}
+
 // ---- condition_variable -----------------------------------------------------------
 
 TEST(condition_variable, wakes_a_waiter_on_another_worker) {
-    wavvix::runtime runtime(2);
     mutex lock;
     condition_variable ready;
     std::vector<int> queue;
     int taken = -1;
 
-    wavvix::coroutine consumer(runtime.worker(0), [&] {
+    wavvix::wait_group group;
+    group.go([&] {
         lock_guard<mutex> held(lock);
         while (queue.empty()) {
             ready.wait(lock);
         }
         taken = queue.back();
     });
-    wavvix::coroutine producer(runtime.worker(1), [&] {
+    group.go([&] {
         wavvix::sleep_for(ms(10));
         {
             lock_guard<mutex> held(lock);
@@ -223,43 +198,9 @@ TEST(condition_variable, wakes_a_waiter_on_another_worker) {
         }
         ready.notify_one();
     });
-    consumer.join();
-    producer.join();
+    group.wait();
 
     EXPECT(taken, ==, 42);
-}
-
-TEST(condition_variable, notify_all_wakes_everyone_in_arrival_order) {
-    mutex lock;
-    condition_variable ready;
-    bool go = false;
-    std::string order;
-    on_one_worker([&] {
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        std::vector<wavvix::coroutine> workers;
-        const char* names = "ABC";
-        for (int i = 0; i < 3; ++i) {
-            const char name = names[i];
-            workers.push_back(wavvix::coroutine(here, [&order, &lock, &ready, &go, name] {
-                lock_guard<mutex> held(lock);
-                while (!go) {
-                    ready.wait(lock);
-                }
-                order += name;
-            }));
-        }
-        workers.push_back(wavvix::coroutine(here, [&] {
-            wavvix::sleep_for(ms(10));
-            {
-                lock_guard<mutex> held(lock);
-                go = true;
-            }
-            ready.notify_all();
-        }));
-        join_all(workers);
-    });
-
-    EXPECT(order, ==, "ABC");
 }
 
 TEST(condition_variable, wait_for_times_out_and_comes_back_holding_the_lock) {
@@ -268,24 +209,26 @@ TEST(condition_variable, wait_for_times_out_and_comes_back_holding_the_lock) {
     condition_variable never;
     bool notified = true;
     bool lock_is_held_again = false;
-    on_one_worker([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         lock.lock();
         notified = never.wait_for(lock, ms(20));
         lock_is_held_again = !lock.try_lock();   // 已经持有，所以拿不到
         lock.unlock();
     });
+    group.wait();
 
     EXPECT(notified, ==, false);
     EXPECT(lock_is_held_again, ==, true);
 }
 
-TEST(condition_variable, can_be_notified_from_outside_a_coroutine) {
-    wavvix::runtime runtime(1);
+TEST(condition_variable, a_coroutine_waiter_is_notified_from_a_plain_thread) {
     mutex lock;
     condition_variable ready;
     bool go = false;
     bool woke = false;
-    wavvix::coroutine waiter([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         lock_guard<mutex> held(lock);
         while (!go) {
             ready.wait(lock);
@@ -293,72 +236,77 @@ TEST(condition_variable, can_be_notified_from_outside_a_coroutine) {
         woke = true;
     });
 
-    // 协程外拿不了 lock()，用 try_lock 等到锁空出来。
-    while (!lock.try_lock()) {
-        std::this_thread::yield();
+    wavvix::sleep_for(ms(10));
+    {
+        lock_guard<mutex> held(lock);   // main 线程上直接拿锁
+        go = true;
     }
-    go = true;
-    lock.unlock();
     ready.notify_one();
-    waiter.join();
+    group.wait();
 
     EXPECT(woke, ==, true);
 }
 
-TEST(sync, nonpositive_timeouts_do_not_wait) {
+TEST(condition_variable, a_plain_thread_waits_until_a_coroutine_notifies) {
     mutex lock;
-    condition_variable never;
-    std::string trace;
-    bool negative = true;
-    bool zero = true;
-    bool waited_negative = true;
-    bool waited_zero = true;
-    on_one_worker([&] {
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        lock.lock();
-        wavvix::coroutine trier(here, [&] {
-            trace += "t";
-            negative = lock.try_lock_for(ms(-1));
-            zero = lock.try_lock_for(ms(0));
-            trace += "t";
-        });
-        wavvix::coroutine other(here, [&] { trace += "o"; });
-        trier.join();
-        other.join();
-
-        waited_negative = never.wait_for(lock, ms(-1));
-        waited_zero = never.wait_for(lock, ms(0));
-        lock.unlock();
+    condition_variable ready;
+    int value = 0;
+    wavvix::wait_group group;
+    group.go([&] {
+        wavvix::sleep_for(ms(10));
+        {
+            lock_guard<mutex> held(lock);
+            value = 7;
+        }
+        ready.notify_all();
     });
 
-    EXPECT(trace, ==, "tto");   // 挂起了的话 o 会插到中间
-    EXPECT(negative, ==, false);
-    EXPECT(zero, ==, false);
-    EXPECT(waited_negative, ==, false);
-    EXPECT(waited_zero, ==, false);
+    {
+        lock_guard<mutex> held(lock);
+        while (value == 0) {
+            ready.wait(lock);   // main 线程在这里阻塞
+        }
+    }
+    group.wait();
+
+    EXPECT(value, ==, 7);
+}
+
+TEST(condition_variable, wait_for_on_a_plain_thread_times_out_holding_the_lock) {
+    mutex lock;
+    condition_variable never;
+    lock.lock();
+    const wavvix::stopwatch watch;
+    const bool notified = never.wait_for(lock, ms(20));
+    const std::chrono::nanoseconds waited = watch.elapsed();
+    const bool held_again = !lock.try_lock();
+    lock.unlock();
+
+    EXPECT(notified, ==, false);
+    EXPECT(waited >= ms(18), ==, true);
+    EXPECT(held_again, ==, true);
 }
 
 // ---- channel ----------------------------------------------------------------------
 
 TEST(channel, passes_values_in_order_between_workers) {
-    wavvix::runtime runtime(2);
     channel<int> values(16);
     std::vector<int> received;
 
-    wavvix::coroutine producer(runtime.worker(0), [&] {
+    wavvix::wait_group group;
+    group.go([&] {
         for (int i = 0; i < 1000; ++i) {
             values.send(i);
         }
         values.close();
     });
-    wavvix::coroutine consumer(runtime.worker(1), [&] {
+    group.go([&] {
         int value = 0;
         while (values.receive(value)) {
             received.push_back(value);
         }
     });
-    producer.join();
-    consumer.join();
+    group.wait();
 
     bool in_order = received.size() == 1000;
     for (std::size_t i = 0; in_order && i < received.size(); ++i) {
@@ -368,48 +316,18 @@ TEST(channel, passes_values_in_order_between_workers) {
     EXPECT(in_order, ==, true);
 }
 
-TEST(channel, send_waits_while_the_channel_is_full) {
-    channel<int> values(1);
-    std::string trace;
-    on_one_worker([&] {
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine producer(here, [&] {
-            for (int i = 0; i < 3; ++i) {
-                values.send(i);
-                trace += "S";
-            }
-        });
-        wavvix::coroutine consumer(here, [&] {
-            wavvix::sleep_for(ms(10));
-            for (int i = 0; i < 3; ++i) {
-                int value = -1;
-                if (values.receive(value) && value == i) {
-                    trace += "R";
-                }
-            }
-        });
-        producer.join();
-        consumer.join();
-    });
-
-    EXPECT(trace, ==, "SRSRSR");   // 容量是 1：发送方最多领先一个
-}
-
 TEST(channel, receive_drains_what_is_left_after_close) {
     std::vector<int> received;
-    bool after_drain = true;
-    on_one_worker([&] {
-        channel<int> values(4);
-        values.send(1);
-        values.send(2);
-        values.send(3);
-        values.close();
-        int value = 0;
-        while (values.receive(value)) {
-            received.push_back(value);
-        }
-        after_drain = values.receive(value);
-    });
+    channel<int> values(4);
+    values.send(1);
+    values.send(2);
+    values.send(3);
+    values.close();
+    int value = 0;
+    while (values.receive(value)) {
+        received.push_back(value);
+    }
+    const bool after_drain = values.receive(value);
 
     EXPECT(received.size(), ==, std::size_t(3));
     EXPECT(received.size() == 3 && received[0] == 1 && received[2] == 3, ==, true);
@@ -418,92 +336,150 @@ TEST(channel, receive_drains_what_is_left_after_close) {
 
 TEST(channel, close_wakes_every_waiting_receiver) {
     channel<int> values(1);
-    int finished = 0;
-    on_one_worker([&] {
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        std::vector<wavvix::coroutine> workers;
-        for (int i = 0; i < 3; ++i) {
-            workers.push_back(wavvix::coroutine(here, [&] {
-                int value = 0;
-                if (!values.receive(value)) {
-                    ++finished;
-                }
-            }));
-        }
-        workers.push_back(wavvix::coroutine(here, [&] {
-            wavvix::sleep_for(ms(10));
-            values.close();
-        }));
-        join_all(workers);
-    });
+    std::atomic<int> finished(0);
+    wavvix::wait_group group;
+    for (int i = 0; i < 3; ++i) {
+        group.go([&] {
+            int value = 0;
+            if (!values.receive(value)) {
+                finished.fetch_add(1);
+            }
+        });
+    }
+    wavvix::sleep_for(ms(10));
+    values.close();
+    group.wait();
 
-    EXPECT(finished, ==, 3);
+    EXPECT(finished.load(), ==, 3);
 }
 
-TEST(channel, can_be_closed_from_outside_a_coroutine) {
-    wavvix::runtime runtime(1);
-    channel<int> values(1);
-    bool ended = false;
-    wavvix::coroutine receiver([&] {
-        int value = 0;
-        ended = !values.receive(value);
+TEST(channel, a_plain_thread_receives_what_coroutines_send) {
+    channel<int> values(2);
+    wavvix::wait_group group;
+    for (int s = 0; s < 4; ++s) {
+        group.go([&values, s] {
+            for (int i = 0; i < 100; ++i) {
+                values.send(s * 100 + i);
+            }
+        });
+    }
+    std::thread closer([&] {
+        group.wait();   // 另一根普通线程等发送方全部结束再关
+        values.close();
     });
 
-    std::this_thread::sleep_for(ms(10));
-    values.close();
-    receiver.join();
+    long sum = 0;
+    int count = 0;
+    int value = 0;
+    while (values.receive(value)) {   // main 线程在这里阻塞等值
+        sum += value;
+        ++count;
+    }
+    closer.join();
 
-    EXPECT(ended, ==, true);
+    EXPECT(count, ==, 400);
+    EXPECT(sum, ==, 400L * 399 / 2);
+}
+
+TEST(channel, a_plain_thread_send_waits_for_room) {
+    channel<int> values(1);
+    std::atomic<int> received(0);
+    wavvix::wait_group group;
+    group.go([&] {
+        wavvix::sleep_for(ms(10));
+        int value = 0;
+        while (values.receive(value)) {
+            received.fetch_add(1);
+        }
+    });
+
+    for (int i = 0; i < 5; ++i) {
+        values.send(i);   // 满了就阻塞 main 线程
+    }
+    values.close();
+    group.wait();
+
+    EXPECT(received.load(), ==, 5);
 }
 
 TEST(channel, carries_move_only_values) {
     int total = 0;
-    on_one_worker([&] {
-        channel<std::unique_ptr<int> > values(2);
-        wavvix::coroutine producer(wavvix::scheduler::current(), [&] {
-            for (int i = 1; i <= 3; ++i) {
-                values.send(std::unique_ptr<int>(new int(i)));
-            }
-            values.close();
-        });
-        std::unique_ptr<int> value;
-        while (values.receive(value)) {
-            total += *value;
+    channel<std::unique_ptr<int> > values(2);
+    wavvix::wait_group group;
+    group.go([&] {
+        for (int i = 1; i <= 3; ++i) {
+            values.send(std::unique_ptr<int>(new int(i)));
         }
-        producer.join();
+        values.close();
     });
+    std::unique_ptr<int> value;
+    while (values.receive(value)) {
+        total += *value;
+    }
+    group.wait();
 
     EXPECT(total, ==, 6);
 }
 
 TEST(channel, serves_many_senders_and_receivers_on_several_workers) {
-    wavvix::runtime runtime(4);
     channel<int> values(8);
     std::atomic<long> sum(0);
     std::atomic<int> count(0);
 
-    std::vector<wavvix::coroutine> senders;
+    wavvix::wait_group senders;
     for (int s = 0; s < 4; ++s) {
-        senders.push_back(wavvix::coroutine([&values, s] {
+        senders.go([&values, s] {
             for (int i = 0; i < 1000; ++i) {
                 values.send(s * 1000 + i);
             }
-        }));
+        });
     }
-    std::vector<wavvix::coroutine> receivers;
+    wavvix::wait_group receivers;
     for (int r = 0; r < 4; ++r) {
-        receivers.push_back(wavvix::coroutine([&] {
+        receivers.go([&] {
             int value = 0;
             while (values.receive(value)) {
                 sum.fetch_add(value);
                 count.fetch_add(1);
             }
-        }));
+        });
     }
-    join_all(senders);
+    senders.wait();
     values.close();
-    join_all(receivers);
+    receivers.wait();
 
     EXPECT(count.load(), ==, 4000);
     EXPECT(sum.load(), ==, 4000L * 3999 / 2);
+}
+
+// ---- wait_group -------------------------------------------------------------------
+
+TEST(wait_group, several_waiters_all_return) {
+    wavvix::wait_group group;
+    std::atomic<bool> release(false);
+    group.go([&] {
+        while (!release.load()) {
+            wavvix::sleep_for(ms(1));
+        }
+    });
+
+    std::atomic<int> returned(0);
+    wavvix::wait_group waiters;
+    for (int i = 0; i < 3; ++i) {
+        waiters.go([&] {
+            group.wait();   // 协程里等
+            returned.fetch_add(1);
+        });
+    }
+    std::thread plain([&] {
+        group.wait();   // 普通线程里等
+        returned.fetch_add(1);
+    });
+
+    wavvix::sleep_for(ms(10));
+    release.store(true);
+    plain.join();
+    waiters.wait();
+
+    EXPECT(returned.load(), ==, 4);
 }

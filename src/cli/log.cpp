@@ -5,7 +5,7 @@
 #include <culib/detail/fiber.h>
 #include <culib/fs.h>
 #include <culib/lexical_cast.h>
-#include <culib/runtime.h>
+#include <culib/coroutine.h>
 #include <culib/term.h>
 #include <culib/time.h>
 
@@ -78,9 +78,10 @@ struct output_state {
     bool configured;
 };
 
+// 永不析构：main 返回时进程直接退出，那时可能还有协程在写日志。
 output_state& output() {
-    static output_state state;
-    return state;
+    static output_state* const state = new output_state();
+    return *state;
 }
 
 // 轮转：path → path.1，path.1 → path.2，…，超过 keep_files 个的删掉。

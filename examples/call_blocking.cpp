@@ -3,8 +3,8 @@
 //     xmake run example_call_blocking
 
 #include <culib/coroutine.h>
-#include <culib/runtime.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <thread>
@@ -20,23 +20,25 @@ int slow_double(int input) {
 }  // namespace
 
 int main() {
-    wavvix::runtime runtime(1);   // 只有一根工作线程，看得出它没被占住
-
     int answer = 0;
-    bool returned = false;
+    std::atomic<bool> returned(false);
     long spins = 0;
-    wavvix::coroutine caller([&] {
+
+    wavvix::wait_group group;
+    group.go([&] {
+        // 协程里起的协程先排在本线程上：它能转起来，说明等 call_blocking 时这根线程没被占住。
+        wavvix::wait_group other;
+        other.go([&] {
+            while (!returned.load()) {
+                ++spins;
+                wavvix::yield();
+            }
+        });
         answer = wavvix::call_blocking(slow_double, 21);   // 参数和直接调用一样传
-        returned = true;
+        returned.store(true);
+        other.wait();
     });
-    wavvix::coroutine other([&] {
-        while (!returned) {
-            ++spins;
-            wavvix::yield();
-        }
-    });
-    caller.join();
-    other.join();
+    group.wait();
 
     std::printf("answer: %d\n", answer);
     std::printf("等它的 50 ms 里，同一根工作线程上的另一根协程转了 %ld 轮\n", spins);

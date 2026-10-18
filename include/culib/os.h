@@ -31,10 +31,9 @@ result<std::string> hostname();
 // 当前进程 ID。写 pid 文件、写进日志行。
 long process_id() noexcept;
 
-// 可用的处理器数量，**至少返回 1**。
-// 包装 std::thread::hardware_concurrency()，只修掉它「不知道时返回 0」这一点——
-// 0 对线程池没有意义。已知局限：Linux 上它数的是在线 CPU 数而不是 cgroup 配额，
-// 所以在容器里会多报；真要按配额开线程得读 cgroup，那是 thread 模块该定的事。
+// 这个进程能用的处理器数量，**至少返回 1**；协程运行时按它开工作线程。
+// Linux 上按 CPU 亲和性（taskset）和 cgroup 的 CPU 配额算，容器里不会报成宿主机的核数；
+// 配额不是整数时向上取整。其他平台是 std::thread::hardware_concurrency()。
 unsigned cpu_count() noexcept;
 
 // --- 优雅退出 -----------------------------------------------------------------

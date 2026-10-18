@@ -5,6 +5,7 @@
 #include <culib/strings.h>
 
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -156,6 +157,11 @@ result<std::string> hostname() {
 }
 
 long process_id() noexcept { return static_cast<long>(::GetCurrentProcessId()); }
+
+unsigned cpu_count() noexcept {
+    const unsigned reported = std::thread::hardware_concurrency();
+    return reported != 0 ? reported : 1u;   // 0 对线程池没有意义
+}
 
 // --- 优雅退出 -----------------------------------------------------------------
 

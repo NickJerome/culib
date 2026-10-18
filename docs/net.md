@@ -26,20 +26,19 @@ if (listener.listen().is_err()) {
 }
 result<endpoint> local = listener.local_endpoint(); // 端口 0 已换成实际端口
 
-runtime workers(2);
-coroutine server([&] {
+wait_group group;
+group.go([&] {
     result<socket> incoming = listener.accept(ms(1000));
     // 在协程中调用 read / read_exactly / write；检查 result 后处理数据。
 });
-coroutine client_io([&] {
+group.go([&] {
     socket stream;
     result<void> connected = stream.connect(local.value(), ms(1000));
 });
-server.join();
-client_io.join();
+group.wait();
 ```
 
-完整的可运行回环示例见 [`examples/net_echo.cpp`](../examples/net_echo.cpp)，用 `xmake run example_net_echo` 启动。`bind`、`listen`、`local_endpoint` / `peer_endpoint`、地址解析和 `close` 可以在协程外调用；`connect`、`accept`、`read` / `read_exactly` / `write`、`send_to` / `recv_from` 只能在协程里调用。runtime 和协程的用法见[协程运行时](runtime.md)。
+完整的可运行回环示例见 [`examples/net_echo.cpp`](../examples/net_echo.cpp)，用 `xmake run example_net_echo` 启动。`bind`、`listen`、`local_endpoint` / `peer_endpoint`、地址解析和 `close` 可以在协程外调用；`connect`、`accept`、`read` / `read_exactly` / `write`、`send_to` / `recv_from` 只能在协程里调用。协程的用法见[协程运行时](runtime.md)。
 
 协议和阶段决定操作是否可用：`listen`（要求先 `bind`）、`accept`、`read` / `read_exactly` / `write` 只对 TCP 有效；`send_to` / `recv_from` 只对 UDP 有效，且 UDP 必须先 `bind`。`peer_endpoint` 只对已连接的 TCP 有效。用错协议或阶段返回错误，已有连接保持原样。非零长度配空指针是 `invalid_argument`；已连接 TCP 的零长度读写直接成功；`read` 返回 0，`read_exactly` / `write` 返回成功的 `result<void>`。
 
@@ -55,8 +54,8 @@ UDP：`send_to` 一次发送一个完整报文，成功返回 `result<void>`；`
 
 套接字第一次 I/O（`connect` 在连接时，监听器是第一次 `accept`，其余是第一次读写或收发）就绑到当时所在的工作线程，登记在那根线程的事件引擎上；之后在别的工作线程上操作打印诊断后终止。Windows 上一个套接字只能关联一个完成端口，epoll / kqueue 那边也是每根线程一个引擎，所以不能让它跟着协程换线程。
 
-- 要在另一根协程里用同一个连接（比如一根收、一根发），把那根协程派到同一根线程上：`coroutine(scheduler::current(), ...)`。
-- `accept` 返回的新连接在第一次 I/O 之前不属于任何工作线程，可以交给任何一根线程上的协程处理，例如 `coroutine(handler, std::move(stream))` 排进全局队列。
+- 要在另一根协程里用同一个连接（比如一根收、一根发），在第一次读写它的那根协程里用 `go()` 起那根协程：协程里起的协程排在本线程上。
+- `accept` 返回的新连接在第一次 I/O 之前不属于任何工作线程，可以交给任何一根协程处理，例如 `go(handler, std::move(stream))`。
 
 ## 主机名连接
 

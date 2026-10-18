@@ -18,7 +18,6 @@
 #include <culib/coroutine.h>
 #include <culib/fs.h>
 #include <culib/strings.h>
-#include <culib/runtime.h>
 #include <culib/test.h>
 #include <culib/time.h>
 
@@ -99,26 +98,29 @@ std::string read_text(const fs::path& target) {
 }
 
 // 在协程里执行 operation，同时盯一件事：等待期间，同工作线程上的另一个协程
-// 有没有跑起来。协作式调度 + 单工作线程下这是确定的，不是概率：
+// 有没有跑起来。协作式调度下这是确定的，不是概率：
 // - 同步实现：碰盘过程占着工作线程，证人协程排在就绪队列里寸步难行，
 //   operation 返回时证人还没跑 → false；
 // - call_blocking 下放：协程挂起、工作线程空出来，证人（当时唯一就绪的协程）
 //   必然先跑 → true。就绪队列先进先出，证人比唤醒更早入队，顺序没有第二个解。
-// 证人必须在 operation 之前、从同一个协程里派——从别的线程派会引入真正的竞态。
+// 证人必须在 operation 之前、从同一个协程里用 go() 起——协程里起的协程排在本线程上；
+// 从别的线程起会落到别的工作线程上，引入真正的竞态。
 template <typename Operation>
 bool operation_offloads_to_blocking_thread(const Operation& operation) {
     bool witness_ran = false;
     bool ran_before_return = false;
-    wavvix::coroutine caller([&] {
-        wavvix::coroutine witness([&] {
+    wavvix::wait_group caller;
+    caller.go([&] {
+        wavvix::wait_group witness;
+        witness.go([&] {
             witness_ran = true;
             wavvix::yield();   // 让出一次再收尾：证明工作线程确实转得动
         });
         operation();
         ran_before_return = witness_ran;
-        witness.join();
+        witness.wait();
     });
-    caller.join();
+    caller.wait();
     return ran_before_return;
 }
 
@@ -218,7 +220,6 @@ TEST(fs_win_edge, empty_directory_path_does_not_list_the_working_directory) {
 // 探针的对照：直接调用（同步的替身）必须报 false，包进 call_blocking 必须报
 // true。少了这条，上面几条「没下放就红」就没人担保它们不是恒真。
 TEST(fs_win_edge, the_offload_probe_distinguishes_inline_from_call_blocking) {
-    wavvix::runtime runtime(1);
     volatile long sink = 0;
     const bool inline_call = operation_offloads_to_blocking_thread([&] {
         for (int i = 0; i < 1000; ++i) {
@@ -240,7 +241,6 @@ TEST(fs_win_edge, file_size_offloads_blocking_work_from_the_coroutine_worker) {
     if (!EXPECT(write_text(file, "0123456789").is_ok(), ==, true)) {
         return;
     }
-    wavvix::runtime runtime(1);
     result<std::uint64_t> size = make_error(error_kind::unknown, "未执行");
     const bool offloaded =
         operation_offloads_to_blocking_thread([&] { size = fs::file_size(file); });
@@ -257,7 +257,6 @@ TEST(fs_win_edge, last_write_time_offloads_blocking_work_from_the_coroutine_work
     if (!EXPECT(write_text(file, "x").is_ok(), ==, true)) {
         return;
     }
-    wavvix::runtime runtime(1);
     result<wavvix::timestamp> when = make_error(error_kind::unknown, "未执行");
     const bool offloaded =
         operation_offloads_to_blocking_thread([&] { when = fs::last_write_time(file); });
@@ -275,7 +274,6 @@ TEST(fs_win_edge, copy_file_offloads_blocking_work_from_the_coroutine_worker) {
     if (!EXPECT(write_text(from, "payload").is_ok(), ==, true)) {
         return;
     }
-    wavvix::runtime runtime(1);
     result<void> copied;
     const bool offloaded = operation_offloads_to_blocking_thread(
         [&] { copied = fs::copy_file(from, to); });
@@ -294,7 +292,6 @@ TEST(fs_win_edge, rename_offloads_blocking_work_from_the_coroutine_worker) {
     if (!EXPECT(write_text(from, "payload").is_ok(), ==, true)) {
         return;
     }
-    wavvix::runtime runtime(1);
     result<void> moved;
     const bool offloaded =
         operation_offloads_to_blocking_thread([&] { moved = fs::rename(from, to); });
@@ -304,7 +301,6 @@ TEST(fs_win_edge, rename_offloads_blocking_work_from_the_coroutine_worker) {
 }
 
 TEST(fs_win_edge, current_path_getter_offloads_blocking_work_from_the_coroutine_worker) {
-    wavvix::runtime runtime(1);
     result<fs::path> here = make_error(error_kind::unknown, "未执行");
     const bool offloaded =
         operation_offloads_to_blocking_thread([&] { here = fs::current_path(); });
@@ -323,7 +319,6 @@ TEST(fs_win_edge, current_path_setter_offloads_blocking_work_from_the_coroutine_
     if (!EXPECT(original.is_ok(), ==, true)) {
         return;
     }
-    wavvix::runtime runtime(1);
     result<void> moved;
     const bool offloaded = operation_offloads_to_blocking_thread(
         [&] { moved = fs::current_path(area.root()); });

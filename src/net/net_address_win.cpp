@@ -1,6 +1,6 @@
 #include "net_address_detail.h"
 
-#include <culib/runtime.h>
+#include <culib/coroutine.h>
 #include <culib/strings.h>
 
 #include <cstring>

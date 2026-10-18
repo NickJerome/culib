@@ -5,7 +5,6 @@
 
 #include <culib/coroutine.h>
 #include <culib/net.h>
-#include <culib/runtime.h>
 #include <culib/test.h>
 
 #include <atomic>
@@ -89,31 +88,6 @@ TEST(net, rejects_empty_and_embedded_nul_host) {
     }
 }
 
-// 公共 resolve 在协程内要挪去阻塞线程：同线程排队的下一根协程得趁解析的空档跑完。
-TEST(net, resolve_offloads_blocking_work_off_the_worker) {
-    wavvix::runtime runtime(1);
-    std::atomic<bool> probe_ran(false);
-    bool resolve_ok = false;
-    bool candidates = false;
-    bool ran_during_resolve = false;
-    wavvix::coroutine task([&] {
-        wavvix::coroutine probe(wavvix::scheduler::current(), [&] {
-            probe_ran.store(true);
-        });
-        const wavvix::result<std::vector<endpoint>> found = wavvix::net::resolve("localhost", 8080);
-        resolve_ok = found.is_ok();
-        candidates = resolve_ok && !found.value().empty();
-        // 协程不会被抢占：probe 排在后面；它跑过就说明解析确实让出了工作线程。
-        ran_during_resolve = probe_ran.load();
-        probe.join();
-    });
-    task.join();
-
-    EXPECT(resolve_ok, ==, true);
-    EXPECT(candidates, ==, true);
-    EXPECT(ran_during_resolve, ==, true);
-}
-
 TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
     socket listener(protocol::tcp);
     listener.bind(endpoint::parse("127.0.0.1", 0).value()).value();
@@ -126,11 +100,11 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
     EXPECT(local.value().port() != 0, ==, true);
 
     // 两端各在一根协程里，由全局队列分到哪根工作线程都行。
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     std::string request;
     std::string reply;
     bool server_saw_eof = false;
-    wavvix::coroutine server([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(ms(1000));
         if (accepted.is_err()) {
             return;
@@ -147,7 +121,7 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
         const wavvix::result<std::size_t> eof = accepted.value().read(&byte, 1, ms(1000));
         server_saw_eof = eof.is_ok() && eof.value() == 0;
     });
-    wavvix::coroutine client([&] {
+    group.go([&] {
         socket connected(protocol::tcp);
         if (connected.connect(local.value(), ms(1000)).is_err()) {
             return;
@@ -160,8 +134,7 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
             reply.assign(answer, sizeof answer);
         }
     });
-    server.join();
-    client.join();
+    group.wait();
 
     EXPECT(request, ==, "ping");
     EXPECT(reply, ==, "pong");
@@ -182,15 +155,15 @@ TEST(net, tcp_listener_rebinds_port_left_in_time_wait) {
     bool accepted_ok = false;
     bool client_saw_eof = false;
     {
-        wavvix::runtime runtime(2);
-        wavvix::coroutine server([&] {
+        wavvix::wait_group group;
+        group.go([&] {
             wavvix::result<socket> accepted = listener.accept(ms(1000));
             accepted_ok = accepted.is_ok();
             if (accepted.is_ok()) {
                 accepted.value().close();   // 服务端先关：TIME_WAIT 留在服务端这一侧
             }
         });
-        wavvix::coroutine client([&] {
+        group.go([&] {
             socket connected(protocol::tcp);
             if (connected.connect(local.value(), ms(1000)).is_err()) {
                 return;
@@ -199,8 +172,7 @@ TEST(net, tcp_listener_rebinds_port_left_in_time_wait) {
             const wavvix::result<std::size_t> eof = connected.read(&byte, 1, ms(1000));
             client_saw_eof = eof.is_ok() && eof.value() == 0;
         });
-        server.join();
-        client.join();
+        group.wait();
     }
     EXPECT(accepted_ok, ==, true);
     EXPECT(client_saw_eof, ==, true);
@@ -216,9 +188,8 @@ TEST(net, tcp_listener_rebinds_port_left_in_time_wait) {
     EXPECT(again.listen().is_ok(), ==, true);
 }
 
-TEST(net, accepted_stream_can_go_to_another_worker_before_first_use) {
-    // 套接字第一次读写时才绑到工作线程，所以刚 accept 出来、还没读写过的连接可以交给
-    // 任何一根工作线程上的协程。
+TEST(net, accepted_stream_can_go_to_another_coroutine_before_first_use) {
+    // 刚 accept 出来、还没读写过的连接可以交给另一根协程，按值移过去。
     socket listener(protocol::tcp);
     listener.bind(endpoint::parse("127.0.0.1", 0).value()).value();
     listener.listen().value();
@@ -228,28 +199,25 @@ TEST(net, accepted_stream_can_go_to_another_worker_before_first_use) {
         return;
     }
 
-    wavvix::runtime runtime(2);
-    std::thread::id accept_thread;
-    std::thread::id handler_thread;
+    wavvix::wait_group group;
     bool handler_ok = false;
     bool client_ok = false;
-    wavvix::coroutine server(runtime.worker(0), [&] {
-        accept_thread = std::this_thread::get_id();
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(ms(1000));
         if (accepted.is_err()) {
             return;
         }
-        wavvix::coroutine handler(runtime.worker(1), [&](socket stream) {
-            handler_thread = std::this_thread::get_id();
+        wavvix::wait_group handlers;
+        handlers.go([&](socket stream) {
             char request = 0;
             if (stream.read_exactly(&request, 1, ms(1000)).is_err() || request != 'q') {
                 return;
             }
             handler_ok = stream.write("r", 1, ms(1000)).is_ok();
         }, std::move(accepted).value());
-        handler.join();
+        handlers.wait();
     });
-    wavvix::coroutine client([&] {
+    group.go([&] {
         socket connected(protocol::tcp);
         if (connected.connect(local.value(), ms(1000)).is_err()) {
             return;
@@ -258,16 +226,14 @@ TEST(net, accepted_stream_can_go_to_another_worker_before_first_use) {
         client_ok = connected.write("q", 1, ms(1000)).is_ok() &&
                     connected.read_exactly(&reply, 1, ms(1000)).is_ok() && reply == 'r';
     });
-    server.join();
-    client.join();
+    group.wait();
 
     EXPECT(handler_ok, ==, true);
     EXPECT(client_ok, ==, true);
-    EXPECT(handler_thread != accept_thread, ==, true);
 }
 
-TEST(net, coroutines_on_the_same_worker_share_a_stream) {
-    // 一个连接同时收和发：两根协程都派到 scheduler::current()，和第一次读写它的协程在同一根线程上。
+TEST(net, two_coroutines_share_a_stream) {
+    // 一个连接同时收和发：一根协程只写，另一根只读。
     socket listener(protocol::tcp);
     listener.bind(endpoint::parse("127.0.0.1", 0).value()).value();
     listener.listen().value();
@@ -277,9 +243,9 @@ TEST(net, coroutines_on_the_same_worker_share_a_stream) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     std::string echoed;
-    wavvix::coroutine server([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(ms(1000));
         if (accepted.is_err()) {
             return;
@@ -289,28 +255,27 @@ TEST(net, coroutines_on_the_same_worker_share_a_stream) {
             (void)accepted.value().write(buffer, sizeof buffer, ms(1000));
         }
     });
-    wavvix::coroutine client([&] {
+    group.go([&] {
         socket connected(protocol::tcp);
         if (connected.connect(local.value(), ms(1000)).is_err()) {
             return;
         }
         socket& stream = connected;
-        wavvix::coroutine sender(wavvix::scheduler::current(), [&] {
+        wavvix::wait_group both;
+        both.go([&] {
             (void)stream.write("abc", 3, ms(1000));
             wavvix::sleep_for(ms(5));
             (void)stream.write("def", 3, ms(1000));
         });
-        wavvix::coroutine receiver(wavvix::scheduler::current(), [&] {
+        both.go([&] {
             char buffer[6] = {};
             if (stream.read_exactly(buffer, sizeof buffer, ms(1000)).is_ok()) {
                 echoed.assign(buffer, sizeof buffer);
             }
         });
-        sender.join();
-        receiver.join();
+        both.wait();
     });
-    server.join();
-    client.join();
+    group.wait();
 
     EXPECT(echoed, ==, "abcdef");
 }
@@ -325,22 +290,21 @@ TEST(net, tcp_accept_recovers_after_timeout) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool timed_out = false;
     bool accepted_later = false;
     bool connected_ok = false;
-    wavvix::coroutine server([&] {
+    group.go([&] {
         const wavvix::result<socket> timed = listener.accept(ms(10));
         timed_out = timed.is_err() && timed.error().kind() == error_kind::timeout;
         accepted_later = listener.accept(ms(1000)).is_ok();
     });
-    wavvix::coroutine client([&] {
+    group.go([&] {
         wavvix::sleep_for(ms(30));
         socket connected(protocol::tcp);
         connected_ok = connected.connect(local.value(), ms(1000)).is_ok();
     });
-    server.join();
-    client.join();
+    group.wait();
 
     EXPECT(timed_out, ==, true);
     EXPECT(accepted_later, ==, true);
@@ -362,12 +326,12 @@ TEST(net, tcp_ipv6_loopback_when_available) {
     }
     EXPECT(local.value().family() == address_family::ipv6, ==, true);
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool accepted_ok = false;
     bool empty_write_ok = false;
     bool bad_read_rejected = false;
-    wavvix::coroutine server([&] { accepted_ok = listener.accept(ms(1000)).is_ok(); });
-    wavvix::coroutine client([&] {
+    group.go([&] { accepted_ok = listener.accept(ms(1000)).is_ok(); });
+    group.go([&] {
         socket connected(protocol::tcp);
         if (connected.connect(local.value(), ms(1000)).is_err()) {
             return;
@@ -377,8 +341,7 @@ TEST(net, tcp_ipv6_loopback_when_available) {
         const wavvix::result<std::size_t> bad = connected.read(0, 1, ms(1000));
         bad_read_rejected = bad.is_err() && bad.error().kind() == error_kind::invalid_argument;
     });
-    server.join();
-    client.join();
+    group.wait();
 
     EXPECT(accepted_ok, ==, true);
     EXPECT(empty_write_ok, ==, true);
@@ -432,10 +395,10 @@ TEST(net, read_times_out_when_peer_stays_silent) {
         return;
     }
 
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool timed_out = false;
     bool kind_is_timeout = false;
-    wavvix::coroutine task([&] {
+    group.go([&] {
         socket connected(protocol::tcp);
         if (connected.connect(local.value(), seconds(1)).is_err()) {
             return;
@@ -445,7 +408,7 @@ TEST(net, read_times_out_when_peer_stays_silent) {
         timed_out = recv_result.is_err();
         kind_is_timeout = timed_out && recv_result.error().kind() == error_kind::timeout;
     });
-    task.join();
+    group.wait();
 
     EXPECT(timed_out, ==, true);
     EXPECT(kind_is_timeout, ==, true);
@@ -461,7 +424,7 @@ TEST(net, deadline_does_not_reset_during_transfer) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     std::atomic<bool> client_done(false);
     bool timed_out = false;
     bool kind_is_timeout = false;
@@ -469,7 +432,7 @@ TEST(net, deadline_does_not_reset_during_transfer) {
 
     // 服务端每隔 25ms 才给一个字节：第 3 个字节最快也要约 50ms 才到，罩不进 40ms 的总预算。
     // 客户端报超时后句柄就析构了；服务端要等客户端收工再撒手，写失败也只是停，不当成断言目标。
-    wavvix::coroutine server([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_err()) {
             return;
@@ -488,7 +451,7 @@ TEST(net, deadline_does_not_reset_during_transfer) {
         }
     });
 
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         if (client.connect(local.value(), seconds(1)).is_err()) {
             client_done.store(true);
@@ -505,8 +468,7 @@ TEST(net, deadline_does_not_reset_during_transfer) {
         client_done.store(true);
     });
 
-    client_side.join();
-    server.join();
+    group.wait();
 
     EXPECT(timed_out, ==, true);   // 40ms 的总预算罩不住间隔 25ms 的四块
     EXPECT(kind_is_timeout, ==, true);
@@ -534,16 +496,16 @@ TEST(net, stream_connects_from_explicit_local_endpoint) {
     }
     const std::string source = bound.value().to_string();
 
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool accepted_ok = false;
-    wavvix::coroutine acceptor([&] {
+    group.go([&] {
         accepted_ok = listener.accept(seconds(10)).is_ok();
     });
 
     bool connected_ok = false;
     std::string local_text;
     std::string peer_text;
-    wavvix::coroutine connector([&] {
+    group.go([&] {
         connected_ok = client.connect(server_local.value(), seconds(2)).is_ok();
         const wavvix::result<endpoint> local = client.local_endpoint();
         const wavvix::result<endpoint> peer = client.peer_endpoint();
@@ -554,8 +516,7 @@ TEST(net, stream_connects_from_explicit_local_endpoint) {
             peer_text = peer.value().to_string();
         }
     });
-    acceptor.join();
-    connector.join();
+    group.wait();
 
     EXPECT(connected_ok, ==, true);
     EXPECT(accepted_ok, ==, true);
@@ -587,9 +548,9 @@ TEST(net, connect_creates_socket_and_uses_default_timeouts) {
         return;
     }
 
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool got_byte = false;
-    wavvix::coroutine acceptor([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept();   // 默认超时（无限）
         if (accepted.is_ok()) {
             char data = 0;
@@ -602,7 +563,7 @@ TEST(net, connect_creates_socket_and_uses_default_timeouts) {
     bool opened = false;
     bool peer_matches = false;
     bool wrote_ok = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         EXPECT(client.is_open(), ==, false);
         connected_ok = client.connect(server_local.value()).is_ok();   // 默认超时：连接按需创建句柄
@@ -613,8 +574,7 @@ TEST(net, connect_creates_socket_and_uses_default_timeouts) {
             wrote_ok = client.write("a", 1).is_ok();   // 默认超时，写满
         }
     });
-    acceptor.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(connected_ok, ==, true);
     EXPECT(opened, ==, true);
@@ -632,9 +592,9 @@ TEST(net, read_some_returns_only_available_bytes) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool payload_sent = false;
-    wavvix::coroutine server([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
             payload_sent = accepted.value().write("ping", 4, seconds(2)).is_ok();
@@ -645,7 +605,7 @@ TEST(net, read_some_returns_only_available_bytes) {
     bool partial_read = false;
     std::size_t read_size = 0;
     bool eof_reported = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         if (client.connect(server_local.value(), seconds(2)).is_err()) {
             return;
@@ -661,8 +621,7 @@ TEST(net, read_some_returns_only_available_bytes) {
         const wavvix::result<std::size_t> after = client.read(&byte, 1, seconds(2));
         eof_reported = after.is_ok() && after.value() == 0;
     });
-    server.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(payload_sent, ==, true);
     EXPECT(partial_read, ==, true);
@@ -679,8 +638,8 @@ TEST(net, read_exactly_assembles_fragmented_stream) {
         return;
     }
 
-    wavvix::runtime runtime(2);
-    wavvix::coroutine server([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
             accepted.value().write("ch", 2, seconds(2)).value();
@@ -691,7 +650,7 @@ TEST(net, read_exactly_assembles_fragmented_stream) {
 
     bool completed = false;
     std::string got;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         if (client.connect(server_local.value(), seconds(2)).is_err()) {
             return;
@@ -702,8 +661,7 @@ TEST(net, read_exactly_assembles_fragmented_stream) {
             got.assign(buffer, sizeof buffer);
         }
     });
-    server.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(completed, ==, true);
     EXPECT(got, ==, "chunk");
@@ -718,8 +676,8 @@ TEST(net, premature_eof_fails_read_exactly) {
         return;
     }
 
-    wavvix::runtime runtime(2);
-    wavvix::coroutine server([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
             accepted.value().write("ab", 2, seconds(2)).value();
@@ -729,7 +687,7 @@ TEST(net, premature_eof_fails_read_exactly) {
 
     bool failed = false;
     bool kind_is_io = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         if (client.connect(server_local.value(), seconds(2)).is_err()) {
             return;
@@ -739,8 +697,7 @@ TEST(net, premature_eof_fails_read_exactly) {
         failed = outcome.is_err();
         kind_is_io = failed && outcome.error().kind() == error_kind::io;
     });
-    server.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(failed, ==, true);
     EXPECT(kind_is_io, ==, true);
@@ -762,27 +719,26 @@ TEST(net, large_transfer_completes_with_full_transfers) {
     }
     std::vector<char> sink(payload_size);
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool write_ok = false;
     bool write_stays_open = false;
     bool read_ok = false;
     bool read_stays_open = false;
-    wavvix::coroutine server([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(5));
         if (accepted.is_ok()) {
             read_ok = accepted.value().read_exactly(sink.data(), sink.size(), seconds(10)).is_ok();
             read_stays_open = accepted.value().is_open();
         }
     });
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         if (client.connect(server_local.value(), seconds(2)).is_ok()) {
             write_ok = client.write(payload.data(), payload.size(), seconds(10)).is_ok();
             write_stays_open = client.is_open();
         }
     });
-    server.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(write_ok, ==, true);
     EXPECT(read_ok, ==, true);
@@ -804,12 +760,12 @@ TEST(net, write_timeout_keeps_socket_open) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     std::atomic<bool> client_done(false);
     bool timed_out = false;
     bool kind_is_timeout = false;
     bool stays_open = false;
-    wavvix::coroutine server([&] {
+    group.go([&] {
         // accept 之后一直不读：接收缓冲满，写才会卡在预算上，而不是 EPIPE。
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
@@ -818,7 +774,7 @@ TEST(net, write_timeout_keeps_socket_open) {
             }
         }
     });
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         if (client.connect(server_local.value(), seconds(2)).is_ok()) {
             // Winsock 可能先把整次发送复制进内核缓冲；继续发送直到出现背压。
@@ -835,8 +791,7 @@ TEST(net, write_timeout_keeps_socket_open) {
         }
         client_done.store(true);
     });
-    client_side.join();
-    server.join();
+    group.wait();
 
     EXPECT(timed_out, ==, true);
     EXPECT(kind_is_timeout, ==, true);
@@ -852,10 +807,10 @@ TEST(net, hostname_connect_reports_endpoints) {
         return;
     }
 
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool accepted_ok = false;
     bool byte_received = false;
-    wavvix::coroutine acceptor([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         accepted_ok = accepted.is_ok();
         if (accepted.is_ok()) {
@@ -867,7 +822,7 @@ TEST(net, hostname_connect_reports_endpoints) {
     bool connected_ok = false;
     bool peer_matches = false;
     bool wrote_ok = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         connected_ok = client.connect("localhost", server_local.value().port(), seconds(10)).is_ok();
         if (connected_ok) {
@@ -876,8 +831,7 @@ TEST(net, hostname_connect_reports_endpoints) {
             wrote_ok = client.write("h", 1, seconds(2)).is_ok();
         }
     });
-    acceptor.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(connected_ok, ==, true);
     EXPECT(peer_matches, ==, true);
@@ -895,10 +849,10 @@ TEST(net, bound_client_keeps_local_source_for_hostname_connect) {
         return;
     }
 
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     std::string server_peer;
     bool byte_received = false;
-    wavvix::coroutine acceptor([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
             const wavvix::result<endpoint> peer = accepted.value().peer_endpoint();
@@ -921,7 +875,7 @@ TEST(net, bound_client_keeps_local_source_for_hostname_connect) {
     bool connected_ok = false;
     bool source_kept = false;
     bool wrote_ok = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         // localhost 可能同时给出 ::1 和 127.0.0.1：预绑定的 IPv4 源必须罩住所有候选。
         connected_ok = client.connect("localhost", server_local.value().port(), seconds(10)).is_ok();
         const wavvix::result<endpoint> local = client.local_endpoint();
@@ -930,8 +884,7 @@ TEST(net, bound_client_keeps_local_source_for_hostname_connect) {
             wrote_ok = client.write("k", 1, seconds(2)).is_ok();
         }
     });
-    acceptor.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(connected_ok, ==, true);
     EXPECT(source_kept, ==, true);
@@ -959,9 +912,9 @@ TEST(net, failed_connect_closes_socket_for_reuse) {
         return;
     }
 
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool got_byte = false;
-    wavvix::coroutine acceptor([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
             char data = 0;
@@ -973,7 +926,7 @@ TEST(net, failed_connect_closes_socket_for_reuse) {
     bool closed_after_failure = false;
     bool reopened_ok = false;
     bool wrote_ok = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         first_failed = client.connect(squatted.value(), seconds(2)).is_err();
         closed_after_failure = !client.is_open();   // 失败的连接尝试不留半开的句柄
@@ -982,8 +935,7 @@ TEST(net, failed_connect_closes_socket_for_reuse) {
             wrote_ok = client.write("r", 1, seconds(2)).is_ok();
         }
     });
-    acceptor.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(first_failed, ==, true);
     EXPECT(closed_after_failure, ==, true);
@@ -1002,10 +954,10 @@ TEST(net, zero_timeout_read_uses_prequeued_bytes) {
     }
 
     // Windows 回归：队列里已有数据时，read(0ns) 不能因为“先跑一遍计时器”就回超时。
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     std::atomic<bool> finish(false);
     bool payload_sent = false;
-    wavvix::coroutine server([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
             // 一次写两个字节：一个环环段，要么都进了队列，要么都还没到。
@@ -1019,7 +971,7 @@ TEST(net, zero_timeout_read_uses_prequeued_bytes) {
     bool first_byte_ok = false;
     bool prequeued_read = false;
     bool idle_timed_out = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         if (client.connect(server_local.value(), seconds(2)).is_err()) {
             finish.store(true);
@@ -1036,8 +988,7 @@ TEST(net, zero_timeout_read_uses_prequeued_bytes) {
         idle_timed_out = client.read(&data, 1, ms(0)).is_err();
         finish.store(true);
     });
-    client_side.join();
-    server.join();
+    group.wait();
 
     EXPECT(payload_sent, ==, true);
     EXPECT(first_byte_ok, ==, true);
@@ -1069,9 +1020,9 @@ TEST(net, connected_socket_rejects_new_connection_setup) {
         return;
     }
 
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool got_byte = false;
-    wavvix::coroutine acceptor([&] {
+    group.go([&] {
         wavvix::result<socket> accepted = listener.accept(seconds(10));
         if (accepted.is_ok()) {
             char data = 0;
@@ -1085,7 +1036,7 @@ TEST(net, connected_socket_rejects_new_connection_setup) {
     bool recon_rejected = false;
     bool stays_open = false;
     bool wrote_ok = false;
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         socket client(protocol::tcp);
         connected_ok = client.connect(server_local.value(), seconds(2)).is_ok();
         listen_rejected = client.listen().is_err();
@@ -1096,8 +1047,7 @@ TEST(net, connected_socket_rejects_new_connection_setup) {
             wrote_ok = client.write("n", 1, seconds(2)).is_ok();
         }
     });
-    acceptor.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(connected_ok, ==, true);
     EXPECT(listen_rejected, ==, true);
@@ -1107,37 +1057,3 @@ TEST(net, connected_socket_rejects_new_connection_setup) {
     EXPECT(wrote_ok, ==, true);
     EXPECT(got_byte, ==, true);
 }
-
-// 下面两个会 abort，故不注册进运行器（注册会把整个 culib_test 拖崩）。
-// 直接验证：临时去掉每行行首的 "// " 再跑 culib_test。
-// TEST(net, socket_binds_to_worker) {
-//     wavvix::runtime runtime(2);
-//     socket listener(protocol::tcp);
-//     listener.bind(endpoint::parse("127.0.0.1", 0).value()).value();
-//     listener.listen().value();
-//     wavvix::coroutine first(runtime.worker(0), [&] {
-//         listener.accept(std::chrono::seconds(1)).value();
-//     });
-//     wavvix::coroutine second(runtime.worker(1), [&] {
-//         wavvix::sleep_for(std::chrono::milliseconds(50));
-//         listener.accept(std::chrono::seconds(1)).value();
-//     });
-//     first.join();
-//     second.join();
-// }
-//
-// TEST(net, close_used_on_two_workers) {
-//     wavvix::runtime runtime(2);
-//     socket sock(protocol::udp);
-//     sock.bind(endpoint::parse("127.0.0.1", 0).value()).value();
-//     const wavvix::result<endpoint> loopback = endpoint::parse("127.0.0.1", 0);
-//     wavvix::coroutine first(runtime.worker(0), [&] {
-//         sock.send_to("x", 1, loopback.value(), std::chrono::seconds(1)).value();
-//     });
-//     wavvix::coroutine second(runtime.worker(1), [&] {
-//         wavvix::sleep_for(std::chrono::milliseconds(50));
-//         sock.close();
-//     });
-//     first.join();
-//     second.join();
-// }

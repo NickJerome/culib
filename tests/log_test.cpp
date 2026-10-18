@@ -9,7 +9,6 @@
 #include <culib/fs.h>
 #include <culib/lexical_cast.h>
 #include <culib/log.h>
-#include <culib/runtime.h>
 #include <culib/test.h>
 
 #include <cstdint>
@@ -308,18 +307,16 @@ TEST(log, sink_management_from_a_coroutine_behaves_like_a_direct_call) {
 
     bool opened = false;
     bool cleared = false;
-    {
-        wavvix::runtime runtime(1);
-        wavvix::coroutine worker([&] {
-            opened = wavvix::log::add_file_sink(file.path(), 100000, 1).is_ok();
-            LOG_INFO << "from coroutine";
-            wavvix::log::add_console_sink();      // 只要求调得成；下面立刻清掉，不会真往 stderr 写
-            wavvix::log::clear_sinks();
-            cleared = true;
-            LOG_INFO << "dropped";
-        });
-        worker.join();
-    }
+    wavvix::wait_group group;
+    group.go([&] {
+        opened = wavvix::log::add_file_sink(file.path(), 100000, 1).is_ok();
+        LOG_INFO << "from coroutine";
+        wavvix::log::add_console_sink();      // 只要求调得成；下面立刻清掉，不会真往 stderr 写
+        wavvix::log::clear_sinks();
+        cleared = true;
+        LOG_INFO << "dropped";
+    });
+    group.wait();
 
     EXPECT(opened, ==, true);
     EXPECT(cleared, ==, true);
@@ -452,12 +449,12 @@ TEST(log, sink_call_from_a_coroutine_does_not_park_the_worker_on_the_log_mutex) 
     bool cleared = false;
     bool probe_ran_before_release = false;
     if (stuck) {
-        wavvix::runtime runtime(1);
-        wavvix::coroutine janitor([&] {
-            // 探针先排队，协程随后一刻不让出：probe 能被调度，只可能因为
-            // clear_sinks 把 worker 让了出来，而不是跟它抢顺序。
-            wavvix::coroutine probe([&] { probe_ran = true; });
-            probe.detach();
+        wavvix::wait_group probes;
+        wavvix::wait_group janitor;
+        janitor.go([&] {
+            // 探针先排队（协程里起的协程排在本线程上），协程随后一刻不让出：probe 能被调度，
+            // 只可能因为 clear_sinks 把 worker 让了出来，而不是跟它抢顺序。
+            probes.go([&] { probe_ran = true; });
             wavvix::log::clear_sinks();      // ← 被测的那一下
             cleared = true;
         });
@@ -468,7 +465,8 @@ TEST(log, sink_call_from_a_coroutine_does_not_park_the_worker_on_the_log_mutex) 
         }
         probe_ran_before_release = probe_ran.load();   // 放行前记下，放行后跑的不算
         release = true;                      // 放行写线程，谁堵着都得散，测试不留死锁
-        janitor.join();
+        janitor.wait();
+        probes.wait();
     }
 
     release = true;

@@ -5,7 +5,7 @@
 // 路径含 '\0' 在公共层就挡下，后端的契约是「到这里不必再查」。
 
 #include <culib/fs.h>
-#include <culib/runtime.h>
+#include <culib/coroutine.h>
 
 #include "file.h"
 

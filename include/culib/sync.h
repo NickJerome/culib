@@ -1,6 +1,7 @@
 ﻿#pragma once
 
-// 协程同步原语。等待者和唤醒者可以在不同的工作线程上。
+// 协程同步原语。在哪里都能用：协程里只挂起协程，普通线程（包括 main）里阻塞线程。
+// 等待者和唤醒者可以在不同的线程上。
 
 #include <chrono>
 #include <cstddef>
@@ -41,20 +42,17 @@ private:
 // MSVC 在 1252 这类代码页下报 C4566，开了 /WX 就编译不过。
 enum class channel_error {
     no_capacity,
-    send_outside_coroutine,
-    receive_outside_coroutine,
     send_after_close,
     closed_twice
 };
 
 // 打印对应的诊断后终止。
 [[noreturn]] void channel_misuse(channel_error what);
-// 不在协程里就 channel_misuse(what)。
-void channel_require_coroutine(channel_error what);
 
 }  // namespace detail
 
-// 协程感知的互斥量。拿不到就挂起，**不占着工作线程**。持有者和等待者可以在不同的工作线程上。
+// 协程感知的互斥量。拿不到时协程挂起、**不占着工作线程**，普通线程阻塞。
+// 持有者和等待者可以在不同的线程上，一方在协程里、一方在普通线程里也行。
 //
 // 公平：等待者按先来后到排队，`unlock()` 交给队首那个。所以不会饿死。
 class mutex {
@@ -62,13 +60,13 @@ public:
     mutex() : held_(false), head_(0), tail_(0) {}
     ~mutex();
 
-    // 拿锁。被别人持有就挂起，直到轮到自己。只能在协程里调用，否则打印诊断后终止。
+    // 拿锁。被别人持有就等，直到轮到自己。
     void lock();
 
-    // 拿不到就立刻回 false，**不挂起**。可以在协程外调用。
+    // 拿不到就立刻回 false，**不等**。
     bool try_lock();
 
-    // 最多等这么久。零或负时长只尝试一次。只能在协程里调用，否则打印诊断后终止。
+    // 最多等这么久。零或负时长只尝试一次。
     bool try_lock_for(std::chrono::nanoseconds timeout);
 
     void unlock();
@@ -95,7 +93,7 @@ public:
     condition_variable() : head_(0), tail_(0) {}
     ~condition_variable();
 
-    // 放开 held、挂起，被通知后重新拿回 held 才返回。只能在协程里调用，否则打印诊断后终止。
+    // 放开 held、等通知，被通知后重新拿回 held 才返回。
     void wait(mutex& held);
 
     // 同上，但最多等这么久。**返回 false 表示到点了**（不管哪种情况，返回时锁都
@@ -115,9 +113,8 @@ private:
     detail::park_token* tail_;
 };
 
-// 协程之间传值的通道：容量固定的先进先出队列。可以多根协程同时发、同时收，也可以跨工作线程。
-// 满了 send 挂起，空了 receive 挂起，这两个只能在协程里调用；close 在哪里都能调用。
-// 往已经关闭的通道 send、重复关闭，都打印诊断后终止。
+// 协程之间传值的通道：容量固定的先进先出队列。可以多根协程同时发、同时收，也可以跨线程。
+// 满了 send 等，空了 receive 等。往已经关闭的通道 send、重复关闭，都打印诊断后终止。
 //
 //     std::string host;
 //     while (hosts.receive(host)) {      // 关闭以后、剩下的取完了才返回 false
@@ -134,7 +131,6 @@ public:
     }
 
     void send(T value) {
-        detail::channel_require_coroutine(detail::channel_error::send_outside_coroutine);
         std::unique_lock<std::mutex> held(state_);
         while (items_.size() == capacity_ && !closed_) {
             waiters_.wait_for_room(held);
@@ -148,7 +144,6 @@ public:
 
     // 取一个值放进 out，返回 true；通道已经关闭、剩下的也都取完了，返回 false。
     bool receive(T& out) {
-        detail::channel_require_coroutine(detail::channel_error::receive_outside_coroutine);
         std::unique_lock<std::mutex> held(state_);
         while (items_.empty() && !closed_) {
             waiters_.wait_for_item(held);
@@ -162,7 +157,7 @@ public:
         return true;
     }
 
-    // 关闭并叫醒所有在等的协程。之后 receive 把剩下的取完就返回 false。
+    // 关闭并叫醒所有在等的。之后 receive 把剩下的取完就返回 false。
     void close() {
         std::lock_guard<std::mutex> held(state_);
         if (closed_) {

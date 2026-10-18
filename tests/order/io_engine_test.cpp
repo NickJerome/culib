@@ -1,10 +1,9 @@
 // 事件引擎的跨平台行为与完成包生命周期测试。
 //
-// 经过调度器的那些测试只开一根工作线程：句柄登记在那根线程的引擎上，读写它的协程都派到
-// scheduler::current()，同一轮起步，次序确定。
+// 在 runtime_order_test 里跑：只有一根工作线程，句柄登记在那根线程的引擎上，读写它的协程
+// 都由一根协程用 go() 起出来，同一轮起步，次序确定。
 
 #include <culib/coroutine.h>
-#include <culib/runtime.h>
 #include <culib/test.h>
 
 #include "runtime/io_engine.h"
@@ -194,12 +193,12 @@ private:
     const void* right_owner_;
 };
 
-// 一根工作线程的 runtime 里跑 body，等它结束。
+// 在协程里跑 body，等它结束。
 template <typename F>
-void on_one_worker(F body) {
-    wavvix::runtime runtime(1);
-    wavvix::coroutine first(body);
-    first.join();
+void in_coroutine(F body) {
+    wavvix::wait_group group;
+    group.go(body);
+    group.wait();
 }
 
 // 完成形状的调用点：**没有「等可读」那一步**，醒来时结果已经在手。
@@ -512,16 +511,15 @@ TEST(io_engine, cancel_keeps_completed_overlapped_alive_until_packet_is_taken) {
 TEST(io_engine, reads_what_the_peer_wrote) {
     char got[16] = {};
     std::ptrdiff_t received = -1;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine reader(here, [&] { received = read_now(pair.right, got, sizeof got); });
-        wavvix::coroutine writer(here, [&] { write_now(pair.left, "hello", 5); });
-        reader.join();
-        writer.join();
+        wavvix::wait_group children;
+        children.go([&] { received = read_now(pair.right, got, sizeof got); });
+        children.go([&] { write_now(pair.left, "hello", 5); });
+        children.wait();
     });
 
     EXPECT(received, ==, 5);
@@ -533,22 +531,21 @@ TEST(io_engine, moves_bytes_in_both_directions_over_one_pair) {
     // 最容易在这里写错（解除一个方向时把另一个也带掉）。
     char there[8] = {};
     char back[8] = {};
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine right_side(here, [&] {
+        wavvix::wait_group children;
+        children.go([&] {
             read_now(pair.right, there, sizeof there);
             write_now(pair.right, "pong", 4);
         });
-        wavvix::coroutine left_side(here, [&] {
+        children.go([&] {
             write_now(pair.left, "ping", 4);
             read_now(pair.left, back, sizeof back);
         });
-        right_side.join();
-        left_side.join();
+        children.wait();
     });
 
     EXPECT(std::string(there, 4), ==, "ping");
@@ -559,16 +556,15 @@ TEST(io_engine, socket_transfer_uses_the_same_completion_contract) {
     char got[8] = {};
     std::ptrdiff_t received = -1;
     std::ptrdiff_t sent = -1;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine reader(here, [&] { received = socket_read_now(pair.right, got, sizeof got); });
-        wavvix::coroutine writer(here, [&] { sent = socket_write_now(pair.left, "hello", 5); });
-        reader.join();
-        writer.join();
+        wavvix::wait_group children;
+        children.go([&] { received = socket_read_now(pair.right, got, sizeof got); });
+        children.go([&] { sent = socket_write_now(pair.left, "hello", 5); });
+        children.wait();
     });
 
     EXPECT(sent, ==, 5);
@@ -581,23 +577,21 @@ TEST(io_engine, yielding_task_does_not_starve_completed_io) {
     bool read_done = false;
     bool write_done = false;
     bool read_before_spinner_stopped = false;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine reader(here, [&] { read_done = socket_read_now(pair.right, &received, 1) == 1; });
-        wavvix::coroutine writer(here, [&] { write_done = socket_write_now(pair.left, "x", 1) == 1; });
-        wavvix::coroutine spinner(here, [&] {
+        wavvix::wait_group children;
+        children.go([&] { read_done = socket_read_now(pair.right, &received, 1) == 1; });
+        children.go([&] { write_done = socket_write_now(pair.left, "x", 1) == 1; });
+        children.go([&] {
             for (int i = 0; i < 50000 && !read_done; ++i) {
                 wavvix::yield();
             }
             read_before_spinner_stopped = read_done;
         });
-        reader.join();
-        writer.join();
-        spinner.join();
+        children.wait();
     });
 
     EXPECT(write_done, ==, true);
@@ -610,7 +604,7 @@ TEST(io_engine, yielding_task_does_not_starve_completed_io) {
 TEST(io_engine, socket_write_after_peer_close_does_not_raise_sigpipe) {
     std::ptrdiff_t sent = 0;
     int failure = 0;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
@@ -626,7 +620,7 @@ TEST(io_engine, socket_write_after_peer_close_does_not_raise_sigpipe) {
 TEST(io_engine, waiting_socket_write_does_not_raise_sigpipe_after_peer_close) {
     std::ptrdiff_t sent = 0;
     int failure = 0;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
@@ -646,14 +640,13 @@ TEST(io_engine, waiting_socket_write_does_not_raise_sigpipe_after_peer_close) {
             return;
         }
 
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine writer(here, [&] { sent = socket_write_now(pair.left, "x", 1, &failure, ms(500)); });
-        wavvix::coroutine closer(here, [&] {
+        wavvix::wait_group children;
+        children.go([&] { sent = socket_write_now(pair.left, "x", 1, &failure, ms(500)); });
+        children.go([&] {
             sleep_for(ms(10));
             close_handle(pair.right);
         });
-        writer.join();
-        closer.join();
+        children.wait();
     });
 
     EXPECT(sent, ==, -1);
@@ -661,55 +654,23 @@ TEST(io_engine, waiting_socket_write_does_not_raise_sigpipe_after_peer_close) {
 }
 #endif
 
-TEST(io_engine, runtime_waits_for_a_coroutine_blocked_on_io) {
-    // IOCP 后端的 OVERLAPPED 住在挂起协程的栈上，必须活到完成包取回来为止，所以还有协程在等
-    // I/O 时 runtime 不能结束。这里读写两根都 detach，只靠 runtime 的析构等它们。
-    char got[8] = {};
-    std::ptrdiff_t received = -1;
-    bool wrote_late = false;
-    std::unique_ptr<linked_pair> pair;
-    {
-        wavvix::runtime runtime(1);
-        wavvix::coroutine starter([&] {
-            pair.reset(new linked_pair);
-            if (!pair->ok()) {
-                return;
-            }
-            const wavvix::scheduler here = wavvix::scheduler::current();
-            wavvix::coroutine(here, [&] { received = read_now(pair->right, got, sizeof got); }).detach();
-            wavvix::coroutine(here, [&] {
-                sleep_for(ms(20));   // 让读的那根先真的挂到引擎上去
-                wrote_late = true;
-                write_now(pair->left, "late", 4);
-            }).detach();
-        });
-        starter.join();
-    }
-
-    EXPECT(pair && pair->ok(), ==, true);
-    EXPECT(wrote_late, ==, true);
-    EXPECT(received, ==, 4);
-    EXPECT(std::string(got, 4), ==, "late");
-}
-
 TEST(io_engine, reports_peer_close_as_zero_not_as_a_failure) {
     std::ptrdiff_t received = -1;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine reader(here, [&] {
+        wavvix::wait_group children;
+        children.go([&] {
             char got[8];
             received = read_now(pair.right, got, sizeof got);
         });
-        wavvix::coroutine closer(here, [&] {
+        children.go([&] {
             sleep_for(ms(10));
             close_handle(pair.left);    // 对端关了
         });
-        reader.join();
-        closer.join();
+        children.wait();
     });
 
     EXPECT(received, ==, 0);            // 0 是「对端关了」，不是错误
@@ -726,24 +687,23 @@ TEST(io_engine, does_not_suspend_when_the_operation_is_already_ready) {
     // 就会有一个完成包落在已经销毁的 OVERLAPPED 上。所以 Windows 维持「照样让出」。
     // **这是性能上的不对称，不是语义上的**：两边传的字节和结果完全一样。见设计文档 7.1。
     std::string trace;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine writer(here, [&] {
+        wavvix::wait_group children;
+        children.go([&] {
             trace += "a";
             write_now(pair.left, "x", 1);    // 缓冲是空的，这次写必定就绪
             trace += "a";
         });
-        wavvix::coroutine other(here, [&] {
+        children.go([&] {
             trace += "b";
             wavvix::yield();
             trace += "b";
         });
-        writer.join();
-        other.join();
+        children.wait();
     });
 
     EXPECT(trace, ==, "aabb");           // 那次写让出了的话会是 "abba"
@@ -755,7 +715,7 @@ TEST(io_engine, times_out_a_read_that_never_arrives) {
     // IOCP 要 CancelIoEx 之后**再等那个完成包**，否则 OVERLAPPED 会随栈帧消失（见 io_engine.h 的 cancel）。
     std::ptrdiff_t outcome = 0;
     int failure = 0;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
@@ -773,19 +733,18 @@ TEST(io_engine, a_timed_read_that_arrives_in_time_still_succeeds) {
     char got[8] = {};
     std::ptrdiff_t received = -1;
     int failure = -1;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        wavvix::coroutine reader(here, [&] { received = read_within(pair.right, got, sizeof got, ms(2000), &failure); });
-        wavvix::coroutine writer(here, [&] {
+        wavvix::wait_group children;
+        children.go([&] { received = read_within(pair.right, got, sizeof got, ms(2000), &failure); });
+        children.go([&] {
             sleep_for(ms(10));
             write_now(pair.left, "ok", 2);
         });
-        reader.join();
-        writer.join();
+        children.wait();
     });
 
     EXPECT(received, ==, 2);
@@ -797,7 +756,7 @@ TEST(io_engine, fails_a_bad_handle_without_suspending_the_coroutine) {
     // 挂不上去时**不能**挂起协程：那根协程永远醒不过来。
     bool continued = false;
     std::ptrdiff_t outcome = 0;
-    on_one_worker([&] {
+    in_coroutine([&] {
         char got[4];
         outcome = read_now(no_handle(), got, sizeof got);
         continued = true;
@@ -810,29 +769,27 @@ TEST(io_engine, fails_a_bad_handle_without_suspending_the_coroutine) {
 TEST(io_engine, serves_two_readers_on_one_handle_in_order) {
     // 同一个句柄同一个方向上的等待链是先来先服务。
     std::string order;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pair;
         if (!EXPECT(pair.ok(), ==, true)) {
             return;
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
+        wavvix::wait_group children;
         const auto read_one = [&] {
             char one = 0;
             if (read_now(pair.right, &one, 1) == 1) {
                 order += one;
             }
         };
-        wavvix::coroutine first(here, read_one);
-        wavvix::coroutine second(here, read_one);
-        wavvix::coroutine writer(here, [&] {
+        children.go(read_one);
+        children.go(read_one);
+        children.go([&] {
             sleep_for(ms(10));
             write_now(pair.left, "A", 1);
             sleep_for(ms(10));
             write_now(pair.left, "B", 1);
         });
-        first.join();
-        second.join();
-        writer.join();
+        children.wait();
     });
 
     EXPECT(order, ==, "AB");
@@ -843,31 +800,28 @@ TEST(io_engine, carries_many_concurrent_readers) {
     // static：lambda 里用它当数组长度，MSVC 要求捕获非静态的局部常量，clang 又嫌捕获多余。
     static const int count = 50;
     int received = 0;
-    on_one_worker([&] {
+    in_coroutine([&] {
         linked_pair pairs[count];
         for (int i = 0; i < count; ++i) {
             if (!EXPECT(pairs[i].ok(), ==, true)) {
                 return;
             }
         }
-        const wavvix::scheduler here = wavvix::scheduler::current();
-        std::vector<wavvix::coroutine> workers;
+        wavvix::wait_group children;
         for (int i = 0; i < count; ++i) {
             linked_pair* const pair = &pairs[i];
-            workers.push_back(wavvix::coroutine(here, [pair, &received] {
+            children.go([pair, &received] {
                 char got[4];
                 if (read_now(pair->right, got, sizeof got) == 1) {
                     ++received;
                 }
-            }));
+            });
         }
         for (int i = 0; i < count; ++i) {
             linked_pair* const pair = &pairs[i];
-            workers.push_back(wavvix::coroutine(here, [pair] { write_now(pair->left, "x", 1); }));
+            children.go([pair] { write_now(pair->left, "x", 1); });
         }
-        for (std::size_t i = 0; i < workers.size(); ++i) {
-            workers[i].join();
-        }
+        children.wait();
     });
 
     EXPECT(received, ==, count);

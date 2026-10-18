@@ -124,27 +124,39 @@ superpowers/specs/2026-10-03-variant-design.md）。
 
 ## [`coroutine.h`](../include/culib/coroutine.h)
 
-公开 `coroutine` 是有栈协程的线程式句柄，构造即提交，`join()` 等指定任务结束。协程都跑在 [`runtime`](#runtimeh) 的工作线程上：
+协程是这个库的并发模型：`go()` 起一根，`wait_group` 等一组。不用建运行时，第一次 `go()` 时自己起来：
 
     #include <culib/coroutine.h>
-    wavvix::runtime runtime(4);
-    wavvix::coroutine worker([&](int count) {
+    wavvix::wait_group group;
+    group.go([&](int count) {
         for (int i = 0; i < count; ++i) {
             produce(i);
             wavvix::yield();
         }
     }, 3);
-    worker.join();
+    group.wait();                        // 在 main 里等就是阻塞 main 线程
 
-`coroutine(f, args...)` 排进全局等待队列，空闲的工作线程取走；`coroutine(target, f, args...)` 派给指定的工作线程（`runtime.worker(i)`，或协程里的 `scheduler::current()`）。协程第一次运行后就固定在那根线程上。
+`go(f, args...)` 和 `std::thread` 一样接受函数及其参数；参数先按值保存，运行时移动到函数中，传引用用 `std::ref`。没有句柄，所以没有「忘了 join 就 terminate」这回事；要等就放进 `wait_group`，要结果就送进 `channel`。`wait_group` 只有 `go()` 和 `wait()` 两个成员：没有 Go 经典的 `add` / `done`，也就不会出现忘了 `done`、`add` 晚于协程启动这类错误（Go 1.25 加的 `WaitGroup.Go` 是同一个理由）。
 
-`coroutine` 可移动；仍可 `join()` 的句柄析构会 `std::terminate()`，所以离开作用域前要 `join()` 或 `detach()`。`join()` 在协程里只挂起当前协程，在协程外阻塞当前线程；`detach()` 只放弃句柄，runtime 析构时照样等它结束。
-构造函数与 `std::thread` 一样接受函数及其参数；参数先按值保存，运行时移动到函数中，传引用用 `std::ref`。需要自定义栈大小时用 `coroutine::with_stack(bytes, function, args...)`。没有 runtime、栈大小不合法、内存不够时打印诊断后终止；默认构造和移动后的空句柄不可 `join()` 或 `detach()`，误用同样打印诊断后终止。
+### 工作线程
 
-协程只在让出点切换：等 I/O、等锁、`sleep_for`、`yield`、`join`。协程里执行真正阻塞线程的函数会连带卡住同一根工作线程上的其他协程，这种调用交给 `call_blocking`。
-底层手动换栈原语在 `detail::fiber`，不是公开的任务接口。实现背景见
-[协程设计记录](superpowers/specs/2026-10-04-coroutine-design.md)；当前用法见
-[协程运行时](runtime.md)。
+运行时的工作线程数取 `os::cpu_count()`（Linux 上按 CPU 亲和性和 cgroup 配额算），环境变量 `WAVVIX_MAXPROCS` 可以覆盖，和 Go 的 `GOMAXPROCS` 一样不在代码里设。普通线程里起的协程排进全局等待队列，由空闲的工作线程取走；协程里起的协程先排在本线程上。协程第一次运行后就固定在那根线程上。
+
+于是：**不同工作线程上的协程是并行的**，共享数据要加锁；**同一根工作线程上的协程不会并行**，只在让出时切换。
+
+### main 返回就退出
+
+运行时启动以后一直在，没有关掉它的接口。`main` 返回时进程直接退出，还没结束的协程不再运行，和 Go 一样。
+
+### 阻塞调用
+
+协程只在让出点切换：等 I/O、等锁、`sleep_for`、`yield`、`wait`。协程里执行真正阻塞线程的函数会连带卡住同一根工作线程上的其他协程，这种调用交给 `call_blocking(f, args...)`：放到后台线程上，等待期间只挂起这根协程。返回值和异常都带回调用处，参数和直接调用一样传。后台线程整个进程共用，最多 64 根。
+
+### 不用协程就什么都不初始化
+
+一个不用协程的程序（比如 CLI）一分钱不付，「不在 main 之前执行任何代码」也没破。
+
+底层手动换栈原语在 `detail::fiber`，不是公开的任务接口。事件引擎在 Linux、macOS、Windows 上分别使用 epoll、kqueue、IOCP，每根工作线程一个。实现背景见[协程设计记录](superpowers/specs/2026-10-04-coroutine-design.md)；当前用法见[协程运行时](runtime.md)。
 
 ## [`defer.h`](../include/culib/defer.h)
 
@@ -402,9 +414,9 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
     已经写出的行都在。
   - **`fatal` 不会 abort**，它只是最高的一级。一句日志顺手把进程杀掉是「意外」，
     要优雅退出用 `culib/os.h` 的停止标志。
-  - **sink 是进程全局的**，所以写的时候用的是 `std::mutex` 而不是
-    `wavvix::mutex`——日志在协程外也会写（`main`、普通线程），而 `wavvix::mutex::lock`
-    只能在协程里调用。那一小段会真的挡住工作线程，但它只是「格式化好的一行交给系统调用」。
+  - **sink 是进程全局的**，写入用一把 `std::mutex` 护着。协程里那一行连同拿锁和写入
+    整段放到后台线程上（`call_blocking`），所以等慢盘的是后台线程，锁也不会跨着挂起点被拿着；
+    协程外直接写。
 
 ## [`net.h`](../include/culib/net.h)
 
@@ -537,47 +549,6 @@ value() / error() 取错分支会打印信息并终止程序，release 同样检
 容器自身不分配内存；值或错误自身可能分配（如 error 的说明字符串）。
 不支持引用类型；需要引用语义时使用指针。
 
-## [`runtime.h`](../include/culib/runtime.h)
-
-协程运行时：协程是这个库的并发模型，这个头文件管工作线程。
-
-    int main() {
-        wavvix::runtime runtime(4);                             // 4 根工作线程
-        wavvix::coroutine task([] {
-            wavvix::sleep_for(std::chrono::milliseconds(10));   // 睡的是协程，不是线程
-            do_work();
-        });
-        task.join();
-    }                                                           // 等所有协程结束再停线程
-
-### 一个进程一个 runtime
-
-`main` 建 runtime、起协程、等协程；协程都在工作线程上跑。一个进程同时只能有一个，析构时等所有协程（含 detach 的）结束，再停掉工作线程。工作线程数没有默认值：容器里 `hardware_concurrency()` 报的是宿主机的核数，只有调用方知道该用几根。
-
-### 协程不迁移
-
-协程排进全局等待队列，空闲的工作线程取走一根；**第一次运行后就绑在那根线程上**，不会再换（为什么不换：换线程会让
-`thread_local` 的地址、`errno` 和异常状态在协程脚下变掉，编译器还会把 `thread_local` 的地址缓存在寄存器里，那条库修不了）。
-要让几根协程在同一根线程上，用 `coroutine(scheduler::current(), ...)` 或 `coroutine(runtime.worker(i), ...)`。
-
-于是：**不同工作线程上的协程是并行的**，共享数据要加锁；**同一根工作线程上的协程不会并行**，只在让出时切换。
-
-### 阻塞调用
-
-`call_blocking(f, args...)` 把没法协作式让出的调用放到后台线程上，等待期间只挂起这根协程，工作线程照常跑别的。
-返回值和异常都带回调用处，参数和直接调用一样传。后台线程整个 runtime 共用，最多 64 根。
-
-### 不建 runtime 就什么都不初始化
-
-一个不用协程的程序（比如 CLI）一分钱不付，「不在 main 之前执行任何代码」也没破。
-
-### 当前边界
-
-事件引擎在 Linux、macOS、Windows 上分别使用 epoll、kqueue、IOCP，每根工作线程一个，工作线程空闲时就睡在里面。
-[sync.h](../include/culib/sync.h) 提供协程感知的同步原语和 channel，
-[net.h](../include/culib/net.h) 提供统一的 `net::socket`（TCP 与 UDP）。调度不抢占、没有优先级，全局等待队列先进先出。
-用法细节见[协程运行时](runtime.md)。
-
 ## [`stopwatch.h`](../include/culib/stopwatch.h)
 
 完整背景见 [设计文档](superpowers/specs/2026-10-02-stopwatch-and-test-slimming-design.md)。
@@ -649,20 +620,20 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 
 完整背景见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
 
-协程感知的同步原语：等不到的时候**挂起这根协程，工作线程照常跑别的协程**。等待者和唤醒者可以在不同的工作线程上。
+协程感知的同步原语：在协程里等不到的时候**挂起这根协程，工作线程照常跑别的协程**；在普通线程（包括 `main`）里就阻塞那根线程。等待者和唤醒者可以在不同的线程上。
 
     wavvix::mutex lock;
-    wavvix::coroutine task([&] {
+    wavvix::go([&] {
         wavvix::lock_guard<wavvix::mutex> held(lock);
         update(shared);                    // 这中间可以放心让出
     });
 
 名字和 std:: 对齐（`lock` / `try_lock` / `try_lock_for` / `unlock`、`wait` / `notify_one` / `notify_all`），所以看名字就会用。
-`channel<T>` 是容量固定的先进先出队列：`send` 满了挂起，`receive` 空了挂起，`close` 以后 `receive` 把剩下的取完就返回 `false`。
+`channel<T>` 是容量固定的先进先出队列：`send` 满了等，`receive` 空了等，`close` 以后 `receive` 把剩下的取完就返回 `false`。
 
 ### 先问一句：你真的需要锁吗
 
-**不同工作线程上的协程是并行的**，它们共享的数据要么加锁，要么让用到它的协程都在同一根工作线程上。
+**不同工作线程上的协程是并行的**，它们共享的数据要么加锁，要么让用到它的协程都在同一根工作线程上（在一根协程里用 `go()` 起它们）。
 
 **同一根工作线程上的协程是协作式调度的，不会被抢占。** 所以那些协程之间，一段**不让出**的临界区
 本来就是原子的——中间没有任何别的协程能插进来，加锁只是多几条指令。
@@ -679,9 +650,10 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 
 ### 和 std::mutex 怎么选
 
-`wavvix::mutex` 拿不到时挂起协程，工作线程去跑别的；`std::mutex` 拿不到时卡住整根工作线程，
-连带它上面所有协程。临界区里会让出（I/O、睡眠、等锁）就只能用 `wavvix::mutex`。
-协程外的线程（`main`、普通线程）也要拿的锁用 `std::mutex`：`wavvix::mutex::lock` 只能在协程里调用，协程外只能 `try_lock`。
+`wavvix::mutex` 在协程里拿不到时挂起协程，工作线程去跑别的；在普通线程里拿不到时阻塞那根线程，
+所以协程和 `main`、普通线程之间共享的锁也用它。`std::mutex` 拿不到时卡住整根工作线程，
+连带它上面所有协程；临界区里会让出（I/O、睡眠、等锁）就只能用 `wavvix::mutex`。
+`std::mutex` 只适合很短、绝不让出的临界区。
 
 ### 要 semaphore 时用 channel
 

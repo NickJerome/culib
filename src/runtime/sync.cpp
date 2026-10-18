@@ -1,7 +1,7 @@
-// 协程感知的同步原语实现。等待者可以在任何一根工作线程上，唤醒经 scheduler_wake 送过去。
+// 协程感知的同步原语实现。等待者可以在任何一根工作线程上，也可以是普通线程，唤醒经 scheduler_wake 送过去。
 
+#include <culib/coroutine.h>
 #include <culib/sync.h>
-#include <culib/detail/fiber.h>
 
 #include "park.h"
 
@@ -17,9 +17,9 @@ using detail::park_token;
 
 const std::chrono::nanoseconds forever(-1);
 
-// 排进等待队列以后别的线程就可能唤醒它，所以先记下等待者所在的工作线程。
+// 排进等待队列以后别的线程就可能唤醒它，所以先记下等待者是谁。
 void enqueue(park_token*& head, park_token*& tail, park_token& token) {
-    token.home = detail::scheduler_current_vcpu();
+    detail::park_prepare(token);
     token.next = 0;
     token.prev = tail;
     token.queued = true;
@@ -88,18 +88,9 @@ bool hand_over(park_token*& head, park_token*& tail) {
     std::abort();
 }
 
-// 不在协程里就打印诊断后终止。
-void require_coroutine(const char* what) {
-    if (!detail::fiber::inside()) {
-        die(what);
-    }
-}
-
 const char* channel_message(detail::channel_error what) {
     switch (what) {
     case detail::channel_error::no_capacity: return "wavvix::channel 的容量至少为 1";
-    case detail::channel_error::send_outside_coroutine: return "wavvix::channel::send 只能在协程里调用";
-    case detail::channel_error::receive_outside_coroutine: return "wavvix::channel::receive 只能在协程里调用";
     case detail::channel_error::send_after_close: return "wavvix::channel 已经关闭，不能再 send";
     case detail::channel_error::closed_twice: return "wavvix::channel 重复关闭";
     }
@@ -123,7 +114,6 @@ mutex::~mutex() {
 }
 
 void mutex::lock() {
-    require_coroutine("wavvix::mutex::lock 只能在协程里调用");
     park_token token;
     {
         std::lock_guard<std::mutex> state(state_);
@@ -147,7 +137,6 @@ bool mutex::try_lock() {
 }
 
 bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
-    require_coroutine("wavvix::mutex::try_lock_for 只能在协程里调用");
     park_token token;
     {
         std::lock_guard<std::mutex> state(state_);
@@ -186,7 +175,6 @@ condition_variable::~condition_variable() {
 }
 
 void condition_variable::wait(mutex& held) {
-    require_coroutine("wavvix::condition_variable::wait 只能在协程里调用");
     park_token token;
     // **先进队列再放锁**：顺序反过来的话，放锁之后到挂起之前的那一小段里，拿到锁的
     // 那一方可能已经 notify 过了，而我们还没进队列——那个通知就丢了。
@@ -200,7 +188,6 @@ void condition_variable::wait(mutex& held) {
 }
 
 bool condition_variable::wait_for(mutex& held, std::chrono::nanoseconds timeout) {
-    require_coroutine("wavvix::condition_variable::wait_for 只能在协程里调用");
     if (timeout.count() <= 0) {
         return false;
     }
@@ -281,12 +268,57 @@ void channel_misuse(channel_error what) {
     die(channel_message(what));
 }
 
-void channel_require_coroutine(channel_error what) {
-    if (!fiber::inside()) {
-        channel_misuse(what);
+}  // namespace detail
+
+// ---- wait_group -------------------------------------------------------------------
+
+wait_group::~wait_group() {
+    std::lock_guard<std::mutex> state(state_);
+    if (running_ != 0) {
+        die("wavvix::wait_group 析构时组里还有协程没结束");
     }
 }
 
-}  // namespace detail
+void wait_group::add() {
+    std::lock_guard<std::mutex> state(state_);
+    ++running_;
+}
+
+void wait_group::done() noexcept {
+    park_token* waiters = 0;
+    {
+        std::lock_guard<std::mutex> state(state_);
+        --running_;
+        if (running_ != 0) {
+            return;
+        }
+        waiters = head_;
+        head_ = 0;
+        tail_ = 0;
+    }
+
+    // 放锁以后才叫醒：被叫醒的一方可能马上返回并析构这个组，之后不能再碰它。
+    // 每个凭据都在等待者的栈上，叫醒之前先记下下一个。
+    while (waiters) {
+        park_token* const next = waiters->next;
+        waiters->next = 0;
+        waiters->prev = 0;
+        waiters->queued = false;
+        detail::scheduler_wake(*waiters);
+        waiters = next;
+    }
+}
+
+void wait_group::wait() {
+    park_token token;
+    {
+        std::lock_guard<std::mutex> state(state_);
+        if (running_ == 0) {
+            return;
+        }
+        enqueue(head_, tail_, token);
+    }
+    detail::scheduler_park(token, forever);
+}
 
 }  // namespace wavvix

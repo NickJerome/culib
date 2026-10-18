@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -14,6 +15,11 @@
 #if defined(__APPLE__)
 #  include <mach-o/dyld.h>      // _NSGetExecutablePath
 #  include <limits.h>
+#endif
+
+#if defined(__linux__)
+#  include <fcntl.h>
+#  include <sched.h>
 #endif
 
 namespace wavvix {
@@ -140,6 +146,88 @@ result<std::string> hostname() {
 }
 
 long process_id() noexcept { return static_cast<long>(::getpid()); }
+
+namespace {
+
+#if defined(__linux__)
+// 把一个很短的文本文件读进 buffer 并补 '\0'。读不到返回 false。cgroup 的文件都在几十字节以内。
+bool read_short_file(const char* path, char* buffer, std::size_t capacity) noexcept {
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+
+    std::size_t used = 0;
+    while (used + 1 < capacity) {
+        const ssize_t got = ::read(fd, buffer + used, capacity - 1 - used);
+        if (got > 0) {
+            used += static_cast<std::size_t>(got);
+            continue;
+        }
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    ::close(fd);
+    buffer[used] = '\0';
+    return used != 0;
+}
+
+// cgroup 的 CPU 配额折成几个核，向上取整。没有限额、读不到或格式不对都返回 0。
+unsigned cgroup_cpu_limit() noexcept {
+    char text[64];
+    long long quota = -1;
+    long long period = 0;
+    if (read_short_file("/sys/fs/cgroup/cpu.max", text, sizeof text)) {
+        // cgroup v2：「配额 周期」，不限额时配额写成 max
+        if (std::strncmp(text, "max", 3) == 0) {
+            return 0;
+        }
+        char* rest = 0;
+        quota = std::strtoll(text, &rest, 10);
+        period = std::strtoll(rest, 0, 10);
+    } else {
+        // cgroup v1：两个文件，不限额时配额是 -1
+        if (!read_short_file("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", text, sizeof text)) {
+            return 0;
+        }
+        quota = std::strtoll(text, 0, 10);
+        if (!read_short_file("/sys/fs/cgroup/cpu/cpu.cfs_period_us", text, sizeof text)) {
+            return 0;
+        }
+        period = std::strtoll(text, 0, 10);
+    }
+
+    if (quota <= 0 || period <= 0) {
+        return 0;
+    }
+    return static_cast<unsigned>((quota + period - 1) / period);
+}
+#endif
+
+}  // namespace
+
+unsigned cpu_count() noexcept {
+    unsigned count = std::thread::hardware_concurrency();
+#if defined(__linux__)
+    // 亲和性比在线核数更准：taskset、容器的 cpuset 都会缩小它。
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (::sched_getaffinity(0, sizeof allowed, &allowed) == 0) {
+        const int usable = CPU_COUNT(&allowed);
+        if (usable > 0) {
+            count = static_cast<unsigned>(usable);
+        }
+    }
+
+    const unsigned limit = cgroup_cpu_limit();
+    if (limit != 0 && limit < count) {
+        count = limit;
+    }
+#endif
+    return count != 0 ? count : 1u;   // 0 对线程池没有意义
+}
 
 // --- 优雅退出 -----------------------------------------------------------------
 

@@ -39,9 +39,10 @@ struct registry {
     registry() : parsed(false), help_requested(false), version_requested(false) {}
 };
 
+// 永不析构：main 返回时进程直接退出，那时可能还有协程在读选项。
 registry& table() {
-    static registry instance;
-    return instance;
+    static registry* const instance = new registry();
+    return *instance;
 }
 
 struct parse_attempt {

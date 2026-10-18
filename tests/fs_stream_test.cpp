@@ -5,7 +5,6 @@
 #include <culib/coroutine.h>
 #include <culib/fs.h>
 #include <culib/fs_stream.h>
-#include <culib/runtime.h>
 #include <culib/test.h>
 
 #include <algorithm>
@@ -456,7 +455,6 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     // 判据是观察到的调度，而不是操作自己上报线程：读协程在 open 返回后马上取
     // spins——若那次 open 真在别的线程上等，工作线程空闲期间必然被旁观协程用掉
     // 至少一次让出（spins >= 1）；若 open 同步地占着工作线程，spins 读到的是 0。
-    wavvix::runtime runtime(1);
 
 #ifdef _WIN32
     const char* const pipe_path_text = "\\\\.\\pipe\\culib_fs_stream_coroutine";
@@ -577,8 +575,18 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
 #endif
 
     // 裸的 fs::open / read / close——没有任何 call_blocking 包装。
-    wavvix::coroutine reader([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         worker_thread = std::this_thread::get_id();
+        // 旁观协程从读协程里起：协程里起的协程排在本线程上，读协程还阻塞在 open 里的时候
+        // 它就能跑起来——这是裸 fs 调用被挪出工作线程的观测证据。
+        wavvix::wait_group observer;
+        observer.go([&] {
+            while (spins < 64) {
+                ++spins;
+                wavvix::yield();
+            }
+        });
         {
             std::lock_guard<std::mutex> lock(gate);
             reader_entered = true;
@@ -610,18 +618,10 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
         if (handle.close().is_err()) {
             read_failed = true;
         }
-    });
-    // 旁观协程：在同一个工作线程上让出固定次数。读协程还阻塞在 open 里的时候它就能
-    // 跑起来——这是裸 fs 调用被挪出工作线程的观测证据。
-    wavvix::coroutine observer([&] {
-        while (spins < 64) {
-            ++spins;
-            wavvix::yield();
-        }
+        observer.wait();
     });
 
-    reader.join();
-    observer.join();
+    group.wait();
     writer.join();
 
     EXPECT(read_failed, ==, false);

@@ -7,7 +7,7 @@
 #include <culib/coroutine.h>
 #include <culib/detail/fiber.h>
 #include <culib/net.h>
-#include <culib/runtime.h>
+#include <culib/os.h>
 #include <culib/sync.h>
 
 #include "runtime/io_engine.h"
@@ -86,92 +86,34 @@ namespace net = wavvix::net;
 
 // ---- 每种情形：都应当打印诊断后终止 ------------------------------------------------
 
+void workers_from_the_environment(const char* value) {
+    wavvix::os::setenv("WAVVIX_MAXPROCS", value).value();
+    wavvix::wait_group group;
+    group.go([] {});
+    group.wait();
+}
+
 void zero_workers() {
-    wavvix::runtime runtime(0);
+    workers_from_the_environment("0");
 }
 
-void second_runtime() {
-    wavvix::runtime first(1);
-    wavvix::runtime second(1);
+void workers_not_a_number() {
+    workers_from_the_environment("four");
 }
 
-void coroutine_without_runtime() {
-    wavvix::coroutine task([] {});
-    task.join();
-}
-
-void stale_scheduler() {
-    std::unique_ptr<wavvix::scheduler> stale;
-    {
-        wavvix::runtime first(1);
-        stale.reset(new wavvix::scheduler(first.worker(0)));
-    }
-    wavvix::runtime second(1);
-    wavvix::coroutine task(*stale, [] {});
-    task.join();
-}
-
-void worker_out_of_range() {
-    wavvix::runtime runtime(1);
-    const wavvix::scheduler missing = runtime.worker(1);
-    (void)missing;
-}
-
-void current_outside_a_coroutine() {
-    wavvix::runtime runtime(1);
-    const wavvix::scheduler here = wavvix::scheduler::current();
-    (void)here;
-}
-
-void runtime_destroyed_in_a_coroutine() {
-    wavvix::runtime* const runtime = new wavvix::runtime(1);
-    wavvix::coroutine task([runtime] { delete runtime; });
-    task.join();
-}
-
-void join_self() {
-    wavvix::runtime runtime(1);
-    std::atomic<wavvix::coroutine*> self(0);
-    wavvix::coroutine task([&self] {
-        while (!self.load()) {
-            wavvix::yield();
-        }
-        self.load()->join();
-    });
-    self.store(&task);
-    task.join();
-}
-
-void join_twice() {
-    wavvix::runtime runtime(1);
-    wavvix::coroutine task([] {});
-    task.join();
-    task.join();
-}
-
-void unjoined_coroutine() {
-    wavvix::runtime runtime(1);
-    wavvix::coroutine task([] {});
-}
-
-void invalid_stack() {
-    wavvix::runtime runtime(1);
-    wavvix::coroutine task = wavvix::coroutine::with_stack(0, [] {});
-    task.join();
+void too_many_workers() {
+    workers_from_the_environment("100000");
 }
 
 void out_of_memory() {
-    wavvix::runtime runtime(1);
     allocation_fails.store(true);
-    wavvix::coroutine task([] {});
-    task.join();
+    wavvix::go([] {});
 }
 
-// 栈在第一次运行时才分配，所以构造成功、工作线程上报错。2^60 字节在哪个平台上都要不到。
+// 栈在第一次运行时才分配，所以构造成功、resume 时报错。2^60 字节在哪个平台上都要不到。
 void stack_unavailable() {
-    wavvix::runtime runtime(1);
-    wavvix::coroutine task = wavvix::coroutine::with_stack(std::size_t(1) << 60, [] {});
-    task.join();
+    wavvix::detail::fiber worker([] {}, std::size_t(1) << 60);
+    worker.resume();
 }
 
 void fiber_moved_to_another_thread() {
@@ -181,28 +123,32 @@ void fiber_moved_to_another_thread() {
     other.join();
 }
 
+// 两根工作线程：第一根协程连上以后一直占着它那根线程，所以从 main 起的第二根协程只能
+// 落到另一根工作线程上，在那里用同一个连接。
 void socket_used_on_two_workers() {
-    wavvix::runtime runtime(2);
+    wavvix::os::setenv("WAVVIX_MAXPROCS", "2").value();
     net::socket listener;
     listener.bind("127.0.0.1", 0).value();
     listener.listen().value();
     const endpoint local = listener.local_endpoint().value();
-    wavvix::coroutine first(runtime.worker(0), [&] {
-        net::socket stream;
+    net::socket stream;
+    std::atomic<bool> connected(false);
+    wavvix::go([&] {
         stream.connect(local, std::chrono::seconds(1)).value();
-        wavvix::coroutine second(runtime.worker(1), [&] {
-            const char byte = 'x';
-            const wavvix::result<void> sent = stream.write(&byte, 1, std::chrono::seconds(1));
-            (void)sent;
-        });
-        second.join();
+        connected.store(true);
+        for (;;) {
+            // 不让出：这根工作线程一直被占着
+        }
     });
-    first.join();
-}
-
-void mutex_lock_outside_a_coroutine() {
-    wavvix::mutex lock;
-    lock.lock();
+    while (!connected.load()) {
+        std::this_thread::yield();
+    }
+    wavvix::go([&] {
+        const char byte = 'x';
+        const wavvix::result<void> sent = stream.write(&byte, 1, std::chrono::seconds(1));
+        (void)sent;
+    });
+    std::this_thread::sleep_for(std::chrono::seconds(5));
 }
 
 void channel_without_capacity() {
@@ -210,17 +156,20 @@ void channel_without_capacity() {
 }
 
 void channel_send_after_close() {
-    wavvix::runtime runtime(1);
     wavvix::channel<int> values(1);
     values.close();
-    wavvix::coroutine task([&] { values.send(1); });
-    task.join();
+    values.send(1);
 }
 
 void channel_closed_twice() {
     wavvix::channel<int> values(1);
     values.close();
     values.close();
+}
+
+void wait_group_destroyed_while_running() {
+    wavvix::wait_group group;
+    group.go([] { wavvix::sleep_for(std::chrono::seconds(5)); });
 }
 
 struct fault_case {
@@ -230,25 +179,17 @@ struct fault_case {
 };
 
 const fault_case cases[] = {
-    {"zero_workers", &zero_workers, "至少要一根工作线程"},
-    {"second_runtime", &second_runtime, "一个进程同时只能有一个 runtime"},
-    {"coroutine_without_runtime", &coroutine_without_runtime, "没有 runtime"},
-    {"stale_scheduler", &stale_scheduler, "属于已经结束的 runtime"},
-    {"worker_out_of_range", &worker_out_of_range, "下标越界"},
-    {"current_outside_a_coroutine", &current_outside_a_coroutine, "scheduler::current() 只能在协程里调用"},
-    {"runtime_destroyed_in_a_coroutine", &runtime_destroyed_in_a_coroutine, "不能在协程里析构"},
-    {"join_self", &join_self, "不能 join 自己"},
-    {"join_twice", &join_twice, "需要一个 joinable 的协程"},
-    {"unjoined_coroutine", &unjoined_coroutine, ""},   // std::terminate，各家的输出不同
-    {"invalid_stack", &invalid_stack, "栈大小不合法"},
+    {"zero_workers", &zero_workers, "WAVVIX_MAXPROCS 必须是"},
+    {"workers_not_a_number", &workers_not_a_number, "WAVVIX_MAXPROCS 必须是"},
+    {"too_many_workers", &too_many_workers, "WAVVIX_MAXPROCS 必须是"},
     {"out_of_memory", &out_of_memory, "内存不足，建不起协程"},
     {"stack_unavailable", &stack_unavailable, "栈内存不够，跑不起协程"},
     {"fiber_moved_to_another_thread", &fiber_moved_to_another_thread, "协程绑定在第"},
     {"socket_used_on_two_workers", &socket_used_on_two_workers, "不能换线程用"},
-    {"mutex_lock_outside_a_coroutine", &mutex_lock_outside_a_coroutine, "只能在协程里调用"},
     {"channel_without_capacity", &channel_without_capacity, "容量至少为 1"},
     {"channel_send_after_close", &channel_send_after_close, "已经关闭，不能再 send"},
     {"channel_closed_twice", &channel_closed_twice, "重复关闭"},
+    {"wait_group_destroyed_while_running", &wait_group_destroyed_while_running, "组里还有协程没结束"},
 };
 
 const std::size_t case_count = sizeof cases / sizeof cases[0];

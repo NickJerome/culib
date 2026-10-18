@@ -129,7 +129,7 @@ jobs:
           CULIB_CI_STRICT: '1'
         # ASan 自己接管 malloc/new；全局覆盖计数测试在此配置下无法观察 culib 的入口。
         # 该覆盖测试仍在普通 Linux debug/release 作业中执行。
-        run: bash .github/report-failure.sh xmake test -v culib_test/default os_stop_test/threads os_stop_test/sigint os_stop_test/sigterm mem_test_abandoned/default mem_test_new_override/default mem_test_rss/default mem_test_security/default mem_test_stress/default mem_test_unit/default
+        run: bash .github/report-failure.sh xmake test -v culib_test/default runtime_order_test/default os_stop_test/threads os_stop_test/sigint os_stop_test/sigterm mem_test_abandoned/default mem_test_new_override/default mem_test_rss/default mem_test_security/default mem_test_stress/default mem_test_unit/default
       - name: check stop requests under ThreadSanitizer
         shell: bash
         env:
@@ -307,13 +307,10 @@ jobs:
               wavvix::string_view ours = "from C++11";
           #endif
 
-              wavvix::runtime runtime(2);
               int completed = 0;
-              wavvix::coroutine worker([&] { ++completed; });
-              if (!worker.joinable()) {
-                  return 1;
-              }
-              worker.join();
+              wavvix::wait_group group;
+              group.go([&] { ++completed; });
+              group.wait();
               if (completed != 1) {
                   return 1;
               }

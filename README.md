@@ -45,10 +45,10 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | term | 终端彩色输出：`fg::red("x")` 形状，样式是可组合的值类型（**漏掉括号就编译报错**，所以不会出现「设了颜色没恢复」）；自动判断是否该上色（终端 / `NO_COLOR` / `TERM`） | **已完成**，见 [设计](docs/superpowers/specs/2026-10-01-test-term-table-design.md) 第 5 节。测试框架的彩色报告就是它的第一个消费者。Windows 走 VT 模式，开不起来就降级成纯文字（不做旧版控制台 API，理由见[实现说明](docs/implementation-notes.md)） |
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
-| runtime 与 I/O | `runtime(n)` 起一组工作线程，协程都在上面跑：全局等待队列、派到指定线程、跨线程可用的 mutex / condition_variable / channel、`call_blocking` 共用的后台线程；三个事件后端（`epoll` / `kqueue` / `IOCP`）与超时 | **可用**。2026-10-13 从 vCPU 调度器改成 runtime：[`60417e4` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38411545278) 24/24 通过，含 GCC 4.8、MinGW、无异常构建和 ASan + UBSan；当时 ThreadSanitizer 只在本机跑过；最新 [`e7b6b8e` 的 CI](https://github.com/NickJerome/culib/actions/runs/38567733275) 已含进程级 TSan 检查。见[协程运行时](docs/runtime.md)和[网络用法](docs/net.md) |
+| 运行时与 I/O | 第一次 `go()` 时起运行时，工作线程数默认取 CPU 数（`WAVVIX_MAXPROCS` 可覆盖）；跨线程可用、在普通线程上也能等的 mutex / condition_variable / channel / wait_group；`call_blocking` 共用的后台线程；三个事件后端（`epoll` / `kqueue` / `IOCP`）与超时 | **可用**。2026-10-18 改成 Go 风格的接口：没有 runtime 对象和协程句柄，`main` 返回时进程直接退出。见[协程运行时](docs/runtime.md)和[网络用法](docs/net.md) |
 | log | 日志：`LOG_INFO << ...`，级别不足时不求值参数；多个输出目标与文件轮转。消息使用固定栈缓冲，文件整行拼接可能分配；文件写入不使用 stdio 缓冲 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-log-design.md) |
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
-| coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，跑在 runtime 的工作线程上 | 构造即提交、`join()` / `detach()` 的线程式句柄；第一次运行后绑在那根工作线程上，栈在那时才向 `mem` 要。换栈汇编覆盖 x86_64 和 arm64 |
+| coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，跑在运行时的工作线程上 | `go()` 起协程、`wait_group` 等协程；第一次运行后绑在那根工作线程上，栈在那时才向 `mem` 要。换栈汇编覆盖 x86_64 和 arm64 |
 | mem | 自带通用分配器 `wavvix::mem`：依赖 `culib_new_override` 就让全局 `new/delete` 和标准容器改用它，代码不用改；Linux 还可以覆盖 `malloc/free`；另有 C 语义的显式接口。协程栈也向它要 | 64 位 Linux、macOS、Windows。本机验证过 Linux（GCC、Clang、ASan + UBSan）和 Windows（MSVC）；[`09f952d` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38219833032) 27/27 通过，含 macOS arm64 / x86_64 和 GCC 4.8。平台边界与覆盖方式见[分配器用法](docs/mem.md) |
 | bytes | 字节缓冲与字节序转换（`culib/bytes.h` 的 `buffer`）。读写游标 + **字节序写在函数名里**，没有「主机字节序」那种函数；`prepare` / `commit` / `consume` 给 I/O 省一次拷贝 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-bytes-design.md)。整数读写内联，汇编和手写逐条相同 |
 | net | socket、地址解析、多路复用；API 做成同步阻塞的样子，多路复用藏在 runtime 工作线程的事件引擎里 | 数字 IP 的 `endpoint`、显式 `resolve()`（协程内自动经 `call_blocking`，不卡工作线程）、TCP/UDP 收发已落地。2026-10-13 把 `tcp_listener` / `tcp_stream` / `udp_socket` 合并为统一的 `net::socket`（协议构造时指定，惰性建套接字），见[网络用法](docs/net.md)和[统一 socket 设计](docs/superpowers/specs/2026-10-13-unified-socket-design.md)；[2026-10-08 的网络](docs/superpowers/specs/2026-10-08-net-design.md)与 [UDP 设计](docs/superpowers/specs/2026-10-08-udp-design.md)描述被取代的旧接口，保留作历史 |
@@ -265,7 +265,7 @@ culib/
 
 ## 错误处理
 
-可能失败的操作通常通过 `result` 返回错误，由调用方显式检查。线程式的 `coroutine` 构造函数是例外：它没法返回错误，没有 runtime、栈大小不合法或内存不够时打印诊断后终止进程。库不依赖 RTTI。
+可能失败的操作通常通过 `result` 返回错误，由调用方显式检查。`go()` 是例外：它没法返回错误，内存不够时打印诊断后终止进程。库不依赖 RTTI。
 
 可能失败的函数返回 `wavvix::result<T>`：成功直接返回值，失败返回 `make_error(...)`。
 
@@ -317,7 +317,7 @@ wavvix::result<config> load(const std::string& path) {
 
 ## 对使用方的保证
 
-- **可关闭异常和 RTTI**：除 `runtime.h` 里 `call_blocking` 按异常开关转发异常的分支外，公共头文件不使用 `throw`、`try`、`dynamic_cast`、`typeid`；`-fno-exceptions` / `-fno-rtti` 下仍可构建和使用全库。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 在这两个选项下构建库和示例，并运行测试。
+- **可关闭异常和 RTTI**：除 `coroutine.h` 里 `call_blocking` 按异常开关转发异常的分支外，公共头文件不使用 `throw`、`try`、`dynamic_cast`、`typeid`；`-fno-exceptions` / `-fno-rtti` 下仍可构建和使用全库。[Linux GCC/Clang CI](https://github.com/NickJerome/culib/actions/runs/37845192319) 在这两个选项下构建库和示例，并运行测试。
 - **全局登记成本可见**：定义全局 `flag` 选项或使用 `TEST` 会在 `main` 前登记；不使用这两个功能时不会产生这两笔登记成本。
 - **可裁剪**：库以 `-ffunction-sections -fdata-sections`（MSVC 为 `/Gy`）编译，链接时开启 `--gc-sections` / `-dead_strip` / `/OPT:REF` 即可剔除未用到的代码。
 - **字符串一律 UTF-8**：包括文件路径；Windows 下由库内部转成 UTF-16 调用 `W` 系列 API。

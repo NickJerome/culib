@@ -1,6 +1,5 @@
 #include <culib/coroutine.h>
 #include <culib/mem.h>
-#include <culib/runtime.h>
 
 #include <atomic>
 #include <cstdio>
@@ -94,21 +93,19 @@ int main() {
     }
 #endif
 
-    // 16 根线程同时起协程：任务状态和栈都经覆盖后的分配器，跨线程分配、释放。
+    // 16 根线程同时起协程：控制块和栈都经覆盖后的分配器，跨线程分配、释放。
     std::atomic<int> completed(0);
-    {
-        wavvix::runtime runtime(4);
-        for (int round = 0; round < 4; ++round) {
-            std::thread carriers[16];
-            for (int i = 0; i < 16; ++i) {
-                carriers[i] = std::thread([&] {
-                    wavvix::coroutine task([&] { completed.fetch_add(1); });
-                    task.join();
-                });
-            }
-            for (int i = 0; i < 16; ++i) {
-                carriers[i].join();
-            }
+    for (int round = 0; round < 4; ++round) {
+        std::thread carriers[16];
+        for (int i = 0; i < 16; ++i) {
+            carriers[i] = std::thread([&] {
+                wavvix::wait_group group;
+                group.go([&] { completed.fetch_add(1); });
+                group.wait();
+            });
+        }
+        for (int i = 0; i < 16; ++i) {
+            carriers[i].join();
         }
     }
     if (completed.load() != 64) {

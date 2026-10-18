@@ -3,7 +3,6 @@
 
 #include <culib/coroutine.h>
 #include <culib/net.h>
-#include <culib/runtime.h>
 
 #include <chrono>
 #include <cstdio>
@@ -23,10 +22,10 @@ int main() {
         return 1;
     }
 
-    wavvix::runtime runtime(2);
     std::string report;
     bool sent = false;
-    wavvix::coroutine receiver([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         char data[32];
         const wavvix::result<net::datagram> packet = server.recv_from(data, sizeof data, seconds(2));
         if (packet.is_err()) {
@@ -35,11 +34,10 @@ int main() {
         report = "UDP from " + packet.value().from.to_string() + ": " +
                  std::string(data, packet.value().size);
     });
-    wavvix::coroutine sender([&] {
+    group.go([&] {
         sent = client.send_to("hello", 5, destination.value(), seconds(2)).is_ok();
     });
-    receiver.join();
-    sender.join();
+    group.wait();
 
     std::printf("%s\n", report.c_str());
     return sent && !report.empty() ? 0 : 1;

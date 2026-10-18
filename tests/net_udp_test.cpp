@@ -3,7 +3,6 @@
 
 #include <culib/coroutine.h>
 #include <culib/net.h>
-#include <culib/runtime.h>
 #include <culib/test.h>
 
 #include <chrono>
@@ -91,13 +90,13 @@ TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
     EXPECT(server_local.value().port() != 0, ==, true);
     EXPECT(client_local.value().port() != 0, ==, true);
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     std::string server_got;
     std::uint16_t server_saw_port = 0;
     bool server_replied = false;
     std::string client_got;
     std::uint16_t client_saw_port = 0;
-    wavvix::coroutine server_side([&] {
+    group.go([&] {
         char data[8] = {};
         const wavvix::result<datagram> received = server.recv_from(data, sizeof data, ms(1000));
         if (received.is_err()) {
@@ -107,7 +106,7 @@ TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
         server_saw_port = received.value().from.port();
         server_replied = server.send_to("pong", 4, received.value().from, ms(1000)).is_ok();
     });
-    wavvix::coroutine client_side([&] {
+    group.go([&] {
         if (client.send_to("ping", 4, server_local.value(), ms(1000)).is_err()) {
             return;
         }
@@ -119,8 +118,7 @@ TEST(net_udp, exchanges_ipv4_datagrams_and_preserves_sources) {
         client_got.assign(data, received.value().size);
         client_saw_port = received.value().from.port();
     });
-    server_side.join();
-    client_side.join();
+    group.wait();
 
     EXPECT(server_got, ==, "ping");
     EXPECT(server_saw_port, ==, client_local.value().port());
@@ -156,23 +154,22 @@ TEST(net_udp, zero_length_datagram_is_not_eof) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool empty_received = false;
     bool nonempty_rejected = false;
     bool empty_sent = false;
     bool next_sent = false;
-    wavvix::coroutine receiving([&] {
+    group.go([&] {
         const wavvix::result<datagram> packet = receiver.recv_from(0, 0, ms(1000));
         empty_received = packet.is_ok() && packet.value().size == 0;
         const wavvix::result<datagram> nonempty = receiver.recv_from(0, 0, ms(1000));
         nonempty_rejected = nonempty.is_err() && nonempty.error().kind() == error_kind::out_of_range;
     });
-    wavvix::coroutine sending([&] {
+    group.go([&] {
         empty_sent = sender.send_to(0, 0, target.value(), ms(1000)).is_ok();
         next_sent = sender.send_to("x", 1, target.value(), ms(1000)).is_ok();
     });
-    receiving.join();
-    sending.join();
+    group.wait();
 
     EXPECT(empty_received, ==, true);
     EXPECT(nonempty_rejected, ==, true);
@@ -191,13 +188,13 @@ TEST(net_udp, zero_capacity_recv_leaves_the_byte_untouched) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool rejected = false;
     bool kind_is_out_of_range = false;
     bool byte_untouched = false;
     bool followup_ok = false;
     char probe = 'U';
-    wavvix::coroutine receiving([&] {
+    group.go([&] {
         // 容量 0、缓冲区非空：截断走内部缓冲，那一个字节不许被写。
         const wavvix::result<datagram> truncated = receiver.recv_from(&probe, 0, ms(1000));
         rejected = truncated.is_err();
@@ -207,15 +204,14 @@ TEST(net_udp, zero_capacity_recv_leaves_the_byte_untouched) {
         const wavvix::result<datagram> next = receiver.recv_from(data, sizeof data, ms(1000));
         followup_ok = next.is_ok() && next.value().size == 3;
     });
-    wavvix::coroutine sending([&] {
+    group.go([&] {
         // 两个报文：第一个给零容量接收当截断，第二个留给随后的正常接收。
         if (sender.send_to("abc", 3, target.value(), ms(1000)).is_err()) {
             return;
         }
         sender.send_to("def", 3, target.value(), ms(1000)).value();
     });
-    receiving.join();
-    sending.join();
+    group.wait();
 
     EXPECT(rejected, ==, true);
     EXPECT(kind_is_out_of_range, ==, true);
@@ -234,11 +230,11 @@ TEST(net_udp, reports_truncation_and_receives_next_datagram) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool truncation_reported = false;
     std::string next;
     bool both_sent = false;
-    wavvix::coroutine receiving([&] {
+    group.go([&] {
         char short_buffer[2] = {};
         const wavvix::result<datagram> truncated = receiver.recv_from(short_buffer, sizeof short_buffer, ms(1000));
         truncation_reported = truncated.is_err() && truncated.error().kind() == error_kind::out_of_range;
@@ -248,13 +244,12 @@ TEST(net_udp, reports_truncation_and_receives_next_datagram) {
             next.assign(data, received.value().size);
         }
     });
-    wavvix::coroutine sending([&] {
+    group.go([&] {
         const bool first = sender.send_to("large", 5, target.value(), ms(1000)).is_ok();
         const bool second = sender.send_to("ok", 2, target.value(), ms(1000)).is_ok();
         both_sent = first && second;
     });
-    receiving.join();
-    sending.join();
+    group.wait();
 
     EXPECT(truncation_reported, ==, true);
     EXPECT(next, ==, "ok");
@@ -272,11 +267,11 @@ TEST(net_udp, timeout_does_not_consume_later_datagram) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool timed_out = false;
     std::string later;
     bool sent = false;
-    wavvix::coroutine receiving([&] {
+    group.go([&] {
         char data[4] = {};
         const wavvix::result<datagram> timed = receiver.recv_from(data, sizeof data, ms(10));
         timed_out = timed.is_err() && timed.error().kind() == error_kind::timeout;
@@ -285,12 +280,11 @@ TEST(net_udp, timeout_does_not_consume_later_datagram) {
             later.assign(data, received.value().size);
         }
     });
-    wavvix::coroutine sending([&] {
+    group.go([&] {
         wavvix::sleep_for(ms(30));
         sent = sender.send_to("yes", 3, target.value(), ms(1000)).is_ok();
     });
-    receiving.join();
-    sending.join();
+    group.wait();
 
     EXPECT(timed_out, ==, true);
     EXPECT(later, ==, "yes");
@@ -304,12 +298,12 @@ TEST(net_udp, zero_timeout_can_be_polled_until_a_packet_arrives) {
         return;
     }
     const endpoint target = receiver.local_endpoint().value();
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool empty_timed_out = false;
     bool sent = false;
     bool received = false;
     bool drained_timed_out = false;
-    wavvix::coroutine task([&] {
+    group.go([&] {
         char byte = 0;
         const wavvix::result<datagram> empty = receiver.recv_from(&byte, 1, ms(0));
         empty_timed_out = empty.is_err() && empty.error().kind() == error_kind::timeout;
@@ -336,7 +330,7 @@ TEST(net_udp, zero_timeout_can_be_polled_until_a_packet_arrives) {
         const wavvix::result<datagram> drained = receiver.recv_from(&byte, 1, ms(0));
         drained_timed_out = drained.is_err() && drained.error().kind() == error_kind::timeout;
     });
-    task.join();
+    group.wait();
 
     EXPECT(empty_timed_out, ==, true);
     EXPECT(sent, ==, true);
@@ -355,11 +349,11 @@ TEST(net_udp, ipv6_loopback_when_available) {
         return;
     }
 
-    wavvix::runtime runtime(2);
+    wavvix::wait_group group;
     bool from_ipv6 = false;
     std::string got;
     bool sent = false;
-    wavvix::coroutine receiving([&] {
+    group.go([&] {
         char data[4] = {};
         const wavvix::result<datagram> received = receiver.recv_from(data, sizeof data, ms(1000));
         if (received.is_ok()) {
@@ -367,9 +361,8 @@ TEST(net_udp, ipv6_loopback_when_available) {
             got.assign(data, received.value().size);
         }
     });
-    wavvix::coroutine sending([&] { sent = sender.send_to("v6", 2, target.value(), ms(1000)).is_ok(); });
-    receiving.join();
-    sending.join();
+    group.go([&] { sent = sender.send_to("v6", 2, target.value(), ms(1000)).is_ok(); });
+    group.wait();
 
     EXPECT(from_ipv6, ==, true);
     EXPECT(got, ==, "v6");
@@ -425,11 +418,11 @@ TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
     unused.close();
 
     // 三次收发都在同一根协程里，probe 和 reply 都绑在它所在的工作线程上。
-    wavvix::runtime runtime(1);
+    wavvix::wait_group group;
     bool probe_sent = false;
     bool reply_sent = false;
     std::string got;
-    wavvix::coroutine task([&] {
+    group.go([&] {
         probe_sent = probe.send_to("x", 1, dead.value(), ms(1000)).is_ok();
         wavvix::sleep_for(ms(50));
         reply_sent = reply.send_to("ok", 2, live.value(), ms(1000)).is_ok();
@@ -439,7 +432,7 @@ TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
             got.assign(bytes, received.value().size);
         }
     });
-    task.join();
+    group.wait();
 
     EXPECT(probe_sent, ==, true);
     EXPECT(reply_sent, ==, true);

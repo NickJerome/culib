@@ -1,7 +1,6 @@
 // call_blocking：阻塞调用放到后台线程上，等待期间只挂起调用它的协程。
 
 #include <culib/coroutine.h>
-#include <culib/runtime.h>
 #include <culib/test.h>
 
 #include <atomic>
@@ -21,36 +20,15 @@ typedef std::chrono::milliseconds ms;
 
 }  // namespace
 
-TEST(call_blocking, returns_the_result_while_the_worker_runs_other_coroutines) {
-    wavvix::runtime runtime(1);
-    int value = 0;
-    bool other_ran = false;
-    bool other_ran_before_return = false;
-
-    wavvix::coroutine caller([&] {
-        value = wavvix::call_blocking([] {
-            std::this_thread::sleep_for(ms(30));
-            return 42;
-        });
-        other_ran_before_return = other_ran;
-    });
-    wavvix::coroutine other([&] { other_ran = true; });
-    caller.join();
-    other.join();
-
-    EXPECT(value, ==, 42);
-    EXPECT(other_ran_before_return, ==, true);
-}
-
 TEST(call_blocking, runs_the_function_on_another_thread) {
-    wavvix::runtime runtime(1);
     std::thread::id worker_thread;
     std::thread::id call_thread;
-    wavvix::coroutine caller([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         worker_thread = std::this_thread::get_id();
         wavvix::call_blocking([&] { call_thread = std::this_thread::get_id(); });
     });
-    caller.join();
+    group.wait();
 
     EXPECT(call_thread != worker_thread, ==, true);
     EXPECT(call_thread != std::this_thread::get_id(), ==, true);
@@ -58,18 +36,18 @@ TEST(call_blocking, runs_the_function_on_another_thread) {
 
 TEST(call_blocking, passes_arguments_like_a_direct_call) {
     // 参数和直接调用一样传：左值按引用，右值照样移动，不拷贝。
-    wavvix::runtime runtime(1);
     int doubled = 0;
     std::string text = "原样";
     std::unique_ptr<int> returned;
 
-    wavvix::coroutine caller([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         wavvix::call_blocking([](std::unique_ptr<int> input, int& output) { output = *input * 2; },
                               std::unique_ptr<int>(new int(21)), doubled);
         wavvix::call_blocking([](std::string& target) { target += "被改了"; }, text);
         returned = wavvix::call_blocking([] { return std::unique_ptr<int>(new int(7)); });
     });
-    caller.join();
+    group.wait();
 
     EXPECT(doubled, ==, 42);
     EXPECT(text, ==, "原样被改了");
@@ -78,10 +56,10 @@ TEST(call_blocking, passes_arguments_like_a_direct_call) {
 
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
 TEST(call_blocking, rethrows_what_the_function_throws) {
-    wavvix::runtime runtime(1);
     std::string caught;
     int result = 0;
-    wavvix::coroutine caller([&] {
+    wavvix::wait_group group;
+    group.go([&] {
         try {
             result = wavvix::call_blocking([](int input) -> int {
                 if (input < 0) {
@@ -93,7 +71,7 @@ TEST(call_blocking, rethrows_what_the_function_throws) {
             caught = error.what();
         }
     });
-    caller.join();
+    group.wait();
 
     EXPECT(caught, ==, "后台线程上抛的");
     EXPECT(result, ==, 0);
@@ -113,7 +91,6 @@ TEST(call_blocking, calls_directly_outside_a_coroutine) {
 
 TEST(call_blocking, runs_calls_from_several_coroutines_side_by_side) {
     // 两个调用都占着后台线程等对方进来：只有同时在两根后台线程上，双方才都等得到。
-    wavvix::runtime runtime(1);
     std::mutex gate;
     std::condition_variable changed;
     int entered = 0;
@@ -127,23 +104,22 @@ TEST(call_blocking, runs_calls_from_several_coroutines_side_by_side) {
         });
     };
 
-    wavvix::coroutine first(meet, 0);
-    wavvix::coroutine second(meet, 1);
-    first.join();
-    second.join();
+    wavvix::wait_group group;
+    group.go(meet, 0);
+    group.go(meet, 1);
+    group.wait();
 
     EXPECT(met[0] && met[1], ==, true);
 }
 
 TEST(call_blocking, queues_calls_beyond_the_thread_limit) {
     // 后台线程最多 64 根；更多的调用排队，一个不丢。
-    wavvix::runtime runtime(2);
     std::atomic<int> running(0);
     std::atomic<int> peak(0);
     std::atomic<int> finished(0);
-    std::vector<wavvix::coroutine> callers;
+    wavvix::wait_group group;
     for (int i = 0; i < 100; ++i) {
-        callers.push_back(wavvix::coroutine([&] {
+        group.go([&] {
             wavvix::call_blocking([&] {
                 const int now = running.fetch_add(1) + 1;
                 int seen = peak.load();
@@ -153,23 +129,20 @@ TEST(call_blocking, queues_calls_beyond_the_thread_limit) {
                 running.fetch_sub(1);
             });
             finished.fetch_add(1);
-        }));
+        });
     }
-    for (std::size_t i = 0; i < callers.size(); ++i) {
-        callers[i].join();
-    }
+    group.wait();
 
     EXPECT(finished.load(), ==, 100);
     EXPECT(peak.load() <= 64, ==, true);
 }
 
 TEST(call_blocking, wakes_each_caller_on_its_own_worker) {
-    wavvix::runtime runtime(4);
     std::atomic<int> completed(0);
     std::atomic<int> moved(0);
-    std::vector<wavvix::coroutine> callers;
+    wavvix::wait_group group;
     for (unsigned i = 0; i < 4; ++i) {
-        callers.push_back(wavvix::coroutine(runtime.worker(i), [&] {
+        group.go([&] {
             const std::thread::id home = std::this_thread::get_id();
             for (int n = 0; n < 50; ++n) {
                 wavvix::call_blocking([] {});
@@ -178,11 +151,9 @@ TEST(call_blocking, wakes_each_caller_on_its_own_worker) {
                 }
                 completed.fetch_add(1);
             }
-        }));
+        });
     }
-    for (std::size_t i = 0; i < callers.size(); ++i) {
-        callers[i].join();
-    }
+    group.wait();
 
     EXPECT(completed.load(), ==, 200);
     EXPECT(moved.load(), ==, 0);

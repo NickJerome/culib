@@ -26,6 +26,11 @@ g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
 "$build_dir/culib_test"
 
 g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
+    -Iinclude -Isrc tests/order/*.cpp "$build_dir/libculib.a" \
+    -ldl -lrt -o "$build_dir/runtime_order_test"
+"$build_dir/runtime_order_test"
+
+g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -pthread \
     -Iinclude tests/process/os_stop.cpp "$build_dir/libculib.a" -ldl -lrt \
     -o "$build_dir/os_stop_test"
 for mode in threads sigint sigterm; do
