@@ -239,6 +239,7 @@ bool read_fixed(string_view text, std::size_t& at, std::size_t count, unsigned& 
     return true;
 }
 
+// 下一个字符是 wanted 就跳过它。
 bool expect(string_view text, std::size_t& at, char wanted) noexcept {
     if (at >= text.size() || text[at] != wanted) {
         return false;
@@ -247,129 +248,124 @@ bool expect(string_view text, std::size_t& at, char wanted) noexcept {
     return true;
 }
 
+// parse_time 读出来的各个字段，还没有检查范围。
+struct time_fields {
+    unsigned year;
+    unsigned month;
+    unsigned day;
+    unsigned hour;
+    unsigned minute;
+    unsigned second;
+    unsigned millisecond;
+    unsigned offset_hour;
+    unsigned offset_minute;
+    bool west;               // 偏移是负的，在 UTC 以西
+};
+
+// YYYY-MM-DD
+bool read_date(string_view text, std::size_t& at, time_fields& fields) {
+    return read_fixed(text, at, 4, fields.year) && expect(text, at, '-') &&
+           read_fixed(text, at, 2, fields.month) && expect(text, at, '-') &&
+           read_fixed(text, at, 2, fields.day);
+}
+
+// 日期和时间之间是 T，也认空格：人手写的配置文件里空格更常见，RFC 3339 也允许。输出一律用 T。
+bool read_separator(string_view text, std::size_t& at) {
+    return expect(text, at, 'T') || expect(text, at, 't') || expect(text, at, ' ');
+}
+
+// hh:mm:ss
+bool read_clock(string_view text, std::size_t& at, time_fields& fields) {
+    return read_fixed(text, at, 2, fields.hour) && expect(text, at, ':') &&
+           read_fixed(text, at, 2, fields.minute) && expect(text, at, ':') &&
+           read_fixed(text, at, 2, fields.second);
+}
+
+// 可选的小数秒，点后至少一位。多于 3 位就截断、不四舍五入：毫秒是能表示的全部精度。
+bool read_fraction(string_view text, std::size_t& at, unsigned& millisecond) {
+    if (!expect(text, at, '.')) {
+        return true;
+    }
+    if (at >= text.size() || !is_digit(text[at])) {
+        return false;
+    }
+    for (unsigned place = 100; at < text.size() && is_digit(text[at]); ++at) {
+        millisecond += static_cast<unsigned>(text[at] - '0') * place;
+        place /= 10;
+    }
+    return true;
+}
+
+// 时区偏移：Z 或者 ±HH:MM。不带偏移的本地时间有歧义，不认，理由见头文件。
+bool read_offset(string_view text, std::size_t& at, time_fields& fields) {
+    if (expect(text, at, 'Z') || expect(text, at, 'z')) {
+        return true;
+    }
+    fields.west = expect(text, at, '-');
+    if (!fields.west && !expect(text, at, '+')) {
+        return false;
+    }
+    return read_fixed(text, at, 2, fields.offset_hour) && expect(text, at, ':') &&
+           read_fixed(text, at, 2, fields.offset_minute);
+}
+
+// 整个输入都要合乎形状，尾部多出来的字符也不认，和 lexical_cast 一样。
+bool read_shape(string_view text, time_fields& fields) {
+    std::size_t at = 0;
+    return read_date(text, at, fields) && read_separator(text, at) && read_clock(text, at, fields) &&
+           read_fraction(text, at, fields.millisecond) && read_offset(text, at, fields) && at == text.size();
+}
+
+bool fields_in_range(const time_fields& fields) {
+    return fields.month >= 1 && fields.month <= 12 && fields.day >= 1 && fields.day <= 31 &&
+           fields.hour <= 23 && fields.minute <= 59 && fields.second <= 59;
+}
+
+// 2 月 30 日这种每个字段都不越界、这一天却不存在的：换算成天数再换回来就对不上。
+// 这样不用维护一张「每月几天、闰年」的表。
+bool date_exists(std::int64_t days, const time_fields& fields) {
+    int year = 0;
+    unsigned month = 0;
+    unsigned day = 0;
+    detail::civil_from_days(days, year, month, day);
+    return year == static_cast<int>(fields.year) && month == fields.month && day == fields.day;
+}
+
+std::int64_t unix_millis(std::int64_t days, const time_fields& fields) {
+    const std::int64_t local =
+        (days * 86400 + fields.hour * 3600 + fields.minute * 60 + fields.second) * 1000 + fields.millisecond;
+    const std::int64_t offset_minutes = static_cast<std::int64_t>(fields.offset_hour) * 60 + fields.offset_minute;
+    return fields.west ? local + offset_minutes * 60000 : local - offset_minutes * 60000;
+}
+
 result<timestamp> malformed(string_view text) {
     return make_error(error_kind::invalid_argument,
                       "不是合法的 ISO 8601 时刻：\"" + text.to_string() +
                           "\"（要 2026-10-04T11:12:51Z 这种形状，必须带 Z 或 ±HH:MM）");
 }
 
+result<timestamp> out_of_range(const char* what, string_view text) {
+    return make_error(error_kind::out_of_range, std::string(what) + "：\"" + text.to_string() + "\"");
+}
+
 }  // namespace
 
 result<timestamp> parse_time(string_view text) {
-    std::size_t at = 0;
-    unsigned year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
-
-    if (!read_fixed(text, at, 4, year)) {
+    time_fields fields = time_fields();
+    if (!read_shape(text, fields)) {
         return malformed(text);
     }
-    if (!expect(text, at, '-')) {
-        return malformed(text);
+    if (fields.offset_hour > 23 || fields.offset_minute > 59) {
+        return out_of_range("时区偏移越界", text);
     }
-    if (!read_fixed(text, at, 2, month)) {
-        return malformed(text);
+    if (!fields_in_range(fields)) {
+        return out_of_range("日期或时间字段越界", text);
     }
-    if (!expect(text, at, '-')) {
-        return malformed(text);
+    const std::int64_t days = detail::days_from_civil(fields.year, fields.month, fields.day);
+    if (!date_exists(days, fields)) {
+        return out_of_range("这一天不存在", text);
     }
-    if (!read_fixed(text, at, 2, day)) {
-        return malformed(text);
-    }
-
-    // 空格代替 T 也认：人手写的配置文件里空格更常见，而 RFC 3339 明确允许换分隔符。
-    // 输出那边仍然一律用 T——输入宽容和输出严格不矛盾。
-    if (at >= text.size() || (text[at] != 'T' && text[at] != 't' && text[at] != ' ')) {
-        return malformed(text);
-    }
-    ++at;
-
-    if (!read_fixed(text, at, 2, hour)) {
-        return malformed(text);
-    }
-    if (!expect(text, at, ':')) {
-        return malformed(text);
-    }
-    if (!read_fixed(text, at, 2, minute)) {
-        return malformed(text);
-    }
-    if (!expect(text, at, ':')) {
-        return malformed(text);
-    }
-    if (!read_fixed(text, at, 2, second)) {
-        return malformed(text);
-    }
-
-    unsigned millisecond = 0;
-    if (at < text.size() && text[at] == '.') {
-        ++at;
-        if (at >= text.size() || !is_digit(text[at])) {
-            return malformed(text);
-        }
-        // 多于 3 位就截断，不四舍五入——毫秒是我们能表示的全部精度
-        unsigned place = 100;
-        while (at < text.size() && is_digit(text[at])) {
-            if (place != 0) {
-                millisecond += static_cast<unsigned>(text[at] - '0') * place;
-                place /= 10;
-            }
-            ++at;
-        }
-    }
-
-    int offset_minutes = 0;
-    if (at < text.size() && (text[at] == 'Z' || text[at] == 'z')) {
-        ++at;
-    } else if (at < text.size() && (text[at] == '+' || text[at] == '-')) {
-        const bool negative = text[at] == '-';
-        ++at;
-        unsigned offset_hour = 0, offset_minute = 0;
-        if (!read_fixed(text, at, 2, offset_hour)) {
-            return malformed(text);
-        }
-        if (!expect(text, at, ':')) {
-            return malformed(text);
-        }
-        if (!read_fixed(text, at, 2, offset_minute)) {
-            return malformed(text);
-        }
-        if (offset_hour > 23 || offset_minute > 59) {
-            return make_error(error_kind::out_of_range,
-                              "时区偏移越界：\"" + text.to_string() + "\"");
-        }
-        offset_minutes = static_cast<int>(offset_hour * 60 + offset_minute);
-        if (negative) {
-            offset_minutes = -offset_minutes;
-        }
-    } else {
-        // 不带偏移的本地时间是有歧义的，所以不认——理由见头文件
-        return malformed(text);
-    }
-
-    // 和 lexical_cast 一样：整个输入必须被消费完，尾部有垃圾就报错
-    if (at != text.size()) {
-        return malformed(text);
-    }
-
-    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 ||
-        second > 59) {
-        return make_error(error_kind::out_of_range,
-                          "日期或时间字段越界：\"" + text.to_string() + "\"");
-    }
-
-    // 2 月 30 日这种「每个字段都在范围内但日期不存在」的情况：换算成天数再换回来，
-    // 不一致就说明这一天不存在。这样不必维护一张「每月几天 + 闰年」的表。
-    const std::int64_t days = detail::days_from_civil(year, month, day);
-    int back_year = 0;
-    unsigned back_month = 0, back_day = 0;
-    detail::civil_from_days(days, back_year, back_month, back_day);
-    if (back_year != static_cast<int>(year) || back_month != month || back_day != day) {
-        return make_error(error_kind::out_of_range,
-                          "这一天不存在：\"" + text.to_string() + "\"");
-    }
-
-    const std::int64_t millis =
-        (days * 86400 + hour * 3600 + minute * 60 + second) * 1000 + millisecond -
-        static_cast<std::int64_t>(offset_minutes) * 60000;
-    return timestamp::from_unix_millis(millis);
+    return timestamp::from_unix_millis(unix_millis(days, fields));
 }
 
 }  // namespace wavvix
