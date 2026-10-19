@@ -253,6 +253,22 @@ TEST(fiber, runs_many_of_them_interleaved) {
     }
 }
 
+namespace {
+
+// 现在在哪根线程上。协程在挂起点会换线程，而 glibc 把 pthread_self 声明成 const：
+// std::this_thread::get_id() 内联以后，编译器在一个函数里只取一次，挂起前后拿到同一个值。
+// 经 volatile 函数指针调，每次都真的去取。
+std::thread::id read_thread_id() {
+    return std::this_thread::get_id();
+}
+
+std::thread::id current_thread() {
+    std::thread::id (*volatile read)() = &read_thread_id;
+    return read();
+}
+
+}  // namespace
+
 // 协程可以换线程继续：一次 resume 在一根线程上，下一次在另一根上，栈上的东西都还在。
 TEST(fiber, continues_on_another_thread) {
     std::thread::id first;
@@ -260,9 +276,9 @@ TEST(fiber, continues_on_another_thread) {
     int kept = 0;
     fiber worker([&] {
         int local = 41;
-        first = std::this_thread::get_id();
+        first = current_thread();
         fiber::yield();
-        second = std::this_thread::get_id();
+        second = current_thread();
         kept = local + 1;
     });
 

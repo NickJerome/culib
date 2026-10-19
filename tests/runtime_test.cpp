@@ -49,6 +49,19 @@ struct observable_task {
     std::unique_ptr<int> marker_;
 };
 
+
+// 现在在哪根线程上。协程在挂起点会换线程，而 glibc 把 pthread_self 声明成 const：
+// std::this_thread::get_id() 内联以后，编译器在一个函数里只取一次，挂起前后拿到同一个值。
+// 经 volatile 函数指针调，每次都真的去取。
+std::thread::id read_thread_id() {
+    return std::this_thread::get_id();
+}
+
+std::thread::id current_thread() {
+    std::thread::id (*volatile read)() = &read_thread_id;
+    return read();
+}
+
 }  // namespace
 
 // ---- go 与 wait_group --------------------------------------------------------------
@@ -255,16 +268,16 @@ TEST(runtime, a_parked_coroutine_continues_on_another_worker) {
         wavvix::wait_group group;
         group.go([&] {
             const int local = 7;
-            before = std::this_thread::get_id();
+            before = current_thread();
             const std::thread::id home = before;
             occupiers.go([&where, &release, home] {
-                where.store(std::this_thread::get_id() == home ? 1 : 2);
+                where.store(current_thread() == home ? 1 : 2);
                 while (!release.load()) {
                 }
             });
             int got = 0;
             wake.receive(got);
-            after = std::this_thread::get_id();
+            after = current_thread();
             value = local + got;
         });
         while (where.load() == 0) {

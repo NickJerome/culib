@@ -47,18 +47,24 @@ TEST(runtime_order, runs_every_coroutine_on_the_one_worker) {
 }
 
 TEST(runtime_order, starts_a_queued_coroutine_while_another_keeps_yielding) {
-    // 一直让出的协程不会让全局队列里的协程等到它结束：工作线程每 61 轮从全局队列里取一根。
-    // 两根都从 main 起，所以都排在全局队列里。
+    // 一直让出的协程不会让全局队列里的协程等到它结束：工作线程每 61 次从全局队列里取一根。
+    // 两根都从 main 起，所以都排在全局队列里。main 排第二根之前，第一根可能已经让出了很多次，
+    // 所以等第二根排进去以后才开始数。
+    std::atomic<bool> queued(false);
     std::atomic<bool> started(false);
     int rounds = 0;
     wavvix::wait_group group;
     group.go([&] {
+        while (!queued.load()) {
+            wavvix::yield();
+        }
         while (!started.load()) {
             ++rounds;
             wavvix::yield();
         }
     });
     group.go([&] { started.store(true); });
+    queued.store(true);
     group.wait();
 
     EXPECT(started.load(), ==, true);

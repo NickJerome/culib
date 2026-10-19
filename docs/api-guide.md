@@ -142,7 +142,7 @@ superpowers/specs/2026-10-03-variant-design.md）。
 
 运行时的工作线程数取 `os::cpu_count()`（Linux 上按 CPU 亲和性和 cgroup 配额算），环境变量 `WAVVIX_MAXPROCS` 可以覆盖，和 Go 的 `GOMAXPROCS` 一样不在代码里设。普通线程里起的协程排进全局队列，协程里起的协程先排进本线程的队列；闲着的工作线程从全局队列取，也从别的工作线程的队列里拿。
 
-于是：**不同工作线程上的协程是并行的**，共享数据要加锁。**协程在挂起点可能换线程**，和 Go 一样：`thread_local`、`errno` 和拿在手里的 `std::mutex` 都不能跨过挂起点，catch 块里不能挂起（打印诊断后终止）。规则和原因见[协程运行时](runtime.md#协程在哪根线程上跑)。
+于是：**不同工作线程上的协程是并行的**，共享数据要加锁。**协程在挂起点可能换线程**，和 Go 一样：`thread_local`、`errno`、`std::this_thread::get_id()` 和拿在手里的 `std::mutex` 都不能跨过挂起点，catch 块里不能挂起（打印诊断后终止）。规则和原因见[协程运行时](runtime.md#协程在哪根线程上跑)。
 
 ### main 返回就退出
 

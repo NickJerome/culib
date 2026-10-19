@@ -3,7 +3,8 @@
 // 协程：go() 起一个，wait_group 等一组。
 // 会等待的调用在协程里只挂起协程，在普通线程（包括 main）里阻塞线程。
 // 协程在挂起点（等锁、收发 channel、I/O、sleep_for、yield、wait）可能换到另一根工作线程上继续，
-// 所以 thread_local、errno 和拿在手里的 std::mutex 都不能跨过挂起点用；在 catch 块里挂起打印诊断后终止。
+// 所以 thread_local、errno、std::this_thread::get_id() 和拿在手里的 std::mutex 都不能跨过挂起点用；
+// 在 catch 块里挂起打印诊断后终止。
 
 #include <culib/detail/coroutine_call.h>
 #include <culib/detail/fiber.h>

@@ -122,22 +122,6 @@ void suspend_inside_a_catch_block() {
     });
     group.wait();
 }
-
-struct suspends_when_destroyed {
-    ~suspends_when_destroyed() { wavvix::sleep_for(std::chrono::milliseconds(1)); }
-};
-
-void suspend_while_unwinding() {
-    wavvix::wait_group group;
-    group.go([] {
-        try {
-            suspends_when_destroyed guard;
-            throw 1;
-        } catch (int) {
-        }
-    });
-    group.wait();
-}
 #endif
 
 void channel_without_capacity() {
@@ -175,7 +159,6 @@ const fault_case cases[] = {
     {"stack_unavailable", &stack_unavailable, "栈内存不够，跑不起协程"},
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
     {"suspend_inside_a_catch_block", &suspend_inside_a_catch_block, "协程不能在 catch 块里"},
-    {"suspend_while_unwinding", &suspend_while_unwinding, "协程不能在 catch 块里"},
 #endif
     {"channel_without_capacity", &channel_without_capacity, "容量至少为 1"},
     {"channel_send_after_close", &channel_send_after_close, "已经关闭，不能再 send"},

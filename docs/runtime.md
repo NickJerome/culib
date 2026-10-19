@@ -47,9 +47,9 @@ int main() {
 **协程在挂起点可能换线程。** 挂起点就是所有会等的调用：等锁、收发 channel、网络 I/O、`sleep_for`、`yield`、`wait`、`call_blocking`。被叫醒的协程排进叫醒它的那根工作线程的队列；叫醒它的不是工作线程（`main`、普通线程），就排进全局队列。之后由哪根工作线程接着跑都有可能。所以：
 
 - **不同工作线程上的协程是并行的。** 协程之间共享的数据要加锁（[`wavvix::mutex`](../include/culib/sync.h) 跨线程可用，协程和普通线程之间也能用），或者用原子量。协程自己的局部变量在它的栈上，换线程不受影响。
-- **`thread_local` 和 `errno` 不要跨过挂起点用。** 挂起前读到的是那根线程的，醒来时可能已经在另一根线程上；编译器还可能把线程局部变量的地址留在寄存器里，换了线程读到的仍是原来那根的。挂起之前取出来放进局部变量。
+- **`thread_local`、`errno` 和线程号不要跨过挂起点用。** 挂起前读到的是那根线程的，醒来时可能已经在另一根线程上；编译器还可能把线程局部变量的地址留在寄存器里，换了线程读到的仍是原来那根的。`std::this_thread::get_id()` 也一样：glibc 把 `pthread_self` 声明成 `const`，GCC 和 Clang 在一个函数里只取一次，挂起前后拿到同一个值。挂起之前取出来放进局部变量。
 - **`std::mutex` 不要拿着跨过挂起点。** 换了线程再解锁是未定义行为；不换也会把整根工作线程卡在锁上。临界区里要挂起就用 `wavvix::mutex`。
-- **catch 块里、异常展开的途中不能挂起**，否则打印诊断后终止。C++ 运行时按线程记着「正在处理哪个异常」：挂起以后同一根线程上的别的协程会改掉它，换了线程继续时 `throw;` 抛出的也不是原来那个，而且这些都不报错。把等待挪到 catch 块外面。
+- **catch 块里不能挂起**，否则打印诊断后终止。C++ 运行时按线程记着「正在处理哪个异常」：挂起以后同一根线程上的别的协程会改掉它，换了线程继续时 `throw;` 抛出的也不是原来那个，而且这些都不报错。把等待挪到 catch 块外面。异常展开的途中（被展开调用的析构函数里）同样不要挂起，这一条查不出来：用来判断的 `std::uncaught_exception()` 在 GCC 4.8 上接住 `std::rethrow_exception` 抛出的异常以后一直为真（libstdc++ PR 62258）。
 - 协程不会被抢占，只在挂起点切换。
 
 协程里调用真正阻塞线程的函数（同步文件读写、`std::this_thread::sleep_for`、长时间持有 `std::mutex`、算个不停的循环）会占住所在的工作线程，排在这根线程上的其他协程要等别的工作线程来拿。阻塞调用交给 `call_blocking`，长循环里适时 `yield()`。
@@ -94,7 +94,7 @@ std::string text = wavvix::call_blocking(read_config, path);
 | `WAVVIX_MAXPROCS` 不是 1 到 256 之间的整数 | WAVVIX_MAXPROCS 必须是 1 到 256 之间的整数 |
 | 内存不够，建不起协程 | 内存不足，建不起协程 |
 | 第一次运行时要不到栈（内存不够；debug 构建超过约 3 万根，见[栈溢出](#栈溢出)） | 栈内存不够，跑不起协程 |
-| 协程在 catch 块里或者异常展开的途中挂起 | 协程不能在 catch 块里或者异常展开的途中挂起 |
+| 协程在 catch 块里挂起 | 协程不能在 catch 块里挂起 |
 | `wait_group` 析构时组里还有协程 | 组里还有协程没结束 |
 | `channel` 容量为 0；往关闭了的 channel send；重复关闭 | 容量至少为 1；已经关闭，不能再 send；重复关闭 |
 
@@ -133,12 +133,12 @@ PhotonLibOS 用 `photon::thread_create` 起协程、`thread_join` 等它，`phot
 
 | 配置 | 结果 |
 | --- | --- |
-| Windows MSVC 2022 x64 release / debug：`culib_test`、`runtime_order_test`、`runtime_faults_test`、`layers_test` | 全部通过：371 项、40 项，误用诊断 11 条 |
+| Windows MSVC 2022 x64 release / debug：`culib_test`、`runtime_order_test`、`runtime_faults_test`、`layers_test` | 全部通过：371 项、40 项，误用诊断 10 条 |
 | release 连跑 `culib_test`、`runtime_order_test` 各 20 遍 | 全部通过，没有挂住 |
 | 示例 | 全部编译；协程、同步、网络、日志、文件相关的 9 个逐个运行，输出正常 |
 | Linux GCC 11.4、Clang 14（WSL），`-std=c++11` 全警告，另加 `-fno-exceptions -fno-rtti` | 运行时、网络和改过的测试只做了 `-fsyntax-only`：本机 WSL 的内存不够完整构建 |
 | macOS 的 kqueue 后端 | 照 SDK 原型手抄的头文件桩 `-fsyntax-only` |
 
-Linux 和 macOS 上的构建和运行、ASan + UBSan、无异常构建都只有 CI。
+Linux 和 macOS 上的构建和运行、ASan + UBSan、无异常构建都只有 CI。第一次推上去（`f5948fb`）有两条测试在 Linux release 上失败，原因就是上面说的线程号被编译器合并：测试在挂起前后各取一次 `std::this_thread::get_id()`，两次被并成一次。测试改成经 volatile 函数指针取线程号。
 
 ThreadSanitizer 不在 CI 里，这次也没有跑。以前跑的时候它对两条测试报过 `std::condition_variable::wait_for` 的竞争：glibc 2.30 起带时限的等待走 `pthread_cond_clockwait`，GCC 11 的 libtsan 没有拦截它，看不到等待期间放开了锁。那两条测试用的是测试自己的 `std::mutex`，报告不涉及运行时。

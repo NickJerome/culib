@@ -239,19 +239,16 @@ unsigned worker_count() {
     return parsed.value();
 }
 
-// 异常的处理状态按线程保存：在 catch 块里或者栈展开的途中挂起，同一根线程上的别的协程
-// 会把它改掉，换到别的线程上继续的话 `throw;` 抛出的也不是原来那个。这种错不报错，所以在挂起点拦下。
+// 异常的处理状态按线程保存：在 catch 块里挂起，同一根线程上的别的协程会把它改掉，换到别的线程上
+// 继续的话 `throw;` 抛出的也不是原来那个。这种错不报错，所以在挂起点拦下。
+// 异常展开的途中（被展开调用的析构函数里）挂起同样不对，但不查：std::uncaught_exception() 在
+// GCC 4.8 上接住 rethrow_exception 抛出的异常以后一直为真（libstdc++ PR 62258），会把正常的挂起当成误用。
 void check_exception_state() {
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
-#  if defined(__cpp_lib_uncaught_exceptions)
-    const bool unwinding = std::uncaught_exceptions() > 0;
-#  else
-    const bool unwinding = std::uncaught_exception();
-#  endif
-    if (unwinding || std::current_exception()) {
-        die("wavvix: 协程不能在 catch 块里或者异常展开的途中挂起（等锁、收发 channel、网络 I/O、sleep_for、"
-            "yield、wait、call_blocking 都会挂起）：异常的处理状态按线程保存，挂起以后会被同一根线程上的"
-            "别的协程改掉，换了线程继续也对不上。把这些调用挪到 catch 块外面");
+    if (std::current_exception()) {
+        die("wavvix: 协程不能在 catch 块里挂起（等锁、收发 channel、网络 I/O、sleep_for、yield、wait、"
+            "call_blocking 都会挂起）：异常的处理状态按线程保存，挂起以后会被同一根线程上的别的协程改掉，"
+            "换了线程继续也对不上。把这些调用挪到 catch 块外面");
     }
 #endif
 }
