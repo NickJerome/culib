@@ -236,6 +236,17 @@ struct child_outcome {
 // （CI 上见过 0xC0000005）。
 const char overflow_marker[] = "STATUS_STACK_OVERFLOW\n";
 
+// 异常分发要放上栈的 CONTEXT（含扩展状态）多大。溢出以后分发就在剩下的那点栈上跑，CI 上偶尔连 VEH
+// 都没进去就以 0xC0000005 结束；记下这两个数，对照是不是只出在 CONTEXT 大的机器上。
+std::string context_note() {
+    DWORD length = 0;
+    ::InitializeContext(NULL, CONTEXT_ALL | CONTEXT_XSTATE, NULL, &length);
+    char text[96];
+    std::snprintf(text, sizeof text, "CONTEXT %lu 字节，扩展状态 0x%llX", static_cast<unsigned long>(length),
+                  static_cast<unsigned long long>(::GetEnabledXStateFeatures()));
+    return text;
+}
+
 LONG CALLBACK note_stack_overflow(EXCEPTION_POINTERS* info) {
     if (info->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
         DWORD written = 0;
@@ -305,7 +316,7 @@ child_outcome run_child(const fault_case& item) {
     } else {
         char text[64];
         std::snprintf(text, sizeof text, "退出码 0x%08lX", static_cast<unsigned long>(code));
-        outcome.how = text;
+        outcome.how = text + std::string("，") + context_note();
         outcome.overflowed = outcome.error.find(overflow_marker) != std::string::npos;
     }
     ::CloseHandle(process.hThread);
