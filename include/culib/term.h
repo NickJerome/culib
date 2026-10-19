@@ -65,7 +65,7 @@ void finish(std::ostream& out, unsigned char fore, unsigned char back, unsigned 
 
 }  // namespace detail
 
-// 一个值加一个样式。**左值存引用、右值存值**，所以先存进变量再输出也安全。
+// 一个值加一个样式。左值存引用、右值存值，所以先存进变量再输出也安全。
 template <typename T>
 class styled {
 public:
@@ -84,7 +84,9 @@ template <typename T>
 std::ostream& operator<<(std::ostream& out, const styled<T>& what) {
     const unsigned char fore = what.how_.foreground_code();
     const unsigned char back = what.how_.background_code();
-    if (!what.how_.colored() || !detail::colorize(out)) return out << what.what_;
+    if (!what.how_.colored() || !detail::colorize(out)) {
+        return out << what.what_;
+    }
 
     const unsigned long token = detail::start(out, fore, back);
     out << what.what_;

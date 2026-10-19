@@ -35,16 +35,22 @@ protected:
         static_assert(std::is_copy_constructible<T>::value && std::is_copy_constructible<E>::value,
                       "copying a result requires copyable value and error types; "
                       "move it with std::move instead");
-        if (ok_) construct(value_, other.value_);
-        else construct(error_, other.error_);
+        if (ok_) {
+            construct(value_, other.value_);
+        } else {
+            construct(error_, other.error_);
+        }
     }
     result_storage(result_storage&& other)
         noexcept(std::is_nothrow_move_constructible<T>::value &&
                  std::is_nothrow_move_constructible<E>::value) : ok_(other.ok_) {
         static_assert(std::is_move_constructible<T>::value && std::is_move_constructible<E>::value,
                       "moving a result requires movable value and error types");
-        if (ok_) construct(value_, std::move(other.value_));
-        else construct(error_, std::move(other.error_));
+        if (ok_) {
+            construct(value_, std::move(other.value_));
+        } else {
+            construct(error_, std::move(other.error_));
+        }
     }
     result_storage& operator=(const result_storage& other)
         noexcept(std::is_nothrow_copy_constructible<T>::value &&
@@ -61,7 +67,9 @@ protected:
     result_storage& operator=(result_storage&& other) noexcept {
         static_assert(assignable,
                       "assigning a result requires value and error types that move without throwing");
-        if (this != &other) replace(other);
+        if (this != &other) {
+            replace(other);
+        }
         return *this;
     }
     ~result_storage() { destroy(); }
@@ -76,14 +84,20 @@ private:
         ::new (std::addressof(destination)) V(std::forward<U>(source));
     }
     void destroy() noexcept {
-        if (ok_) value_.~T();
-        else error_.~E();
+        if (ok_) {
+            value_.~T();
+        } else {
+            error_.~E();
+        }
     }
     void replace(result_storage& other) noexcept {
         destroy();
         ok_ = other.ok_;
-        if (ok_) construct(value_, std::move(other.value_));
-        else construct(error_, std::move(other.error_));
+        if (ok_) {
+            construct(value_, std::move(other.value_));
+        } else {
+            construct(error_, std::move(other.error_));
+        }
     }
 };
 

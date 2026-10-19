@@ -51,15 +51,21 @@ public:
     bool empty() const noexcept { return size_ == 0; }
 
     char operator[](size_type index) const noexcept {
-        if (index >= size_) detail::string_view_out_of_range("operator[]", index, size_);
+        if (index >= size_) {
+            detail::string_view_out_of_range("operator[]", index, size_);
+        }
         return data_[index];
     }
     char front() const noexcept {
-        if (size_ == 0) detail::string_view_out_of_range("front()", 0, 0);
+        if (size_ == 0) {
+            detail::string_view_out_of_range("front()", 0, 0);
+        }
         return data_[0];
     }
     char back() const noexcept {
-        if (size_ == 0) detail::string_view_out_of_range("back()", 0, 0);
+        if (size_ == 0) {
+            detail::string_view_out_of_range("back()", 0, 0);
+        }
         return data_[size_ - 1];
     }
 
@@ -68,37 +74,51 @@ public:
 
     // pos > size() 是越界，终止；pos == size() 得到空视图。count 超出剩余长度时截断。
     string_view substr(size_type pos, size_type count = npos) const noexcept {
-        if (pos > size_) detail::string_view_out_of_range("substr()", pos, size_);
+        if (pos > size_) {
+            detail::string_view_out_of_range("substr()", pos, size_);
+        }
         const size_type remaining = size_ - pos;
         return string_view(data_ + pos, count < remaining ? count : remaining);
     }
 
     // count 超出当前长度时清空，不终止：这两个是「吃掉前面/后面这些」的意思，吃过头就是吃光。
     void remove_prefix(size_type count) noexcept {
-        if (count > size_) count = size_;
+        if (count > size_) {
+            count = size_;
+        }
         data_ += count;
         size_ -= count;
     }
     void remove_suffix(size_type count) noexcept {
-        if (count > size_) count = size_;
+        if (count > size_) {
+            count = size_;
+        }
         size_ -= count;
     }
 
     size_type find(char ch, size_type pos = 0) const noexcept {
-        if (pos >= size_) return npos;
+        if (pos >= size_) {
+            return npos;
+        }
         const char* found = static_cast<const char*>(std::memchr(data_ + pos, ch, size_ - pos));
         return found ? static_cast<size_type>(found - data_) : npos;
     }
 
     size_type find(string_view needle, size_type pos = 0) const noexcept {
-        if (needle.size_ == 0) return pos <= size_ ? pos : npos;
-        if (pos >= size_ || needle.size_ > size_ - pos) return npos;
+        if (needle.size_ == 0) {
+            return pos <= size_ ? pos : npos;
+        }
+        if (pos >= size_ || needle.size_ > size_ - pos) {
+            return npos;
+        }
         // 先用 memchr 跳到首字符，再 memcmp 比对剩下的；两者都是 libc 的向量化实现。
         const char* const stop = data_ + size_ - needle.size_ + 1;
         for (const char* p = data_ + pos; p < stop; ++p) {
             p = static_cast<const char*>(
                 std::memchr(p, needle.data_[0], static_cast<std::size_t>(stop - p)));
-            if (!p) return npos;
+            if (!p) {
+                return npos;
+            }
             if (std::memcmp(p, needle.data_, needle.size_) == 0) {
                 return static_cast<size_type>(p - data_);
             }
@@ -107,11 +127,17 @@ public:
     }
 
     size_type rfind(char ch, size_type pos = npos) const noexcept {
-        if (size_ == 0) return npos;
+        if (size_ == 0) {
+            return npos;
+        }
         size_type index = pos < size_ - 1 ? pos : size_ - 1;
         for (;; --index) {
-            if (data_[index] == ch) return index;
-            if (index == 0) return npos;
+            if (data_[index] == ch) {
+                return index;
+            }
+            if (index == 0) {
+                return npos;
+            }
         }
     }
 
@@ -128,8 +154,12 @@ public:
     int compare(string_view other) const noexcept {
         const size_type shorter = size_ < other.size_ ? size_ : other.size_;
         const int order = shorter ? std::memcmp(data_, other.data_, shorter) : 0;
-        if (order != 0) return order;
-        if (size_ == other.size_) return 0;
+        if (order != 0) {
+            return order;
+        }
+        if (size_ == other.size_) {
+            return 0;
+        }
         return size_ < other.size_ ? -1 : 1;
     }
 

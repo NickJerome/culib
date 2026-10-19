@@ -61,7 +61,9 @@ struct caster<T, typename std::enable_if<std::is_integral<T>::value &&
                                          std::is_signed<T>::value>::type> {
     static result<T> cast(string_view text, int base) {
         result<long long> wide = parse_signed(text, base);
-        if (wide.is_err()) return std::move(wide).error();
+        if (wide.is_err()) {
+            return std::move(wide).error();
+        }
         const long long value = wide.value();
         if (value < static_cast<long long>((std::numeric_limits<T>::min)()) ||
             value > static_cast<long long>((std::numeric_limits<T>::max)())) {
@@ -78,7 +80,9 @@ struct caster<T, typename std::enable_if<std::is_integral<T>::value &&
                                          !std::is_same<T, bool>::value>::type> {
     static result<T> cast(string_view text, int base) {
         result<unsigned long long> wide = parse_unsigned(text, base);
-        if (wide.is_err()) return std::move(wide).error();
+        if (wide.is_err()) {
+            return std::move(wide).error();
+        }
         const unsigned long long value = wide.value();
         if (value > static_cast<unsigned long long>((std::numeric_limits<T>::max)())) {
             return unsigned_out_of_range(
@@ -139,7 +143,7 @@ std::string to_string(T value) {
 
 // 需要反复产出结果时用这三个，写进调用方的缓冲区，不分配。
 // 返回写入的字节数；容量不足时返回 0 且不写入任何东西。
-// 和 std::to_chars 一样**不写 '\0'**，所以要用返回的长度，不能直接当 C 字符串。
+// 和 std::to_chars 一样不写 '\0'，要用返回的长度，不能直接当 C 字符串。
 // 容量给够就不会返回 0：整数 24 字节、浮点 32 字节足够任何输入。
 std::size_t to_chars(long long value, char* buffer, std::size_t capacity) noexcept;
 std::size_t to_chars(unsigned long long value, char* buffer, std::size_t capacity) noexcept;

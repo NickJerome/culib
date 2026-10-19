@@ -68,35 +68,51 @@ optional<std::string> getenv(string_view name) {
     if (name.empty() || name.find('\0') != string_view::npos ||
         name.find('=') != string_view::npos) return nullopt;
     const result<std::wstring> wide_name = utf8_to_wide(name);
-    if (wide_name.is_err()) return nullopt;
+    if (wide_name.is_err()) {
+        return nullopt;
+    }
 
     // 两次调用的返回值含义不同，混起来会把「值为空」当成「没设置」：
-    //   - 不给缓冲区时返回**需要的大小，含结尾 '\0'**，返回 0 才是没设置；
-    //   - 给了缓冲区时返回**存进去的字符数，不含 '\0'**，值为空时就是 0。
+    //   - 不给缓冲区时返回需要的大小，含结尾的 '\0'，返回 0 才是没设置；
+    //   - 给了缓冲区时返回存进去的字符数，不含 '\0'，值为空时就是 0。
     const DWORD needed = ::GetEnvironmentVariableW(wide_name.value().c_str(), 0, 0);
-    if (needed == 0) return nullopt;              // 不存在
-    if (needed == 1) return std::string();        // 存在，值是空字符串
+    if (needed == 0) {
+        return nullopt;              // 不存在
+    }
+    if (needed == 1) {
+        return std::string();        // 存在，值是空字符串
+    }
 
     std::vector<wchar_t> buffer(needed);
     const DWORD length = ::GetEnvironmentVariableW(wide_name.value().c_str(), &buffer[0], needed);
     // 走到这里 needed >= 2，所以 length 应该是 needed-1；不是就说明两次调用之间被改了
-    if (length == 0 || length >= needed) return nullopt;
+    if (length == 0 || length >= needed) {
+        return nullopt;
+    }
 
     const result<std::string> text = wide_to_utf8(&buffer[0], length);
-    if (text.is_err()) return nullopt;
+    if (text.is_err()) {
+        return nullopt;
+    }
     return text.value();
 }
 
 result<void> setenv(string_view name, string_view value) {
     const result<void> valid = check_name(name);
-    if (valid.is_err()) return valid;
+    if (valid.is_err()) {
+        return valid;
+    }
     if (value.find('\0') != string_view::npos) {
         return make_error(error_kind::invalid_argument, "环境变量值不能含 NUL");
     }
     const result<std::wstring> wide_name = utf8_to_wide(name);
-    if (wide_name.is_err()) return std::move(wide_name).error();
+    if (wide_name.is_err()) {
+        return std::move(wide_name).error();
+    }
     const result<std::wstring> wide_value = utf8_to_wide(value);
-    if (wide_value.is_err()) return std::move(wide_value).error();
+    if (wide_value.is_err()) {
+        return std::move(wide_value).error();
+    }
     if (!::SetEnvironmentVariableW(wide_name.value().c_str(), wide_value.value().c_str())) {
         return from_last_error("设置环境变量 " + name.to_string(), ::GetLastError());
     }
@@ -105,13 +121,19 @@ result<void> setenv(string_view name, string_view value) {
 
 result<void> unsetenv(string_view name) {
     const result<void> valid = check_name(name);
-    if (valid.is_err()) return valid;
+    if (valid.is_err()) {
+        return valid;
+    }
     const result<std::wstring> wide_name = utf8_to_wide(name);
-    if (wide_name.is_err()) return std::move(wide_name).error();
+    if (wide_name.is_err()) {
+        return std::move(wide_name).error();
+    }
     // 传 0 作为值就是删除。本来没设置时也返回成功，所以这是幂等的。
     if (!::SetEnvironmentVariableW(wide_name.value().c_str(), 0)) {
         const DWORD code = ::GetLastError();
-        if (code == ERROR_ENVVAR_NOT_FOUND) return result<void>();
+        if (code == ERROR_ENVVAR_NOT_FOUND) {
+            return result<void>();
+        }
         return from_last_error("清除环境变量 " + name.to_string(), code);
     }
     return result<void>();
@@ -120,14 +142,18 @@ result<void> unsetenv(string_view name) {
 // --- 进程与机器信息 -----------------------------------------------------------
 
 result<std::string> executable_path() {
-    // GetModuleFileNameW 在缓冲区不够时**也返回请求的大小**并设 ERROR_INSUFFICIENT_BUFFER，
-    // 而且 Windows XP 以前不保证补 '\0'。所以按需翻倍重试，自己留一个字节。
+    // GetModuleFileNameW 在缓冲区不够时也返回缓冲区的大小，并设 ERROR_INSUFFICIENT_BUFFER。
+    // 所以按需翻倍重试，自己多留一个字节。
     std::vector<wchar_t> buffer(MAX_PATH);
     for (;;) {
         const DWORD length = ::GetModuleFileNameW(0, &buffer[0],
                                                   static_cast<DWORD>(buffer.size()));
-        if (length == 0) return from_last_error("取可执行文件路径", ::GetLastError());
-        if (length < buffer.size()) return wide_to_utf8(&buffer[0], length);
+        if (length == 0) {
+            return from_last_error("取可执行文件路径", ::GetLastError());
+        }
+        if (length < buffer.size()) {
+            return wide_to_utf8(&buffer[0], length);
+        }
         if (buffer.size() > (1u << 16)) {
             return make_error(error_kind::io, "可执行文件路径过长");
         }
@@ -145,7 +171,9 @@ result<std::string> hostname() {
             return wide_to_utf8(&buffer[0], size);
         }
         const DWORD code = ::GetLastError();
-        if (code != ERROR_MORE_DATA || size > 4096) return from_last_error("取主机名", code);
+        if (code != ERROR_MORE_DATA || size > 4096) {
+            return from_last_error("取主机名", code);
+        }
         buffer.resize(size);          // 失败时 size 已被改成需要的大小
     }
 }
@@ -154,7 +182,7 @@ long process_id() noexcept { return static_cast<long>(::GetCurrentProcessId()); 
 
 unsigned cpu_count() noexcept {
     const unsigned reported = std::thread::hardware_concurrency();
-    return reported != 0 ? reported : 1u;   // 0 对线程池没有意义
+    return reported != 0 ? reported : 1u;   // 按它开工作线程，0 没有意义
 }
 
 // --- 优雅退出 -----------------------------------------------------------------

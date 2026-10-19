@@ -20,13 +20,19 @@ char upper_ascii(char ch) {
 // join 的两个重载只在「怎么取第 i 片」上不同，用模板把剩下的共享掉。
 template <typename Parts>
 std::string join_parts(const Parts& parts, string_view separator) {
-    if (parts.empty()) return std::string();
+    if (parts.empty()) {
+        return std::string();
+    }
     std::size_t total = separator.size() * (parts.size() - 1);
-    for (std::size_t i = 0; i < parts.size(); ++i) total += parts[i].size();
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        total += parts[i].size();
+    }
     std::string joined;
     joined.reserve(total);          // 先算总长再一次分配，不让 append 反复扩容
     for (std::size_t i = 0; i < parts.size(); ++i) {
-        if (i != 0) joined.append(separator.data(), separator.size());
+        if (i != 0) {
+            joined.append(separator.data(), separator.size());
+        }
         joined.append(parts[i].data(), parts[i].size());
     }
     return joined;
@@ -35,9 +41,13 @@ std::string join_parts(const Parts& parts, string_view separator) {
 template <typename Transform>
 void map_ascii(string_view text, std::string& out, Transform transform) {
     const std::size_t size = text.size();
-    if (out.size() < size) out.resize(size);
+    if (out.size() < size) {
+        out.resize(size);
+    }
     // text 可能指向 out 内部；读完后才能缩短 out。
-    for (std::size_t i = 0; i < size; ++i) out[i] = transform(text[i]);
+    for (std::size_t i = 0; i < size; ++i) {
+        out[i] = transform(text[i]);
+    }
     out.resize(size);
 }
 
@@ -49,10 +59,18 @@ error bad_utf8(std::size_t offset, const char* why) {
 
 // 一个 UTF-8 序列的长度，首字节不合法时返回 0。
 int sequence_length(unsigned char lead) {
-    if (lead < 0x80) return 1;
-    if ((lead & 0xE0) == 0xC0) return 2;
-    if ((lead & 0xF0) == 0xE0) return 3;
-    if ((lead & 0xF8) == 0xF0) return 4;
+    if (lead < 0x80) {
+        return 1;
+    }
+    if ((lead & 0xE0) == 0xC0) {
+        return 2;
+    }
+    if ((lead & 0xF0) == 0xE0) {
+        return 3;
+    }
+    if ((lead & 0xF8) == 0xF0) {
+        return 4;
+    }
     return 0;   // 0x80..0xBF 是后续字节，0xF8 以上根本不存在
 }
 
@@ -60,19 +78,29 @@ int sequence_length(unsigned char lead) {
 int decode(const char* text, std::size_t available, unsigned long& code_point) {
     const unsigned char lead = static_cast<unsigned char>(text[0]);
     const int length = sequence_length(lead);
-    if (length == 0 || static_cast<std::size_t>(length) > available) return 0;
+    if (length == 0 || static_cast<std::size_t>(length) > available) {
+        return 0;
+    }
     static const unsigned char kLeadMask[5] = {0, 0x7F, 0x1F, 0x0F, 0x07};
     unsigned long value = lead & kLeadMask[length];
     for (int i = 1; i < length; ++i) {
         const unsigned char continuation = static_cast<unsigned char>(text[i]);
-        if ((continuation & 0xC0) != 0x80) return 0;
+        if ((continuation & 0xC0) != 0x80) {
+            return 0;
+        }
         value = (value << 6) | (continuation & 0x3Fu);
     }
     // 过长编码：同一个码点用了比必要更多的字节，是经典的安全问题（绕过路径检查）
     static const unsigned long kMinimum[5] = {0, 0, 0x80, 0x800, 0x10000};
-    if (value < kMinimum[length]) return 0;
-    if (value > 0x10FFFF) return 0;
-    if (value >= 0xD800 && value <= 0xDFFF) return 0;   // UTF-16 代理区不是合法码点
+    if (value < kMinimum[length]) {
+        return 0;
+    }
+    if (value > 0x10FFFF) {
+        return 0;
+    }
+    if (value >= 0xD800 && value <= 0xDFFF) {
+        return 0;   // UTF-16 代理区不是合法码点
+    }
     code_point = value;
     return length;
 }
@@ -103,7 +131,9 @@ result<Container> utf8_to_units(string_view utf8) {
     while (offset < utf8.size()) {
         unsigned long code_point = 0;
         const int consumed = decode(utf8.data() + offset, utf8.size() - offset, code_point);
-        if (consumed == 0) return bad_utf8(offset, "不是合法的 UTF-8 序列");
+        if (consumed == 0) {
+            return bad_utf8(offset, "不是合法的 UTF-8 序列");
+        }
         if (code_point < 0x10000) {
             units.push_back(static_cast<Unit>(code_point));
         } else {
@@ -191,11 +221,15 @@ std::vector<string_view> split(string_view text, string_view separator) {
 
 std::vector<string_view> split(string_view text, char separator, std::size_t limit) {
     std::vector<string_view> parts;
-    if (limit == 0) return parts;
+    if (limit == 0) {
+        return parts;
+    }
     string_view rest = text;
     while (parts.size() + 1 < limit) {
         const string_view::size_type at = rest.find(separator);
-        if (at == string_view::npos) break;
+        if (at == string_view::npos) {
+            break;
+        }
         parts.push_back(rest.substr(0, at));
         rest.remove_prefix(at + 1);
     }
@@ -215,13 +249,17 @@ std::string join(const std::vector<std::string>& parts, string_view separator) {
 
 string_view trim_left(string_view text) noexcept {
     std::size_t start = 0;
-    while (start < text.size() && is_space(text.data()[start])) ++start;
+    while (start < text.size() && is_space(text.data()[start])) {
+        ++start;
+    }
     return string_view(text.data() + start, text.size() - start);
 }
 
 string_view trim_right(string_view text) noexcept {
     std::size_t size = text.size();
-    while (size > 0 && is_space(text.data()[size - 1])) --size;
+    while (size > 0 && is_space(text.data()[size - 1])) {
+        --size;
+    }
     return string_view(text.data(), size);
 }
 
@@ -245,15 +283,21 @@ std::string to_upper(string_view text) {
 }
 
 bool equals_ignore_case(string_view a, string_view b) noexcept {
-    if (a.size() != b.size()) return false;
+    if (a.size() != b.size()) {
+        return false;
+    }
     for (std::size_t i = 0; i < a.size(); ++i) {
-        if (lower_ascii(a.data()[i]) != lower_ascii(b.data()[i])) return false;
+        if (lower_ascii(a.data()[i]) != lower_ascii(b.data()[i])) {
+            return false;
+        }
     }
     return true;
 }
 
 std::string replace_all(string_view text, string_view from, string_view to) {
-    if (from.empty()) return text.to_string();
+    if (from.empty()) {
+        return text.to_string();
+    }
     std::string out;
     string_view rest = text;
     for (;;) {
@@ -276,7 +320,9 @@ bool is_valid_utf8(string_view text) noexcept {
     while (offset < text.size()) {
         unsigned long code_point = 0;
         const int consumed = decode(text.data() + offset, text.size() - offset, code_point);
-        if (consumed == 0) return false;
+        if (consumed == 0) {
+            return false;
+        }
         offset += static_cast<std::size_t>(consumed);
     }
     return true;

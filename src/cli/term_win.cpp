@@ -26,7 +26,9 @@ int vt_state[2] = {0, 0};
 
 bool is_terminal(stream_kind which) noexcept {
     const HANDLE to = handle_of(which);
-    if (to == INVALID_HANDLE_VALUE || to == 0) return false;
+    if (to == INVALID_HANDLE_VALUE || to == 0) {
+        return false;
+    }
     DWORD mode = 0;
     // 控制台句柄才有「控制台模式」；重定向到文件或管道时这个会失败。
     return ::GetConsoleMode(to, &mode) != 0;
@@ -34,7 +36,9 @@ bool is_terminal(stream_kind which) noexcept {
 
 bool enable_ansi(stream_kind which) noexcept {
     int& state = vt_state[which == stream_out ? 0 : 1];
-    if (state) return state == 1;
+    if (state) {
+        return state == 1;
+    }
 
     const HANDLE to = handle_of(which);
     DWORD mode = 0;

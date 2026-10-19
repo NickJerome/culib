@@ -34,7 +34,7 @@ private:
     bool active_ = true;
 };
 
-// 让 WAVVIX_DEFER 可以写成 `defer_maker() + [&]() { ... }` 的形式。
+// 让 WAVVIX_DEFER 可以展开成 defer_maker() + [&]() { ... } 的形式。
 struct defer_maker {
     template <typename F>
     defer_guard<F> operator+(F&& fn) const noexcept {

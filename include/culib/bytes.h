@@ -56,7 +56,7 @@ public:
     bool empty() const { return write_at_ == read_at_; }
     std::size_t capacity() const { return capacity_; }
 
-    // 读游标和写游标一起回到起点，**容量留着**（下一轮不用重新分配）。
+    // 读游标和写游标一起回到起点。容量留着，下一轮不用重新分配。
     void clear() {
         read_at_ = 0;
         write_at_ = 0;
@@ -67,11 +67,13 @@ public:
     void reserve(std::size_t room);
 
     // ---- 直接读写底下那块内存，省一次拷贝 ----
-    // 要至少 length 字节的可写空间，返回它的起点。**真写进去多少要用 commit 认账。**
-    // 最多认账 length 字节；再次 prepare、reserve、consume 或 clear 后须重新取得。
+    // 要至少 length 字节的可写空间，返回它的起点。真写进去多少，用 commit 认账，最多认 length 字节；
+    // 再次 prepare、reserve、consume 或 clear 以后要重新取。
     unsigned char* prepare(std::size_t length);
     void commit(std::size_t length) {
-        if (length > prepared_) detail::bytes_overcommit();
+        if (length > prepared_) {
+            detail::bytes_overcommit();
+        }
         write_at_ += length;
         prepared_ -= length;
     }
@@ -80,13 +82,17 @@ public:
     void consume(std::size_t length) {
         prepared_ = 0;
         read_at_ += (length < size()) ? length : size();
-        if (read_at_ == write_at_) clear();    // 空了就归零，省得越积越靠后
+        if (read_at_ == write_at_) {
+            clear();    // 空了就归零，省得越积越靠后
+        }
     }
 
     // ---- 写 ----
     // 可以复制本缓冲区中尚未消费的字节；此时源区间须完整落在有效数据内。
     void write(const void* from, std::size_t length) {
-        if (!length) return;
+        if (!length) {
+            return;
+        }
         if (capacity_ - write_at_ < length) {
             write_slow(from, length);
             return;
@@ -134,32 +140,44 @@ public:
 
     void write_u64_be(std::uint64_t value) {
         unsigned char* const at = prepare(8);
-        for (int i = 0; i < 8; ++i) at[i] = static_cast<unsigned char>(value >> (56 - 8 * i));
+        for (int i = 0; i < 8; ++i) {
+            at[i] = static_cast<unsigned char>(value >> (56 - 8 * i));
+        }
         commit(8);
     }
     void write_u64_le(std::uint64_t value) {
         unsigned char* const at = prepare(8);
-        for (int i = 0; i < 8; ++i) at[i] = static_cast<unsigned char>(value >> (8 * i));
+        for (int i = 0; i < 8; ++i) {
+            at[i] = static_cast<unsigned char>(value >> (8 * i));
+        }
         commit(8);
     }
 
-    // ---- 读。不够就返回 false，**游标不动**。 ----
+    // ---- 读。不够就返回 false，游标不动 ----
     bool read(void* into, std::size_t length) {
-        if (size() < length) return false;
-        if (length) std::memcpy(into, data(), length);
+        if (size() < length) {
+            return false;
+        }
+        if (length) {
+            std::memcpy(into, data(), length);
+        }
         consume(length);
         return true;
     }
 
     optional<std::uint8_t> read_u8() {
-        if (size() < 1) return optional<std::uint8_t>();
+        if (size() < 1) {
+            return optional<std::uint8_t>();
+        }
         const std::uint8_t value = *data();
         consume(1);
         return optional<std::uint8_t>(value);
     }
 
     optional<std::uint16_t> read_u16_be() {
-        if (size() < 2) return optional<std::uint16_t>();
+        if (size() < 2) {
+            return optional<std::uint16_t>();
+        }
         const unsigned char* const at = data();
         const std::uint16_t value =
             static_cast<std::uint16_t>(static_cast<std::uint16_t>(at[0]) << 8 | at[1]);
@@ -167,7 +185,9 @@ public:
         return optional<std::uint16_t>(value);
     }
     optional<std::uint16_t> read_u16_le() {
-        if (size() < 2) return optional<std::uint16_t>();
+        if (size() < 2) {
+            return optional<std::uint16_t>();
+        }
         const unsigned char* const at = data();
         const std::uint16_t value =
             static_cast<std::uint16_t>(static_cast<std::uint16_t>(at[1]) << 8 | at[0]);
@@ -176,7 +196,9 @@ public:
     }
 
     optional<std::uint32_t> read_u32_be() {
-        if (size() < 4) return optional<std::uint32_t>();
+        if (size() < 4) {
+            return optional<std::uint32_t>();
+        }
         const unsigned char* const at = data();
         const std::uint32_t value =
             static_cast<std::uint32_t>(at[0]) << 24 | static_cast<std::uint32_t>(at[1]) << 16 |
@@ -185,7 +207,9 @@ public:
         return optional<std::uint32_t>(value);
     }
     optional<std::uint32_t> read_u32_le() {
-        if (size() < 4) return optional<std::uint32_t>();
+        if (size() < 4) {
+            return optional<std::uint32_t>();
+        }
         const unsigned char* const at = data();
         const std::uint32_t value =
             static_cast<std::uint32_t>(at[3]) << 24 | static_cast<std::uint32_t>(at[2]) << 16 |
@@ -195,18 +219,26 @@ public:
     }
 
     optional<std::uint64_t> read_u64_be() {
-        if (size() < 8) return optional<std::uint64_t>();
+        if (size() < 8) {
+            return optional<std::uint64_t>();
+        }
         const unsigned char* const at = data();
         std::uint64_t value = 0;
-        for (int i = 0; i < 8; ++i) value = value << 8 | at[i];
+        for (int i = 0; i < 8; ++i) {
+            value = value << 8 | at[i];
+        }
         consume(8);
         return optional<std::uint64_t>(value);
     }
     optional<std::uint64_t> read_u64_le() {
-        if (size() < 8) return optional<std::uint64_t>();
+        if (size() < 8) {
+            return optional<std::uint64_t>();
+        }
         const unsigned char* const at = data();
         std::uint64_t value = 0;
-        for (int i = 7; i >= 0; --i) value = value << 8 | at[i];
+        for (int i = 7; i >= 0; --i) {
+            value = value << 8 | at[i];
+        }
         consume(8);
         return optional<std::uint64_t>(value);
     }

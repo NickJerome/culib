@@ -535,7 +535,7 @@ directory_iterator::~directory_iterator() {
 
 const result<directory_entry>& directory_iterator::operator*() const {
     if (state_ == nullptr || !state_->current) {
-        // 到尾还解引用是误用；给个可诊断的错误元素，不踩空指针。
+        // 到尾还解引用是误用；给一个说明情况的错误元素，不解引用空指针。
         static const result<directory_entry> past_the_end(
             make_error(error_kind::invalid_argument, "已过尾的目录迭代器被解引用"));
         return past_the_end;

@@ -19,13 +19,12 @@ public:
     static result<config> load(string_view path);
     static result<config> parse(string_view text);
 
-    // 原始文本。键不存在时是空的。**返回的视图指向 config 自己的存储**，
-    // 所以别让它活得比 config 长。
+    // 原始文本，键不存在时为空。返回的视图指向 config 自己的存储，不能比 config 活得长。
     optional<string_view> get(string_view key) const;
 
     bool has(string_view key) const noexcept { return find(key) != 0; }
 
-    // 全部键，**按文件里出现的顺序**。
+    // 全部键，按文件里出现的顺序。
     std::vector<string_view> keys() const;
 
     std::size_t size() const noexcept { return entries_.size(); }
@@ -37,11 +36,8 @@ public:
     result<double> get_double(string_view key, double fallback = 0.0) const;
     result<bool> get_bool(string_view key, bool fallback = false) const;
 
-    // 把所有键值喂给 flag，**命令行优先**：命令行上已经给过的那些跳过。
-    // 这样配置文件和命令行用同一套定义，不用写两遍。
-    //
-    // 配置里有 flag 没定义的键不算错（配置文件通常比 flag 多，比如日志路径那些
-    // 不走命令行的），所以那些只是跳过。
+    // 把所有键值交给 flag，命令行优先：命令行上已经给过的跳过。配置文件和命令行用同一套定义。
+    // flag 没定义的键也跳过，不算错：配置文件通常比命令行选项多，比如日志路径。
     result<void> apply_to_flags() const;
 
 private:

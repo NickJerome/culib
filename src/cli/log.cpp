@@ -147,8 +147,8 @@ void deliver(sink& target, level at, const char* stamp, std::size_t stamp_length
             }
             // 没轮转成的话计数不用重问：还是同一个文件，攒着的数照旧。
         }
-        // 被拒过一次就不再试（见 sink::rotation_disabled），继续往当前文件写；
-        // 开不起来也照写不了，和以前一样。
+        // 被拒过一次就不再试（见 sink::rotation_disabled），继续往当前文件写；当前文件也打不开时
+        // 照样写不进去。
         if (!rotated) {
             target.rotation_disabled = true;
         }

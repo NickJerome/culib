@@ -40,7 +40,9 @@ buffer& buffer::operator=(const buffer& other) {
 
 void buffer::compact() {
     const std::size_t left = size();
-    if (left && read_at_) std::memmove(store_.get(), data(), left);
+    if (left && read_at_) {
+        std::memmove(store_.get(), data(), left);
+    }
     read_at_ = 0;
     write_at_ = left;
 }
@@ -48,7 +50,9 @@ void buffer::compact() {
 void buffer::grow(std::size_t capacity) {
     std::unique_ptr<unsigned char[]> next(new unsigned char[capacity]);
     const std::size_t left = size();
-    if (left != 0) std::memcpy(next.get(), data(), left);
+    if (left != 0) {
+        std::memcpy(next.get(), data(), left);
+    }
     store_.swap(next);
     capacity_ = capacity;
     read_at_ = 0;
@@ -77,7 +81,9 @@ void buffer::write_slow(const void* from, std::size_t length) {
 
 unsigned char* buffer::prepare(std::size_t length) {
     prepared_ = 0;
-    if (length == 0) return store_ ? store_.get() + write_at_ : 0;
+    if (length == 0) {
+        return store_ ? store_.get() + write_at_ : 0;
+    }
     if (capacity_ - write_at_ >= length) {
         prepared_ = length;
         return store_.get() + write_at_;
@@ -93,7 +99,9 @@ unsigned char* buffer::prepare(std::size_t length) {
 
     const std::size_t left = size();
     const std::size_t max = (std::numeric_limits<std::size_t>::max)();
-    if (length > max - left) detail::bytes_capacity_overflow();
+    if (length > max - left) {
+        detail::bytes_capacity_overflow();
+    }
     const std::size_t needed = left + length;
     std::size_t room = capacity_ == 0 ? 256 : capacity_;
     while (room < needed) {
@@ -110,14 +118,17 @@ unsigned char* buffer::prepare(std::size_t length) {
 
 void buffer::reserve(std::size_t room) {
     prepared_ = 0;
-    if (capacity_ - write_at_ >= room) return;
+    if (capacity_ - write_at_ >= room) {
+        return;
+    }
     const std::size_t left = size();
     if (capacity_ - left >= room) {
         compact();
         return;
     }
-    if (room > (std::numeric_limits<std::size_t>::max)() - left)
+    if (room > (std::numeric_limits<std::size_t>::max)() - left) {
         detail::bytes_capacity_overflow();
+    }
     grow(left + room);
 }
 

@@ -15,7 +15,7 @@ namespace log {
 
 enum class level { trace, debug, info, warning, error, fatal };
 
-// 低于这一级的都不写。默认 `info`。
+// 低于这一级的都不写。默认 info。
 void set_level(level value) noexcept;
 level current_level() noexcept;
 
@@ -24,15 +24,15 @@ const std::size_t line_capacity = 1024;
 
 // ---- 输出目标 ----
 
-// 往 stderr 写。**不配任何 sink 时自动就有一个**，所以这个函数只在
-// `clear_sinks()` 之后或者想要两个控制台输出时才需要调。
+// 往 stderr 写。一个 sink 都没配时自动就有这一个，所以只在 clear_sinks() 之后，
+// 或者想要两个控制台输出时才需要调。
 void add_console_sink();
 
-// 往文件追加。`max_bytes` 不为 0 时超过它就轮转：`path` 改名成 `path.1`，
-// 原来的 `path.1` 变 `path.2`，依此类推，超过 `keep_files` 个的删掉。
+// 往文件追加。max_bytes 不为 0 时超过它就轮转：path 改名成 path.1，原来的 path.1 变成 path.2，
+// 依此类推，超过 keep_files 个的删掉。
 result<void> add_file_sink(string_view path, std::uint64_t max_bytes = 0, int keep_files = 3);
 
-// 去掉全部输出目标。之后的日志**什么都不写**（也不会再自动补上控制台那一路）。
+// 去掉全部输出目标。之后的日志什么都不写，也不会再自动补上控制台那一路。
 void clear_sinks();
 
 namespace detail {
@@ -40,8 +40,8 @@ namespace detail {
 // 这一级现在要不要写。宏先问它，所以不够级别时参数一行都不求值。
 bool enabled(level at) noexcept;
 
-// 把消息写进一块固定缓冲的 streambuf。满了就不要后面的——`overflow` 返回 eof，
-// `std::ostream` 会把自己置成 bad，后续 `<<` 直接丢掉，正好是「截断」。
+// 把消息写进一块固定缓冲的 streambuf。满了就丢掉后面的：overflow 返回 eof，std::ostream 把自己
+// 置成 bad，之后的 << 直接丢掉，也就是截断。
 class line_buffer : public std::streambuf {
 public:
     line_buffer(char* at, std::size_t capacity) noexcept : start_(at) {
@@ -56,8 +56,8 @@ private:
     char* start_;
 };
 
-// 一行日志。**活在调用方的栈上，一次分配都没有。** 析构时才真交给各个 sink，
-// 所以 `<<` 链上的东西全部写完才会出现一行完整的日志（不会和别的线程交错）。
+// 一行日志，放在调用方的栈上，不分配。析构时才交给各个 sink，所以 << 链上的东西全部写完
+// 才出现一行完整的日志，不会和别的线程交错。
 class line {
 public:
     line(level at, const char* file, int row) noexcept;

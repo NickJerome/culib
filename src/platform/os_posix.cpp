@@ -67,13 +67,17 @@ optional<std::string> getenv(string_view name) {
         name.find('=') != string_view::npos) return nullopt;
     const std::string key = name.to_string();
     const char* value = std::getenv(key.c_str());
-    if (!value) return nullopt;
+    if (!value) {
+        return nullopt;
+    }
     return std::string(value);      // 空字符串是合法的值，和「没设置」不同
 }
 
 result<void> setenv(string_view name, string_view value) {
     const result<void> valid = check_name(name);
-    if (valid.is_err()) return valid;
+    if (valid.is_err()) {
+        return valid;
+    }
     if (value.find('\0') != string_view::npos) {
         return make_error(error_kind::invalid_argument, "环境变量值不能含 NUL");
     }
@@ -87,7 +91,9 @@ result<void> setenv(string_view name, string_view value) {
 
 result<void> unsetenv(string_view name) {
     const result<void> valid = check_name(name);
-    if (valid.is_err()) return valid;
+    if (valid.is_err()) {
+        return valid;
+    }
     const std::string key = name.to_string();
     // 本来就没设置时 unsetenv 返回 0，所以这是幂等的
     if (::unsetenv(key.c_str()) != 0) {
@@ -108,7 +114,9 @@ result<std::string> executable_path() {
         return make_error(error_kind::io, "取可执行文件路径失败");
     }
     char resolved[PATH_MAX];
-    if (!::realpath(&buffer[0], resolved)) return from_errno("解析可执行文件路径", errno);
+    if (!::realpath(&buffer[0], resolved)) {
+        return from_errno("解析可执行文件路径", errno);
+    }
     return std::string(resolved);
 #else
     // Linux：/proc/self/exe 是符号链接，readlink 给出已解析的绝对路径。
@@ -116,7 +124,9 @@ result<std::string> executable_path() {
     std::vector<char> buffer(512);
     for (;;) {
         const ssize_t written = ::readlink("/proc/self/exe", &buffer[0], buffer.size());
-        if (written < 0) return from_errno("读取 /proc/self/exe", errno);
+        if (written < 0) {
+            return from_errno("读取 /proc/self/exe", errno);
+        }
         if (static_cast<std::size_t>(written) < buffer.size()) {
             return std::string(&buffer[0], static_cast<std::size_t>(written));
         }
@@ -135,12 +145,15 @@ result<std::string> hostname() {
         if (::gethostname(&buffer[0], buffer.size()) == 0) {
             const char* const end = static_cast<const char*>(
                 std::memchr(&buffer[0], '\0', buffer.size()));
-            if (end) return std::string(&buffer[0], static_cast<std::size_t>(end - &buffer[0]));
+            if (end) {
+                return std::string(&buffer[0], static_cast<std::size_t>(end - &buffer[0]));
+            }
         } else if (errno != ENAMETOOLONG && errno != ERANGE) {
             return from_errno("取主机名", errno);
         }
-        if (buffer.size() >= 4096)
+        if (buffer.size() >= 4096) {
             return make_error(error_kind::out_of_range, "主机名过长");
+        }
         buffer.resize(buffer.size() * 2);
     }
 }
@@ -226,7 +239,7 @@ unsigned cpu_count() noexcept {
         count = limit;
     }
 #endif
-    return count != 0 ? count : 1u;   // 0 对线程池没有意义
+    return count != 0 ? count : 1u;   // 按它开工作线程，0 没有意义
 }
 
 // --- 优雅退出 -----------------------------------------------------------------
@@ -238,8 +251,8 @@ result<void> install_stop_handler() {
     std::memset(&action, 0, sizeof action);
     action.sa_handler = &raise_stop_flag;
     sigemptyset(&action.sa_mask);
-    // 不设 SA_RESTART：我们**想要**阻塞的系统调用被 EINTR 打断，否则一个卡在
-    // read 上的主循环收到信号也不会醒过来。调用方要处理 EINTR。
+    // 不设 SA_RESTART：要让阻塞的系统调用被 EINTR 打断，否则卡在 read 上的主循环收到信号
+    // 也不会醒过来。调用方要处理 EINTR。
     action.sa_flags = 0;
 
     // SIGHUP 不管，保持默认：按惯例它是「重载配置」而不是「停止」。

@@ -1,7 +1,7 @@
 ﻿#pragma once
 
-// fs::ofstream：把 fs::file 接到标准 <ostream> 上。自带缓冲的 streambuf 攒够一
-// 整块才落一次 file.write，协程里每次落盘只挂起写它的那个协程。
+// fs::ofstream：把 fs::file 接到标准 <ostream> 上。自带缓冲的 streambuf 攒够一整块才调一次
+// file.write。落盘是阻塞的系统调用，在协程里卡得久了，由监控线程把工作线程的名额交给别的线程。
 // 只支持写：构造即打开（app/out/trunc/binary 的组合，默认 out 即截断），
 // 打开失败反映在流状态上（failbit）；写、flush、close 的失败置 badbit/failbit，
 // 从不洗掉更早的状态。void close() 之后 is_open() 为 false；析构只尽力冲刷。

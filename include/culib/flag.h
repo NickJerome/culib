@@ -58,7 +58,9 @@ public:
     ~option() noexcept { detail::unregister_flag(&stored_); }
 
     const T& value() const noexcept {
-        if (!detail::parsed()) detail::read_before_parse(&stored_);
+        if (!detail::parsed()) {
+            detail::read_before_parse(&stored_);
+        }
         return stored_;
     }
 

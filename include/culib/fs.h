@@ -67,7 +67,7 @@ result<path> temp_directory_path();
 // --- 查询 -------------------------------------------------------------------------
 
 // 答案放值里：不存在是 ok(false)；没有权限之类「问不成」才是错误。
-// 查询跟随符号链接（`lstat` 风格的判断在遍历接口内部，不对外）。
+// 查询跟随符号链接（lstat 那样不跟随的判断只在遍历接口内部用，不对外）。
 result<bool> exists(const path& target);
 result<bool> is_regular_file(const path& target);
 result<bool> is_directory(const path& target);

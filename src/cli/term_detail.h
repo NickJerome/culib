@@ -13,8 +13,8 @@ bool is_terminal(stream_kind which) noexcept;
 
 // 让这个标准流能吃 ANSI 颜色码。
 //
-// POSIX 上什么都不用做，直接返回 true。**Windows 上要开 VT 模式**，开不起来就返回
-// false，调用方据此退回纯文字。
+// POSIX 上什么都不用做，直接返回 true。Windows 上要开 VT 模式，开不起来就返回 false，
+// 调用方据此退回纯文字。
 //
 // 一根流只会真去开一次（里面记着结果）。
 bool enable_ansi(stream_kind which) noexcept;

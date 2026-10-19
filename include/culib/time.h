@@ -27,8 +27,9 @@ public:
 
     static timestamp from_unix_seconds(std::int64_t seconds) noexcept {
         const std::int64_t limit = (std::numeric_limits<std::int64_t>::max)() / 1000;
-        if (seconds < -limit || seconds > limit)
+        if (seconds < -limit || seconds > limit) {
             detail::timestamp_seconds_out_of_range();
+        }
         return timestamp(seconds * 1000);
     }
     static timestamp from_unix_millis(std::int64_t millis) noexcept { return timestamp(millis); }
@@ -82,7 +83,7 @@ std::string format_time(timestamp point, precision digits = precision::seconds);
 result<std::string> format_local_time(timestamp point, precision digits = precision::seconds);
 
 // 写进调用方的缓冲区，不分配。返回写入的字节数；容量不足时返回 0 且不写入。
-// 和 to_chars 一样**不写 '\0'**，要用返回的长度。**40 字节够任何输入。**
+// 和 to_chars 一样不写 '\0'，要用返回的长度。40 字节够任何输入。
 std::size_t format_time(timestamp point, precision digits, char* buffer,
                         std::size_t capacity) noexcept;
 

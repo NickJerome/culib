@@ -104,7 +104,9 @@ const std::size_t needed_capacity = 36;
 
 std::size_t write_parts(const date_time& parts, precision digits, char* buffer,
                         std::size_t capacity) noexcept {
-    if (capacity < needed_capacity) return 0;
+    if (capacity < needed_capacity) {
+        return 0;
+    }
 
     char* p = buffer + write_year(parts.year, buffer);
     *p++ = '-';
@@ -205,7 +207,9 @@ std::string format_time(timestamp point, precision digits) {
 
 result<std::string> format_local_time(timestamp point, precision digits) {
     result<date_time> parts = local_parts(point);
-    if (parts.is_err()) return std::move(parts).error();
+    if (parts.is_err()) {
+        return std::move(parts).error();
+    }
     char buffer[needed_capacity];
     const std::size_t written = write_parts(parts.value(), digits, buffer, sizeof buffer);
     return std::string(buffer, written);
@@ -219,11 +223,15 @@ bool is_digit(char c) noexcept { return c >= '0' && c <= '9'; }
 
 // 读固定位数的十进制数。位数不够或有非数字就失败。
 bool read_fixed(string_view text, std::size_t& at, std::size_t count, unsigned& out) noexcept {
-    if (at + count > text.size()) return false;
+    if (at + count > text.size()) {
+        return false;
+    }
     unsigned value = 0;
     for (std::size_t i = 0; i < count; ++i) {
         const char c = text[at + i];
-        if (!is_digit(c)) return false;
+        if (!is_digit(c)) {
+            return false;
+        }
         value = value * 10 + static_cast<unsigned>(c - '0');
     }
     at += count;
@@ -232,7 +240,9 @@ bool read_fixed(string_view text, std::size_t& at, std::size_t count, unsigned& 
 }
 
 bool expect(string_view text, std::size_t& at, char wanted) noexcept {
-    if (at >= text.size() || text[at] != wanted) return false;
+    if (at >= text.size() || text[at] != wanted) {
+        return false;
+    }
     ++at;
     return true;
 }
@@ -249,11 +259,21 @@ result<timestamp> parse_time(string_view text) {
     std::size_t at = 0;
     unsigned year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
 
-    if (!read_fixed(text, at, 4, year)) return malformed(text);
-    if (!expect(text, at, '-')) return malformed(text);
-    if (!read_fixed(text, at, 2, month)) return malformed(text);
-    if (!expect(text, at, '-')) return malformed(text);
-    if (!read_fixed(text, at, 2, day)) return malformed(text);
+    if (!read_fixed(text, at, 4, year)) {
+        return malformed(text);
+    }
+    if (!expect(text, at, '-')) {
+        return malformed(text);
+    }
+    if (!read_fixed(text, at, 2, month)) {
+        return malformed(text);
+    }
+    if (!expect(text, at, '-')) {
+        return malformed(text);
+    }
+    if (!read_fixed(text, at, 2, day)) {
+        return malformed(text);
+    }
 
     // 空格代替 T 也认：人手写的配置文件里空格更常见，而 RFC 3339 明确允许换分隔符。
     // 输出那边仍然一律用 T——输入宽容和输出严格不矛盾。
@@ -262,16 +282,28 @@ result<timestamp> parse_time(string_view text) {
     }
     ++at;
 
-    if (!read_fixed(text, at, 2, hour)) return malformed(text);
-    if (!expect(text, at, ':')) return malformed(text);
-    if (!read_fixed(text, at, 2, minute)) return malformed(text);
-    if (!expect(text, at, ':')) return malformed(text);
-    if (!read_fixed(text, at, 2, second)) return malformed(text);
+    if (!read_fixed(text, at, 2, hour)) {
+        return malformed(text);
+    }
+    if (!expect(text, at, ':')) {
+        return malformed(text);
+    }
+    if (!read_fixed(text, at, 2, minute)) {
+        return malformed(text);
+    }
+    if (!expect(text, at, ':')) {
+        return malformed(text);
+    }
+    if (!read_fixed(text, at, 2, second)) {
+        return malformed(text);
+    }
 
     unsigned millisecond = 0;
     if (at < text.size() && text[at] == '.') {
         ++at;
-        if (at >= text.size() || !is_digit(text[at])) return malformed(text);
+        if (at >= text.size() || !is_digit(text[at])) {
+            return malformed(text);
+        }
         // 多于 3 位就截断，不四舍五入——毫秒是我们能表示的全部精度
         unsigned place = 100;
         while (at < text.size() && is_digit(text[at])) {
@@ -290,22 +322,32 @@ result<timestamp> parse_time(string_view text) {
         const bool negative = text[at] == '-';
         ++at;
         unsigned offset_hour = 0, offset_minute = 0;
-        if (!read_fixed(text, at, 2, offset_hour)) return malformed(text);
-        if (!expect(text, at, ':')) return malformed(text);
-        if (!read_fixed(text, at, 2, offset_minute)) return malformed(text);
+        if (!read_fixed(text, at, 2, offset_hour)) {
+            return malformed(text);
+        }
+        if (!expect(text, at, ':')) {
+            return malformed(text);
+        }
+        if (!read_fixed(text, at, 2, offset_minute)) {
+            return malformed(text);
+        }
         if (offset_hour > 23 || offset_minute > 59) {
             return make_error(error_kind::out_of_range,
                               "时区偏移越界：\"" + text.to_string() + "\"");
         }
         offset_minutes = static_cast<int>(offset_hour * 60 + offset_minute);
-        if (negative) offset_minutes = -offset_minutes;
+        if (negative) {
+            offset_minutes = -offset_minutes;
+        }
     } else {
         // 不带偏移的本地时间是有歧义的，所以不认——理由见头文件
         return malformed(text);
     }
 
     // 和 lexical_cast 一样：整个输入必须被消费完，尾部有垃圾就报错
-    if (at != text.size()) return malformed(text);
+    if (at != text.size()) {
+        return malformed(text);
+    }
 
     if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 ||
         second > 59) {

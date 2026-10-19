@@ -72,14 +72,18 @@ protected:
         static_assert(std::is_copy_constructible<T>::value,
                       "copying an optional requires a copyable value type; "
                       "move it with std::move instead");
-        if (has_) construct(other.value_);
+        if (has_) {
+            construct(other.value_);
+        }
     }
 
     optional_storage(optional_storage&& other)
         noexcept(std::is_nothrow_move_constructible<T>::value) : has_(other.has_) {
         static_assert(std::is_move_constructible<T>::value,
                       "moving an optional requires a movable value type");
-        if (has_) construct(std::move(other.value_));
+        if (has_) {
+            construct(std::move(other.value_));
+        }
     }
 
     optional_storage& operator=(const optional_storage& other)
@@ -97,7 +101,9 @@ protected:
     optional_storage& operator=(optional_storage&& other) noexcept {
         static_assert(assignable,
                       "assigning an optional requires a value type that moves without throwing");
-        if (this != &other) replace(other);
+        if (this != &other) {
+            replace(other);
+        }
         return *this;
     }
 
@@ -115,13 +121,17 @@ private:
     }
 
     void destroy() noexcept {
-        if (has_) value_.~T();
+        if (has_) {
+            value_.~T();
+        }
     }
 
     void replace(optional_storage& other) noexcept {
         destroy();
         has_ = other.has_;
-        if (has_) construct(std::move(other.value_));
+        if (has_) {
+            construct(std::move(other.value_));
+        }
     }
 };
 

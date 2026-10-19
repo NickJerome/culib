@@ -122,8 +122,7 @@ void coroutine_arm(coroutine_control* control, void (*invoke)(void*),
 
 void coroutine_destroy(coroutine_control* control) noexcept {
 #ifndef NDEBUG
-    // 半路丢掉：栈上的局部对象不会析构。这是已定的语义（设计文档 3.6），
-    // 但 debug 下吭一声，因为它常常是忘了跑完而不是有意放弃。
+    // 没跑完就销毁，栈上的局部对象不会析构。debug 下提示一句：多半是忘了等它跑完。
     if (control->started && !control->finished) {
         std::fputs("wavvix::coroutine: 协程没跑完就销毁了，栈上的局部对象不会析构\n", stderr);
     }
