@@ -157,3 +157,21 @@ CI 里的 ThreadSanitizer 只编 `os` 的停止请求那一个程序，不覆盖
 2026-10-18 删掉 `call_blocking`、文件 / 日志 / DNS 改成直接做系统调用以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 `culib_test` 368 项（少了 `call_blocking` 的 6 项，多了从 `runtime_order_test` 挪回来的 3 条 Windows fs 边界测试）、`runtime_order_test` 31 项（删掉下放探针、挪走 fs 边界测试，少了 12 条）、误用诊断 10 条全部通过；release 下 `culib_test` 连跑 8 遍、`runtime_order_test` 连跑 10 遍全部通过；协程、网络、日志、文件相关的 8 个示例和 api.md 里的 5 个协程 / 同步 / 网络程序逐个运行，输出不变。Linux 侧只做了 `-fsyntax-only`。
 
 第一次推上去（`fcfb828`）有两处失败：clang 报只有 `scheduler_call_blocking` 用的一个常量没人用了（`-Wunused-const-variable`）；ASan + UBSan 上数工作线程的测试试了五轮，每轮都看到多于 4 根——那个作业里 xmake 并行跑几个测试程序，工作线程被系统挂起得频繁，每一轮都有交接。测试改成只查下限（协程分到了不止一根线程上），名额的上限由会重试的交接次序测试查（`e480c6e`）。[`e480c6e` 的 CI](https://github.com/NickJerome/culib/actions/runs/39186010918) 24/24 通过：`culib_test` Linux 372 项、macOS 369 项、Windows 与 MinGW 368 项，`runtime_order_test` 依次 36、34、31 项，GCC 4.8 和 ASan + UBSan 与 Linux 相同，无异常构建 366 项和 36 项；误用诊断 POSIX 11 条（无异常构建 10 条）、Windows 10 条；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
+
+2026-10-19 把「卡住」从连着两个 1 毫秒的周期改成停住超过 10 毫秒、Windows 上的监控线程改用高精度的可等待定时器以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 `culib_test` 368 项、`runtime_order_test` 32 项（多了「停住几毫秒不交接」的 1 条）、误用诊断 10 条全部通过；release 下 `culib_test` 连跑 10 遍、`runtime_order_test` 连跑 200 遍全部通过（后者不含 `carries_many_concurrent_readers`，原因见下）。MSYS2 的 MinGW-w64 GCC 15.2 跑 `tests/mingw_windows.sh`：库、测试和全部示例在 `-std=c++11` 全警告下编过，测试全部通过。改过的文件用 Windows 上的 clang 22 做过 `-fsyntax-only`。本机 WSL 这次起不来，Linux 和 macOS 只有 CI。新加的那条测试先在阈值临时改成 2 毫秒、空转改成 8 毫秒的构建上跑过：10 轮都交接了，测试失败，说明它看得出交接。
+
+交接延迟用一个 scratch 程序量：一根协程占住唯一的名额，量排在它后面的协程过多久在别的线程上跑起来。Windows 10 22H2，MSVC 2022 x64 release，改动前后是同一个程序，各跑两遍，每遍每种 30 次：
+
+| 占住的方式 | 改之前：中位数 / 最大 | 改之后：中位数 / 最大 |
+| --- | --- | --- |
+| 空转 | 46.5、46.5 / 46.8 毫秒 | 12.5、15.0 / 15.1 毫秒 |
+| 每 1 毫秒 `sleep_for` 一下 | 46.4、46.5 / 46.7 毫秒 | 13.4、14.1 / 15.0 毫秒 |
+
+改之前是三个 15.6 毫秒的节拍；改之后是 10 毫秒再加至多两个约 2.4 毫秒的间隔：同一次运行里，`std::this_thread::sleep_for(2ms)` 实际睡 13.1 毫秒（中位数，200 次），高精度定时器睡 2.4 毫秒。Linux 上没有量。
+
+本机连跑 `runtime_order_test` 时碰到两种失败，都和这次改动无关：
+
+- `io_engine.carries_many_concurrent_readers` 在第 238 遍以后建不起连接。每遍要建几十条回环 TCP 连接，关掉以后在 TIME_WAIT 里占着临时端口，几百遍以后 16384 个临时端口快用完了（跑完时 TIME_WAIT 有 11597 个）。这是连跑造成的。
+- `io_engine.cancel_keeps_completed_overlapped_alive_until_packet_is_taken` 在整个程序连跑 400 遍时失败 1 次，单独连跑 600 遍也失败 1 次；单独跑时进程根本不启动运行时。这是测试的时序问题，原因和改法见[实现说明](implementation-notes.md#io_engine_wincpp)，改了以后单独连跑 600 遍没有失败。
+
+最开始连跑 20 遍时还有 1 遍失败，没有留下输出；之后整个程序又连跑了一千多遍，只见过上面两种。

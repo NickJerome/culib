@@ -458,6 +458,17 @@ TEST(io_engine, cancel_keeps_completed_overlapped_alive_until_packet_is_taken) {
         const char sent = 'x';
         const int written = ::send(reinterpret_cast<SOCKET>(left), &sent, 1, 0);
         if (EXPECT(written, ==, 1)) {
+            // 等这个字节到了对端再发起读，读才会当场完成。挂起以后才完成的读，OVERLAPPED 里的状态
+            // 要等完成包被取走才写回（套接字关联了完成端口），下面的轮询就一直看到没完成。
+            u_long available = 0;
+            const std::chrono::steady_clock::time_point stop_at =
+                std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (available == 0 && std::chrono::steady_clock::now() < stop_at) {
+                if (::ioctlsocket(reinterpret_cast<SOCKET>(right), FIONREAD, &available) != 0) {
+                    break;
+                }
+                std::this_thread::yield();
+            }
             char received = 0;
             wavvix::detail::park_token token;
             io_request request;
