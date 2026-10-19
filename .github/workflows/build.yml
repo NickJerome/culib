@@ -139,7 +139,8 @@ jobs:
           bash .github/report-failure.sh bash -e -c '
             g++ -std=c++11 -O1 -g -Wall -Wextra -Wpedantic -Werror -pthread -fsanitize=thread -Iinclude \
               tests/process/os_stop.cpp src/platform/os.cpp src/platform/os_posix.cpp \
-              src/base/result.cpp src/base/string_view.cpp src/base/optional.cpp -o build/os_stop_tsan
+              src/base/result.cpp src/base/string_view.cpp src/base/optional.cpp src/base/fatal.cpp \
+              -o build/os_stop_tsan
             for mode in threads sigint sigterm; do
               setarch "$(uname -m)" -R build/os_stop_tsan "$mode"
             done
