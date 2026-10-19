@@ -282,6 +282,10 @@ Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序
 
 实测：起步 12 KiB，递归 500 层（每层 1 KiB）后 540 KiB，超出保留范围时以 `0xC00000FD` 终止。两个反向验证：不记已提交下界时，复用深栈的协程在深处抛异常，进程以 `0xE06D7363` 终止（`fiber.throws_from_deep_in_a_reused_stack`）；不放保护页、整格提交时，溢出变成访问违例 `0xC0000005`（`runtime_faults.stack_overflow` 失败）。单独保留、提交、放保护页、释放一根栈约 5 µs，所以这几步只在一格第一次用时做。
 
+溢出时系统先报 `STATUS_STACK_OVERFLOW`，异常就在剩下的栈上分发。本机量过还剩多少：出错时 rsp 离 `DeallocationStack` 约 15.8 KiB，系统把已提交的下界放到 `DeallocationStack` 往上一页，所以还有约 11.7 KiB，分发到向量化异常处理时用掉 2.5 KiB（其中 `CONTEXT` 连扩展状态 1663 字节）。同一段递归放在线程栈上，出错时 rsp 离 `DeallocationStack` 16.1 KiB，和协程栈一样。
+
+[`9cad3fd` 的 CI](https://github.com/NickJerome/culib/actions/runs/39220220574) 里，MSVC release 那一格的 `runtime_faults.stack_overflow` 以 `0xC0000005` 结束；前两次运行用的是同一个镜像、同一版 MSVC，都是 `0xC00000FD`。原因没有确定，本机复现不出来。这条用例原来只看退出码，把「系统报了栈溢出」和「之后的默认处理」混在一起。现在子进程里装一个向量化异常处理，第一时间看到 `STATUS_STACK_OVERFLOW` 就往 stderr 写一行，父进程看这一行，退出码只报出来，印在用例的 OK 行里。不放保护页、整格提交时它仍然失败：`0xC0000005`，没有那一行。
+
 没覆盖的：线程块里的 `GuaranteedStackBytes` 没有跟着切（Boost.Context 也没切，只有调过 `SetThreadStackGuarantee` 的线程才受影响）；`SwitchToFiber` 还会切 CET 影子栈，我们的换栈不切，这对开了 `/CETCOMPAT` 的程序意味着什么没有验证，和改之前一样；arm64 Windows 没有换栈汇编。
 
 ### 为什么 Linux / macOS 的 release 不设保护页

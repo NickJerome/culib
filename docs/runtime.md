@@ -100,7 +100,7 @@ Windows 上等在完成端口上的超时按系统定时器的节拍到期，默
 | Windows | 报 `STATUS_STACK_OVERFLOW` 后终止 | 同左 |
 | Linux / macOS | 碰到栈底的保护页，收到 SIGSEGV / SIGBUS | 不报错，悄悄写坏相邻的内存 |
 
-Windows 上栈和线程栈一样只提交用到的部分，最底下留一段不提交，长到那里系统就报栈溢出，不用另设保护页。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
+Windows 上栈和线程栈一样只提交用到的部分，最底下留一段不提交，长到那里系统就报栈溢出，不用另设保护页。进程的退出码通常是 `0xC00000FD`，CI 上见过一次 `0xC0000005`，原因还没确定。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
 
 Linux / macOS 的 debug 构建在每根栈的最底下设保护页，溢出当场崩溃，调试器里能看到越界那一刻的调用栈。代价是 Linux 默认设置下 debug 构建最多约 3 万根同时在跑的协程。怀疑 release 程序里有栈溢出时（卡死或崩溃发生在无关的协程里），用 debug 构建重现。
 
@@ -207,3 +207,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`5d63026` 的 CI](https://github.com/NickJerome/culib/actions/runs/39214766196) 24/24 通过：`culib_test` Linux 374 项、macOS 371 项、Windows 与 MinGW 370 项（各多了那 2 条），GCC 4.8、ASan + UBSan 和 TSan 与 Linux 相同，无异常构建 367 项（只多了深递归那 1 条）；`runtime_order_test` 依次 37、35、32 项，不变；误用诊断 Linux / macOS 的 debug 构建 12 条、release 构建 11 条，Windows 11 条，无异常构建 10 条。栈溢出那条在 Windows 的两个作业、Linux 和 macOS 的五个 debug 作业里都按预期终止；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
 
 2026-10-19 Windows 上协程的定时器改由高精度定时器按时叫醒以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 13 个测试目标全部通过，`runtime_order_test` 33 项（多了「睡 1 毫秒的中位数在 5 毫秒以内」的 1 条）；release 下 `xmake test` 连跑 20 遍、`runtime_order_test` 连跑 30 遍、`culib_test` 连跑 10 遍全部通过，18 个空转进程占满 CPU 时两个程序各连跑 10 遍也全部通过。MSYS2 的 MinGW-w64 GCC 15.2 跑 `tests/mingw_windows.sh` 全部通过。WSL2 上 GCC 11.4 构建 debug / release 的 `runtime_order_test` 38 项全部通过，新加的那条连睡 21 次用了 23.1、23.6 毫秒。改过的文件另用 Windows 上的 clang 22 做过 `-fsyntax-only`，打开了 `-Wcast-function-type-strict`。新加的那条在强制走退路的构建上失败，做法和数据见[实现说明](implementation-notes.md#按时醒)。
+
+[`9cad3fd` 的 CI](https://github.com/NickJerome/culib/actions/runs/39220220574) 23/24：MSVC release 那一格的 `runtime_faults.stack_overflow` 以 `0xC0000005` 结束，和这次的改动无关，见[实现说明](implementation-notes.md#windows只提交用到的部分)；其余通过。`culib_test` 的项数不变（Linux 374、macOS 371、Windows 与 MinGW 370、无异常构建 367），`runtime_order_test` 依次 38、36、33 项，各多了新加的 1 条。新加的那条在 17 个作业里连睡 21 次用了 22.7–57.8 毫秒，Windows 的三个作业是 31.2–32.0 毫秒。Windows 上等 20 毫秒的测试从 31 毫秒左右变成 20 毫秒出头：`condition_variable.wait_for_times_out_and_comes_back_holding_the_lock` 在 MSVC release、debug 和 MinGW 上从 31.58、31.63、30.93 毫秒变成 20.18、20.64、20.51 毫秒，Linux 上是 20.31 毫秒。报告里没有 SKIP，诊断只有那一条失败。

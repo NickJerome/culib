@@ -231,6 +231,20 @@ struct child_outcome {
 
 #if defined(_WIN32)
 
+// 子进程第一时间看到 STATUS_STACK_OVERFLOW 就往 stderr 写这一行，再照常交给系统。拦没拦住看这一行：
+// 系统随后的默认处理跑在溢出后剩下的那点栈上，最后的退出码不一定是 STATUS_STACK_OVERFLOW
+// （CI 上见过 0xC0000005）。
+const char overflow_marker[] = "STATUS_STACK_OVERFLOW\n";
+
+LONG CALLBACK note_stack_overflow(EXCEPTION_POINTERS* info) {
+    if (info->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+        DWORD written = 0;
+        ::WriteFile(::GetStdHandle(STD_ERROR_HANDLE), overflow_marker, sizeof overflow_marker - 1, &written,
+                    NULL);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 child_outcome run_child(const fault_case& item) {
     child_outcome outcome;
     outcome.aborted = false;
@@ -288,13 +302,11 @@ child_outcome run_child(const fault_case& item) {
         outcome.how = "取不到退出码";
     } else if (code == 3) {
         outcome.aborted = true;   // abort() 和 std::terminate 都以 3 退出
-    } else if (code == 0xC00000FD) {
-        outcome.overflowed = true;   // STATUS_STACK_OVERFLOW
-        outcome.how = "栈溢出";
     } else {
         char text[64];
         std::snprintf(text, sizeof text, "退出码 0x%08lX", static_cast<unsigned long>(code));
         outcome.how = text;
+        outcome.overflowed = outcome.error.find(overflow_marker) != std::string::npos;
     }
     ::CloseHandle(process.hThread);
     ::CloseHandle(process.hProcess);
@@ -307,6 +319,7 @@ void prepare_child() {
 #  if defined(_MSC_VER)
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #  endif
+    ::AddVectoredExceptionHandler(1, &note_stack_overflow);
 }
 
 #else
@@ -468,7 +481,12 @@ int run_all() {
         const child_outcome outcome = run_child(item);
         const std::string problem = check(item, outcome);
         if (problem.empty()) {
-            std::printf("[       OK ] runtime_faults.%s\n", item.name);
+            // 栈溢出的那条把子进程最后怎么结束的也印出来：不同的平台和机器上不一定一样
+            if (item.expected == ending::stack_overflow) {
+                std::printf("[       OK ] runtime_faults.%s（%s）\n", item.name, outcome.how.c_str());
+            } else {
+                std::printf("[       OK ] runtime_faults.%s\n", item.name);
+            }
             ++passed;
             continue;
         }
