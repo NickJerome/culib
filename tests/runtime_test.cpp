@@ -76,30 +76,25 @@ TEST(runtime, runs_coroutines_on_worker_threads) {
     EXPECT(ran_on != std::this_thread::get_id(), ==, true);
 }
 
-TEST(runtime, uses_the_worker_count_it_was_given) {
-    // culib_test 在 main 里把 WAVVIX_MAXPROCS 设成 4：跑协程的是 4 根线程。每根协程只占线程
-    // 200 微秒，到不了监控线程把它当成卡住的时间；但机器忙的时候，工作线程被系统挂起两个周期
-    // 也会被当成卡住、交接一次，那一轮里跑过协程的线程就多一根。所以试几轮，有一轮在 2 到 4 根之间就行。
-    std::size_t used = 0;
-    for (int attempt = 0; attempt < 5 && (used < 2 || used > 4); ++attempt) {
-        std::mutex guard;
-        std::set<std::thread::id> threads;
-        wavvix::wait_group group;
-        for (int i = 0; i < 32; ++i) {
-            group.go([&] {
-                const wavvix::stopwatch busy;   // 占着工作线程，别的协程只能去别的线程
-                while (busy.elapsed() < std::chrono::microseconds(200)) {
-                }
-                std::lock_guard<std::mutex> held(guard);
-                threads.insert(std::this_thread::get_id());
-            });
-        }
-        group.wait();
-        used = threads.size();
+TEST(runtime, runs_coroutines_on_several_workers) {
+    // culib_test 在 main 里把 WAVVIX_MAXPROCS 设成 4：占着线程的协程会分到几根工作线程上并行跑。
+    // 上限不在这里查：机器忙的时候，工作线程被系统挂起两个周期也会被当成卡住、交接一次，
+    // 跑过协程的线程就会多出来。同一时刻只有名额那么多根在跑，由 runtime_order_test 的交接测试查。
+    std::mutex guard;
+    std::set<std::thread::id> threads;
+    wavvix::wait_group group;
+    for (int i = 0; i < 32; ++i) {
+        group.go([&] {
+            const wavvix::stopwatch busy;   // 占着工作线程，别的协程只能去别的线程
+            while (busy.elapsed() < std::chrono::microseconds(200)) {
+            }
+            std::lock_guard<std::mutex> held(guard);
+            threads.insert(std::this_thread::get_id());
+        });
     }
+    group.wait();
 
-    EXPECT(used >= std::size_t(2), ==, true);
-    EXPECT(used <= std::size_t(4), ==, true);
+    EXPECT(threads.size() >= std::size_t(2), ==, true);
 }
 
 TEST(runtime, wait_returns_after_every_coroutine_in_the_group_ended) {

@@ -170,8 +170,6 @@ namespace {
 typedef park_clock clock_type;
 typedef park_instant instant;
 
-const std::chrono::nanoseconds forever(-1);
-
 // 协程在调度器里的状态，存在 coroutine_control::park_state 里。挂起的协程先切出去，
 // 再由它所在的工作线程记成 parked（run）；叫醒它的一方在那之前就到的话只留下 woken，
 // 由那根工作线程把它放回队列。所以一根协程不会同时在两根线程上跑。
