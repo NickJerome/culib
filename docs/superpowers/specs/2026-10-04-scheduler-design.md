@@ -4,6 +4,7 @@
 - 状态：**六期均已有实现**。第三期见 [事件引擎设计](2026-10-05-event-engine-design.md)，第四期见 [io_uring 设计](2026-10-08-io-uring-design.md)，第五期见 [超时与同步原语](2026-10-05-sync-and-timeout-design.md)，第六期 TCP/UDP 见 [网络设计](2026-10-08-net-design.md)。各期跨平台验证范围以对应设计文档和 CI 记录为准。
 - 前置：[coroutine 设计](2026-10-04-coroutine-design.md)（原语已完成）、路线图 4.2 / 4.6。
 - **本文改变了库的定位**，见第 1 节。
+- 2026-10-18：调度改成 Go 的模型——协程在挂起点可以换线程、闲着的工作线程从别的队列里拿活、事件引擎和定时器整个进程各一份、监控线程把卡住的工作线程的名额交给另一根线程；`scheduler_scope`、`spawn()` / `run()`、线程式的 `coroutine` 句柄都已经换成 `go()` / `wait_group`。本文的接口快照是历史。当前用法见[协程运行时](../../runtime.md)，实现见[实现说明](../../implementation-notes.md)。
 
 ## 1. 定位变了：协程是并发模型，不是一个工具
 
@@ -93,7 +94,7 @@ io_uring 本身是三个系统调用（`io_uring_setup` / `io_uring_enter` / `io
 
 这样约定的精神（「简单的事一行完成」「零启动开销」）还在，只是把「绝对没有 init」放宽成「不用时没有、要调时可以调」。
 
-2026-10-08 补充：现在提供 `scheduler_scope` 作为显式 RAII 生命周期入口。构造当前线程的 vCPU，最外层析构时运行已提交协程并释放事件引擎；不用它时仍保留按需创建和 `spawn()` / `run()`。公开 `coroutine` 已改为构造即提交、`join()` / `detach()` 的线程式句柄；可连接句柄析构会终止程序。手动 `resume()` 的换栈原语移到 `detail::fiber`。具体用法见[协程调度器](../../scheduler.md)。
+2026-10-08 补充：现在提供 `scheduler_scope` 作为显式 RAII 生命周期入口。构造当前线程的 vCPU，最外层析构时运行已提交协程并释放事件引擎；不用它时仍保留按需创建和 `spawn()` / `run()`。公开 `coroutine` 已改为构造即提交、`join()` / `detach()` 的线程式句柄；可连接句柄析构会终止程序。手动 `resume()` 的换栈原语移到 `detail::fiber`。具体用法见[协程运行时](../../runtime.md)。
 
 ## 5. 怎么分期：这是全库最大的一块，不能一口做完
 
@@ -130,7 +131,7 @@ io_uring 本身是三个系统调用（`io_uring_setup` / `io_uring_enter` / `io
 
 ## 7. 第一期的实现验证：vCPU + 调度器
 
-下表保留第一期的接口快照。当前 `spawn(function, args...)` 可直接传函数参数，自定义栈大小使用 `spawn_with_stack(bytes, function, args...)`；已初始化 vCPU 的主线程调用 `sleep_for()` 也会调度其他协程。现行用法见[协程调度器](../../scheduler.md)。
+下表保留第一期的接口快照。当前 `spawn(function, args...)` 可直接传函数参数，自定义栈大小使用 `spawn_with_stack(bytes, function, args...)`；已初始化 vCPU 的主线程调用 `sleep_for()` 也会调度其他协程。现行用法见[协程运行时](../../runtime.md)。
 
 `include/culib/scheduler.h` 四个入口加两个查询：
 

@@ -101,6 +101,22 @@ debug 构建在每根栈的最低一页设保护页，溢出当场崩溃，调�
 
 确实需要深栈的代码放到 `std::thread` 里跑：普通线程的栈通常是 1 到 8 MiB。
 
+## 和 Go 的对照
+
+接口和调度照着 Go 做，差别都来自 C++ 本身：
+
+| | Go | culib |
+| --- | --- | --- |
+| 起协程 | `go f(x)` | `go(f, x)`，参数按值保存，传引用用 `std::ref` |
+| 等一组 | `sync.WaitGroup`：`Add` / `Done` / `Wait`，1.25 起有 `Go` | `wait_group`：只有 `go()` 和 `wait()` |
+| 并行度 | `GOMAXPROCS`，默认 CPU 数，代码里也能改 | `WAVVIX_MAXPROCS`，默认 `os::cpu_count()`，代码里不能改 |
+| 换线程 | 随时，goroutine 没有线程身份 | 只在挂起点；`thread_local`、`errno`、线程号、拿着的 `std::mutex` 都不能跨过挂起点 |
+| 阻塞的系统调用 | P 留在原线程上；sysmon 看到调用跨过一个周期（最短 20 微秒）就把 P 交给别的线程，没活可做时最多拖到 10 毫秒 | 监控线程看到同一根协程停了两个周期（每周期 1 毫秒，Windows 上约 15.6 毫秒）、又有活可做，才把名额交出去 |
+| 一直算 | 跑满 10 毫秒就异步抢占 | 不抢占；被当成卡住、交出名额，线程跟着多 |
+| panic / 异常 | `recover` | 逃出协程就 `std::terminate()`；catch 块里不能挂起 |
+| `main` 返回 | 进程退出，不等 goroutine | 一样 |
+| 栈 | 从 2 KiB 起按需增长 | 固定 240 KiB |
+
 ## 和 Photon 的对照
 
 PhotonLibOS 用 `photon::thread_create` 起协程、`thread_join` 等它，`photon_std::thread` 是 `std::thread` 风格的持有型句柄。culib 改成了 Go 的形状：没有句柄，`go()` 起了就不管，要等就用 `wait_group`。另外：
@@ -130,8 +146,12 @@ PhotonLibOS 用 `photon::thread_create` 起协程、`thread_join` 等它，`phot
 
 Linux 和 macOS 上的构建和运行、ASan + UBSan、无异常构建都只有 CI。第一次推上去（`f5948fb`）有两条测试在 Linux release 上失败，原因就是上面说的线程号被编译器合并：测试在挂起前后各取一次 `std::this_thread::get_id()`，两次被并成一次。测试改成经 volatile 函数指针取线程号。修正以后 [`3ed99d6` 的 CI](https://github.com/NickJerome/culib/actions/runs/39182216745) 24/24 通过：Linux 378 项、macOS 375 项、Windows 与 MinGW 371 项，GCC 4.8 378 项，误用诊断 POSIX 11 条、Windows 10 条；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
 
-ThreadSanitizer 不在 CI 里，这次也没有跑。以前跑的时候它对两条测试报过 `std::condition_variable::wait_for` 的竞争：glibc 2.30 起带时限的等待走 `pthread_cond_clockwait`，GCC 11 的 libtsan 没有拦截它，看不到等待期间放开了锁。那两条测试用的是测试自己的 `std::mutex`，报告不涉及运行时。
+CI 里的 ThreadSanitizer 只编 `os` 的停止请求那一个程序，不覆盖运行时；这次也没有对运行时跑。以前跑的时候它对两条测试报过 `std::condition_variable::wait_for` 的竞争：glibc 2.30 起带时限的等待走 `pthread_cond_clockwait`，GCC 11 的 libtsan 没有拦截它，看不到等待期间放开了锁。那两条测试用的是测试自己的 `std::mutex`，报告不涉及运行时。
 
 2026-10-18 加上监控线程以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 `culib_test` 371 项、`runtime_order_test` 43 项（多了交接名额的 3 条）、误用诊断 10 条全部通过；release 下两个程序各连跑 15 遍全部通过；协程相关的 6 个示例逐个运行正常。Windows 上从卡住到交接约 55–60 毫秒：定时器精度 15.6 毫秒，要连着两次看到停住。第一次推上去（`9a50970`）有一条测试在 Linux 和 macOS 上失败：它断言交接以后同一时刻只有一根线程在跑协程，而 CI 机器上跑协程的线程被系统挂起 2 毫秒以上时也会被当成卡住、交接一次，那一轮就看到两根。测试改成试几轮、有一轮只看到一根就算过。
 
+之后又红过三轮，各改一处。MinGW 上一条次序测试看到 `BCA`：唯一的工作线程卡住时，监控线程把到点的定时器唤醒进全局队列，工作线程把后到点的唤醒进先跑的本地队列，同一批到点的协程就乱了序；改成监控线程不触发定时器，只把「有定时器到点」算作有活，拿到名额的线程按到点次序触发（`c33dbbf`）。GCC 4.8 上文件 I/O 的测试数到 0 次：夹具里的写入方马上就写，读的协程只等了几百微秒，改成写入方等 50 毫秒（`215cff4`）。ASan + UBSan 上数工作线程的测试看到多于 4 根，也是抢占触发的交接，改成试几轮（`642db3a`）。[`642db3a` 的 CI](https://github.com/NickJerome/culib/actions/runs/39185020215) 24/24 通过：`culib_test` Linux 378 项、macOS 375 项、Windows 与 MinGW 371 项，`runtime_order_test` 依次 38、36、43 项，GCC 4.8 和 ASan + UBSan 与 Linux 相同，无异常构建 371 项和 38 项；误用诊断 POSIX 11 条（无异常构建 10 条）、Windows 10 条；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
+
 2026-10-18 删掉 `call_blocking`、文件 / 日志 / DNS 改成直接做系统调用以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 `culib_test` 368 项（少了 `call_blocking` 的 6 项，多了从 `runtime_order_test` 挪回来的 3 条 Windows fs 边界测试）、`runtime_order_test` 31 项（删掉下放探针、挪走 fs 边界测试，少了 12 条）、误用诊断 10 条全部通过；release 下 `culib_test` 连跑 8 遍、`runtime_order_test` 连跑 10 遍全部通过；协程、网络、日志、文件相关的 8 个示例和 api.md 里的 5 个协程 / 同步 / 网络程序逐个运行，输出不变。Linux 侧只做了 `-fsyntax-only`。
+
+第一次推上去（`fcfb828`）有两处失败：clang 报只有 `scheduler_call_blocking` 用的一个常量没人用了（`-Wunused-const-variable`）；ASan + UBSan 上数工作线程的测试试了五轮，每轮都看到多于 4 根——那个作业里 xmake 并行跑几个测试程序，工作线程被系统挂起得频繁，每一轮都有交接。测试改成只查下限（协程分到了不止一根线程上），名额的上限由会重试的交接次序测试查（`e480c6e`）。[`e480c6e` 的 CI](https://github.com/NickJerome/culib/actions/runs/39186010918) 24/24 通过：`culib_test` Linux 372 项、macOS 369 项、Windows 与 MinGW 368 项，`runtime_order_test` 依次 36、34、31 项，GCC 4.8 和 ASan + UBSan 与 Linux 相同，无异常构建 366 项和 36 项；误用诊断 POSIX 11 条（无异常构建 10 条）、Windows 10 条；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
