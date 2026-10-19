@@ -137,4 +137,13 @@ bool unprotect(void* address, std::size_t size) noexcept {
     return ::mprotect(address, size, PROT_READ | PROT_WRITE) == 0;
 }
 
+void no_huge_pages(void* address, std::size_t size) noexcept {
+#if defined(MADV_NOHUGEPAGE)
+    (void)::madvise(address, size, MADV_NOHUGEPAGE);
+#else
+    (void)address;
+    (void)size;
+#endif
+}
+
 } } } } // namespace wavvix::mem::detail::pages

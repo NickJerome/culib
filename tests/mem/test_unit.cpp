@@ -1,9 +1,11 @@
-// wavvix::mem 公开接口的行为：各档尺寸、超大块、calloc、realloc、aligned_alloc、usable_size、collect。
+// wavvix::mem 公开接口的行为：各档尺寸、超大块、透明大页、calloc、realloc、aligned_alloc、usable_size、
+// collect。
 #include "test_util.h"
 
 #include <culib/mem.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -93,6 +95,42 @@ void test_huge() {
 
     CHECK(wavvix::mem::alloc((std::numeric_limits<std::size_t>::max)()) == NULL);
 }
+
+#if defined(__linux__)
+// chunk 整段标了不用透明大页：/proc/self/smaps 里这段映射的 VmFlags 带 nh。
+// 内核没开透明大页时没有这个标记，跳过。
+void test_chunks_do_not_use_huge_pages() {
+    std::FILE* const thp = std::fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
+    if (!thp) {
+        return;
+    }
+    std::fclose(thp);
+
+    void* const p = wavvix::mem::alloc(1024 * 1024);
+    CHECK(p != NULL);
+    const unsigned long long address = reinterpret_cast<std::uintptr_t>(p);
+    std::FILE* const smaps = std::fopen("/proc/self/smaps", "r");
+    CHECK(smaps != NULL);
+    char line[512];
+    bool inside = false;
+    bool flagged = false;
+    while (std::fgets(line, sizeof line, smaps)) {
+        unsigned long long start = 0;
+        unsigned long long end = 0;
+        if (std::sscanf(line, "%llx-%llx ", &start, &end) == 2) {
+            inside = address >= start && address < end;
+            continue;
+        }
+        if (inside && std::strncmp(line, "VmFlags:", 8) == 0) {
+            flagged = std::strstr(line, " nh") != NULL;
+            break;
+        }
+    }
+    std::fclose(smaps);
+    CHECK(flagged);
+    wavvix::mem::free(p);
+}
+#endif
 
 void test_calloc() {
     // 小块：刚写脏又释放的块再分出来，也得清零
@@ -214,6 +252,9 @@ int main() {
     test_sizes();
     test_medium_pages();
     test_huge();
+#if defined(__linux__)
+    test_chunks_do_not_use_huge_pages();
+#endif
     test_calloc();
     test_realloc();
     test_aligned_alloc();

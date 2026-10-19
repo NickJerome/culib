@@ -98,6 +98,17 @@ Linux 默认那一行全程不改映射。改映射（`mprotect`、`MAP_FIXED`�
 
 macOS 的 `MADV_DONTNEED` 不会马上减少进程占用的内存（mimalloc 为此改用 `MADV_FREE_REUSABLE`），所以 macOS 走第二行，和现在的协程栈一样用 `MAP_FIXED` 重新映射。
 
+Linux 上每个 chunk 一保留就整段 `MADV_NOHUGEPAGE`（`pages::no_huge_pages`）。块稀疏地落在 chunk 里，而 THP 设成 `always` 时，一个 2 MiB 对齐的范围只要整个落在映射里，第一次缺页就可能直接给一个大页；khugepaged 的 `max_ptes_none` 默认 511，范围里只要有一页在用，过一会儿也会被合成大页（`mm/khugepaged.c`）。标记打在整段映射上，不拆映射；只标其中一段就会拆。单独保留的超大块不标：那多半是整块都要用的缓冲区，按系统设置来。内核不支持透明大页时 `madvise` 失败，那本来就没有大页，不处理。
+
+实测（2026-10-19，WSL2，内核 6.18，GCC 11.4 `-O2`；临时把 THP 切到 `always`，量完改回 `madvise`）：建 1 万 / 5 万根协程，栈是现在的 240 KiB，每根碰 1 KiB 后挂起，同一次运行里比较去掉这一行和保留这一行：
+
+| | 每根常驻 | 每根创建耗时 | 映射数 |
+| --- | ---: | ---: | --- |
+| 不标 | 257.2 KiB | 90–303 µs | 82 / 240 |
+| 标了 | 4.7 KiB | 4.6 µs | 82 / 239 |
+
+不标时栈整根进了物理内存，创建慢是因为每次缺页都要清零一个 2 MiB 的页。标了以后和 `madvise` 模式下一样。`mem_test_unit` 在 Linux 上查 `/proc/self/smaps` 里 chunk 那段映射的 `VmFlags` 带 `nh`；去掉这一行时这条检查失败。
+
 ## 大块、超大块和对齐
 
 大块在所有 chunk 里从低地址找第一段足够长的连续空闲 slice，找不到就建新 chunk。要求对齐超过 64 KiB 时，起点下标按对齐的 slice 数对齐；chunk 本身按自身大小对齐，下标对齐就是地址对齐。

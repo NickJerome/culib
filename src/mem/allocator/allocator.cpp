@@ -350,6 +350,8 @@ chunk* chunk_create_locked() {
     if (!base) {
         return 0;
     }
+    // 块稀疏地落在 chunk 里：开了透明大页的系统上，碰一个字节就可能占满 2 MiB
+    pages::no_huge_pages(base, chunk_size);
     if (!pages::commit(base, header_bytes) || !mark(chunk_map, base, true)) {
         pages::release(base, chunk_size);
         return 0;

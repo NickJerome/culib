@@ -87,4 +87,9 @@ bool unprotect(void* address, std::size_t size) noexcept {
     return ::VirtualProtect(address, size, PAGE_READWRITE, &previous) != 0;
 }
 
+void no_huge_pages(void* address, std::size_t size) noexcept {
+    (void)address;
+    (void)size;
+}
+
 } } } } // namespace wavvix::mem::detail::pages
