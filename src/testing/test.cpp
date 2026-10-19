@@ -347,67 +347,92 @@ parsed_arguments parse_arguments(int argc, const char* const argv[]) {
     return parsed;
 }
 
-run_summary run_tests(const std::vector<test_case>& tests, const run_options& options, std::ostream& out) {
+namespace {
+
+std::vector<const test_case*> select_tests(const std::vector<test_case>& tests, const std::string& filter) {
     std::vector<const test_case*> selected;
     for (const test_case& test : tests) {
-        if (matches_filter(full_name(test), options.filter)) {
+        if (matches_filter(full_name(test), filter)) {
             selected.push_back(&test);
         }
     }
+    return selected;
+}
+
+void list_tests(const std::vector<suite_group>& groups, std::ostream& out) {
+    for (const suite_group& group : groups) {
+        out << group.name << ".\n";
+        for (const test_case* test : group.tests) {
+            out << "  " << test->name << '\n';
+        }
+    }
+}
+
+// 跑一个测试，打出 RUN 和 OK / FAILED 两行，结果记进 summary。
+void run_one(const test_case& test, run_summary& summary, std::ostream& out) {
+    const std::string name = full_name(test);
+    out << marker("[ RUN      ]") << " " << name << std::endl;  // 立即刷新：崩溃时最后一行就是出问题的测试
+    std::chrono::nanoseconds elapsed(0);
+    const bool passed = run_single_test(test, out, elapsed);
+    ++summary.ran;
+    if (passed) {
+        out << marker("[       OK ]") << " " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
+        return;
+    }
+    out << bad("[  FAILED  ]") << " " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
+    ++summary.failed;
+    summary.failed_names.push_back(name);
+}
+
+void run_suite(const suite_group& group, run_summary& summary, std::ostream& out) {
+    out << marker("[----------]") << " " << count_text(group.tests.size(), "test") << " from " << group.name
+        << '\n';
+    const wavvix::stopwatch watch;
+    for (const test_case* test : group.tests) {
+        run_one(*test, summary, out);
+    }
+    out << marker("[----------]") << " " << count_text(group.tests.size(), "test") << " from " << group.name
+        << " (" << wavvix::format_duration(watch.elapsed()) << " total)\n\n";
+}
+
+// 结尾的汇总：通过几个，失败的逐个列出来。
+void print_summary(const run_summary& summary, std::size_t tests, std::size_t suites,
+                   std::chrono::nanoseconds elapsed, std::ostream& out) {
+    out << marker("[==========]") << " " << count_text(tests, "test") << " from "
+        << count_text(suites, "test suite") << " ran. (" << wavvix::format_duration(elapsed) << " total)\n";
+    const std::size_t passed = static_cast<std::size_t>(summary.ran - summary.failed);
+    out << marker("[  PASSED  ]") << " " << count_text(passed, "test") << ".\n";
+    if (summary.failed == 0) {
+        return;
+    }
+    out << bad("[  FAILED  ]") << " " << count_text(static_cast<std::size_t>(summary.failed), "test")
+        << ", listed below:\n";
+    for (const std::string& name : summary.failed_names) {
+        out << bad("[  FAILED  ]") << " " << name << '\n';
+    }
+    out << "\n " << display_signed(summary.failed) << " FAILED " << (summary.failed == 1 ? "TEST" : "TESTS")
+        << '\n';
+}
+
+}  // namespace
+
+run_summary run_tests(const std::vector<test_case>& tests, const run_options& options, std::ostream& out) {
+    const std::vector<const test_case*> selected = select_tests(tests, options.filter);
     const std::vector<suite_group> groups = group_by_suite(selected);
     run_summary summary;
-
     if (options.list_only) {
-        for (const suite_group& group : groups) {
-            out << group.name << ".\n";
-            for (const test_case* test : group.tests) {
-                out << "  " << test->name << '\n';
-            }
-        }
+        list_tests(groups, out);
         out.flush();
         return summary;
     }
 
     out << marker("[==========]") << " Running " << count_text(selected.size(), "test") << " from "
         << count_text(groups.size(), "test suite") << ".\n";
-    const wavvix::stopwatch run_watch;
+    const wavvix::stopwatch watch;
     for (const suite_group& group : groups) {
-        out << marker("[----------]") << " " << count_text(group.tests.size(), "test") << " from "
-            << group.name << '\n';
-        const wavvix::stopwatch suite_watch;
-        for (const test_case* test : group.tests) {
-            const std::string name = full_name(*test);
-            out << marker("[ RUN      ]") << " " << name << std::endl;  // 立即刷新：崩溃时最后一行就是出问题的测试
-            std::chrono::nanoseconds elapsed(0);
-            const bool passed = run_single_test(*test, out, elapsed);
-            ++summary.ran;
-            if (passed) {
-                out << marker("[       OK ]") << " " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
-            } else {
-                out << bad("[  FAILED  ]") << " " << name << " (" << wavvix::format_duration(elapsed) << ")\n";
-                ++summary.failed;
-                summary.failed_names.push_back(name);
-            }
-        }
-        const std::chrono::nanoseconds suite_elapsed = suite_watch.elapsed();
-        out << marker("[----------]") << " " << count_text(group.tests.size(), "test") << " from "
-            << group.name << " ("
-            << wavvix::format_duration(suite_elapsed) << " total)\n\n";
+        run_suite(group, summary, out);
     }
-    const std::chrono::nanoseconds run_elapsed = run_watch.elapsed();
-    out << marker("[==========]") << " " << count_text(selected.size(), "test") << " from "
-        << count_text(groups.size(), "test suite") << " ran. (" << wavvix::format_duration(run_elapsed)
-        << " total)\n";
-    out << marker("[  PASSED  ]") << " " << count_text(static_cast<std::size_t>(summary.ran - summary.failed), "test") << ".\n";
-    if (summary.failed > 0) {
-        out << bad("[  FAILED  ]") << " " << count_text(static_cast<std::size_t>(summary.failed), "test")
-            << ", listed below:\n";
-        for (const std::string& name : summary.failed_names) {
-            out << bad("[  FAILED  ]") << " " << name << '\n';
-        }
-        out << "\n " << display_signed(summary.failed) << " FAILED " << (summary.failed == 1 ? "TEST" : "TESTS")
-            << '\n';
-    }
+    print_summary(summary, selected.size(), groups.size(), watch.elapsed(), out);
     out.flush();
     return summary;
 }
