@@ -75,4 +75,6 @@ bash .github/report-failure.sh xmake test -v
 ASan/UBSan job 设置 `CULIB_CI_STRICT=1`：即使测试进程返回 0，扫描到诊断也让该步骤失败。
 这会拦住 sanitizer 自身降级检测的警告，不能只靠 `halt_on_error=1`。
 同一 job 另用 TSan 编译停止标志测试及其依赖，检查多线程请求与 POSIX 信号处理。
+最后用 TSan 重新构建 `culib_test` 和 `runtime_order_test` 并运行，查运行时的数据竞争：协程换栈按 TSan 的
+fiber 接口标注过（`src/runtime/coroutine.cpp`），两个程序都跑完再判结果，一次看全所有报告。
 TSan 进程用 `setarch -R` 关闭自身地址随机化，避免其影子内存与高随机度映射冲突；不改变宿主机设置。

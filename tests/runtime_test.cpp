@@ -97,27 +97,6 @@ TEST(runtime, runs_coroutines_on_several_workers) {
     EXPECT(threads.size() >= std::size_t(2), ==, true);
 }
 
-TEST(runtime, deliberate_race_for_the_tsan_gate) {
-    // 临时：两根协程在不同的工作线程上同时、不加锁地改同一个变量，验证 CI 的 TSan 那一步抓得到。
-    // 下一个提交删掉。
-    int counter = 0;
-    std::atomic<int> entered(0);
-    wavvix::wait_group group;
-    for (int i = 0; i < 2; ++i) {
-        group.go([&] {
-            entered.fetch_add(1);
-            while (entered.load() < 2) {
-            }
-            for (int k = 0; k < 100000; ++k) {
-                ++counter;
-            }
-        });
-    }
-    group.wait();
-
-    EXPECT(counter > 0, ==, true);
-}
-
 TEST(runtime, wait_returns_after_every_coroutine_in_the_group_ended) {
     std::atomic<int> finished(0);
     wavvix::wait_group group;

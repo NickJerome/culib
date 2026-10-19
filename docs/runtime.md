@@ -148,7 +148,7 @@ PhotonLibOS 用 `photon::thread_create` 起协程、`thread_join` 等它，`phot
 
 Linux 和 macOS 上的构建和运行、ASan + UBSan、无异常构建都只有 CI。第一次推上去（`f5948fb`）有两条测试在 Linux release 上失败，原因就是上面说的线程号被编译器合并：测试在挂起前后各取一次 `std::this_thread::get_id()`，两次被并成一次。测试改成经 volatile 函数指针取线程号。修正以后 [`3ed99d6` 的 CI](https://github.com/NickJerome/culib/actions/runs/39182216745) 24/24 通过：Linux 378 项、macOS 375 项、Windows 与 MinGW 371 项，GCC 4.8 378 项，误用诊断 POSIX 11 条、Windows 10 条；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
 
-CI 里的 ThreadSanitizer 只编 `os` 的停止请求那一个程序，不覆盖运行时；这次也没有对运行时跑。以前跑的时候它对两条测试报过 `std::condition_variable::wait_for` 的竞争：glibc 2.30 起带时限的等待走 `pthread_cond_clockwait`，GCC 11 的 libtsan 没有拦截它，看不到等待期间放开了锁。那两条测试用的是测试自己的 `std::mutex`，报告不涉及运行时。
+CI 里的 ThreadSanitizer 当时只编 `os` 的停止请求那一个程序，不覆盖运行时；这次也没有对运行时跑（2026-10-19 起覆盖了，见本节最后）。以前跑的时候它对两条测试报过 `std::condition_variable::wait_for` 的竞争：glibc 2.30 起带时限的等待走 `pthread_cond_clockwait`，GCC 11 的 libtsan 没有拦截它，看不到等待期间放开了锁。那两条测试用的是测试自己的 `std::mutex`，报告不涉及运行时。
 
 2026-10-18 加上监控线程以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 `culib_test` 371 项、`runtime_order_test` 43 项（多了交接名额的 3 条）、误用诊断 10 条全部通过；release 下两个程序各连跑 15 遍全部通过；协程相关的 6 个示例逐个运行正常。Windows 上从卡住到交接约 55–60 毫秒：定时器精度 15.6 毫秒，要连着两次看到停住。第一次推上去（`9a50970`）有一条测试在 Linux 和 macOS 上失败：它断言交接以后同一时刻只有一根线程在跑协程，而 CI 机器上跑协程的线程被系统挂起 2 毫秒以上时也会被当成卡住、交接一次，那一轮就看到两根。测试改成试几轮、有一轮只看到一根就算过。
 
@@ -186,3 +186,9 @@ CI 里的 ThreadSanitizer 只编 `os` 的停止请求那一个程序，不覆盖
 | macOS（4 个） | 5.3–212.9 毫秒 | 24.5–123.8 毫秒 |
 
 Linux 上交接变慢是阈值提高的预期结果。macOS 的 runner 计时本来就抖得厉害，两次运行都看不出规律。
+
+2026-10-19 起，CI 的 sanitizer 作业也用 ThreadSanitizer 构建并运行 `culib_test` 和 `runtime_order_test`。TSan 不认识自己写的换栈：每根协程在 TSan 里建一个上下文，切栈之前调 `__tsan_switch_to_fiber`，和 ASan 的标注在同样三处（进协程、让出、协程结束时切走）。切换带着先后关系，和同一根线程上的先后执行一致；协程换了线程，就要靠调度器交接时的锁和原子量排先后，这正是要查的。第一次推上去（`119b0d1`）两个程序一切协程就在 TSan 里段错误：切换写在一个小函数里，debug 构建不内联它，TSan 按函数进出记的调用栈记错了一侧，协程那一侧被弹空，下一次进函数就写到了缓冲区前面。`dd1894f` 改成在真正跳转的函数里直接切。[`dd1894f` 的 CI](https://github.com/NickJerome/culib/actions/runs/39198214046) 24/24 通过：TSan 下 `culib_test` 372 项、`runtime_order_test` 37 项全部通过，没有一条报告；ubuntu-24.04 默认的 g++ 上也没有再出现上面说的 `pthread_cond_clockwait` 误报。其余作业的项数和上一次相同，报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
+
+反向验证：`a28e139` 临时加了一条测试，让两根协程在不同的工作线程上同时、不加锁地自增同一个 `int`。[那次 CI](https://github.com/NickJerome/culib/actions/runs/39198940046) 里 TSan 正好报了这两处（`tests/runtime_test.cpp:112`），把两根协程当成两个执行上下文，调用栈从 `trampoline` 一直到那个 lambda，sanitizer 作业变红；别的测试没有报告。下一个提交删掉了那条测试。
+
+TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协程始终当成同一个执行上下文，换了线程也一样：协程自己写下的内存，换线程以后读不读得到，它不检查，只检查调度器交接时用的那些数据结构有没有排好先后。
