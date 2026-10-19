@@ -722,6 +722,8 @@ const std::chrono::milliseconds monitor_interval(2);
 
 // 监控线程给每根工作线程记下上一次看到的调度次数，和第一次看到这个数的时刻。
 struct watch_mark {
+    watch_mark() : ticks(0) {}
+
     unsigned ticks;
     park_instant since;
 };
@@ -768,7 +770,7 @@ void sleep_until_busy(runtime_state& state, std::unique_lock<std::mutex>& held) 
 // 也没人收，所以先替它们收一次，叫醒的协程排进全局队列。定时器不替它们叫：交给拿到名额的线程
 // 按时限的先后叫，次序才对。
 void monitor_main(runtime_state* state) noexcept {
-    watch_mark marks[worker_limit] = {};
+    watch_mark marks[worker_limit];
     std::unique_lock<std::mutex> held(state->mutex);
     for (;;) {
         if (state->idle.load() == static_cast<int>(state->slots)) {
