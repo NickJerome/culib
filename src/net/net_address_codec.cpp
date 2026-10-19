@@ -60,7 +60,11 @@ result<std::vector<endpoint>> lookup(string_view host, std::uint16_t port, bool 
     if (host.empty() || host.find('\0') != string_view::npos) {
         return make_error(error_kind::invalid_argument, "host must be nonempty and contain no NUL");
     }
-    return detail::lookup_native(host, port, numeric);
+    result<std::vector<endpoint>> addresses = detail::lookup_native(host, port, numeric);
+    if (addresses.is_ok() && addresses.value().empty()) {
+        return make_error(error_kind::not_found, "no IPv4 or IPv6 address for " + host.to_string());
+    }
+    return addresses;
 }
 
 }  // namespace

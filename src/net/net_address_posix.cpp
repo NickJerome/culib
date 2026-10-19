@@ -16,15 +16,11 @@ result<std::vector<endpoint>> lookup_native(string_view host, std::uint16_t port
     addrinfo* list = 0;
     const int failed = ::getaddrinfo(name.c_str(), std::to_string(port).c_str(), &hints, &list);
     if (failed != 0) {
-        const error_kind kind = numeric ? error_kind::invalid_argument
-            : (failed == EAI_NONAME ? error_kind::not_found : error_kind::io);
-        return make_error(kind, "getaddrinfo(" + name + ") failed: " + std::to_string(failed));
+        return make_error(lookup_failure_kind(failed, numeric),
+                          "getaddrinfo(" + name + ") failed: " + std::to_string(failed));
     }
     std::vector<endpoint> addresses = decode_all(list);
     ::freeaddrinfo(list);
-    if (addresses.empty()) {
-        return make_error(error_kind::not_found, "no IPv4 or IPv6 address for " + name);
-    }
     return addresses;
 }
 

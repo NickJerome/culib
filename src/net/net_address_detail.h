@@ -45,7 +45,7 @@ struct socket_address {
 void encode_address(const endpoint& value, socket_address& output) noexcept;
 result<endpoint> decode_address(const sockaddr* address, int length);
 
-// 由平台实现。host 非空、不含 NUL；numeric 时只接受数字地址。
+// 由平台实现。host 非空、不含 NUL；numeric 时只接受数字地址。结果可能为空。
 result<std::vector<endpoint>> lookup_native(string_view host, std::uint16_t port, bool numeric);
 
 // 由平台实现。地址部分的文本，不含端口；失败时为空。
@@ -61,6 +61,18 @@ Info lookup_hints(bool numeric) {
     hints.ai_protocol = IPPROTO_TCP;
     hints.ai_flags = numeric ? AI_NUMERICHOST : 0;
     return hints;
+}
+
+// getaddrinfo 和 GetAddrInfoW 失败时的类别：数字地址解析不了是参数不对，主机名不存在是 not_found。
+// Windows 的 EAI_NONAME 就是 WSAHOST_NOT_FOUND。
+inline error_kind lookup_failure_kind(int code, bool numeric) {
+    if (numeric) {
+        return error_kind::invalid_argument;
+    }
+    if (code == EAI_NONAME) {
+        return error_kind::not_found;
+    }
+    return error_kind::io;
 }
 
 // 解析结果里的 IPv4 和 IPv6 地址，保持原来的顺序，其他地址族跳过。

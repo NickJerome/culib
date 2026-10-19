@@ -24,14 +24,11 @@ result<std::vector<endpoint>> lookup_native(string_view host, std::uint16_t port
     ADDRINFOW* list = 0;
     const int failed = ::GetAddrInfoW(name.c_str(), std::to_wstring(port).c_str(), &hints, &list);
     if (failed != 0) {
-        const error_kind kind = numeric ? error_kind::invalid_argument : error_kind::io;
-        return make_error(kind, "GetAddrInfoW failed: " + std::to_string(failed));
+        return make_error(lookup_failure_kind(failed, numeric),
+                          "GetAddrInfoW(" + host.to_string() + ") failed: " + std::to_string(failed));
     }
     std::vector<endpoint> addresses = decode_all(list);
     ::FreeAddrInfoW(list);
-    if (addresses.empty()) {
-        return make_error(error_kind::not_found, "no IPv4 or IPv6 address returned");
-    }
     return addresses;
 }
 

@@ -47,6 +47,7 @@ private:
 
 // 保持系统返回顺序。直接调系统解析器，会阻塞当前线程：在协程里卡得久了，由监控线程把工作线程的
 // 名额交给别的线程。系统解析器不可取消，DNS 时间不计入 connect 的超时。
+// 主机名不存在报 not_found，解析器的其他失败报 io，消息里带着主机名。
 result<std::vector<endpoint>> resolve(string_view host, std::uint16_t port);
 
 struct datagram {

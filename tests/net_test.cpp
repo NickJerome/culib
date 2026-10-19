@@ -72,6 +72,16 @@ TEST(net, resolves_localhost_without_assuming_address_order) {
     }
 }
 
+TEST(net, reports_an_unknown_host_as_not_found) {
+    // .invalid 是保留的顶级域名，不会有地址；末尾的点让解析器不再拼搜索域。
+    const wavvix::result<std::vector<endpoint>> addresses = wavvix::net::resolve("no-such-host.invalid.", 80);
+    EXPECT(addresses.is_err(), ==, true);
+    if (addresses.is_err()) {
+        EXPECT(addresses.error().kind(), ==, error_kind::not_found);
+        EXPECT(addresses.error().message().find("no-such-host.invalid.") != std::string::npos, ==, true);
+    }
+}
+
 TEST(net, rejects_empty_and_embedded_nul_host) {
     const wavvix::result<std::vector<endpoint>> empty = wavvix::net::resolve("", 80);
     EXPECT(empty.is_err(), ==, true);
