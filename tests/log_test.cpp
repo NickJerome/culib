@@ -327,16 +327,15 @@ TEST(log, sink_management_from_a_coroutine_behaves_like_a_direct_call) {
 }
 
 #ifdef __linux__
-// 协程里调 clear_sinks 不能把 worker 线程压在 state.mutex 上：后台 emit_line
-// 可能正拿着锁等一次写盘。这里把这条阻塞做成确定的：
+// 协程里调 clear_sinks 碰上别的写入者拿着 state.mutex 堵在一次写盘上：协程把它所在的
+// 工作线程卡在锁上，排着的协程得由别的线程接着跑。这里把这条阻塞做成确定的：
 //   1. 建一个 FIFO，容量设成 64 KiB，灌到只剩 32 字节；
 //   2. dup2 把它接到 stderr 上，控制台 sink 的 clog 就写进这个快满的管道；
 //   3. 一个普通线程记一行远超 32 字节的日志——deliver 写到一半必然堵死在
 //      write(2) 里，而 state.mutex 正拿在它手上；
-//   4. 这时让唯一的 worker 上的协程去 clear_sinks。正确做法是整段挪去后台线程
-//      等锁，worker 腾出来能跑另一个协程（probe）；直接在线程里拿 std::mutex
-//      的话，worker 会被一起堵死，probe 永远排不上。
-TEST(log, sink_call_from_a_coroutine_does_not_park_the_worker_on_the_log_mutex) {
+//   4. 这时让一根协程去 clear_sinks，它先起的 probe 排在本线程上。clear_sinks 卡在锁上，
+//      probe 只能由别的线程拿走去跑（闲着的工作线程，或者监控线程交接名额以后的那根）。
+TEST(log, a_coroutine_stuck_on_the_log_mutex_does_not_stall_the_others) {
     const wavvix::result<wavvix::fs::path> temp = wavvix::fs::temp_directory_path();
     const wavvix::fs::path base = temp.is_ok() ? temp.value() : wavvix::fs::path(".");
     const std::string fifo = (base / std::string("culib_log_jam.fifo")).string();
@@ -452,8 +451,7 @@ TEST(log, sink_call_from_a_coroutine_does_not_park_the_worker_on_the_log_mutex) 
         wavvix::wait_group probes;
         wavvix::wait_group janitor;
         janitor.go([&] {
-            // 探针先排队（协程里起的协程排在本线程上），协程随后一刻不让出：probe 能被调度，
-            // 只可能因为 clear_sinks 把 worker 让了出来，而不是跟它抢顺序。
+            // 探针先排在本线程上，这根协程随后卡在锁上不让出：probe 跑起来只能是别的线程接了手。
             probes.go([&] { probe_ran = true; });
             wavvix::log::clear_sinks();      // ← 被测的那一下
             cleared = true;
@@ -480,7 +478,7 @@ TEST(log, sink_call_from_a_coroutine_does_not_park_the_worker_on_the_log_mutex) 
 
     EXPECT(stuck, ==, true);
     EXPECT(cleared, ==, true);
-    // ★ 被测性质：写线程还堵在锁里的时候，worker 就得照常能跑别的协程。
+    // ★ 被测性质：写线程还堵在锁里的时候，排着的协程照样有人跑。
     EXPECT(probe_ran_before_release, ==, true);
 }
 #endif  // __linux__

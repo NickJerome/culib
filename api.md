@@ -63,7 +63,7 @@ target("app")
 | `bytes.h` | `buffer` | `wavvix` |
 | `flag.h` | `option<T>`、五种选项别名、`init`、`parse` | `wavvix::flag` |
 | `config.h` | `config` | `wavvix` |
-| `coroutine.h` | `go`、`wait_group`、`yield`、`sleep_for`、`call_blocking` | `wavvix` |
+| `coroutine.h` | `go`、`wait_group`、`yield`、`sleep_for` | `wavvix` |
 | `sync.h` | `mutex`、`condition_variable`、`channel`、`lock_guard` | `wavvix` |
 | `net.h` | `endpoint`、`resolve`、`protocol`、`socket`、`datagram` | `wavvix::net` |
 | `fs.h` | `path`、查询、目录操作、`directory_iterator`、`file`、`open` | `wavvix::fs` |
@@ -81,8 +81,8 @@ target("app")
 
 - 文本和路径使用 UTF-8。`string_view` 不拥有数据；原字符串销毁、移动或重新分配后，不应继续使用旧视图。
 - 可恢复错误通常返回 `result<T>`，先检查 `is_err()` / `is_ok()` 再取对应分支；空值用 `optional<T>`。取错分支、越界等编程错误会诊断并终止。
-- `result` 不保证捕获所有 C++ 异常：例如 `std::string`、`std::vector` 分配和用户回调仍可能抛出异常。协程函数不得让异常逃出，逃出会 `std::terminate()`；`call_blocking` 把函数抛出的异常带回调用处。
-- 协程内的 `fs` 操作和 `net` 的主机名解析由库内部处理：自动经 `call_blocking` 放到后台线程执行，只挂起当前协程，工作线程照常跑别的协程；协程外同步执行。用户自己的阻塞函数仍要自己交给 `call_blocking`。
+- `result` 不保证捕获所有 C++ 异常：例如 `std::string`、`std::vector` 分配和用户回调仍可能抛出异常。协程函数不得让异常逃出，逃出会 `std::terminate()`。
+- `fs` 操作、日志和 `net` 的主机名解析直接做系统调用，在协程里也一样：阻塞期间占住所在的工作线程，卡得久了由监控线程把跑协程的名额交给另一根线程。用户自己的阻塞函数也直接调用。
 - 普通值类型可复制；资源句柄的可复制、可移动性在各节列出。库不隐式替换全局 `malloc/new`。
 
 <a id="result"></a>
@@ -596,9 +596,6 @@ public:
 void yield();
 void sleep_for(std::chrono::nanoseconds duration);
 
-template<class F, class... Args>
-auto call_blocking(F&& function, Args&&... args) -> decltype(function(args...));
-
 const std::size_t default_stack_size = 240 * 1024;
 ```
 
@@ -609,16 +606,15 @@ const std::size_t default_stack_size = 240 * 1024;
 | `wait_group::wait()` | 等组里的协程全部结束。返回时它们的函数和参数都已析构，写下的东西都看得见。协程里只挂起当前协程，普通线程里阻塞当前线程；可以有多个等待者。组里的协程可以接着往组里加，返回后组可以再用。不可复制或移动；组里还有协程时析构，打印诊断后终止 |
 | `yield()` | 协程里让出，排到就绪队列的末尾；协程外等同 `std::this_thread::yield()` |
 | `sleep_for(d)` | 协程里只挂起当前协程；协程外睡当前线程。零或负时长立即返回 |
-| `call_blocking(f, args...)` | 在后台线程上调用 `f(args...)`，等待期间只挂起当前协程。返回 `f` 的返回值，`f` 抛出的异常在这里重新抛出；参数和直接调用一样传，不拷贝。后台线程整个进程共用，最多 64 根。协程外直接调用。没有超时也不能取消 |
 
 - **`main` 返回时进程直接退出**，还没结束的协程不再运行，和 Go 一样；要等就用 `wait_group`。运行时启动以后一直在，不需要也没有办法关掉。
-- 普通线程里起的协程排进全局队列，协程里起的协程先排进本线程的队列；闲着的工作线程从全局队列取，也从别的工作线程的队列里拿。协程在挂起点（等锁、收发 channel、I/O、`sleep_for`、`yield`、`wait`、`call_blocking`）可能换到另一根工作线程上继续，所以协程之间共享数据要加锁，`thread_local`、`errno`、`std::this_thread::get_id()` 和拿在手里的 `std::mutex` 都不能跨过挂起点。在 catch 块里挂起，打印诊断后终止。规则和原因见[运行时文档](docs/runtime.md#协程在哪根线程上跑)。
+- 普通线程里起的协程排进全局队列，协程里起的协程先排进本线程的队列；闲着的工作线程从全局队列取，也从别的工作线程的队列里拿。协程在挂起点（等锁、收发 channel、网络 I/O、`sleep_for`、`yield`、`wait`）可能换到另一根工作线程上继续，所以协程之间共享数据要加锁，`thread_local`、`errno`、`std::this_thread::get_id()` 和拿在手里的 `std::mutex` 都不能跨过挂起点。在 catch 块里挂起，打印诊断后终止。规则和原因见[运行时文档](docs/runtime.md#协程在哪根线程上跑)。
 - 一根工作线程卡在阻塞调用或长循环里，又有协程排着没人跑时，监控线程把它跑协程的名额交给另一根线程（备用的或新起的，线程总数不超过 256），同一时刻跑协程的线程数保持 `WAVVIX_MAXPROCS`。见[运行时文档](docs/runtime.md#卡住的工作线程)。
 - 函数里逃出的异常会 `std::terminate()`。内存不够时打印诊断后终止。
 - 栈固定为 240 KiB，在协程第一次运行时才分配。**release 构建里栈溢出不会被检测**：没有保护页，用超了会写坏别的内存；debug 构建有保护页，溢出当场崩溃。递归深度随输入增长的代码要自己限制深度，规则见[运行时文档](docs/runtime.md#栈溢出)。
 - 库不检测死锁：所有协程都挂起、谁也叫不醒谁时，`wait()` 会一直等。生命周期与内存的说明见 [docs/runtime.md](docs/runtime.md)。
 
-示例：阻塞的调用交给后台线程，同时跑别的协程。
+示例：阻塞的调用直接写，卡住的工作线程有别的线程顶上。
 
 ```cpp
 #include <culib/coroutine.h>
@@ -627,7 +623,7 @@ const std::size_t default_stack_size = 240 * 1024;
 #include <thread>
 
 int slow_square(int x) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));   // 阻塞这根线程
     return x * x;
 }
 
@@ -635,7 +631,7 @@ int main() {
     int square = 0;
     int other = 0;
     wavvix::wait_group group;
-    group.go([&] { square = wavvix::call_blocking(slow_square, 7); });
+    group.go([&] { square = slow_square(7); });
     group.go([&] { other = 1; });
     group.wait();
     std::cout << square << ' ' << other << '\n';
@@ -761,7 +757,7 @@ public:
 result<std::vector<endpoint>> resolve(string_view host, std::uint16_t port);
 ```
 
-`endpoint` 无公共默认构造；`parse` 接受数字 IPv4/IPv6，端口单独传入。IPv6 可带数字 scope ID，如 `fe80::1%3`。`to_string` 带端口，IPv6 用方括号包住地址。`resolve` 调用系统解析器，可能阻塞并分配内存：协程内自动经 `call_blocking` 执行，不卡工作线程；协程外同步执行，调用方无需再包一层。返回结果保持系统顺序，由调用者选择地址。
+`endpoint` 无公共默认构造；`parse` 接受数字 IPv4/IPv6，端口单独传入。IPv6 可带数字 scope ID，如 `fe80::1%3`。`to_string` 带端口，IPv6 用方括号包住地址。`resolve` 调用系统解析器，可能阻塞并分配内存：在协程里调用时占住所在的工作线程，卡得久了由监控线程把跑协程的名额交给另一根线程。返回结果保持系统顺序，由调用者选择地址。
 
 ### 统一套接字：`protocol`、`socket` 与 `datagram`
 
@@ -816,7 +812,7 @@ struct datagram {
 
 `send_to` 一次发送一个完整报文，成功返回 `result<void>`；`recv_from` 消费一个报文，返回 `datagram{size, from}`（来源地址与字节数），数据写入调用方缓冲区。零字节报文有效；缓冲区小于报文时报文已被消费并返回 `out_of_range`。
 
-主机名版 `connect` 先解析再按系统顺序尝试候选，DNS 不计入超时，候选共用同一份超时；协程里解析经 `call_blocking`，协程外同步。已显式绑定的套接字只尝试地址族一致的候选，重试前按实际本地端点重新绑定，做不到就报错，绝不悄悄换本地源地址。endpoint 版 `connect` 不解析；已绑定时要求地址族一致；监听中或已连接时拒绝。连接失败会关掉失败的原生句柄。
+主机名版 `connect` 先解析再按系统顺序尝试候选，DNS 不计入超时，候选共用同一份超时；解析是同步的系统调用。已显式绑定的套接字只尝试地址族一致的候选，重试前按实际本地端点重新绑定，做不到就报错，绝不悄悄换本地源地址。endpoint 版 `connect` 不解析；已绑定时要求地址族一致；监听中或已连接时拒绝。连接失败会关掉失败的原生句柄。
 
 套接字建出来就登记在运行时的事件引擎上（整个进程一个），之后可以交给任何协程或线程用：一根协程读、另一根写也行，读写之间协程换了工作线程也没关系。同一个方向上同时有几个在等，按先来后到交付。句柄上还有未完成的操作时不得 `close`、移动覆盖或析构；缓冲区须活到 I/O 返回。
 
@@ -920,7 +916,7 @@ int main() {
 <a id="fs"></a>
 ## 文件系统：`<culib/fs.h>` 与 `<culib/fs_stream.h>`
 
-命名空间：`wavvix::fs`。路径是值类型 `fs::path`，值一律 UTF-8；读写一律二进制。会碰磁盘的接口返回 `result`：「不存在」是答案不是失败——`exists` 返回 `ok(false)` 表示「没有」，「问不成」（权限、I/O）才是错误。路径里含内嵌 `'\0'` 一律报 `invalid_argument`，动手之前磁盘碰不到。协程内的文件操作自动经 `call_blocking` 放到后台线程执行，只挂起当前协程；协程外同步执行。取舍见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
+命名空间：`wavvix::fs`。路径是值类型 `fs::path`，值一律 UTF-8；读写一律二进制。会碰磁盘的接口返回 `result`：「不存在」是答案不是失败——`exists` 返回 `ok(false)` 表示「没有」，「问不成」（权限、I/O）才是错误。路径里含内嵌 `'\0'` 一律报 `invalid_argument`，动手之前磁盘碰不到。文件操作直接做系统调用，在协程里也一样：慢盘上卡住的工作线程由监控线程把跑协程的名额交给另一根线程。取舍见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
 
 ### 路径：纯字符串操作
 
@@ -1485,6 +1481,6 @@ int main() {
 
 上条记录之后，本文网络几节按统一 `net::socket` 重写。TCP、UDP 两个完整程序已重新以 Linux GCC C++11 和 Windows MSVC `/W4 /WX /execution-charset:.1252` 编译运行，分别输出 `tcp ok`、`udp ok`；Windows 消费程序未加 `/utf-8`。这次仅重跑这两段，不把上一条或旧 CI 当作新接口的验证。完整本地矩阵见[统一 socket 设计](docs/superpowers/specs/2026-10-13-unified-socket-design.md#实现验证)。
 
-2026-10-18 协程一节改成 `go` / `wait_group`，同步和网络两节的示例随之改写。这 5 个程序在 Windows x64 MSVC 2022 上以警告即错误编译、逐个运行，输出与正文一致；这一次没有在 Linux 上复核（本机 WSL 不可用），本文示例也不在 CI 里编译。同一天协程改成可以换线程以后，这 5 个程序在 Windows 上重新编译运行，输出不变。
+2026-10-18 协程一节改成 `go` / `wait_group`，同步和网络两节的示例随之改写。这 5 个程序在 Windows x64 MSVC 2022 上以警告即错误编译、逐个运行，输出与正文一致；这一次没有在 Linux 上复核（本机 WSL 不可用），本文示例也不在 CI 里编译。同一天协程改成可以换线程以后，这 5 个程序在 Windows 上重新编译运行，输出不变；删掉 `call_blocking` 以后，协程一节第一个示例改成直接调用阻塞函数，5 个程序在 Windows 上再编译运行一遍，输出不变。
 
 2026-10-14：`fs` 按定稿的标准接口整体重写（`path` 值类型、`result` 三态查询、`directory_iterator`、`file` 句柄与 `fs::ofstream`，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)）。fs 一节全部提取重验：本文 23 个独立 C++ 程序从当前文档提取，在 Linux x86_64 GCC 11.4（`-std=c++11`，全部警告即错误）与 Windows x64 MSVC 2022（全部警告即错误）下编译并运行，30 次调用的退出码与输出均与正文一致；fs 示例实测输出即上文 fs 一节「实测输出」所列五行。2026-10-13 及更早的两段验证记录针对的是旧 fs 接口，不能替代本段新接口的重验。本段的文档示例验证与远程 CI 是两项独立检查：[提交 `e7b6b8e` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38567733275) 24/24 job 通过；完整日志核对、测试项数和未覆盖边界见[fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md) 第 5 节。

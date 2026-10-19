@@ -6,18 +6,11 @@
 // 长路径测试（tests/fs_test.cpp）钉死了这条行为。
 // 平台私有契约见 directory.h / file.h；对外的 exists / create_directory / remove /
 // directory_iterator 等组合操作由可移植的 fs.cpp 在这里的原语上拼出来。
-//
-// 和 fs_posix.cpp 同一套分层，call_blocking 的边界也跟着分：
-// - 公共 API 里由本平台负责的那几个入口（file_size / last_write_time / copy_file /
-//   rename / current_path 的 get/set）是协程可能直接碰到的，整个碰盘过程包进
-//   call_blocking，一次公共调用只挂起一次。
-// - detail 命名空间下的私有原语保持裸系统调用，不包：fs.cpp 的组合层已经把
-//   整段高层操作放进 call_blocking，这里再包一层就成了嵌套挂起。
+// 和 fs_posix.cpp 一样都直接做系统调用。
 
 #include <culib/fs.h>
 #include <culib/defer.h>
 #include <culib/lexical_cast.h>   // to_string
-#include <culib/coroutine.h>
 #include <culib/strings.h>
 
 #include "directory.h"
@@ -517,9 +510,6 @@ result<bool> same_file(const std::wstring& wide_from, string_view from,
            source_info.nFileIndexLow == target_info.nFileIndexLow;
 }
 
-// 下面几个 *_native 只在 call_blocking 放到后台线程的那一段里跑
-// （协程外的直接调用会内联执行），内部绝不套 call_blocking。
-
 result<std::uint64_t> file_size_native(string_view target) {
     const result<std::wstring> wide = wide_path(target);
     if (wide.is_err()) {
@@ -645,43 +635,38 @@ result<void> set_current_directory_native(string_view directory) {
 
 }  // namespace
 
-// --- 公共入口：每个整个碰盘过程恰好一次 call_blocking ------------------------------
+// --- 公共入口 ---------------------------------------------------------------------
 
 result<std::uint64_t> file_size(const path& target) {
-    return call_blocking([&target] { return file_size_native(target.string()); });
+    return file_size_native(target.string());
 }
 
 result<wavvix::timestamp> last_write_time(const path& target) {
-    return call_blocking([&target] { return last_write_time_native(target.string()); });
+    return last_write_time_native(target.string());
 }
 
 // --- 目录与文件操作 -------------------------------------------------------------
 
 result<void> copy_file(const path& from, const path& to, copy_options options) {
     const bool overwrite = options == copy_options::overwrite_existing;
-    return call_blocking(
-        [&from, &to, overwrite] {
-            return copy_file_native(from.string(), to.string(), overwrite);
-        });
+    return copy_file_native(from.string(), to.string(), overwrite);
 }
 
 result<void> rename(const path& from, const path& to) {
-    return call_blocking(
-        [&from, &to] { return rename_native(from.string(), to.string()); });
+    return rename_native(from.string(), to.string());
 }
 
 // --- 当前目录与临时目录 -----------------------------------------------------------
 
 result<path> current_path() {
-    return call_blocking([] { return current_directory_native(); });
+    return current_directory_native();
 }
 
 result<void> current_path(const path& directory) {
-    return call_blocking(
-        [&directory] { return set_current_directory_native(directory.string()); });
+    return set_current_directory_native(directory.string());
 }
 
-// 只读环境变量 / 已知位置，不碰磁盘，不需要 call_blocking（和 fs_posix.cpp 一致）。
+// 只读环境变量 / 已知位置，不碰磁盘（和 fs_posix.cpp 一致）。
 result<path> temp_directory_path() {
     std::size_t capacity = MAX_PATH + 1;
     std::vector<wchar_t> buffer(capacity);

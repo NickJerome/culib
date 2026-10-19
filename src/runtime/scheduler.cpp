@@ -1,4 +1,4 @@
-// 协程运行时：工作线程与就绪队列、挂起与唤醒、定时器、事件引擎、监控线程、阻塞调用。
+// 协程运行时：工作线程与就绪队列、挂起与唤醒、定时器、事件引擎、监控线程。
 //
 // 协程可以在任何一根工作线程上继续：被叫醒的协程排进叫醒它的那根工作线程的队列
 // （叫醒它的不是工作线程，就排进全局队列），闲着的工作线程去别的队列里拿。
@@ -10,6 +10,7 @@
 // 运行时的状态也不析构——那时可能还有协程在跑，它们碰到的库内状态必须还在。
 
 #include <culib/coroutine.h>
+#include <culib/detail/macros.h>
 #include <culib/lexical_cast.h>
 #include <culib/os.h>
 
@@ -102,28 +103,6 @@ struct run_queue {
     std::size_t count;
 };
 
-struct blocking_job {
-    void (*invoke)(void*);
-    void* body;
-    park_token* token;
-    blocking_job* next;
-};
-
-// call_blocking 的后台线程，整个进程共用：第一次用到时才建，最多 background_limit 根。
-struct background_threads {
-    background_threads() : head(0), tail(0), queued(0), idle(0), started(0) {}
-
-    std::mutex mutex;
-    std::condition_variable ready;
-    blocking_job* head;
-    blocking_job* tail;
-    std::size_t queued;   // 还没被取走的调用
-    std::size_t idle;     // 正在等活的线程
-    std::size_t started;
-};
-
-const std::size_t background_limit = 64;
-
 // 工作线程总数的上限，含备用的。WAVVIX_MAXPROCS 也不能超过它。
 const unsigned worker_limit = 256;
 
@@ -184,8 +163,6 @@ struct runtime_state {
     std::mutex timer_mutex;        // 护着 timers
     timer_heap timers;
     std::atomic<park_ticks> earliest;   // timers 里最早的时限，没有时为 no_deadline
-
-    background_threads blocking;   // call_blocking 的后台线程
 };
 
 namespace {
@@ -258,8 +235,8 @@ unsigned worker_count() {
 void check_exception_state() {
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
     if (std::current_exception()) {
-        die("wavvix: 协程不能在 catch 块里挂起（等锁、收发 channel、网络 I/O、sleep_for、yield、wait、"
-            "call_blocking 都会挂起）：异常的处理状态按线程保存，挂起以后会被同一根线程上的别的协程改掉，"
+        die("wavvix: 协程不能在 catch 块里挂起（等锁、收发 channel、网络 I/O、sleep_for、yield、wait "
+            "都会挂起）：异常的处理状态按线程保存，挂起以后会被同一根线程上的别的协程改掉，"
             "换了线程继续也对不上。把这些调用挪到 catch 块外面");
     }
 #endif
@@ -705,34 +682,6 @@ void worker_loop(runtime_state& state, vcpu& self) {
     }
 }
 
-// ---- call_blocking 的后台线程 ------------------------------------------------------
-
-void background_main(background_threads* pool) noexcept {
-    std::unique_lock<std::mutex> lock(pool->mutex);
-    for (;;) {
-        if (pool->head) {
-            blocking_job* const job = pool->head;
-            pool->head = job->next;
-            if (!pool->head) {
-                pool->tail = 0;
-            }
-            --pool->queued;
-            lock.unlock();
-
-            job->invoke(job->body);
-            // 叫醒以后 job 随等待者的栈帧消失，之后不能再碰它。
-            scheduler_wake(*job->token);
-
-            lock.lock();
-            continue;
-        }
-
-        ++pool->idle;
-        pool->ready.wait(lock);
-        --pool->idle;
-    }
-}
-
 // ---- 起线程 ----------------------------------------------------------------------
 
 // 线程起不来是资源耗尽，和内存不够一样打印诊断后终止。线程不 join：进程退出时随进程结束。
@@ -963,30 +912,6 @@ bool scheduler_wake(park_token& token) {
     token.delivered = true;
     parker.woken.notify_all();
     return true;
-}
-
-void scheduler_call_blocking(void (*invoke)(void*), void* body) {
-    background_threads& pool = running().blocking;
-
-    park_token token;
-    park_prepare(token);
-    blocking_job job = {invoke, body, &token, 0};
-    {
-        std::lock_guard<std::mutex> lock(pool.mutex);
-        if (pool.tail) {
-            pool.tail->next = &job;
-        } else {
-            pool.head = &job;
-        }
-        pool.tail = &job;
-        ++pool.queued;
-        if (pool.idle < pool.queued && pool.started < background_limit) {
-            ++pool.started;
-            start_thread([&pool] { background_main(&pool); }, "wavvix::call_blocking: 起不来后台线程");
-        }
-    }
-    pool.ready.notify_one();
-    scheduler_park(token, forever);
 }
 
 // ---- I/O --------------------------------------------------------------------------

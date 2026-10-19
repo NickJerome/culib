@@ -51,7 +51,7 @@
 ## 错误处理
 
 - 可恢复的失败通常返回 `result`，由调用方显式检查。`go(fn)` 不能返回错误：内存不够和其他运行时误用一样，打印诊断后终止；没有另一种返回 `result` 的提交方式。`mem` 的分配函数沿用 `malloc` 的语义，失败返回空指针、由调用方手动释放：两个全局覆盖目标直接用它们实现 `malloc` 和 `new`，应用代码一般经覆盖后的 `new` 间接使用。
-- 不依赖 RTTI。除 `coroutine.h` 里 `call_blocking` 按异常开关转发异常的分支外，公共头文件不出现 `throw`、`try`、`dynamic_cast`、`typeid`；关闭异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程仍可使用全库。
+- 不依赖 RTTI。公共头文件不出现 `throw`、`try`、`dynamic_cast`、`typeid`；关闭异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程仍可使用全库。
 - **错误类型只有一种：默认的 `error`。** 不为「性能敏感」的接口另开 `enum class` ——量过了，枚举的优势在本库的场景里兑现不了（见下），而两种错误类型会让每个层边界上多一次显式转换，也让每个调用点都要先做一次选择。
 - **跨层传播时在层边界上补上下文。** 底层只知道「不是合法整数」，它永远不知道「这是 /etc/app.conf 的 port 字段」——那个信息只有中间那层同时持有，所以必须在那里拼进消息里。不补的话 `main` 拿到的是一句没有主语的话。
 - 运行时的误用（取错分支、越界等）打印一行诊断后 `std::abort()`，release 同样检查。诊断直接写 stderr，不分配内存、不依赖流。
@@ -72,7 +72,7 @@
 
 - **热路径可内联**：热路径上的小函数放在头文件中（`inline` / 模板）。静态库里的普通函数在不开启 LTO 时无法被跨库内联。
 - **少分配、少拷贝**：避免不必要的堆分配和拷贝；参数优先传引用或字符串视图（`wavvix::string_view`，第一程第一项，在那之前只能用 `const std::string&`），支持移动语义；需要反复产出结果的接口，额外提供写入调用方缓冲区的重载。
-- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。异构任务也不必直接使用 `std::function`：`call_blocking` 把可调用对象留在等待协程的栈上，队列只传函数指针和对象地址。另一处曾卡在这里的是「模板回调」与「公共头文件不含平台头」的冲突，`fs` 的目录遍历早年就是模板回调。2026-10-14 改版把它换成 `directory_iterator`：公共头文件里只有一个指向引用计数共享状态的指针成员（状态定义在 `src/fs`），遍历走 range-for，错误放进 `result<directory_entry>` 元素——冲突随回调一起消失了，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
+- **慎用有隐性开销的设施**：虚函数、`std::function`、`std::shared_ptr` 等，优先使用模板与值语义；公共头文件不引入 `<iostream>`。异构任务也不必直接使用 `std::function`：`go()` 把可调用对象连同参数放进协程控制块的同一块内存，调度器只传控制块的指针。另一处曾卡在这里的是「模板回调」与「公共头文件不含平台头」的冲突，`fs` 的目录遍历早年就是模板回调。2026-10-14 改版把它换成 `directory_iterator`：公共头文件里只有一个指向引用计数共享状态的指针成员（状态定义在 `src/fs`），遍历走 range-for，错误放进 `result<directory_entry>` 元素——冲突随回调一起消失了，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)。
 - **无启动开销**：不在 `main` 之前执行任何代码，避免需要动态初始化的全局对象。两处例外：测试程序里 `TEST` 的自动注册（正式程序不受影响）、以及 `flag` 的全局选项对象在 `main` 之前登记（那是 Go 风格 flag 包的用法前提，见 [flag 设计](docs/superpowers/specs/2026-10-04-flag-design.md) 第 1 节）。登记表用函数内静态变量，因为文件级全局的初始化顺序跨翻译单元不确定。
 - **按需同步**：只在必要处加锁，不让单线程使用者为同步付出代价。
 - **目标存储包含 HDD 和网络挂载，它们对开销极其敏感。** 同一个系统调用的代价差几个数量级：
@@ -184,7 +184,7 @@
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 六个目标 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
 | 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/38567733275)（`e7b6b8e`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
-| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 22 个） |
+| 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 21 个） |
 | CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |
 | 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |

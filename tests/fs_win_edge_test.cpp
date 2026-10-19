@@ -1,10 +1,6 @@
-// Windows 平台侧的边界测试，钉死 src/fs/fs_win.cpp 特有的三条契约：
+// Windows 平台侧的边界测试，钉死 src/fs/fs_win.cpp 特有的两条契约：
 // 1. 目录打开的空路径报 not_found，绝不退化成「当前目录 + *」去列别人的 cwd。
-// 2. 公共入口（file_size / last_write_time / copy_file / rename / current_path
-//    的 get/set）在协程里整段下放 call_blocking，等待期间工作线程能跑别的协程
-//    ——和 fs_posix.cpp 同一个契约。fs.cpp 的组合层和 detail 私有原语的下放
-//    边界由 fs_test.cpp / fs_stream_test.cpp 那边盯。
-// 3. 同一文件判定：经 junction / 硬链接绕回同一文件必须拦住且两份入口的内容
+// 2. 同一文件判定：经 junction / 硬链接绕回同一文件必须拦住且两份入口的内容
 //    完好——身份只认内核给的卷号 + FileIndex（两边非 0 才有身份可比）。
 // 任何一边 FileIndex 全 0 时实现按「身份不可得」报错拒绝覆盖，不再拿最终
 // 路径兜底——零索引的网络重定向器同样可能支持硬链接，同一个文件的两个别名
@@ -12,12 +8,9 @@
 // 本机 NTFS（索引恒非 0）上造不出来，没有确定性的复现手段，也不为此往生产
 // 代码里塞测试钩子；理由见实现注释。
 // POSIX 上这些契约各由自己的实现保证，本文件整个不参与编译。
-// 放在只开一根工作线程的 runtime_order_test 里：第 2 条的探针靠「证人协程只能在
-// 这根线程上跑」，工作线程多了，证人会被别的线程拿走，看不出操作有没有下放。
 
 #ifdef _WIN32
 
-#include <culib/coroutine.h>
 #include <culib/fs.h>
 #include <culib/strings.h>
 #include <culib/test.h>
@@ -97,33 +90,6 @@ std::string read_text(const fs::path& target) {
     }
     (void)handle.close();
     return content;
-}
-
-// 在协程里执行 operation，同时盯一件事：等待期间，同工作线程上的另一个协程
-// 有没有跑起来。协作式调度下这是确定的，不是概率：
-// - 同步实现：碰盘过程占着工作线程，证人协程排在就绪队列里寸步难行，
-//   operation 返回时证人还没跑 → false；
-// - call_blocking 下放：协程挂起、工作线程空出来，证人（当时唯一就绪的协程）
-//   必然先跑 → true。就绪队列先进先出，证人比唤醒更早入队，顺序没有第二个解。
-// 证人必须在 operation 之前、从同一个协程里用 go() 起——协程里起的协程排在本线程上；
-// 从别的线程起会落到别的工作线程上，引入真正的竞态。
-template <typename Operation>
-bool operation_offloads_to_blocking_thread(const Operation& operation) {
-    bool witness_ran = false;
-    bool ran_before_return = false;
-    wavvix::wait_group caller;
-    caller.go([&] {
-        wavvix::wait_group witness;
-        witness.go([&] {
-            witness_ran = true;
-            wavvix::yield();   // 让出一次再收尾：证明工作线程确实转得动
-        });
-        operation();
-        ran_before_return = witness_ran;
-        witness.wait();
-    });
-    caller.wait();
-    return ran_before_return;
 }
 
 // fs_test.cpp 同款 junction 工具（独立 TU，各带一份）。
@@ -213,120 +179,6 @@ TEST(fs_win_edge, empty_directory_path_does_not_list_the_working_directory) {
     EXPECT(items, ==, 1);
     EXPECT(kind, ==, error_kind::not_found);
     EXPECT(restored, ==, true);
-}
-
-// ---------------------------------------------------------------------------
-// worker 调度：公共入口整段下放 call_blocking（红→绿的确定性探针）
-// ---------------------------------------------------------------------------
-
-// 探针的对照：直接调用（同步的替身）必须报 false，包进 call_blocking 必须报
-// true。少了这条，上面几条「没下放就红」就没人担保它们不是恒真。
-TEST(fs_win_edge, the_offload_probe_distinguishes_inline_from_call_blocking) {
-    volatile long sink = 0;
-    const bool inline_call = operation_offloads_to_blocking_thread([&] {
-        for (int i = 0; i < 1000; ++i) {
-            sink += i;   // 占着工作线程干点活，绝不挂起
-        }
-    });
-    EXPECT(inline_call, ==, false);
-    const bool blocking_call = operation_offloads_to_blocking_thread(
-        [&] { wavvix::call_blocking([&] { sink += 1; }); });
-    EXPECT(blocking_call, ==, true);
-}
-
-TEST(fs_win_edge, file_size_offloads_blocking_work_from_the_coroutine_worker) {
-    const scratch area("offload_size");
-    if (!EXPECT(area.ok(), ==, true)) {
-        return;
-    }
-    const fs::path file = area.at("data.txt");
-    if (!EXPECT(write_text(file, "0123456789").is_ok(), ==, true)) {
-        return;
-    }
-    result<std::uint64_t> size = make_error(error_kind::unknown, "未执行");
-    const bool offloaded =
-        operation_offloads_to_blocking_thread([&] { size = fs::file_size(file); });
-    EXPECT(offloaded, ==, true);
-    EXPECT(size.value_or(0), ==, 10ull);
-}
-
-TEST(fs_win_edge, last_write_time_offloads_blocking_work_from_the_coroutine_worker) {
-    const scratch area("offload_time");
-    if (!EXPECT(area.ok(), ==, true)) {
-        return;
-    }
-    const fs::path file = area.at("data.txt");
-    if (!EXPECT(write_text(file, "x").is_ok(), ==, true)) {
-        return;
-    }
-    result<wavvix::timestamp> when = make_error(error_kind::unknown, "未执行");
-    const bool offloaded =
-        operation_offloads_to_blocking_thread([&] { when = fs::last_write_time(file); });
-    EXPECT(offloaded, ==, true);
-    EXPECT(when.is_ok(), ==, true);
-}
-
-TEST(fs_win_edge, copy_file_offloads_blocking_work_from_the_coroutine_worker) {
-    const scratch area("offload_copy");
-    if (!EXPECT(area.ok(), ==, true)) {
-        return;
-    }
-    const fs::path from = area.at("from.txt");
-    const fs::path to = area.at("to.txt");
-    if (!EXPECT(write_text(from, "payload").is_ok(), ==, true)) {
-        return;
-    }
-    result<void> copied;
-    const bool offloaded = operation_offloads_to_blocking_thread(
-        [&] { copied = fs::copy_file(from, to); });
-    EXPECT(offloaded, ==, true);
-    EXPECT(copied.is_ok(), ==, true);
-    EXPECT(read_text(to), ==, "payload");
-}
-
-TEST(fs_win_edge, rename_offloads_blocking_work_from_the_coroutine_worker) {
-    const scratch area("offload_rename");
-    if (!EXPECT(area.ok(), ==, true)) {
-        return;
-    }
-    const fs::path from = area.at("from.txt");
-    const fs::path to = area.at("to.txt");
-    if (!EXPECT(write_text(from, "payload").is_ok(), ==, true)) {
-        return;
-    }
-    result<void> moved;
-    const bool offloaded =
-        operation_offloads_to_blocking_thread([&] { moved = fs::rename(from, to); });
-    EXPECT(offloaded, ==, true);
-    EXPECT(moved.is_ok(), ==, true);
-    EXPECT(read_text(to), ==, "payload");
-}
-
-TEST(fs_win_edge, current_path_getter_offloads_blocking_work_from_the_coroutine_worker) {
-    result<fs::path> here = make_error(error_kind::unknown, "未执行");
-    const bool offloaded =
-        operation_offloads_to_blocking_thread([&] { here = fs::current_path(); });
-    EXPECT(offloaded, ==, true);
-    if (EXPECT(here.is_ok(), ==, true)) {
-        EXPECT(here.value().is_absolute(), ==, true);
-    }
-}
-
-TEST(fs_win_edge, current_path_setter_offloads_blocking_work_from_the_coroutine_worker) {
-    const scratch area("offload_cwd");
-    if (!EXPECT(area.ok(), ==, true)) {
-        return;
-    }
-    const result<fs::path> original = fs::current_path();
-    if (!EXPECT(original.is_ok(), ==, true)) {
-        return;
-    }
-    result<void> moved;
-    const bool offloaded = operation_offloads_to_blocking_thread(
-        [&] { moved = fs::current_path(area.root()); });
-    EXPECT(offloaded, ==, true);
-    EXPECT(moved.is_ok(), ==, true);
-    EXPECT(fs::current_path(original.value()).is_ok(), ==, true);
 }
 
 // ---------------------------------------------------------------------------

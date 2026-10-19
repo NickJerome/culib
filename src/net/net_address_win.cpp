@@ -1,6 +1,5 @@
 #include "net_address_detail.h"
 
-#include <culib/coroutine.h>
 #include <culib/strings.h>
 
 #include <cstring>
@@ -72,9 +71,7 @@ result<endpoint> endpoint::parse(string_view numeric_ip, std::uint16_t port) {
 }
 
 result<std::vector<endpoint>> resolve(string_view host, std::uint16_t port) {
-    return call_blocking([host, port] {
-        return lookup(host, port, false);
-    });
+    return lookup(host, port, false);
 }
 
 std::string endpoint::to_string() const {

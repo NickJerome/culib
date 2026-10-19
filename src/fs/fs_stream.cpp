@@ -1,7 +1,6 @@
 // fs::ofstream：把 fs::file 挂到标准 <ostream> 上的缓冲写端。
 // put 区攒字节，整块才落一次原生写；大块数据绕过缓冲直接一次 file.write，
-// 避免逐字符触发下放。file::write 自带 call_blocking，协程里每次落盘只挂起
-// 写它的那个协程；缓冲活在 ofstream 对象里，写完才复用，不会带着挂起被复用。
+// 避免逐字符发系统调用。
 // 状态约定：构造失败置 failbit；写/flush/close 的失败置 badbit/failbit，
 // 从不 clear 洗掉更早的状态；显式 close 之后 is_open() 为 false。
 
@@ -88,7 +87,7 @@ std::streamsize file_streambuf::xsputn(const char* data, std::streamsize size) {
         return -1;
     }
     if (static_cast<std::size_t>(size) > kBufferSize) {
-        // 大块不进缓冲：一次 file.write 整块落盘，一次下放一次原生写。
+        // 大块不进缓冲：一次 file.write 整块落盘。
         const result<void> written = file_.write(data, static_cast<std::size_t>(size));
         if (written.is_err()) {
             return -1;

@@ -2,12 +2,10 @@
 // 平台原语（detail::query / make_directory / remove_empty_directory /
 // remove_link_or_file / directory_handle）来自 directory.h，由 fs_posix.cpp 和
 // fs_win.cpp 实现；路径的纯字符串操作在 path.cpp。
-// 会碰磁盘的公共函数统一走 call_blocking：整段组合操作（含 remove_all 的递归）
-// 一次下放到后台线程，不在协程里时 call_blocking 直接内联执行。
+// 会碰磁盘的函数直接做系统调用；在协程里卡得久了，由监控线程把工作线程的名额交给别的线程。
 // 路径含 '\0' 在公共层就挡下，后端的契约是「到这里不必再查」。
 
 #include <culib/fs.h>
-#include <culib/coroutine.h>
 
 #include "directory.h"
 #include "path.h"
@@ -54,7 +52,7 @@ enum class kind_test {
     directory,
 };
 
-result<bool> query_flag_sync(std::string target, kind_test test) {
+result<bool> query_flag(const std::string& target, kind_test test) {
     // 公共查询跟随符号链接；link 不会从 follow::yes 的 query 里出来。
     result<detail::entry_kind> kind = detail::query(target, detail::follow_links::yes);
     if (kind.is_err()) {
@@ -75,7 +73,7 @@ result<bool> query_flag_sync(std::string target, kind_test test) {
 
 // --- 建目录 -----------------------------------------------------------------------
 
-result<bool> create_one_sync(std::string target) {
+result<bool> create_one(const std::string& target) {
     if (target.empty()) {
         return make_error(error_kind::invalid_argument, "目录路径是空的");
     }
@@ -138,7 +136,7 @@ result<void> ensure_prefix(const std::string& part, bool& created) {
     return make_error(error_kind::already_exists, part + " 已存在但不是目录");
 }
 
-result<bool> create_tree_sync(std::string target) {
+result<bool> create_tree(const std::string& target) {
     if (target.empty()) {
         return make_error(error_kind::invalid_argument, "目录路径是空的");
     }
@@ -173,7 +171,7 @@ result<bool> create_tree_sync(std::string target) {
 
 // --- 删除 -------------------------------------------------------------------------
 
-result<void> remove_leaf_sync(const std::string& target, std::uint64_t& count) {
+result<void> remove_leaf(const std::string& target, std::uint64_t& count) {
     const result<void> removed = detail::remove_link_or_file(target);
     if (removed.is_err() && removed.error().kind() != error_kind::not_found) {
         return std::move(removed).error();
@@ -182,9 +180,9 @@ result<void> remove_leaf_sync(const std::string& target, std::uint64_t& count) {
     return result<void>();
 }
 
-// 整棵树一次下放；稳定目录树中的链接只删链接本身。
+// 稳定目录树中的链接只删链接本身。
 // 路径在操作期间若被并发替换，不能保证不进入替换后的目标。
-result<void> remove_tree_sync(const std::string& target, std::uint64_t& count) {
+result<void> remove_tree(const std::string& target, std::uint64_t& count) {
     const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
     if (kind.is_err()) {
         return std::move(kind).error();
@@ -194,7 +192,7 @@ result<void> remove_tree_sync(const std::string& target, std::uint64_t& count) {
     }
     if (kind.value() != detail::entry_kind::directory) {
         // 普通文件、链接（含指向目录的链接、悬空链接）、管道设备：删条目自己。
-        return remove_leaf_sync(target, count);
+        return remove_leaf(target, count);
     }
 
     // readdir 对枚举期间被增删的条目没有稳定性保证；先收本层名字，
@@ -229,7 +227,7 @@ result<void> remove_tree_sync(const std::string& target, std::uint64_t& count) {
         detail::entry_kind hint = children[i].second;
         const std::string child = join_native(target, name);
         if (hint == detail::entry_kind::directory) {
-            const result<void> status = remove_tree_sync(child, count);
+            const result<void> status = remove_tree(child, count);
             if (status.is_err()) {
                 return status;
             }
@@ -246,7 +244,7 @@ result<void> remove_tree_sync(const std::string& target, std::uint64_t& count) {
                 continue;   // 并发里已经没了
             }
             if (child_kind.value() == detail::entry_kind::directory) {
-                const result<void> status = remove_tree_sync(child, count);
+                const result<void> status = remove_tree(child, count);
                 if (status.is_err()) {
                     return status;
                 }
@@ -254,7 +252,7 @@ result<void> remove_tree_sync(const std::string& target, std::uint64_t& count) {
             }
         }
         // hint 是 link / regular_file / other：删条目自己，链接绝不跟进。
-        const result<void> status = remove_leaf_sync(child, count);
+        const result<void> status = remove_leaf(child, count);
         if (status.is_err()) {
             return status;
         }
@@ -269,16 +267,16 @@ result<void> remove_tree_sync(const std::string& target, std::uint64_t& count) {
     return result<void>();
 }
 
-result<std::uint64_t> remove_all_sync(std::string target) {
+result<std::uint64_t> remove_counting(const std::string& target) {
     std::uint64_t count = 0;
-    const result<void> status = remove_tree_sync(target, count);
+    const result<void> status = remove_tree(target, count);
     if (status.is_err()) {
         return std::move(status).error();
     }
     return count;
 }
 
-result<bool> remove_one_sync(std::string target) {
+result<bool> remove_one(const std::string& target) {
     const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
     if (kind.is_err()) {
         return std::move(kind).error();
@@ -304,20 +302,6 @@ result<bool> remove_one_sync(std::string target) {
 
 // --- 当前目录与绝对路径 -----------------------------------------------------------
 
-// 后台线程上：取当前目录 + 拼接 + 归一，整段一次下放。current_path 自带的下放
-// 在后台线程上是内联执行（不在纤程里），整次 absolute 只挂起协程一次。
-result<path> absolute_sync(std::string target) {
-    const path relative(std::move(target));
-    if (relative.is_absolute()) {
-        return relative.lexically_normal();
-    }
-    result<path> base = current_path();
-    if (base.is_err()) {
-        return std::move(base).error();
-    }
-    return (base.value() / relative).lexically_normal();
-}
-
 result<path> absolute(const path& target) {
     if (has_nul(target.string())) {
         return nul_error(target.string());
@@ -325,7 +309,11 @@ result<path> absolute(const path& target) {
     if (target.is_absolute()) {
         return target.lexically_normal();   // 纯字符串，一个系统调用都不发
     }
-    return call_blocking(&absolute_sync, std::string(target.string()));
+    result<path> base = current_path();
+    if (base.is_err()) {
+        return std::move(base).error();
+    }
+    return (base.value() / target).lexically_normal();
 }
 
 // --- 查询 -------------------------------------------------------------------------
@@ -334,21 +322,21 @@ result<bool> exists(const path& target) {
     if (has_nul(target.string())) {
         return nul_error(target.string());
     }
-    return call_blocking(&query_flag_sync, std::string(target.string()), kind_test::exists);
+    return query_flag(target.string(), kind_test::exists);
 }
 
 result<bool> is_regular_file(const path& target) {
     if (has_nul(target.string())) {
         return nul_error(target.string());
     }
-    return call_blocking(&query_flag_sync, std::string(target.string()), kind_test::regular_file);
+    return query_flag(target.string(), kind_test::regular_file);
 }
 
 result<bool> is_directory(const path& target) {
     if (has_nul(target.string())) {
         return nul_error(target.string());
     }
-    return call_blocking(&query_flag_sync, std::string(target.string()), kind_test::directory);
+    return query_flag(target.string(), kind_test::directory);
 }
 
 // --- 目录与文件操作 ---------------------------------------------------------------
@@ -357,7 +345,7 @@ result<bool> create_directory(const path& directory) {
     if (has_nul(directory.string())) {
         return nul_error(directory.string());
     }
-    return call_blocking(&create_one_sync, std::string(directory.string()));
+    return create_one(directory.string());
 }
 
 result<bool> create_directories(const path& directory) {
@@ -366,21 +354,21 @@ result<bool> create_directories(const path& directory) {
     if (has_nul(directory.string())) {
         return nul_error(directory.string());
     }
-    return call_blocking(&create_tree_sync, std::string(directory.string()));
+    return create_tree(directory.string());
 }
 
 result<bool> remove(const path& target) {
     if (has_nul(target.string())) {
         return nul_error(target.string());
     }
-    return call_blocking(&remove_one_sync, std::string(target.string()));
+    return remove_one(target.string());
 }
 
 result<std::uint64_t> remove_all(const path& root) {
     if (has_nul(root.string())) {
         return nul_error(root.string());
     }
-    return call_blocking(&remove_all_sync, std::string(root.string()));
+    return remove_counting(root.string());
 }
 
 // --- 遍历 -------------------------------------------------------------------------
@@ -394,21 +382,20 @@ result<bool> directory_entry::is_regular_file() const {
     if (has_nul(path_.string())) {
         return nul_error(path_.string());
     }
-    return call_blocking(&query_flag_sync, std::string(path_.string()), kind_test::regular_file);
+    return query_flag(path_.string(), kind_test::regular_file);
 }
 
 result<bool> directory_entry::is_directory() const {
     if (has_nul(path_.string())) {
         return nul_error(path_.string());
     }
-    return call_blocking(&query_flag_sync, std::string(path_.string()), kind_test::directory);
+    return query_flag(path_.string(), kind_test::directory);
 }
 
 namespace detail {
 
 // 引用计数的遍历状态：原生目录句柄 + 共享的流式位置 + 当前元素。
-// 所有推进都发生在 call_blocking 放到后台线程的那一次调用里；gate 只在那期间、
-// 只在后台线程上持有——绝不跨挂起的协程。
+// gate 只在一次推进（一次系统调用）期间持有，推进时不会挂起。
 struct directory_state {
     explicit directory_state(std::string directory)
         : refs(1), base(std::move(directory)), handle(nullptr) {}
@@ -473,7 +460,7 @@ void read_next_locked(detail::directory_state& state) {
     }
 }
 
-// 后台线程上：打开 + 预读第一项一次做完。打开失败不是异常也不是空遍历，
+// 打开 + 预读第一项一次做完。打开失败不是异常也不是空遍历，
 // 而是把错误装进当前元素——第一个元素报出去，之后到尾。
 detail::directory_state* open_stream(std::string directory) {
     detail::directory_state* state = new detail::directory_state(std::move(directory));
@@ -487,7 +474,7 @@ detail::directory_state* open_stream(std::string directory) {
     return state;
 }
 
-// 后台线程上：推进一格，一次 next 一个元素，不整目录预读。
+// 推进一格，一次 next 一个元素，不整目录预读。
 void advance_stream(detail::directory_state* state) {
     std::lock_guard<std::mutex> guard(state->gate);
     if (!state->current) {
@@ -496,7 +483,7 @@ void advance_stream(detail::directory_state* state) {
     read_next_locked(*state);
 }
 
-// 后台线程上：最后一个引用放下时关掉原生句柄并销毁状态。
+// 最后一个引用放下时关掉原生句柄并销毁状态。
 // 引用已归零，锁只是给「还有人在推进」的窗口兜底；句柄在锁内关，状态在锁外删。
 void destroy_stream(detail::directory_state* state) {
     {
@@ -512,13 +499,13 @@ directory_iterator::directory_iterator() noexcept : state_(nullptr) {}
 
 directory_iterator::directory_iterator(const path& directory) : state_(nullptr) {
     if (has_nul(directory.string())) {
-        // NUL 在后台调用之前就挡下：错误照样走「第一个元素报出、随后到尾」。
+        // NUL 在碰磁盘之前就挡下：错误照样走「第一个元素报出、随后到尾」。
         state_ = new detail::directory_state(std::string());
         state_->current.reset(
             new result<directory_entry>(nul_error(directory.string())));
         return;
     }
-    state_ = call_blocking(&open_stream, std::string(directory.string()));
+    state_ = open_stream(directory.string());
 }
 
 directory_iterator::directory_iterator(const directory_iterator& other) : state_(other.state_) {
@@ -538,7 +525,7 @@ directory_iterator& directory_iterator::operator=(const directory_iterator& othe
     detail::directory_state* previous = state_;
     state_ = next;
     if (previous != nullptr && previous->refs.fetch_sub(1) == 1) {
-        call_blocking(&destroy_stream, previous);
+        destroy_stream(previous);
     }
     return *this;
 }
@@ -550,7 +537,7 @@ directory_iterator::~directory_iterator() {
     if (state_->refs.fetch_sub(1) != 1) {
         return;
     }
-    call_blocking(&destroy_stream, state_);
+    destroy_stream(state_);
 }
 
 const result<directory_entry>& directory_iterator::operator*() const {
@@ -567,7 +554,7 @@ directory_iterator& directory_iterator::operator++() {
     if (state_ == nullptr || !state_->current) {
         return *this;   // 尾上前进：什么都不做，连系统调用都不发
     }
-    call_blocking(&advance_stream, state_);
+    advance_stream(state_);
     return *this;
 }
 

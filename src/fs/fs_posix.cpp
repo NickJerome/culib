@@ -1,15 +1,8 @@
-// fs 的 POSIX 实现（Linux + macOS）。
-//
-// 这里的代码分两层，call_blocking 的边界也跟着分：
-// - 公共 API 里由本平台负责的那几个入口（file_size / last_write_time / copy_file /
-//   rename / current_path）是协程可能直接碰到的，整个碰盘过程包进 call_blocking，
-//   等待只挂起当前协程；一次公共调用挂起一次，不在内部的每块读写上反复挂。
-// - src/fs/directory.h 与 file.h 的私有原语是裸系统调用，不做包装：组合层 fs.cpp
-//   会把整段高层操作（查询、建删、开关读写、遍历步进）包进 call_blocking，
-//   这里再包一层就成了嵌套，每级都多一次挂起/恢复。
+// fs 的 POSIX 实现（Linux + macOS）：公共 API 里由本平台负责的那几个入口（file_size /
+// last_write_time / copy_file / rename / current_path），和 src/fs/directory.h、file.h 的
+// 私有原语。都直接做系统调用。
 
 #include <culib/fs.h>
-#include <culib/coroutine.h>
 
 #include "directory.h"
 #include "file.h"
@@ -196,8 +189,6 @@ result<std::size_t> write_some(std::intptr_t handle, const char* data, std::size
 }  // namespace detail
 
 // --- 私有后端契约（src/fs/directory.h）---------------------------------------------
-//
-// 同样是裸系统调用：调用方（fs.cpp 的组合层）负责把整段操作放进 call_blocking。
 
 namespace detail {
 
@@ -368,7 +359,7 @@ result<bool> directory_handle::next(string_view& name, entry_kind& hint) {
 
 // --- 公共 API 的平台部分 -----------------------------------------------------------
 //
-// culib/fs.h 里点名由平台实现的操作。每个入口整个碰盘过程一次 call_blocking。
+// culib/fs.h 里点名由平台实现的操作。
 
 namespace {
 
@@ -571,33 +562,32 @@ result<void> set_current_directory_native(string_view directory) {
 }  // namespace
 
 result<std::uint64_t> file_size(const path& target) {
-    return call_blocking([&target] { return file_size_native(target.string()); });
+    return file_size_native(target.string());
 }
 
 result<wavvix::timestamp> last_write_time(const path& target) {
-    return call_blocking([&target] { return last_write_time_native(target.string()); });
+    return last_write_time_native(target.string());
 }
 
 result<void> copy_file(const path& from, const path& to, copy_options options) {
     const bool overwrite = (static_cast<unsigned>(options) &
                             static_cast<unsigned>(copy_options::overwrite_existing)) != 0;
-    return call_blocking(
-        [&from, &to, overwrite] { return copy_file_native(from.string(), to.string(), overwrite); });
+    return copy_file_native(from.string(), to.string(), overwrite);
 }
 
 result<void> rename(const path& from, const path& to) {
-    return call_blocking([&from, &to] { return rename_native(from.string(), to.string()); });
+    return rename_native(from.string(), to.string());
 }
 
 result<path> current_path() {
-    return call_blocking([] { return current_directory_native(); });
+    return current_directory_native();
 }
 
 result<void> current_path(const path& directory) {
-    return call_blocking([&directory] { return set_current_directory_native(directory.string()); });
+    return set_current_directory_native(directory.string());
 }
 
-// 只读环境变量，不碰磁盘，不需要 call_blocking。
+// 只读环境变量，不碰磁盘。
 result<path> temp_directory_path() {
     static const char* const names[] = {"TMPDIR", "TMP", "TEMP"};
     for (std::size_t i = 0; i < sizeof names / sizeof *names; ++i) {

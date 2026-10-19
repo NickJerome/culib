@@ -2,10 +2,9 @@
 
 #include <culib/log.h>
 
-#include <culib/detail/fiber.h>
+#include <culib/detail/macros.h>
 #include <culib/fs.h>
 #include <culib/lexical_cast.h>
-#include <culib/coroutine.h>
 #include <culib/term.h>
 #include <culib/time.h>
 
@@ -156,9 +155,8 @@ void deliver(sink& target, level at, const char* stamp, std::size_t stamp_length
     }
 }
 
-// 加锁、补默认 sink、把一行发给所有目标：一次做完。
-// 在协程里调用时整段挪到后台线程跑（见 ~line）——写入会把协程挂起，锁绝不能
-// 横跨挂起点被拿着，否则别的 worker 一进日志就卡在同一把 std::mutex 上。
+// 加锁、补默认 sink、把一行发给所有目标：一次做完。写入是阻塞的系统调用，不挂起协程，
+// 所以锁不会跨着挂起点被拿着；用 std::mutex 而不是 wavvix::mutex，catch 块里写日志也不会挂起。
 void emit_line(level at, const char* stamp, std::size_t stamp_length,
                const char* file, int row, const char* message, std::size_t length) {
     output_state& state = output();
@@ -172,21 +170,27 @@ void emit_line(level at, const char* stamp, std::size_t stamp_length,
     }
 }
 
-// ---- sink 管理：「拿锁改 sink」整段一次做完 ----
-// 在协程里调用时整段挪到后台线程跑（call_blocking 在协程外就地内联执行，
-// 同一条代码路两边一样）。绝不能让协程直接在工作线程上锁 std::mutex：
-// 后台 emit_line 可能正拿着这把锁等一次慢写，协程里就地等锁会把整根
-// worker 线程压死。这里把「开文件 + 量大小 + 拿锁改表」整个单元一次下放，
-// fs::open / fs::file_size 自带的下放在后台线程里直接内联跑，不会二次挂起，
-// 更不会出现拿着锁再挂起。
-void add_console_sink_offthread() {
+}  // namespace
+
+void set_level(level value) noexcept {
+    chosen_level.store(static_cast<int>(value), std::memory_order_relaxed);
+}
+
+level current_level() noexcept {
+    return static_cast<level>(chosen_level.load(std::memory_order_relaxed));
+}
+
+// sink 管理：拿锁改表。锁是 std::mutex，在锁里不挂起：别的写入者可能正拿着它等一次慢写，
+// 在协程里等这把锁会占住工作线程，等得久了由监控线程把名额交给别的线程。
+void add_console_sink() {
     output_state& state = output();
     const std::lock_guard<std::mutex> held(state.mutex);
     state.sinks.emplace_back(true);
     state.configured = true;
 }
 
-result<void> add_file_sink_offthread(std::string target, std::uint64_t max_bytes, int keep_files) {
+result<void> add_file_sink(string_view path, std::uint64_t max_bytes, int keep_files) {
+    std::string target = path.to_string();
     result<fs::file> opened = fs::open(fs::path(target), fs::open_mode::append);
     if (opened.is_err()) {
         return result<void>(std::move(opened).error());
@@ -208,35 +212,11 @@ result<void> add_file_sink_offthread(std::string target, std::uint64_t max_bytes
     return result<void>();
 }
 
-void clear_sinks_offthread() {
+void clear_sinks() {
     output_state& state = output();
     const std::lock_guard<std::mutex> held(state.mutex);
     state.sinks.clear();
     state.configured = true;   // 清空后不再自动补控制台输出。
-}
-
-}  // namespace
-
-void set_level(level value) noexcept {
-    chosen_level.store(static_cast<int>(value), std::memory_order_relaxed);
-}
-
-level current_level() noexcept {
-    return static_cast<level>(chosen_level.load(std::memory_order_relaxed));
-}
-
-void add_console_sink() {
-    call_blocking(&add_console_sink_offthread);
-}
-
-result<void> add_file_sink(string_view path, std::uint64_t max_bytes, int keep_files) {
-    // 路径先拷成 std::string：挂起期间参数活在调用方栈帧上，string_view 可不管
-    // 调用方什么时候把底层的缓冲换掉。
-    return call_blocking(&add_file_sink_offthread, path.to_string(), max_bytes, keep_files);
-}
-
-void clear_sinks() {
-    call_blocking(&clear_sinks_offthread);
 }
 
 namespace detail {
@@ -249,9 +229,8 @@ line::line(level at, const char* file, int row) noexcept
     : buffer_(room_, line_capacity), out_(&buffer_), at_(at), file_(file), row_(row) {}
 
 line::~line() {
-    // 析构函数是隐式 noexcept 的：投递途中冒出来的任何异常（锁、分配、
-    // call_blocking 的重抛）都不许跨过它，否则直接 terminate。日志丢一行
-    // 好过进程没了。
+    // 析构函数是隐式 noexcept 的：投递途中冒出来的任何异常（锁、分配）
+    // 都不许跨过它，否则直接 terminate。日志丢一行好过进程没了。
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
     try {
 #endif
@@ -260,15 +239,7 @@ line::~line() {
         const std::size_t stamp_length =
             format_time(timestamp::now(), precision::millis, stamp, sizeof stamp);
 
-        if (wavvix::detail::fiber::inside()) {
-            // 协程里：锁 + 写入 + 轮转整段在后台线程上跑完再恢复。写盘挂起的是
-            // 后台线程，协程只是让出工作线程，锁不在挂起点上被人拿着。
-            // stamp 和行缓冲都活在调用方的栈帧上，协程挂起期间不会失效。
-            call_blocking(&emit_line, at_, static_cast<const char*>(stamp), stamp_length,
-                          file_, row_, static_cast<const char*>(room_), buffer_.used());
-        } else {
-            emit_line(at_, stamp, stamp_length, file_, row_, room_, buffer_.used());
-        }
+        emit_line(at_, stamp, stamp_length, file_, row_, room_, buffer_.used());
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
     } catch (...) {
     }

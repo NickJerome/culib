@@ -444,17 +444,17 @@ TEST(fs_stream, closed_file_rejects_io_and_close_is_idempotent) {
 }
 
 // ---------------------------------------------------------------------------
-// 协程：协程里的裸 fs 调用（open/read/write/close，不带 call_blocking）由实现
-// 自己挪到 runtime 的阻塞线程上；工作线程照常跑别的协程。
+// 协程：协程里的 fs 调用（open/read/write/close）直接做系统调用。阻塞在里面时它所在的
+// 工作线程被占住，排着的协程由别的线程接着跑（闲着的，或者监控线程交接名额以后的那根）。
 // ---------------------------------------------------------------------------
 
-TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
+TEST(fs_stream, a_coroutine_blocked_in_file_io_does_not_stall_the_others) {
     // 阻塞夹具：POSIX 用 FIFO（两端 open 在内核里互相等），Windows 用命名管道。
     // 写端等读协程进来以后再等 50 毫秒才打开（POSIX）或写入（Windows），读协程这段时间
-    // 一直等在 open（POSIX）或第一次 read（Windows）里。
+    // 一直阻塞在 open（POSIX）或第一次 read（Windows）的系统调用里。
     //
-    // 判据是观察到的调度：读协程在第一块数据到的时候取 spins——等的期间工作线程空出来，
-    // 排着的旁观协程就至少让出过一次（spins >= 1）；要是读协程占着工作线程，spins 读到的是 0。
+    // 判据是观察到的调度：读协程在第一块数据到的时候取 spins——阻塞期间有别的线程接手，
+    // 排着的旁观协程就至少让出过一次（spins >= 1）；没人接手，spins 读到的是 0。
 
 #ifdef _WIN32
     const char* const pipe_path_text = "\\\\.\\pipe\\culib_fs_stream_coroutine";
@@ -490,7 +490,7 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     bool written = false;
     std::string content;
     bool read_failed = false;
-    std::atomic<std::size_t> spins(0);   // 旁观协程可能被别的工作线程拿走
+    std::atomic<std::size_t> spins(0);   // 旁观协程可能在别的线程上跑
     std::size_t spins_at_resume = 0;
 
 #ifdef _WIN32
@@ -514,7 +514,7 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
             ::CloseHandle(server_pipe);
             return;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));   // 读协程等在第一次 read 里
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));   // 读协程阻塞在第一次 read 里
         std::size_t offset = 0;
         while (offset < payload.size()) {
             const DWORD chunk = static_cast<DWORD>(
@@ -554,7 +554,7 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
             release_the_reader();  // 失败路径也要把可能已进 open 的读端放出来
             return;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));   // 读协程等在 open 里
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));   // 读协程阻塞在 open 里
         // open_mode::write 对 FIFO 同样阻塞到读端出现；写完 close 触发读端 EOF。
         result<fs::file> opened = fs::open(pipe_path, fs::open_mode::write);
         if (opened.is_err()) {
@@ -574,11 +574,11 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     });
 #endif
 
-    // 裸的 fs::open / read / close——没有任何 call_blocking 包装。
+    // 直接调 fs::open / read / close。
     wavvix::wait_group group;
     group.go([&] {
-        // 旁观协程从读协程里起：协程里起的协程排在本线程上，读协程还阻塞在 open 里的时候
-        // 它就能跑起来——这是裸 fs 调用被挪出工作线程的观测证据。
+        // 旁观协程从读协程里起，先排在本线程上；读协程阻塞在系统调用里的时候，它只能由
+        // 别的线程拿走去跑。
         wavvix::wait_group observer;
         observer.go([&] {
             while (spins.load() < 64) {
@@ -603,7 +603,7 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
         for (;;) {
             const result<std::size_t> got = handle.read(buffer, sizeof(buffer));
             if (first) {
-                // 第一块数据一到就取 spins：此刻旁观协程跑过的次数说明等的期间工作线程是否空出来了。
+                // 第一块数据一到就取 spins：此刻旁观协程跑过的次数说明阻塞期间有没有别的线程接手。
                 spins_at_resume = spins.load();
                 first = false;
             }
@@ -628,6 +628,6 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     EXPECT(read_failed, ==, false);
     EXPECT(written, ==, true);
     EXPECT(content, ==, payload);  // 读到写端 close 为止，一个字节不少
-    // 第一块数据到的时候旁观协程至少让出过一次：等的期间工作线程空了出来。
+    // 第一块数据到的时候旁观协程至少让出过一次：读协程阻塞期间有别的线程接手。
     EXPECT(spins_at_resume >= 1, ==, true);
 }

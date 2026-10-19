@@ -6,6 +6,7 @@
 
 #include <culib/coroutine.h>
 #include <culib/detail/fiber.h>
+#include <culib/detail/macros.h>
 #include <culib/os.h>
 #include <culib/sync.h>
 

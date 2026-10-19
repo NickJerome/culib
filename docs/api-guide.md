@@ -152,7 +152,7 @@ superpowers/specs/2026-10-03-variant-design.md）。
 
 ### 阻塞调用
 
-协程只在挂起点切换：等 I/O、等锁、`sleep_for`、`yield`、`wait`。协程里执行真正阻塞线程的函数会占住所在的工作线程，过一两个监控周期才由别的线程顶上；这种调用也可以交给 `call_blocking(f, args...)`：放到后台线程上，等待期间只挂起这根协程。返回值和异常都带回调用处，参数和直接调用一样传。后台线程整个进程共用，最多 64 根。
+协程只在挂起点切换：等 I/O、等锁、`sleep_for`、`yield`、`wait`。阻塞线程的函数（文件读写、DNS 解析、第三方库的同步接口）直接调用：它占住所在的工作线程，过一两个监控周期（Linux 上 2 毫秒左右，Windows 上约 30–60 毫秒）由别的线程顶上。库自己的文件操作、日志和 DNS 解析也是这样。
 
 ### 不用协程就什么都不初始化
 
@@ -301,8 +301,8 @@ args() 返回的视图指向 argv，和进程同寿，不拷字符串。C++ 标�
   不替调用方多问一次磁盘：需要类型就直接 `is_regular_file` / `is_directory`，不用先问
   `exists`；`directory_entry` 建条目不多做一次 stat。见 CLAUDE.md「性能与占用」。
 - 读写一律二进制，不做换行转换：读到的就是磁盘上的字节，内嵌 `'\0'` 保留。
-- **协程里的文件操作自动经 `call_blocking`** 放到 runtime 的后台线程执行，等待期间
-  只挂起当前协程，工作线程照常跑别的协程；协程外同步执行，调用方不用自己包。
+- **文件操作直接做系统调用**，在协程里也一样：慢盘上卡住的工作线程由监控线程把跑协程的
+  名额交给另一根线程，排着的协程照样有人跑。
 
 `fs::file` 是原生字节句柄（`fs::open(path, open_mode::read/write/append)`）：
 移动 only，析构关闭；`read` 返回读到的字节数、0 表示末尾，`write` 写满为止
@@ -416,9 +416,8 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
     已经写出的行都在。
   - **`fatal` 不会 abort**，它只是最高的一级。一句日志顺手把进程杀掉是「意外」，
     要优雅退出用 `culib/os.h` 的停止标志。
-  - **sink 是进程全局的**，写入用一把 `std::mutex` 护着。协程里那一行连同拿锁和写入
-    整段放到后台线程上（`call_blocking`），所以等慢盘的是后台线程，锁也不会跨着挂起点被拿着；
-    协程外直接写。
+  - **sink 是进程全局的**，写入用一把 `std::mutex` 护着，写入是阻塞的系统调用、不挂起，
+    所以锁不会跨着挂起点被拿着，catch 块里写日志也没事。等慢盘时卡住的工作线程由监控线程交接。
 
 ## [`net.h`](../include/culib/net.h)
 
@@ -429,7 +428,7 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
     wavvix::result<std::vector<wavvix::net::endpoint>> candidates =
         wavvix::net::resolve("localhost", 8080);
 
-`parse` 只接受数字 IPv4/IPv6；输入主机名用 `resolve`，或直接把主机名交给 `connect(host, port)`。`resolve` 调用系统 DNS 解析器，**会阻塞并分配内存**：协程内自动经 `call_blocking` 执行、不卡工作线程，协程外同步执行，调用方无需再包一层；别在热路径里频繁解析。
+`parse` 只接受数字 IPv4/IPv6；输入主机名用 `resolve`，或直接把主机名交给 `connect(host, port)`。`resolve` 调用系统 DNS 解析器，**会阻塞并分配内存**：在协程里调用时占住所在的工作线程，卡得久了由监控线程交接；别在热路径里频繁解析。
 `resolve` 保留系统返回的地址顺序，不替调用方猜该连哪一个。`endpoint::to_string()`
 把端口一起写出，IPv6 用 `[::1]:8080` 形状。详情见 `examples/net_address.cpp`。
 
@@ -642,8 +641,8 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 用 `wavvix::mutex` 而不是 `std::mutex`，是因为**临界区中间会挂起**：
 
     wavvix::lock_guard<wavvix::mutex> held(lock);
-    auto info = wavvix::fs::file_size(p);  // 协程里走 call_blocking，这里会挂起
-    cache[p] = info;                       // 挂起期间别的协程拿不到锁，看不到一半的状态
+    auto got = stream.read(buffer, sizeof buffer);   // 网络 I/O，这里会挂起
+    cache[key] = parse(buffer, got);                  // 挂起期间别的协程拿不到锁，看不到一半的状态
 
 ### 和 std::mutex 怎么选
 
