@@ -68,12 +68,12 @@ void wait_on(list_node& waiters, std::unique_lock<std::mutex>& held) {
 
 const char* channel_message(detail::channel_error what) {
     switch (what) {
-    case detail::channel_error::no_capacity:
-        return "wavvix::channel 的容量至少为 1";
-    case detail::channel_error::send_after_close:
-        return "wavvix::channel 已经关闭，不能再 send";
-    case detail::channel_error::closed_twice:
-        return "wavvix::channel 重复关闭";
+        case detail::channel_error::no_capacity:
+            return "wavvix::channel 的容量至少为 1";
+        case detail::channel_error::send_after_close:
+            return "wavvix::channel 已经关闭，不能再 send";
+        case detail::channel_error::closed_twice:
+            return "wavvix::channel 重复关闭";
     }
     return "wavvix::channel 用错了";
 }

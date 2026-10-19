@@ -213,15 +213,15 @@ DWORD submit_transfer(io_request& request, OVERLAPPED* overlapped) {
 
 DWORD submit(io_request& request, OVERLAPPED* overlapped) {
     switch (request.operation) {
-    case io_accept:
-        return submit_accept(request, overlapped);
-    case io_connect:
-        return submit_connect(request, overlapped);
-    case io_datagram_transfer:
-        return submit_datagram(request, overlapped);
-    case io_transfer:
-    case io_socket_transfer:
-        break;
+        case io_accept:
+            return submit_accept(request, overlapped);
+        case io_connect:
+            return submit_connect(request, overlapped);
+        case io_datagram_transfer:
+            return submit_datagram(request, overlapped);
+        case io_transfer:
+        case io_socket_transfer:
+            break;
     }
     return submit_transfer(request, overlapped);
 }

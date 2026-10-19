@@ -10,16 +10,16 @@ error::error(error_kind kind, std::string message) : kind_(kind), message_(std::
 
 const char* error_kind_name(error_kind kind) noexcept {
     switch (kind) {
-    case error_kind::unknown: return "unknown";
-    case error_kind::invalid_argument: return "invalid_argument";
-    case error_kind::out_of_range: return "out_of_range";
-    case error_kind::resource_exhausted: return "resource_exhausted";
-    case error_kind::not_found: return "not_found";
-    case error_kind::already_exists: return "already_exists";
-    case error_kind::permission_denied: return "permission_denied";
-    case error_kind::timeout: return "timeout";
-    case error_kind::unsupported: return "unsupported";
-    case error_kind::io: return "io";
+        case error_kind::unknown: return "unknown";
+        case error_kind::invalid_argument: return "invalid_argument";
+        case error_kind::out_of_range: return "out_of_range";
+        case error_kind::resource_exhausted: return "resource_exhausted";
+        case error_kind::not_found: return "not_found";
+        case error_kind::already_exists: return "already_exists";
+        case error_kind::permission_denied: return "permission_denied";
+        case error_kind::timeout: return "timeout";
+        case error_kind::unsupported: return "unsupported";
+        case error_kind::io: return "io";
     }
     return "unknown";
 }
