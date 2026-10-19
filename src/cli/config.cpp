@@ -5,7 +5,9 @@
 #include <culib/lexical_cast.h>
 
 #include <cstddef>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace wavvix {
 
@@ -61,6 +63,76 @@ error malformed(std::size_t row, string_view why) {
                           why.to_string());
 }
 
+typedef std::vector<std::pair<std::string, std::string> > entry_list;
+
+// 从 at 起切出一行，at 移到下一行的开头。没有行了返回 false。最后一行可以没有换行符。
+bool next_line(string_view text, std::size_t& at, string_view& line) {
+    if (at > text.size()) {
+        return false;
+    }
+    std::size_t end = at;
+    while (end < text.size() && text[end] != '\n') {
+        ++end;
+    }
+    line = text.substr(at, end - at);
+    at = end + 1;
+    return true;
+}
+
+// [段名]，段名去掉两边空白以后不能是空的。
+result<void> read_section(string_view line, std::size_t row, std::string& section) {
+    if (line[line.size() - 1] != ']') {
+        return malformed(row, "段名少了右方括号");
+    }
+    const string_view name = trimmed(line.substr(1, line.size() - 2));
+    if (name.empty()) {
+        return malformed(row, "段名是空的");
+    }
+    section = name.to_string();
+    return result<void>();
+}
+
+// 段里的键加上段名前缀，变成扁平的 section.key。
+std::string full_key(const std::string& section, string_view name) {
+    std::string key;
+    if (!section.empty()) {
+        key = section;
+        key += '.';
+    }
+    key.append(name.data(), name.size());
+    return key;
+}
+
+// 重复的键覆盖旧值，位置留在第一次出现的地方。
+void store(entry_list& entries, const std::string& key, string_view value) {
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].first == key) {
+            entries[i].second.assign(value.data(), value.size());
+            return;
+        }
+    }
+    entries.push_back(std::make_pair(key, value.to_string()));
+}
+
+// 键 = 值
+result<void> read_entry(string_view line, std::size_t row, const std::string& section, entry_list& entries) {
+    const std::size_t equals = line.find('=');
+    if (equals == string_view::npos) {
+        return malformed(row, "既不是注释也不是段，又没有等号");
+    }
+    const string_view name = trimmed(line.substr(0, equals));
+    if (name.empty()) {
+        return malformed(row, "等号左边是空的");
+    }
+    bool bad_value = false;
+    const string_view value = value_of(line.substr(equals + 1), bad_value);
+    if (bad_value) {
+        return malformed(row, "引号没闭上，或者闭引号后面还有东西");
+    }
+    store(entries, full_key(section, name), value);
+    return result<void>();
+}
+
 }  // namespace
 
 result<config> config::parse(string_view text) {
@@ -68,81 +140,19 @@ result<config> config::parse(string_view text) {
     std::string section;
     std::size_t row = 0;
     std::size_t at = 0;
-
-    while (at <= text.size()) {
-        // 切出一行（最后一行可能没有换行符）
-        std::size_t end = at;
-        while (end < text.size() && text[end] != '\n') {
-            ++end;
-        }
-        const string_view line = trimmed(text.substr(at, end - at));
-        at = end + 1;
+    string_view raw;
+    while (next_line(text, at, raw)) {
         ++row;
-
+        const string_view line = trimmed(raw);
         if (line.empty() || line[0] == '#' || line[0] == ';') {
-            if (end >= text.size()) {
-                break;
-            }
             continue;
         }
-
-        if (line[0] == '[') {
-            if (line[line.size() - 1] != ']') {
-                return result<config>(malformed(row, "段名少了右方括号"));
-            }
-            const string_view name = trimmed(line.substr(1, line.size() - 2));
-            if (name.empty()) {
-                return result<config>(malformed(row, "段名是空的"));
-            }
-            section = name.to_string();
-            if (end >= text.size()) {
-                break;
-            }
-            continue;
-        }
-
-        const std::size_t equals = line.find('=');
-        if (equals == string_view::npos) {
-            return result<config>(malformed(row, "既不是注释也不是段，又没有等号"));
-        }
-        const string_view name = trimmed(line.substr(0, equals));
-        if (name.empty()) {
-            return result<config>(malformed(row, "等号左边是空的"));
-        }
-
-        bool bad_value = false;
-        const string_view value = value_of(line.substr(equals + 1), bad_value);
-        if (bad_value) {
-            return result<config>(malformed(row, "引号没闭上，或者闭引号后面还有东西"));
-        }
-
-        // 段里的键加前缀，变成扁平的 section.key
-        std::string key;
-        if (!section.empty()) {
-            key = section;
-            key += '.';
-        }
-        key.append(name.data(), name.size());
-
-        // 重复键覆盖旧值，保持首次出现的位置。
-        bool replaced = false;
-        for (std::size_t i = 0; i < built.entries_.size(); ++i) {
-            if (built.entries_[i].first == key) {
-                built.entries_[i].second.assign(value.data(), value.size());
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            built.entries_.push_back(
-                std::make_pair(key, std::string(value.data(), value.size())));
-        }
-
-        if (end >= text.size()) {
-            break;
+        const result<void> read = line[0] == '[' ? read_section(line, row, section)
+                                                 : read_entry(line, row, section, built.entries_);
+        if (read.is_err()) {
+            return read.error();
         }
     }
-
     return result<config>(std::move(built));
 }
 
