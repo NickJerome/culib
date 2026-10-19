@@ -106,7 +106,7 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
     }
     outcome = fiber_failure::none;
 
-    coroutine_control* const control = new (block) coroutine_control();   // 值初始化，成员全是零
+    coroutine_control* const control = new (block) coroutine_control();   // 值初始化，数据成员从零开始
     control->body = align_up(block + sizeof(coroutine_control), body_align);
     control->usable = stack_size;   // 还没有栈：先记下要多大
     tsan_fiber_create(*control);

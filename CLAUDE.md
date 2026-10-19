@@ -183,7 +183,7 @@
 | --- | --- | --- |
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 六个目标 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/39248866020)（`0c22ab5`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、运行时的 TSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/39251788881)（`9f2ab3d`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、运行时的 TSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 21 个） |
 | CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |

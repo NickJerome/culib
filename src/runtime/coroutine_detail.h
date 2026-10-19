@@ -2,6 +2,7 @@
 
 // coroutine 的内部接口。不是公共头文件，使用方不该包含。
 
+#include <culib/detail/list.h>
 #include <culib/detail/macros.h>
 
 #include <atomic>
@@ -37,8 +38,8 @@ context_transfer wavvix_jump_context(void* to, void* data) noexcept;
 using mem::detail::stack_memory;
 
 // 控制块和可调用对象放在同一块堆内存里，栈在第一次 resume 时才分配（memory.base 在那之前为空）。
-// 调度器用 next_ready 串起就绪队列，用 park_state 对齐挂起和唤醒（见 scheduler.cpp 的 run）。
-struct coroutine_control {
+// 基类把它挂进调度器的就绪队列；park_state 对齐挂起和唤醒（见 scheduler.cpp 的 run）。
+struct coroutine_control : list_node {
     void* context;
     void* resumer;
     void (*invoke)(void*);
@@ -57,7 +58,6 @@ struct coroutine_control {
     void* tsan_fiber;     // 这根协程在 TSan 里的上下文
     void* tsan_resumer;   // 切回去的那一侧
 #endif
-    coroutine_control* next_ready;
     std::atomic<int> park_state;
 };
 

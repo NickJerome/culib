@@ -19,6 +19,13 @@ inline bool list_empty(const list_node& head) noexcept {
     return head.next == &head;
 }
 
+inline void list_add(list_node& node, list_node& head) noexcept {
+    node.next = head.next;
+    node.prev = &head;
+    head.next->prev = &node;
+    head.next = &node;
+}
+
 inline void list_add_tail(list_node& node, list_node& head) noexcept {
     node.next = &head;
     node.prev = head.prev;

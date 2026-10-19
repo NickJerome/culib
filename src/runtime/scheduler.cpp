@@ -35,71 +35,42 @@
 namespace wavvix {
 namespace detail {
 
-// 用 coroutine_control::next_ready 串起来的先进先出队列。
+// 就绪队列，先进先出。
 struct run_queue {
-    run_queue() noexcept : head(0), tail(0), count(0) {}
+    run_queue() noexcept : count(0) {}
 
     void push(coroutine_control* body) noexcept {
-        body->next_ready = 0;
-        if (tail) {
-            tail->next_ready = body;
-        } else {
-            head = body;
-        }
-        tail = body;
+        list_add_tail(*body, items);
         ++count;
     }
 
     coroutine_control* pop() noexcept {
-        coroutine_control* const body = head;
-        if (!body) {
+        if (list_empty(items)) {
             return 0;
         }
-        head = body->next_ready;
-        if (!head) {
-            tail = 0;
-        }
-        body->next_ready = 0;
+        coroutine_control* const body = static_cast<coroutine_control*>(items.next);
+        list_del_init(*body);
         --count;
         return body;
     }
 
-    // 从队首摘下 n 根，次序不变。n 不超过 count。
-    run_queue take(std::size_t n) noexcept {
-        run_queue taken;
+    // 从队首摘下 n 根，按原来的次序接到 to 的队尾。n 不超过 count。
+    void move_front(std::size_t n, run_queue& to) noexcept {
         for (std::size_t i = 0; i < n; ++i) {
-            taken.push(pop());
+            to.push(pop());
         }
-        return taken;
     }
 
-    // 把 other 整个接到队尾，other 清空。
-    void append(run_queue& other) noexcept {
-        if (!other.head) {
-            return;
-        }
-        if (tail) {
-            tail->next_ready = other.head;
-        } else {
-            head = other.head;
-        }
-        tail = other.tail;
-        count += other.count;
-        other = run_queue();
-    }
-
-    coroutine_control* head;
-    coroutine_control* tail;
+    list_node items;
     std::size_t count;
 };
 
 // 工作线程总数的上限，含备用的。WAVVIX_MAXPROCS 也不能超过它。
 const unsigned worker_limit = 256;
 
-struct vcpu {
-    vcpu()
-        : current(0), ticks(0), has_slot(false), parking(false), searching(false), notified(false), next_sleeper(0),
-          next_spare(0) {}
+// 一根工作线程。睡着时挂在 runtime_state::sleepers 上，当备用线程时挂在 spares 上，两者不会同时。
+struct vcpu : list_node {
+    vcpu() : current(0), ticks(0), has_slot(false), parking(false), searching(false), notified(false) {}
 
     std::mutex mutex;              // 护着 queue：这根线程自己和来拿协程的线程都要拿它
     run_queue queue;
@@ -115,8 +86,6 @@ struct vcpu {
     // 在 runtime_state::mutex 里读写；睡着的时候由叫醒它的线程改
     bool searching;                // 被叫醒来找活，还没找到
     bool notified;
-    vcpu* next_sleeper;
-    vcpu* next_spare;
     std::condition_variable woken;
 };
 
@@ -126,8 +95,8 @@ const park_ticks no_deadline = (std::numeric_limits<park_ticks>::max)();
 
 struct runtime_state {
     runtime_state()
-        : count(0), slots(0), engine(0), sleepers(0), spares(0), polling(false), poll_notified(false),
-          monitor_sleeping(false), queued(0), idle(0), searching(0), earliest(no_deadline) {}
+        : count(0), slots(0), engine(0), polling(false), poll_notified(false), monitor_sleeping(false), queued(0),
+          idle(0), searching(0), earliest(no_deadline) {}
 
     vcpu* workers[worker_limit];
     std::atomic<unsigned> count;   // workers 里建好的根数
@@ -136,8 +105,8 @@ struct runtime_state {
 
     std::mutex mutex;              // 护着下面这一段
     run_queue global;              // 普通线程里起的、叫醒的协程
-    vcpu* sleepers;                // 有名额、睡在各自条件变量上的工作线程
-    vcpu* spares;                  // 名额交出去了的备用线程
+    list_node sleepers;            // 有名额、睡在各自条件变量上的工作线程，后睡的先叫
+    list_node spares;              // 名额交出去了的备用线程
     bool polling;                  // 有一根闲着的工作线程等在引擎里
     bool poll_notified;            // 已经叫过它了
     park_instant poll_until;       // 它自己会在这一刻醒来
@@ -156,9 +125,6 @@ struct runtime_state {
 };
 
 namespace {
-
-typedef park_clock clock_type;
-typedef park_instant instant;
 
 // 协程在调度器里的状态，存在 coroutine_control::park_state 里。挂起的协程先切出去，
 // 再由它所在的工作线程记成 parked（run）；叫醒它的一方在那之前就到的话只留下 woken，
@@ -181,11 +147,11 @@ bool in_coroutine() noexcept {
     return this_worker() != 0 && fiber::inside();
 }
 
-instant deadline_after(std::chrono::nanoseconds duration) {
-    const instant now = clock_type::now();
+park_instant deadline_after(std::chrono::nanoseconds duration) {
+    const park_instant now = park_clock::now();
     // 最长的时限可能超出 steady_clock 剩下的范围。
-    if (now >= instant() && duration >= (instant::max)() - now) {
-        return (instant::max)();
+    if (now >= park_instant() && duration >= (park_instant::max)() - now) {
+        return (park_instant::max)();
     }
     return now + duration;
 }
@@ -231,6 +197,16 @@ void leave_idle_locked(runtime_state& state) {
     }
 }
 
+// 摘下名单上的第一根，名单空了返回 0。调用方拿着 state.mutex。
+vcpu* take_first(list_node& workers) {
+    if (list_empty(workers)) {
+        return 0;
+    }
+    vcpu* const first = static_cast<vcpu*>(workers.next);
+    list_del_init(*first);
+    return first;
+}
+
 // 叫醒一根闲着的工作线程来找活：有闲着的、又没有正在找活的才叫——正在找活的那根睡下之前
 // 会把所有队列再看一遍（idle）。先叫睡在条件变量上的，都没有再叫等在引擎里的那根。
 // 被叫醒的记成找活的。调用方拿着 state.mutex。
@@ -238,8 +214,7 @@ void wake_one_locked(runtime_state& state) {
     if (state.idle.load() == 0 || state.searching.load() != 0) {
         return;
     }
-    if (vcpu* const sleeper = state.sleepers) {
-        state.sleepers = sleeper->next_sleeper;
+    if (vcpu* const sleeper = take_first(state.sleepers)) {
         sleeper->notified = true;
         sleeper->searching = true;
         leave_idle_locked(state);
@@ -323,7 +298,7 @@ coroutine_control* steal(runtime_state& state, vcpu& self) {
         run_queue taken;
         {
             std::lock_guard<std::mutex> held(victim.mutex);
-            taken = victim.queue.take(victim.queue.count - victim.queue.count / 2);
+            victim.queue.move_front(victim.queue.count - victim.queue.count / 2, taken);
         }
         coroutine_control* const body = taken.pop();
         if (!body) {
@@ -331,7 +306,7 @@ coroutine_control* steal(runtime_state& state, vcpu& self) {
         }
         if (taken.count != 0) {
             std::lock_guard<std::mutex> held(self.mutex);
-            self.queue.append(taken);
+            taken.move_front(taken.count, self.queue);
         }
         return body;
     }
@@ -377,7 +352,7 @@ void publish_earliest(runtime_state& state) {
 }
 
 // 等在引擎里的那根会睡到 poll_until；新的时限更早，就叫它起来重新算。
-void wake_poller_before(runtime_state& state, instant deadline) {
+void wake_poller_before(runtime_state& state, park_instant deadline) {
     std::lock_guard<std::mutex> held(state.mutex);
     if (!state.polling || deadline >= state.poll_until) {
         return;
@@ -388,7 +363,7 @@ void wake_poller_before(runtime_state& state, instant deadline) {
     }
 }
 
-void add_timer(runtime_state& state, park_token& token, instant deadline) {
+void add_timer(runtime_state& state, park_token& token, park_instant deadline) {
     token.deadline = deadline;
     bool first = false;
     {
@@ -443,7 +418,7 @@ void fire_timers(runtime_state& state) {
     if (next == no_deadline) {
         return;
     }
-    const instant now = clock_type::now();
+    const park_instant now = park_clock::now();
     if (now.time_since_epoch().count() < next) {
         return;
     }
@@ -504,28 +479,37 @@ void stop_polling_locked(runtime_state& state, vcpu& self) {
     wake_one_locked(state);
 }
 
+// 等在引擎里要等多久，并记下会在哪一刻醒（wake_poller_before 拿它比）。已经被叫过就不等；
+// 没有定时器就一直等。
+std::chrono::nanoseconds poll_timeout(runtime_state& state) {
+    std::lock_guard<std::mutex> held(state.mutex);
+    const park_ticks next = state.earliest.load();
+    if (next == no_deadline) {
+        state.poll_until = (park_instant::max)();
+    } else {
+        state.poll_until = park_instant(park_clock::duration(next));
+    }
+    if (state.poll_notified) {
+        return std::chrono::nanoseconds(0);
+    }
+    if (next == no_deadline) {
+        return std::chrono::nanoseconds(-1);
+    }
+    const park_instant now = park_clock::now();
+    if (state.poll_until <= now) {
+        return std::chrono::nanoseconds(0);
+    }
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(state.poll_until - now);
+}
+
 // 等在引擎里：同时等 I/O、最早的时限和别的线程的唤醒（wake_one_locked、wake_poller_before）。
 void poll_blocking(runtime_state& state, vcpu& self) {
     io_completion_batch completed;
     {
-        // 不等待地收一次的那根可能正拿着它，只是一瞬间。它可能顺手收走了发给这里的唤醒，
-        // 所以下面还要看一眼 poll_notified。
+        // 不等待地收一次的那根可能正拿着 poll_mutex，只是一瞬间。它可能顺手收走了发给这里的唤醒，
+        // 所以 poll_timeout 要看一眼 poll_notified。
         std::lock_guard<std::mutex> role(state.poll_mutex);
-        std::chrono::nanoseconds timeout(-1);
-        {
-            std::lock_guard<std::mutex> held(state.mutex);
-            const park_ticks next = state.earliest.load();
-            state.poll_until = next == no_deadline ? (instant::max)() : instant(park_clock::duration(next));
-            if (state.poll_notified) {
-                timeout = std::chrono::nanoseconds(0);
-            } else if (next != no_deadline) {
-                const instant now = clock_type::now();
-                timeout = state.poll_until > now
-                              ? std::chrono::duration_cast<std::chrono::nanoseconds>(state.poll_until - now)
-                              : std::chrono::nanoseconds(0);
-            }
-        }
-        io_engine_wait(state.engine, timeout, completed);
+        io_engine_wait(state.engine, poll_timeout(state), completed);
     }
     {
         std::lock_guard<std::mutex> held(state.mutex);
@@ -534,8 +518,38 @@ void poll_blocking(runtime_state& state, vcpu& self) {
     deliver(completed);
 }
 
-// 找不到活：登记为闲着，把所有队列再看一遍，还是没有就睡下——还没有谁等在引擎里的话
-// 就等在引擎里，否则睡在自己的条件变量上，等 wake_one_locked 叫。
+// 登记为闲着。还没有谁等在引擎里，就由这根去等，返回 true；否则排进睡眠名单。调用方拿着 state.mutex。
+bool register_idle_locked(runtime_state& state, vcpu& self) {
+    if (self.searching) {
+        self.searching = false;
+        state.searching.fetch_sub(1);
+    }
+    state.idle.fetch_add(1);
+    if (!state.polling) {
+        state.polling = true;
+        state.poll_notified = false;
+        return true;
+    }
+    self.notified = false;
+    list_add(self, state.sleepers);
+    return false;
+}
+
+// 登记以后发现又有活了，撤销登记。已经被叫醒（摘下名单、记成找活的）就不用撤。调用方拿着 state.mutex。
+void unregister_idle_locked(runtime_state& state, vcpu& self, bool poller) {
+    if (poller) {
+        stop_polling_locked(state, self);
+        return;
+    }
+    if (self.notified) {
+        return;
+    }
+    list_del_init(self);
+    leave_idle_locked(state);
+}
+
+// 找不到活：登记为闲着，把所有队列再看一遍，还是没有就睡下：等在引擎里，或者睡在自己的
+// 条件变量上，等 wake_one_locked 叫。
 void idle(runtime_state& state, vcpu& self) {
     bool poller = false;
     {
@@ -543,41 +557,14 @@ void idle(runtime_state& state, vcpu& self) {
         if (!self.has_slot.load()) {
             return;   // 名额刚被交出去，回去当备用线程
         }
-        if (self.searching) {
-            self.searching = false;
-            state.searching.fetch_sub(1);
-        }
-        state.idle.fetch_add(1);
-        if (!state.polling) {
-            state.polling = true;
-            state.poll_notified = false;
-            poller = true;
-        } else {
-            self.notified = false;
-            self.next_sleeper = state.sleepers;
-            state.sleepers = &self;
-        }
+        poller = register_idle_locked(state, self);
     }
 
     if (has_work(state)) {
-        // 撤销登记。已经被叫醒（摘下名单、记成找活的）就不用撤。
         std::lock_guard<std::mutex> held(state.mutex);
-        if (poller) {
-            stop_polling_locked(state, self);
-            return;
-        }
-        if (self.notified) {
-            return;
-        }
-        vcpu** link = &state.sleepers;
-        while (*link != &self) {
-            link = &(*link)->next_sleeper;
-        }
-        *link = self.next_sleeper;
-        leave_idle_locked(state);
+        unregister_idle_locked(state, self, poller);
         return;
     }
-
     if (poller) {
         poll_blocking(state, self);
         return;
@@ -635,8 +622,7 @@ void become_spare(runtime_state& state, vcpu& self) {
     if (self.has_slot.load()) {
         return;
     }
-    self.next_spare = state.spares;
-    state.spares = &self;
+    list_add(self, state.spares);
     while (!self.has_slot.load()) {
         self.woken.wait(held);
     }
@@ -690,24 +676,31 @@ void start_worker(runtime_state& state, vcpu& worker) {
 
 // ---- 监控线程 ------------------------------------------------------------------------
 
-// 把卡住的那根的名额交给一根备用线程，没有备用的就新起一根，总数到了 worker_limit 就不交。
-// 调用方拿着 state.mutex。
+// 新起一根备用线程。总数到了 worker_limit 或者内存不够返回 0。调用方拿着 state.mutex。
+vcpu* start_spare_locked(runtime_state& state) {
+    const unsigned count = state.count.load();
+    if (count == worker_limit) {
+        return 0;
+    }
+    vcpu* const spare = new (std::nothrow) vcpu();
+    if (!spare) {
+        return 0;
+    }
+    state.workers[count] = spare;
+    state.count.store(count + 1, std::memory_order_release);
+    start_worker(state, *spare);
+    return spare;
+}
+
+// 把卡住的那根的名额交给一根备用线程，没有备用的就新起一根。都不行就先不交：卡住的那根总会回来，
+// 监控线程下一轮还会再试。调用方拿着 state.mutex。
 void hand_off_locked(runtime_state& state, vcpu& stuck) {
-    vcpu* spare = state.spares;
-    if (spare) {
-        state.spares = spare->next_spare;
-    } else {
-        const unsigned count = state.count.load();
-        if (count == worker_limit) {
-            return;   // 只能等它自己回来
-        }
-        spare = new (std::nothrow) vcpu();
-        if (!spare) {
-            return;   // 下一次再试
-        }
-        state.workers[count] = spare;
-        state.count.store(count + 1, std::memory_order_release);
-        start_worker(state, *spare);
+    vcpu* spare = take_first(state.spares);
+    if (!spare) {
+        spare = start_spare_locked(state);
+    }
+    if (!spare) {
+        return;
     }
     stuck.has_slot.store(false);
     spare->has_slot.store(true);
@@ -717,7 +710,7 @@ void hand_off_locked(runtime_state& state, vcpu& stuck) {
 // 有没有到点还没叫醒的定时器。
 bool timer_due(runtime_state& state) {
     const park_ticks next = state.earliest.load();
-    return next != no_deadline && clock_type::now().time_since_epoch().count() >= next;
+    return next != no_deadline && park_clock::now().time_since_epoch().count() >= next;
 }
 
 // 一根工作线程停在同一根协程里超过这么久，就算卡住了。太短会把「被系统挂起了一会儿」也当成卡住，
@@ -727,22 +720,59 @@ const std::chrono::milliseconds stall_limit(10);
 // 监控线程隔多久看一次。从卡住到交接是 stall_limit 再加至多两个间隔。
 const std::chrono::milliseconds monitor_interval(2);
 
-// 监控线程。有工作线程忙着的时候每隔 monitor_interval 看一次：一根有名额的工作线程停在同一根协程里
-// 超过 stall_limit，又没有闲着的工作线程、而还有协程排着或者定时器到点了，就把它的名额交出去。
+// 监控线程给每根工作线程记下上一次看到的调度次数，和第一次看到这个数的时刻。
+struct watch_mark {
+    unsigned ticks;
+    park_instant since;
+};
+
+// 卡住了没有：有名额、停在同一根协程里超过 stall_limit。同时更新记号。
+bool stuck(vcpu& worker, watch_mark& mark, park_instant now) {
+    const unsigned ticks = worker.ticks.load(std::memory_order_relaxed);
+    const bool running = worker.has_slot.load() && worker.current.load(std::memory_order_relaxed) != 0;
+    if (!running || ticks != mark.ticks) {
+        mark.ticks = ticks;
+        mark.since = now;
+        return false;
+    }
+    return now - mark.since >= stall_limit;
+}
+
+// 有工作线程卡住，又没有闲着的工作线程、而还有协程排着或者定时器到点了，就把它的名额交出去。
 // 卡在阻塞调用里和算个不停一样对待：卡住的那根接着跑完手上那根协程，之后去当备用线程（worker_loop）。
-// 没有闲着的工作线程时，完成的 I/O 也没人收，所以先替它们收一次，叫醒的协程排进全局队列。
-// 定时器不替它们叫：交给拿到名额的线程按时限的先后叫，次序才对。全都闲着时睡到有谁忙起来
-// （leave_idle_locked）。
+// 调用方拿着 state.mutex。
+void hand_off_stuck_locked(runtime_state& state, watch_mark* marks, park_instant now) {
+    const unsigned count = state.count.load();
+    for (unsigned i = 0; i < count; ++i) {
+        vcpu& worker = *state.workers[i];
+        if (!stuck(worker, marks[i], now) || state.idle.load() != 0) {
+            continue;
+        }
+        if (!queued_locked(state) && !timer_due(state)) {
+            continue;
+        }
+        hand_off_locked(state, worker);
+        marks[i].since = now;
+    }
+}
+
+// 全都闲着时睡到有谁忙起来（leave_idle_locked）。
+void sleep_until_busy(runtime_state& state, std::unique_lock<std::mutex>& held) {
+    state.monitor_sleeping = true;
+    while (state.monitor_sleeping) {
+        state.monitor_woken.wait(held);
+    }
+}
+
+// 监控线程。有工作线程忙着的时候每隔 monitor_interval 看一次。没有闲着的工作线程时，完成的 I/O
+// 也没人收，所以先替它们收一次，叫醒的协程排进全局队列。定时器不替它们叫：交给拿到名额的线程
+// 按时限的先后叫，次序才对。
 void monitor_main(runtime_state* state) noexcept {
-    unsigned seen[worker_limit] = {};
-    instant since[worker_limit];   // 第一次看到 seen 里那个值的时刻
+    watch_mark marks[worker_limit] = {};
     std::unique_lock<std::mutex> held(state->mutex);
     for (;;) {
         if (state->idle.load() == static_cast<int>(state->slots)) {
-            state->monitor_sleeping = true;
-            while (state->monitor_sleeping) {
-                state->monitor_woken.wait(held);
-            }
+            sleep_until_busy(*state, held);
             continue;
         }
         held.unlock();
@@ -751,26 +781,7 @@ void monitor_main(runtime_state* state) noexcept {
             poll_now(*state);
         }
         held.lock();
-
-        const instant now = clock_type::now();
-        const unsigned count = state->count.load();
-        for (unsigned i = 0; i < count; ++i) {
-            vcpu& worker = *state->workers[i];
-            const unsigned ticks = worker.ticks.load(std::memory_order_relaxed);
-            if (!worker.has_slot.load() || worker.current.load(std::memory_order_relaxed) == 0 || ticks != seen[i]) {
-                seen[i] = ticks;
-                since[i] = now;
-                continue;
-            }
-            if (now - since[i] < stall_limit || state->idle.load() != 0) {
-                continue;
-            }
-            if (!queued_locked(*state) && !timer_due(*state)) {
-                continue;
-            }
-            hand_off_locked(*state, worker);
-            since[i] = now;
-        }
+        hand_off_stuck_locked(*state, marks, park_clock::now());
     }
 }
 
@@ -816,7 +827,7 @@ bool park_thread(park_token& token, std::chrono::nanoseconds timeout) {
     thread_parker& parker = *token.parker;
     std::unique_lock<std::mutex> held(parker.mutex);
     if (timeout.count() >= 0) {
-        const instant deadline = deadline_after(timeout);
+        const park_instant deadline = deadline_after(timeout);
         while (!token.delivered) {
             if (parker.woken.wait_until(held, deadline) == std::cv_status::timeout) {
                 break;
