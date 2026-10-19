@@ -787,11 +787,18 @@ void hand_off_locked(runtime_state& state, vcpu& stuck) {
     spare->woken.notify_one();
 }
 
+// 有没有到点还没叫醒的定时器。
+bool timer_due(runtime_state& state) {
+    const park_ticks next = state.earliest.load();
+    return next != no_deadline && clock_type::now().time_since_epoch().count() >= next;
+}
+
 // 监控线程。有工作线程忙着的时候隔 1 毫秒看一次（Windows 默认的定时器精度约 15.6 毫秒）：
-// 一根有名额的工作线程连着两次都停在同一根协程里，又没有闲着的工作线程、而还有协程排着，
-// 就把它的名额交出去。卡在阻塞调用里和算个不停一样对待：卡住的那根接着跑完手上那根协程，
-// 之后去当备用线程（worker_loop）。没有闲着的工作线程时，到点的定时器和完成的 I/O 也没人收，
-// 所以先替它们收一次，叫醒的协程排进全局队列。全都闲着时睡到有谁忙起来（leave_idle_locked）。
+// 一根有名额的工作线程连着两次都停在同一根协程里，又没有闲着的工作线程、而还有协程排着
+// 或者定时器到点了，就把它的名额交出去。卡在阻塞调用里和算个不停一样对待：卡住的那根接着
+// 跑完手上那根协程，之后去当备用线程（worker_loop）。没有闲着的工作线程时，完成的 I/O 也没人收，
+// 所以先替它们收一次，叫醒的协程排进全局队列。定时器不替它们叫：交给拿到名额的线程按时限的先后叫，
+// 次序才对。全都闲着时睡到有谁忙起来（leave_idle_locked）。
 void monitor_main(runtime_state* state) noexcept {
     unsigned seen[worker_limit] = {};
     unsigned stalled[worker_limit] = {};
@@ -807,7 +814,6 @@ void monitor_main(runtime_state* state) noexcept {
         state->monitor_woken.wait_for(held, std::chrono::milliseconds(1));
         if (state->idle.load() == 0) {
             held.unlock();
-            fire_timers(*state);
             poll_now(*state);
             held.lock();
         }
@@ -821,7 +827,7 @@ void monitor_main(runtime_state* state) noexcept {
                 stalled[i] = 0;
                 continue;
             }
-            if (++stalled[i] < 2 || state->idle.load() != 0 || !queued_locked(*state)) {
+            if (++stalled[i] < 2 || state->idle.load() != 0 || !(queued_locked(*state) || timer_due(*state))) {
                 continue;
             }
             hand_off_locked(*state, worker);
