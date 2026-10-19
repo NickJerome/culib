@@ -517,6 +517,18 @@ channel 不交棒：放进元素或腾出位置时叫醒一个等待者，它醒
 
 平台资源操作（建套接字、绑定、accept、connect、端点查询、Windows overlapped 调用与 AcceptEx / ConnectEx 上下文、UDP ICMP 抑制、POSIX 非阻塞与 close-on-exec）集中在 `net_socket_posix.cpp` / `net_socket_win.cpp`，经私有的 `net_socket_detail.h` 相接；公共 `net.h` 不包含平台头文件；内部地址编解码使用平台的 sockaddr。旧的 `net_tcp*` / `net_udp*` 实现随合并删除，不留并行旧路径。这批改动尚未取得 CI 结果，不能沿用 2026-10-08 那套接口的绿色记录。
 
+## [`fs_win.cpp`](../src/fs/fs_win.cpp)
+
+### 复制前怎么判断是不是同一个文件
+
+覆盖复制会先清空目标，所以源和目标是同一个文件（同一路径，或者经 junction、硬链接绕回来）时，必须在写盘之前拒绝。身份只认系统给的卷号加 FileIndex：两边的 FileIndex 都不为 0 时（NTFS、SMB2 以上），硬链接的两个名字值相同，直接比较即可。
+
+任何一边的 FileIndex 为 0 就认不出身份。这时报错、拒绝覆盖，不找别的退路：
+
+- FAT、exFAT 和一部分网络重定向器不维护持久的 64 位索引，`GetFileInformationByHandle` 给的是兼容层合成的值（chkdsk 或重新挂载以后不保证不变），或者干脆是 0。「卷号相同、0 等于 0」会把同一个卷上不相干的两个文件当成同一个。
+- 不拿最终路径兜底：索引为 0 的重定向器同样可能支持硬链接，同一个文件的两个名字可以各有各的最终路径。「路径不同」证明不了「文件不同」，也没有别的可查询的东西能排除这种别名；问得出 GUID 路径也不构成身份。
+- `CopyFileW` 的文档没有承诺会拒绝同一个文件（它甚至直接覆盖符号链接指向的目标），没有可以依赖的行为。身份不明时，唯一安全的做法是拒绝。
+
 ## [`term_win.cpp`](../src/cli/term_win.cpp)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-01-test-term-table-design.md)。

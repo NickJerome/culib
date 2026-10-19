@@ -40,34 +40,26 @@ detail::file_mode mode_of(open_mode mode) {
     return detail::file_mode::truncate;
 }
 
-// 写满为止：短写循环续写；「一字节都没前进」是 io 错误，不许原地打转。
-result<void> write_all(std::intptr_t handle, const std::string& target, const char* data,
-                       std::size_t size) {
+}  // namespace
+
+namespace detail {
+
+result<void> write_all(std::intptr_t handle, const char* data, std::size_t size, string_view path) {
     std::size_t offset = 0;
     while (offset != size) {
-        result<std::size_t> moved =
-            detail::write_some(handle, data + offset, size - offset, target);
+        result<std::size_t> moved = write_some(handle, data + offset, size - offset, path);
         if (moved.is_err()) {
             return std::move(moved).error();
         }
         if (moved.value() == 0) {
-            return make_error(error_kind::io, target + " 写入未前进");
+            return make_error(error_kind::io, path.to_string() + " 写入未前进");
         }
         offset += moved.value();
     }
     return result<void>();
 }
 
-// close_file 成功与否都消费句柄；这里拿的是句柄的副本，成员自己置回 -1。
-result<void> close_copy(std::intptr_t handle, const std::string& target) {
-    const unsigned long code = detail::close_file(handle);
-    if (code != 0) {
-        return detail::file_error("关闭", target, code);
-    }
-    return result<void>();
-}
-
-}  // namespace
+}  // namespace detail
 
 // --- file：移动 only 的句柄 ---------------------------------------------------------
 
@@ -117,17 +109,18 @@ result<void> file::write(const void* data, std::size_t size) {
     if (size == 0) {
         return result<void>();   // 空写是 no-op，不产生原生写
     }
-    return write_all(handle_, path_.string(), static_cast<const char*>(data), size);
+    return detail::write_all(handle_, static_cast<const char*>(data), size, path_.string());
 }
 
 result<void> file::close() {
     if (!is_open()) {
         return result<void>();   // 没打开时成功
     }
-    const result<void> status = close_copy(handle_, path_.string());
-    // 原生 close 无论如何都消费句柄；出错也一样回到关闭态，不给二次关闭留活句柄。
-    handle_ = -1;
-    return status;
+    const unsigned long code = detail::close_file(handle_);   // 出错也消费句柄，回到关闭态
+    if (code != 0) {
+        return detail::file_error("关闭", path_.string(), code);
+    }
+    return result<void>();
 }
 
 result<file> open(const path& target, open_mode mode) {

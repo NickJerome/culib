@@ -1,12 +1,7 @@
-// fs 的 Windows 实现。
-// 一律走 W 系列 API：路径是 UTF-8，先转 UTF-16 再调。
-// '\0' 检查不等系统报错：W API 拿 NUL 当串尾，转完先查宽字符里有没有 0，
-// 否则含 NUL 的路径会被截成前缀，悄悄命中另一个文件（磁盘被碰到就晚了）。
-// 超过 MAX_PATH - 12 的路径统一经 GetFullPathNameW 换成 \\?\ 扩展形式再进内核，
-// 长路径测试（tests/fs_test.cpp）钉死了这条行为。
-// 平台私有契约见 directory.h / file.h；对外的 exists / create_directory / remove /
-// directory_iterator 等组合操作由可移植的 fs.cpp 在这里的原语上拼出来。
-// 和 fs_posix.cpp 一样都直接做系统调用。
+// fs 的 Windows 实现，一律走 W 系列 API：路径是 UTF-8，先转成 UTF-16。
+// 转完先查有没有 NUL：W API 拿 NUL 当串尾，含 NUL 的路径会被截成前缀，悄悄指到另一个文件。
+// 超过 MAX_PATH - 12 的路径经 GetFullPathNameW 换成 \\?\ 形式再交给系统。
+// 这里只有平台原语（directory.h、file.h）和几个由平台实现的公共入口，组合操作在 fs.cpp。
 
 #include <culib/fs.h>
 #include <culib/defer.h>
@@ -91,65 +86,69 @@ error from_last_error(string_view what, string_view path, DWORD code) {
                                          " 失败：" + describe(code));
 }
 
-// UTF-8 → UTF-16，顺手做两件事：
-// 1. 拒绝内嵌 NUL。utf8_to_wide 按长度转，NUL 会变成串里的 0 单元，
-//    带着它调用 W API 会被截断成前缀——必须在任何系统调用之前拦下。
-// 2. 长路径升级。够短（建目录还要给 8.3 预留 12 个字符）直接原样交给 Win32，
-//    它自己能处理相对路径、'/' 和 "."；带 \\?\ / \\.\ 前缀的本来就是扩展形式，
-//    原样直通（扩展形式要求调用方自己保证已规范、全反斜杠）。
-//    其余一律解析成绝对路径再挂 \\?\ 前缀，绕开 MAX_PATH。
-result<std::wstring> wide_path(string_view path) {
-    result<std::wstring> converted = utf8_to_wide(path);
-    if (converted.is_err()) {
-        return std::move(converted).error();
-    }
-    std::wstring wide = std::move(converted).value();
-    if (wide.find(L'\0') != std::wstring::npos) {
-        return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
-    }
-    if (wide.size() < MAX_PATH - 12 ||
-        (wide.size() >= 4 && wide[0] == L'\\' && wide[1] == L'\\' &&
-         (wide[2] == L'?' || wide[2] == L'.') && wide[3] == L'\\')) {
-        return wide;
-    }
+bool already_extended(const std::wstring& wide) {
+    return wide.size() >= 4 && wide[0] == L'\\' && wide[1] == L'\\' && (wide[2] == L'?' || wide[2] == L'.') &&
+           wide[3] == L'\\';
+}
 
+// 解析成绝对路径。当前目录可能同时被改，长度变了就按新长度再来，最多三次。
+result<std::wstring> full_path(const std::wstring& wide, string_view path) {
     DWORD capacity = ::GetFullPathNameW(wide.c_str(), 0, 0, 0);
     if (capacity == 0) {
         return from_last_error("解析路径", path, ::GetLastError());
     }
-    std::wstring absolute;
-    bool resolved = false;
     for (int attempt = 0; attempt < 3; ++attempt) {
-        absolute.resize(static_cast<std::size_t>(capacity));
-        const DWORD length =
-            ::GetFullPathNameW(wide.c_str(), capacity, &absolute[0], 0);
+        std::wstring absolute(static_cast<std::size_t>(capacity), L'\0');
+        const DWORD length = ::GetFullPathNameW(wide.c_str(), capacity, &absolute[0], 0);
         if (length == 0) {
             return from_last_error("解析路径", path, ::GetLastError());
         }
         if (length < capacity) {
             absolute.resize(static_cast<std::size_t>(length));
-            resolved = true;
-            break;
+            return absolute;
         }
         capacity = length + 1;
     }
-    if (!resolved) {
-        return make_error(error_kind::out_of_range, "路径在解析时发生变化");
-    }
+    return make_error(error_kind::out_of_range, "路径在解析时发生变化");
+}
+
+// \\?\ 形式要求全是反斜杠；UNC 路径 \\server\share 写成 \\?\UNC\server\share。
+std::wstring extended_form(std::wstring absolute) {
     for (std::size_t i = 0; i < absolute.size(); ++i) {
         if (absolute[i] == L'/') {
             absolute[i] = L'\\';
         }
     }
     if (absolute.size() >= 2 && absolute[0] == L'\\' && absolute[1] == L'\\') {
-        return std::wstring(L"\\\\?\\UNC\\") + absolute.substr(2);
+        return L"\\\\?\\UNC\\" + absolute.substr(2);
     }
-    return std::wstring(L"\\\\?\\") + absolute;
+    return L"\\\\?\\" + absolute;
 }
 
-// 给一坨文件属性归类（不跟进 reparse point：调用方保证或已决定不跟）。
-// Windows 的属性区分不出普通文件和管道设备，DEVICE 是老掉牙的遗留位，
-// 除此之外一律按普通文件算——这正好是可移植层要的分类粒度。
+// UTF-8 转 UTF-16。含 NUL 的路径在任何系统调用之前就拒绝。够短的路径（建目录还要给 8.3 名留
+// 12 个字符）和已经是 \\?\、\\.\ 形式的原样交给系统，系统自己处理相对路径、'/' 和 "."；
+// 其余解析成绝对路径再挂上 \\?\ 前缀，绕开 MAX_PATH。
+result<std::wstring> wide_path(string_view path) {
+    result<std::wstring> converted = utf8_to_wide(path);
+    if (converted.is_err()) {
+        return std::move(converted).error();
+    }
+    const std::wstring& wide = converted.value();
+    if (wide.find(L'\0') != std::wstring::npos) {
+        return make_error(error_kind::invalid_argument, "路径包含 NUL 字节");
+    }
+    if (wide.size() < MAX_PATH - 12 || already_extended(wide)) {
+        return converted;
+    }
+    result<std::wstring> absolute = full_path(wide, path);
+    if (absolute.is_err()) {
+        return absolute;
+    }
+    return extended_form(std::move(absolute).value());
+}
+
+// 按文件属性归类，不跟进 reparse point（调用方已经决定不跟）。属性分不出普通文件和管道设备，
+// 除了 DEVICE 位一律按普通文件算，这也正是可移植层要的粒度。
 detail::entry_kind kind_from_attributes(DWORD attributes) {
     if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
         return detail::entry_kind::link;   // 符号链接 / junction，绝不跟进
@@ -212,8 +211,7 @@ result<detail::entry_kind> follow_target(const std::wstring& wide, string_view p
     return detail::entry_kind::regular_file;
 }
 
-// FILETIME 是 1601-01-01 起的 100 纳秒刻度。转 Unix 毫秒，向下取整，
-// 1970 以前同样是负数（纪元前测试钉死了 -1 秒这个例子），不许钳成 0。
+// FILETIME 是 1601-01-01 起的 100 纳秒刻度。转成 Unix 毫秒，向下取整：1970 以前是负数，不能钳成 0。
 timestamp timestamp_of(const FILETIME& time) {
     ULARGE_INTEGER ticks;
     ticks.LowPart = time.dwLowDateTime;
@@ -335,8 +333,8 @@ result<std::intptr_t> open_file(string_view path, file_mode mode) {
     if (wide.is_err()) {
         return std::move(wide).error();
     }
-    // append 用 FILE_APPEND_DATA 而不是 GENERIC_WRITE：
-    // 写在内核里落当时文件末尾，多个 append 句柄同时写不会互相踩（测试钉死了这条）。
+    // append 用 FILE_APPEND_DATA 而不是 GENERIC_WRITE：由内核写到当时的文件末尾，
+    // 多个 append 句柄同时写不会互相覆盖。
     const DWORD access = mode == file_mode::read
                              ? static_cast<DWORD>(GENERIC_READ)
                              : mode == file_mode::append
@@ -445,22 +443,9 @@ result<wavvix::timestamp> time_through_link(string_view path, const std::wstring
     return timestamp_of(last_write);
 }
 
-// 源和目标是不是同一个文件（含 junction / 硬链接绕过去的别名）。
-// 任何一边「不存在」都算「不同」——让后面的真正操作去报权威的错。
-//
-// 身份只认内核给的卷号 + FileIndex：两边 FileIndex 都非 0（NTFS、SMB2+
-// 之类）时，硬链接别名同值，直接比就完事。
-// 任何一边 FileIndex 全 0 就是身份不可得——报错拒绝覆盖，不设退路：
-// - FAT / exFAT 和部分网络重定向器不维护持久的 64 位索引，
-//   GetFileInformationByHandle 报的是兼容层合成的值（chkdsk / 重新挂载后
-//   不保同一）或干脆 0，「卷号相等 + 0 == 0」会把同卷上不相干的文件误判
-//   成同一个。
-// - 不拿最终路径兜底：零索引的重定向器同样可能支持硬链接，同一个文件的
-//   两个别名可以各有自己的最终路径——「路径不同」证明不了「文件不同」，
-//   没有任何可查询的东西能排除这种别名，问得出 GUID 路径也不构成身份。
-// - CopyFileW 的文档不承诺拒绝同一文件（它甚至直接覆盖符号链接的目标），
-//   没有可押注的行为；覆盖是「先清目标再复制」，身份不明时唯一安全的
-//   做法是拒绝。
+// 源和目标是不是同一个文件（含 junction、硬链接绕过去的别名）：比卷号和 FileIndex。任何一边不存在
+// 都算不同，让后面的操作去报权威的错。FileIndex 为 0（FAT、部分网络盘）时认不出身份，报错拒绝覆盖，
+// 理由见 docs/implementation-notes.md 的 fs_win.cpp 一节。
 result<bool> same_file(const std::wstring& wide_from, string_view from,
                        const std::wstring& wide_to, string_view to) {
     const result<HANDLE> source = open_for_query(wide_from, from);
@@ -551,8 +536,7 @@ result<void> copy_file_native(string_view from, string_view to, bool overwrite) 
         return std::move(wide_to).error();
     }
     if (overwrite) {
-        // 覆盖是「先清空目标再复制」：同一文件（字符串相等，或经 junction / 硬链接
-        // 绕到同一个 inode）必须在任何写盘动作之前拦下，否则内容直接被清光。
+        // 覆盖会先清空目标，所以同一个文件（同一路径，或者经 junction、硬链接绕回来）要在写盘之前拦下。
         if (from == to) {
             return make_error(error_kind::invalid_argument, "复制源和目标是同一文件");
         }
@@ -564,8 +548,7 @@ result<void> copy_file_native(string_view from, string_view to, bool overwrite) 
             return make_error(error_kind::invalid_argument, "复制源和目标是同一文件");
         }
     }
-    // 不覆盖时目标已存在报 FILE_EXISTS → already_exists；源不存在报找不到。
-    // 注意默认语义就是「难误用」：skip 不是这里的选项。
+    // 不覆盖时目标已存在，报 already_exists。
     if (!::CopyFileW(wide_from.value().c_str(), wide_to.value().c_str(),
                      overwrite ? FALSE : TRUE)) {
         const DWORD code = ::GetLastError();
@@ -586,9 +569,7 @@ result<void> rename_native(string_view from, string_view to) {
     if (wide_to.is_err()) {
         return std::move(wide_to).error();
     }
-    // REPLACE_EXISTING 让语义向 POSIX 的 rename 看齐（目标存在则顶掉）。
-    // COPY_ALLOWED：Windows 允许跨卷「改名」，退化成复制再删，比直接报错了事更贴近
-    // 使用方的直觉；跨卷原子性本来就不存在。
+    // REPLACE_EXISTING：和 POSIX 的 rename 一样顶掉已有的目标。COPY_ALLOWED：跨卷时退化成复制再删。
     if (!::MoveFileExW(wide_from.value().c_str(), wide_to.value().c_str(),
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
         return from_last_error("重命名", from, ::GetLastError());

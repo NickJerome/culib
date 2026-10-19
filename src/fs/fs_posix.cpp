@@ -2,6 +2,7 @@
 // last_write_time / copy_file / rename / current_path），和 src/fs/directory.h、file.h 的
 // 私有原语。都直接做系统调用。
 
+#include <culib/defer.h>
 #include <culib/fs.h>
 
 #include "directory.h"
@@ -392,8 +393,63 @@ result<wavvix::timestamp> last_write_time_native(string_view target) {
     return timestamp::from_unix_seconds(static_cast<std::int64_t>(info.st_mtime));
 }
 
-// copy_file 的实体。整体在阻塞线程上跑：一次公共调用只挂起一次，
-// 中间的每块读写不再各自进出协程调度。
+int open_retrying(const char* path, int flags) {
+    int fd;
+    do {
+        fd = ::open(path, flags, 0666);
+    } while (fd < 0 && errno == EINTR);
+    return fd;
+}
+
+// 只复制普通文件，和 std::filesystem::copy_file 一致。目录用 O_RDONLY 也打得开，读的时候才报
+// EISDIR，所以要在建目标之前查，免得失败的复制在磁盘上留下空的（覆盖时是被截空的）目标；
+// fifo、设备这类文件读起来要么阻塞要么语义不对。
+result<void> check_source(int fd, string_view from, struct stat& info) {
+    if (::fstat(fd, &info) != 0) {
+        return from_errno("检查复制源", from, errno);
+    }
+    if (!S_ISREG(info.st_mode)) {
+        return make_error(error_kind::unsupported, from.to_string() + " 不是普通文件，copy_file 只复制普通文件");
+    }
+    return result<void>();
+}
+
+// 覆盖之前：源和目标是同一个文件（同一路径、硬链接、经由链接绕回来都算）就报错，目标也得是
+// 普通文件。这两样都要在截断之前查，否则内容先被清空了。
+result<void> prepare_target(int fd, string_view to, const struct stat& source) {
+    struct stat info;
+    if (::fstat(fd, &info) != 0) {
+        return from_errno("检查复制文件", to, errno);
+    }
+    if (info.st_dev == source.st_dev && info.st_ino == source.st_ino) {
+        return make_error(error_kind::invalid_argument, "复制源和目标是同一文件");
+    }
+    if (!S_ISREG(info.st_mode)) {
+        return make_error(error_kind::unsupported, to.to_string() + " 不是普通文件，copy_file 只覆盖普通文件");
+    }
+    if (::ftruncate(fd, 0) != 0) {
+        return from_errno("截断", to, errno);
+    }
+    return result<void>();
+}
+
+result<void> copy_contents(std::intptr_t source, string_view from, std::intptr_t target, string_view to) {
+    char chunk[65536];
+    for (;;) {
+        result<std::size_t> got = detail::read_some(source, chunk, sizeof chunk, from);
+        if (got.is_err()) {
+            return std::move(got).error();
+        }
+        if (got.value() == 0) {
+            return result<void>();
+        }
+        const result<void> written = detail::write_all(target, chunk, got.value(), to);
+        if (written.is_err()) {
+            return written;
+        }
+    }
+}
+
 result<void> copy_file_native(string_view from, string_view to, bool overwrite) {
     const c_path native_from(from);
     const c_path native_to(to);
@@ -401,116 +457,41 @@ result<void> copy_file_native(string_view from, string_view to, bool overwrite) 
         return invalid_path();
     }
 
-    int source_raw = -1;
-    do {
-        source_raw = ::open(native_from.get(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    } while (source_raw < 0 && errno == EINTR);
-    if (source_raw < 0) {
+    std::intptr_t source = open_retrying(native_from.get(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (source < 0) {
         return from_errno("打开", from, errno);
     }
-    std::intptr_t source_handle = static_cast<std::intptr_t>(source_raw);
-
+    WAVVIX_DEFER { (void)detail::close_file(source); };
     struct stat source_info;
-    if (::fstat(static_cast<int>(source_handle), &source_info) != 0) {
-        const int code = errno;
-        (void)detail::close_file(source_handle);
-        return from_errno("检查复制源", from, code);
+    const result<void> checked = check_source(static_cast<int>(source), from, source_info);
+    if (checked.is_err()) {
+        return checked;
     }
 
-    // 只复制普通文件，与 std::filesystem::copy_file 一致。目录能用 O_RDONLY
-    // 打开、fstat 也过得去，读才 EISDIR——类型必须在建目标之前拦住，否则失败的
-    // 复制会在磁盘上留下空的（覆盖模式下还有被截空的）坏目标。fifo、设备这类
-    // 特殊文件同样出局：读它们要么阻塞要么语义不对。
-    if (!S_ISREG(source_info.st_mode)) {
-        (void)detail::close_file(source_handle);
-        return make_error(error_kind::unsupported,
-                          from.to_string() + " 不是普通文件，copy_file 只复制普通文件");
+    // 不覆盖时带 O_EXCL：目标是悬空链接也报 already_exists，不会透过链接把文件建到它指的地方。
+    // 覆盖时不带 O_TRUNC，截断要等查过是不是同一个文件。O_NONBLOCK 免得已有的 fifo 没人读时卡住。
+    const int flags = O_WRONLY | O_CREAT | O_CLOEXEC | O_NONBLOCK | (overwrite ? 0 : O_EXCL);
+    std::intptr_t target = open_retrying(native_to.get(), flags);
+    if (target < 0) {
+        return from_errno("创建", to, errno);   // EEXIST 映射成 already_exists
     }
-
-    // 不覆盖时 O_EXCL：目标是悬空链接也报 already_exists，绝不透过链接把文件
-    // 造到链接指向的地方去。覆盖时不带 O_TRUNC——截断要等同源检查之后再做。
-    // O_NONBLOCK 避免已存在的 FIFO 在无人读取时卡住整个复制任务。
-    const int flags = O_WRONLY | O_CREAT | O_CLOEXEC | O_NONBLOCK |
-                      (overwrite ? 0 : O_EXCL);
-    int target_raw = -1;
-    do {
-        target_raw = ::open(native_to.get(), flags, 0666);
-    } while (target_raw < 0 && errno == EINTR);
-    if (target_raw < 0) {
-        const int code = errno;   // EEXIST 映射成 already_exists
-        (void)detail::close_file(source_handle);
-        return from_errno("创建", to, code);
-    }
-    std::intptr_t target_handle = static_cast<std::intptr_t>(target_raw);
-
+    WAVVIX_DEFER { (void)detail::close_file(target); };
     if (overwrite) {
-        // 源和目标指向同一个文件（同一路径、硬链接、经由链接绕回去都算）就报错。
-        // 检查在任何截断之前做：先 truncate 再比较会把内容清空。
-        struct stat target_info;
-        if (::fstat(target_raw, &target_info) != 0) {
-            const int code = errno;
-            (void)detail::close_file(source_handle);
-            (void)detail::close_file(target_handle);
-            return from_errno("检查复制文件", to, code);
-        }
-        if (source_info.st_dev == target_info.st_dev && source_info.st_ino == target_info.st_ino) {
-            (void)detail::close_file(source_handle);
-            (void)detail::close_file(target_handle);
-            return make_error(error_kind::invalid_argument, "复制源和目标是同一文件");
-        }
-        if (!S_ISREG(target_info.st_mode)) {
-            (void)detail::close_file(source_handle);
-            (void)detail::close_file(target_handle);
-            return make_error(error_kind::unsupported,
-                              to.to_string() + " 不是普通文件，copy_file 只覆盖普通文件");
-        }
-        if (::ftruncate(target_raw, 0) != 0) {
-            const int code = errno;
-            (void)detail::close_file(source_handle);
-            (void)detail::close_file(target_handle);
-            return from_errno("截断", to, code);
+        const result<void> prepared = prepare_target(static_cast<int>(target), to, source_info);
+        if (prepared.is_err()) {
+            return prepared;
         }
     }
 
-    char chunk[65536];
-    for (;;) {
-        result<std::size_t> got = detail::read_some(source_handle, chunk, sizeof chunk, from);
-        if (got.is_err()) {
-            (void)detail::close_file(source_handle);
-            (void)detail::close_file(target_handle);
-            return std::move(got).error();
-        }
-        if (got.value() == 0) {
-            break;
-        }
-
-        std::size_t offset = 0;
-        while (offset < got.value()) {
-            result<std::size_t> moved =
-                detail::write_some(target_handle, chunk + offset, got.value() - offset, to);
-            if (moved.is_err()) {
-                (void)detail::close_file(source_handle);
-                (void)detail::close_file(target_handle);
-                return std::move(moved).error();
-            }
-            if (moved.value() == 0) {
-                (void)detail::close_file(source_handle);
-                (void)detail::close_file(target_handle);
-                return make_error(error_kind::io, to.to_string() + " 写入未前进");
-            }
-            offset += moved.value();
-        }
+    const result<void> copied = copy_contents(source, from, target, to);
+    if (copied.is_err()) {
+        return copied;
     }
-
-    // 权限跟着源走：不管目标是新建还是被覆盖，落盘模式都定成源的。
-    if (::fchmod(target_raw, source_info.st_mode & 07777) != 0) {
-        const int code = errno;
-        (void)detail::close_file(source_handle);
-        (void)detail::close_file(target_handle);
-        return from_errno("设置权限", to, code);
+    // 权限跟着源走，不管目标是新建的还是被覆盖的。
+    if (::fchmod(static_cast<int>(target), source_info.st_mode & 07777) != 0) {
+        return from_errno("设置权限", to, errno);
     }
-    (void)detail::close_file(source_handle);
-    const unsigned long code = detail::close_file(target_handle);
+    const unsigned long code = detail::close_file(target);   // 关闭也会失败（比如网络盘写回出错），要报出来
     if (code != 0) {
         return detail::file_error("关闭", to, code);
     }

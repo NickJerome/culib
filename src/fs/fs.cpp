@@ -180,8 +180,52 @@ result<void> remove_leaf(const std::string& target, std::uint64_t& count) {
     return result<void>();
 }
 
-// 稳定目录树中的链接只删链接本身。
-// 路径在操作期间若被并发替换，不能保证不进入替换后的目标。
+typedef std::vector<std::pair<std::string, detail::entry_kind> > child_list;
+
+// 收下一层的名字。readdir 对枚举期间增删的条目没有稳定性保证，所以先收齐、关掉枚举句柄再删。
+result<void> list_children(const std::string& target, child_list& children) {
+    result<detail::directory_handle> opened = detail::directory_handle::open(target);
+    if (opened.is_err()) {
+        return std::move(opened).error();
+    }
+    detail::directory_handle handle = std::move(opened).value();
+    for (;;) {
+        string_view name;
+        detail::entry_kind hint = detail::entry_kind::unknown;
+        const result<bool> got = handle.next(name, hint);
+        if (got.is_err()) {
+            return std::move(got).error();
+        }
+        if (!got.value()) {
+            return result<void>();
+        }
+        if (name != "." && name != "..") {
+            children.push_back(std::make_pair(name.to_string(), hint));   // name 只活到下一次 next()
+        }
+    }
+}
+
+result<void> remove_tree(const std::string& target, std::uint64_t& count);
+
+// 枚举给不出类型（POSIX 的 DT_UNKNOWN）时先查一次，再决定要不要下潜。链接绝不跟进。
+result<void> remove_child(const std::string& child, detail::entry_kind hint, std::uint64_t& count) {
+    if (hint == detail::entry_kind::unknown) {
+        const result<detail::entry_kind> kind = detail::query(child, detail::follow_links::no);
+        if (kind.is_err()) {
+            return std::move(kind).error();
+        }
+        if (kind.value() == detail::entry_kind::missing) {
+            return result<void>();   // 并发里已经没了
+        }
+        hint = kind.value();
+    }
+    if (hint == detail::entry_kind::directory) {
+        return remove_tree(child, count);
+    }
+    return remove_leaf(child, count);
+}
+
+// 稳定目录树中的链接只删链接本身。路径在操作期间若被并发替换，不能保证不进入替换后的目标。
 result<void> remove_tree(const std::string& target, std::uint64_t& count) {
     const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
     if (kind.is_err()) {
@@ -191,77 +235,26 @@ result<void> remove_tree(const std::string& target, std::uint64_t& count) {
         return result<void>();
     }
     if (kind.value() != detail::entry_kind::directory) {
-        // 普通文件、链接（含指向目录的链接、悬空链接）、管道设备：删条目自己。
-        return remove_leaf(target, count);
+        return remove_leaf(target, count);   // 文件、链接（含指向目录的）、管道设备：删条目自己
     }
 
-    // readdir 对枚举期间被增删的条目没有稳定性保证；先收本层名字，
-    // 关闭枚举句柄后再删除，避免自己的删除干扰枚举。
-    std::vector<std::pair<std::string, detail::entry_kind> > children;
-    {
-        result<detail::directory_handle> opened = detail::directory_handle::open(target);
-        if (opened.is_err()) {
-            return std::move(opened).error();
-        }
-        detail::directory_handle handle = std::move(opened).value();
-        for (;;) {
-            string_view name;
-            detail::entry_kind hint = detail::entry_kind::unknown;
-            const result<bool> got = handle.next(name, hint);
-            if (got.is_err()) {
-                return std::move(got).error();
-            }
-            if (!got.value()) {
-                break;
-            }
-            if (name == "." || name == "..") {
-                continue;
-            }
-            // 名字只活到下一次 next()：当场拷进向量。
-            children.push_back(std::make_pair(std::string(name.data(), name.size()), hint));
-        }
-    }   // 关闭枚举句柄后再删子项。
-
+    child_list children;
+    const result<void> listed = list_children(target, children);
+    if (listed.is_err()) {
+        return listed;
+    }
     for (std::size_t i = 0; i != children.size(); ++i) {
-        const std::string& name = children[i].first;
-        detail::entry_kind hint = children[i].second;
-        const std::string child = join_native(target, name);
-        if (hint == detail::entry_kind::directory) {
-            const result<void> status = remove_tree(child, count);
-            if (status.is_err()) {
-                return status;
-            }
-            continue;
-        }
-        if (hint == detail::entry_kind::unknown) {
-            // 原生枚举给不出类型（POSIX 的 DT_UNKNOWN）：查过才敢下潜。
-            const result<detail::entry_kind> child_kind =
-                detail::query(child, detail::follow_links::no);
-            if (child_kind.is_err()) {
-                return std::move(child_kind).error();
-            }
-            if (child_kind.value() == detail::entry_kind::missing) {
-                continue;   // 并发里已经没了
-            }
-            if (child_kind.value() == detail::entry_kind::directory) {
-                const result<void> status = remove_tree(child, count);
-                if (status.is_err()) {
-                    return status;
-                }
-                continue;
-            }
-        }
-        // hint 是 link / regular_file / other：删条目自己，链接绝不跟进。
-        const result<void> status = remove_leaf(child, count);
+        const result<void> status =
+            remove_child(join_native(target, children[i].first), children[i].second, count);
         if (status.is_err()) {
             return status;
         }
     }
 
-    // 子项都清了，删根目录；中途又冒出东西（already_exists）就如实报，不硬来。
+    // 子项都清了，删目录本身；中途又冒出东西（already_exists）就如实报，不硬来。
     const result<void> removed = detail::remove_empty_directory(target);
     if (removed.is_err()) {
-        return std::move(removed).error();
+        return removed;
     }
     ++count;
     return result<void>();
