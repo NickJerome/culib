@@ -78,7 +78,7 @@ TEST(runtime, runs_coroutines_on_worker_threads) {
 
 TEST(runtime, runs_coroutines_on_several_workers) {
     // culib_test 在 main 里把 WAVVIX_MAXPROCS 设成 4：占着线程的协程会分到几根工作线程上并行跑。
-    // 上限不在这里查：机器忙的时候，工作线程被系统挂起两个周期也会被当成卡住、交接一次，
+    // 上限不在这里查：机器忙的时候，工作线程被系统挂起 10 毫秒以上也会被当成卡住、交接一次，
     // 跑过协程的线程就会多出来。同一时刻只有名额那么多根在跑，由 runtime_order_test 的交接测试查。
     std::mutex guard;
     std::set<std::thread::id> threads;

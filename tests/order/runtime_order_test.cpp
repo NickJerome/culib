@@ -292,9 +292,32 @@ TEST(runtime_order, a_timer_fires_while_the_only_worker_is_stuck) {
     EXPECT(woke_while_stuck, ==, true);
 }
 
+TEST(runtime_order, a_worker_busy_for_a_few_milliseconds_keeps_its_place) {
+    // 停住不到 10 毫秒不算卡住：排在后面的协程等它跑完，不交接名额。机器忙的时候这根线程可能被系统
+    // 挂起得更久、交接一次，所以试几轮，有一轮没交接就行。阈值要是太低，每一轮都会交接。
+    bool kept = false;
+    for (int attempt = 0; attempt < 10 && !kept; ++attempt) {
+        std::atomic<bool> ran(false);
+        bool ran_while_busy = true;
+        in_coroutine([&] {
+            wavvix::wait_group children;
+            children.go([&] { ran.store(true); });   // 排在本线程上，交接了才会在别的线程上先跑
+            const wavvix::stopwatch busy;
+            while (busy.elapsed() < ms(4)) {
+                // 故意不让出
+            }
+            ran_while_busy = ran.load();
+            children.wait();
+        });
+        kept = !ran_while_busy;
+    }
+
+    EXPECT(kept, ==, true);
+}
+
 TEST(runtime_order, goes_back_to_one_coroutine_at_a_time_after_a_hand_off) {
     // 交接以后多了一根线程，但卡住的那根跑完手上的协程就去当备用，同一时刻跑协程的又只剩一根。
-    // 机器忙的时候，跑协程的线程被系统挂起两个监控周期也会被当成卡住、交接一次，那一轮里会看到
+    // 机器忙的时候，跑协程的线程被系统挂起 10 毫秒以上也会被当成卡住、交接一次，那一轮里会看到
     // 两根同时在跑；所以试几轮，有一轮只看到一根就行。卡住的那根要是一直不交还名额，每一轮都是两根。
     std::atomic<bool> ran(false);
     in_coroutine([&] {

@@ -16,6 +16,7 @@
 
 #include "coroutine_detail.h"
 #include "park.h"
+#include "precise_sleep.h"
 #include "scheduler_io.h"
 #include "timer_heap.h"
 
@@ -740,15 +741,22 @@ bool timer_due(runtime_state& state) {
     return next != no_deadline && clock_type::now().time_since_epoch().count() >= next;
 }
 
-// 监控线程。有工作线程忙着的时候隔 1 毫秒看一次（Windows 默认的定时器精度约 15.6 毫秒）：
-// 一根有名额的工作线程连着两次都停在同一根协程里，又没有闲着的工作线程、而还有协程排着
-// 或者定时器到点了，就把它的名额交出去。卡在阻塞调用里和算个不停一样对待：卡住的那根接着
-// 跑完手上那根协程，之后去当备用线程（worker_loop）。没有闲着的工作线程时，完成的 I/O 也没人收，
-// 所以先替它们收一次，叫醒的协程排进全局队列。定时器不替它们叫：交给拿到名额的线程按时限的先后叫，
-// 次序才对。全都闲着时睡到有谁忙起来（leave_idle_locked）。
+// 一根工作线程停在同一根协程里超过这么久，就算卡住了。太短会把「被系统挂起了一会儿」也当成卡住，
+// 机器忙的时候那常有几毫秒；Go 给一根 goroutine 的时间片也是 10 毫秒。
+const std::chrono::milliseconds stall_limit(10);
+
+// 监控线程隔多久看一次。从卡住到交接是 stall_limit 再加至多两个间隔。
+const std::chrono::milliseconds monitor_interval(2);
+
+// 监控线程。有工作线程忙着的时候每隔 monitor_interval 看一次：一根有名额的工作线程停在同一根协程里
+// 超过 stall_limit，又没有闲着的工作线程、而还有协程排着或者定时器到点了，就把它的名额交出去。
+// 卡在阻塞调用里和算个不停一样对待：卡住的那根接着跑完手上那根协程，之后去当备用线程（worker_loop）。
+// 没有闲着的工作线程时，完成的 I/O 也没人收，所以先替它们收一次，叫醒的协程排进全局队列。
+// 定时器不替它们叫：交给拿到名额的线程按时限的先后叫，次序才对。全都闲着时睡到有谁忙起来
+// （leave_idle_locked）。
 void monitor_main(runtime_state* state) noexcept {
     unsigned seen[worker_limit] = {};
-    unsigned stalled[worker_limit] = {};
+    instant since[worker_limit];   // 第一次看到 seen 里那个值的时刻
     std::unique_lock<std::mutex> held(state->mutex);
     for (;;) {
         if (state->idle.load() == static_cast<int>(state->slots)) {
@@ -758,27 +766,31 @@ void monitor_main(runtime_state* state) noexcept {
             }
             continue;
         }
-        state->monitor_woken.wait_for(held, std::chrono::milliseconds(1));
+        held.unlock();
+        sleep_precisely(monitor_interval);
         if (state->idle.load() == 0) {
-            held.unlock();
             poll_now(*state);
-            held.lock();
         }
+        held.lock();
 
+        const instant now = clock_type::now();
         const unsigned count = state->count.load();
         for (unsigned i = 0; i < count; ++i) {
             vcpu& worker = *state->workers[i];
             const unsigned ticks = worker.ticks.load(std::memory_order_relaxed);
             if (!worker.has_slot.load() || worker.current.load(std::memory_order_relaxed) == 0 || ticks != seen[i]) {
                 seen[i] = ticks;
-                stalled[i] = 0;
+                since[i] = now;
                 continue;
             }
-            if (++stalled[i] < 2 || state->idle.load() != 0 || !(queued_locked(*state) || timer_due(*state))) {
+            if (now - since[i] < stall_limit || state->idle.load() != 0) {
+                continue;
+            }
+            if (!queued_locked(*state) && !timer_due(*state)) {
                 continue;
             }
             hand_off_locked(*state, worker);
-            stalled[i] = 0;
+            since[i] = now;
         }
     }
 }
