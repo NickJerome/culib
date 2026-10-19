@@ -243,3 +243,85 @@ TEST(runtime_order, wait_inside_a_coroutine_suspends_only_that_coroutine) {
     EXPECT(seen_after_wait, ==, true);
     EXPECT(spins > 10, ==, true);   // wait 期间工作线程照常跑别的协程
 }
+
+// ---- 卡住的工作线程 --------------------------------------------------------------------
+//
+// 这个程序只有一个名额：一根协程把它所在的线程卡住（阻塞线程，不是挂起协程），监控线程把名额
+// 交给另一根线程，排着的协程照样跑。
+
+namespace {
+
+void block_thread_until(const std::atomic<bool>& done) {
+    const wavvix::stopwatch watch;
+    while (!done.load() && watch.elapsed() < std::chrono::seconds(5)) {
+        std::this_thread::sleep_for(ms(1));
+    }
+}
+
+}  // namespace
+
+TEST(runtime_order, a_worker_stuck_in_a_blocking_call_hands_its_place_over) {
+    std::atomic<bool> ran(false);
+    bool ran_while_stuck = false;
+    in_coroutine([&] {
+        wavvix::wait_group children;
+        children.go([&] { ran.store(true); });   // 排在本线程上，这根协程不让出它就没人跑
+        block_thread_until(ran);
+        ran_while_stuck = ran.load();
+        children.wait();
+    });
+
+    EXPECT(ran_while_stuck, ==, true);
+}
+
+TEST(runtime_order, a_timer_fires_while_the_only_worker_is_stuck) {
+    std::atomic<bool> woke(false);
+    bool woke_while_stuck = false;
+    in_coroutine([&] {
+        wavvix::wait_group children;
+        children.go([&] {
+            wavvix::sleep_for(ms(5));
+            woke.store(true);
+        });
+        wavvix::yield();   // 让它先睡下
+        block_thread_until(woke);
+        woke_while_stuck = woke.load();
+        children.wait();
+    });
+
+    EXPECT(woke_while_stuck, ==, true);
+}
+
+TEST(runtime_order, still_runs_one_coroutine_at_a_time_after_a_hand_off) {
+    // 交接以后多了一根线程，但同一时刻能跑协程的仍然只有一根：卡住的那根跑完手上的协程就去当备用。
+    std::atomic<bool> ran(false);
+    in_coroutine([&] {
+        wavvix::wait_group children;
+        children.go([&] { ran.store(true); });
+        block_thread_until(ran);
+        children.wait();
+    });
+
+    std::atomic<int> inside(0);
+    std::atomic<int> peak(0);
+    wavvix::wait_group group;
+    for (int i = 0; i < 8; ++i) {
+        group.go([&] {
+            for (int round = 0; round < 50; ++round) {
+                const int now = inside.fetch_add(1) + 1;
+                int seen = peak.load();
+                while (now > seen && !peak.compare_exchange_weak(seen, now)) {
+                }
+                const wavvix::stopwatch busy;
+                while (busy.elapsed() < std::chrono::microseconds(20)) {
+                }
+                inside.fetch_sub(1);
+                wavvix::yield();
+            }
+        });
+    }
+    group.wait();
+
+    EXPECT(ran.load(), ==, true);
+    EXPECT(peak.load(), ==, 1);
+}

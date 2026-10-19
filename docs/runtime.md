@@ -19,7 +19,7 @@ int main() {
 
 ## 运行时
 
-运行时在第一次 `go()` 时启动，工作线程数取 [`os::cpu_count()`](../include/culib/os.h)：Linux 上按 CPU 亲和性和 cgroup 的 CPU 配额算，容器里不会报成宿主机的核数。环境变量 `WAVVIX_MAXPROCS` 可以改成 1 到 256 之间的任何数；给了别的值，第一次 `go()` 时打印诊断后终止。代码里没有设置线程数的接口。
+运行时在第一次 `go()` 时启动，同时跑协程的工作线程数取 [`os::cpu_count()`](../include/culib/os.h)：Linux 上按 CPU 亲和性和 cgroup 的 CPU 配额算，容器里不会报成宿主机的核数。环境变量 `WAVVIX_MAXPROCS` 可以改成 1 到 256 之间的任何数；给了别的值，第一次 `go()` 时打印诊断后终止。代码里没有设置线程数的接口。工作线程卡住时运行时会多起线程顶上（见[卡住的工作线程](#卡住的工作线程)），但同一时刻跑协程的仍然只有这么多根。
 
 运行时启动以后一直在，不析构，工作线程也不 join。**`main` 返回时进程直接退出，还没结束的协程不再运行**，和 Go 一样；要等就用 `wait_group`。退出时库自己的状态（运行时、日志输出表、flag 登记表）不析构，协程碰到它们是安全的；使用方自己的全局对象照常析构，还在跑的协程碰到它们是使用方的问题。
 
@@ -52,7 +52,11 @@ int main() {
 - **catch 块里不能挂起**，否则打印诊断后终止。C++ 运行时按线程记着「正在处理哪个异常」：挂起以后同一根线程上的别的协程会改掉它，换了线程继续时 `throw;` 抛出的也不是原来那个，而且这些都不报错。把等待挪到 catch 块外面。异常展开的途中（被展开调用的析构函数里）同样不要挂起，这一条查不出来：用来判断的 `std::uncaught_exception()` 在 GCC 4.8 上接住 `std::rethrow_exception` 抛出的异常以后一直为真（libstdc++ PR 62258）。
 - 协程不会被抢占，只在挂起点切换。
 
-协程里调用真正阻塞线程的函数（同步文件读写、`std::this_thread::sleep_for`、长时间持有 `std::mutex`、算个不停的循环）会占住所在的工作线程，排在这根线程上的其他协程要等别的工作线程来拿。阻塞调用交给 `call_blocking`，长循环里适时 `yield()`。
+### 卡住的工作线程
+
+协程里调用真正阻塞线程的函数（同步文件读写、`std::this_thread::sleep_for`、长时间持有 `std::mutex`、算个不停的循环）会占住所在的工作线程。监控线程每 1 毫秒（Windows 上受定时器精度限制，约 15.6 毫秒）看一次：一根工作线程连着两次都停在同一根协程里，没有闲着的工作线程，又有协程排着没人跑，就把它跑协程的名额交给另一根线程——有备用的用备用的，没有就新起一根，线程总数不超过 256。卡住的那根跑完手上那根协程以后去当备用线程，所以同一时刻跑协程的线程仍然是 `WAVVIX_MAXPROCS` 根，卡在阻塞调用里的不算。到点的定时器和完成的 I/O 在这期间也由监控线程收。
+
+阻塞调用和算个不停一样对待：C++ 里没有办法知道一根线程是在等系统调用还是在算。所以一直算、从不让出的协程多了，线程也会跟着多起来，长循环里仍要适时 `yield()`。没法协作式让出的调用也可以交给 `call_blocking`，那样一开始就不占工作线程。
 
 ### 内存
 
@@ -125,7 +129,7 @@ PhotonLibOS 用 `photon::thread_create` 起协程、`thread_join` 等它，`phot
 
 ## 测试怎么分
 
-`culib_test` 在 `main` 里把 `WAVVIX_MAXPROCS` 设成 4，不随机器的核数变。断言执行次序的测试在 [`runtime_order_test`](../tests/order/) 里，那个程序只开一根工作线程：所有协程排在同一根线程上，只在挂起和让出时切换，次序是确定的。
+`culib_test` 在 `main` 里把 `WAVVIX_MAXPROCS` 设成 4，不随机器的核数变。断言执行次序的测试在 [`runtime_order_test`](../tests/order/) 里，那个程序只有一个名额：同一时刻只有一根线程跑协程，只在挂起和让出时切换，次序是确定的。卡住工作线程、看名额交接的几条也在那里。
 
 ## 验证
 
@@ -139,6 +143,8 @@ PhotonLibOS 用 `photon::thread_create` 起协程、`thread_join` 等它，`phot
 | Linux GCC 11.4、Clang 14（WSL），`-std=c++11` 全警告，另加 `-fno-exceptions -fno-rtti` | 运行时、网络和改过的测试只做了 `-fsyntax-only`：本机 WSL 的内存不够完整构建 |
 | macOS 的 kqueue 后端 | 照 SDK 原型手抄的头文件桩 `-fsyntax-only` |
 
-Linux 和 macOS 上的构建和运行、ASan + UBSan、无异常构建都只有 CI。第一次推上去（`f5948fb`）有两条测试在 Linux release 上失败，原因就是上面说的线程号被编译器合并：测试在挂起前后各取一次 `std::this_thread::get_id()`，两次被并成一次。测试改成经 volatile 函数指针取线程号。
+Linux 和 macOS 上的构建和运行、ASan + UBSan、无异常构建都只有 CI。第一次推上去（`f5948fb`）有两条测试在 Linux release 上失败，原因就是上面说的线程号被编译器合并：测试在挂起前后各取一次 `std::this_thread::get_id()`，两次被并成一次。测试改成经 volatile 函数指针取线程号。修正以后 [`3ed99d6` 的 CI](https://github.com/NickJerome/culib/actions/runs/39182216745) 24/24 通过：Linux 378 项、macOS 375 项、Windows 与 MinGW 371 项，GCC 4.8 378 项，误用诊断 POSIX 11 条、Windows 10 条；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
 
 ThreadSanitizer 不在 CI 里，这次也没有跑。以前跑的时候它对两条测试报过 `std::condition_variable::wait_for` 的竞争：glibc 2.30 起带时限的等待走 `pthread_cond_clockwait`，GCC 11 的 libtsan 没有拦截它，看不到等待期间放开了锁。那两条测试用的是测试自己的 `std::mutex`，报告不涉及运行时。
+
+2026-10-18 加上监控线程以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 `culib_test` 371 项、`runtime_order_test` 43 项（多了交接名额的 3 条）、误用诊断 10 条全部通过；release 下两个程序各连跑 15 遍全部通过；协程相关的 6 个示例逐个运行正常。Windows 上从卡住到交接约 55–60 毫秒：定时器精度 15.6 毫秒，要连着两次看到停住。

@@ -1,8 +1,10 @@
-// 协程运行时：工作线程与就绪队列、挂起与唤醒、定时器、事件引擎、阻塞调用。
+// 协程运行时：工作线程与就绪队列、挂起与唤醒、定时器、事件引擎、监控线程、阻塞调用。
 //
 // 协程可以在任何一根工作线程上继续：被叫醒的协程排进叫醒它的那根工作线程的队列
 // （叫醒它的不是工作线程，就排进全局队列），闲着的工作线程去别的队列里拿。
 // 事件引擎和定时器整个进程各一份；闲下来的工作线程里有一根等在引擎里，同时等 I/O 和最早的时限。
+// 同一时刻最多 WAVVIX_MAXPROCS 根工作线程跑协程；一根卡住了（阻塞调用、算个不停），
+// 监控线程把它的名额交给另一根线程。
 //
 // 运行时第一次用到时启动，之后一直在：main 返回时进程直接退出，工作线程不 join，
 // 运行时的状态也不析构——那时可能还有协程在跑，它们碰到的库内状态必须还在。
@@ -122,24 +124,30 @@ struct background_threads {
 
 const std::size_t background_limit = 64;
 
-// 工作线程数的上限，WAVVIX_MAXPROCS 也不能超过它。
+// 工作线程总数的上限，含备用的。WAVVIX_MAXPROCS 也不能超过它。
 const unsigned worker_limit = 256;
 
 struct vcpu {
-    vcpu() : current(0), parking(false), ticks(0), searching(false), notified(false), next_sleeper(0) {}
+    vcpu()
+        : current(0), ticks(0), has_slot(false), parking(false), searching(false), notified(false), next_sleeper(0),
+          next_spare(0) {}
 
     std::mutex mutex;              // 护着 queue：这根线程自己和来拿协程的线程都要拿它
     run_queue queue;
 
-    // 只有这根线程自己读写
-    coroutine_control* current;    // 正在跑的协程
-    bool parking;                  // 刚切出来的协程是去挂起，不是让出
-    unsigned ticks;                // 调度过几次
+    // 这根线程自己写，监控线程读
+    std::atomic<coroutine_control*> current;   // 正在跑的协程
+    std::atomic<unsigned> ticks;                // 调度过几次
+    // 能不能跑协程。同一时刻有 WAVVIX_MAXPROCS 根有这个名额，由监控线程在它们之间移交
+    std::atomic<bool> has_slot;
+
+    bool parking;                  // 刚切出来的协程是去挂起，不是让出；只有这根线程自己读写
 
     // 在 runtime_state::mutex 里读写；睡着的时候由叫醒它的线程改
     bool searching;                // 被叫醒来找活，还没找到
     bool notified;
     vcpu* next_sleeper;
+    vcpu* next_spare;
     std::condition_variable woken;
 };
 
@@ -149,22 +157,26 @@ const park_ticks no_deadline = (std::numeric_limits<park_ticks>::max)();
 
 struct runtime_state {
     runtime_state()
-        : count(0), engine(0), sleepers(0), polling(false), poll_notified(false), queued(0), idle(0),
-          searching(0), earliest(no_deadline) {}
+        : count(0), slots(0), engine(0), sleepers(0), spares(0), polling(false), poll_notified(false),
+          monitor_sleeping(false), queued(0), idle(0), searching(0), earliest(no_deadline) {}
 
     vcpu* workers[worker_limit];
     std::atomic<unsigned> count;   // workers 里建好的根数
+    unsigned slots;                // 名额数，就是 WAVVIX_MAXPROCS
     io_engine* engine;             // 整个进程一个
 
     std::mutex mutex;              // 护着下面这一段
     run_queue global;              // 普通线程里起的、叫醒的协程
-    vcpu* sleepers;                // 睡在各自条件变量上的工作线程
+    vcpu* sleepers;                // 有名额、睡在各自条件变量上的工作线程
+    vcpu* spares;                  // 名额交出去了的备用线程
     bool polling;                  // 有一根闲着的工作线程等在引擎里
     bool poll_notified;            // 已经叫过它了
     park_instant poll_until;       // 它自己会在这一刻醒来
+    bool monitor_sleeping;         // 监控线程在等有谁忙起来
+    std::condition_variable monitor_woken;
     // 也只在 mutex 里改，往队列里放协程的线程不加锁先看一眼
     std::atomic<std::size_t> queued;   // global 里有几根
-    std::atomic<int> idle;             // 闲着的工作线程，含等在引擎里的那根
+    std::atomic<int> idle;             // 闲着的有名额的工作线程，含等在引擎里的那根
     std::atomic<int> searching;        // 被叫醒来找活、还没找到的
 
     std::mutex poll_mutex;         // 同一时刻只有一根线程在 io_engine_wait 里
@@ -255,6 +267,15 @@ void check_exception_state() {
 
 // ---- 就绪队列与闲着的工作线程 ----------------------------------------------------------
 
+// 闲着的工作线程少了一根。监控线程在全都闲着的时候睡，有一根忙起来就叫醒它。调用方拿着 state.mutex。
+void leave_idle_locked(runtime_state& state) {
+    state.idle.fetch_sub(1);
+    if (state.monitor_sleeping) {
+        state.monitor_sleeping = false;
+        state.monitor_woken.notify_one();
+    }
+}
+
 // 叫醒一根闲着的工作线程来找活：有闲着的、又没有正在找活的才叫——正在找活的那根睡下之前
 // 会把所有队列再看一遍（idle）。先叫睡在条件变量上的，都没有再叫等在引擎里的那根。
 // 被叫醒的记成找活的。调用方拿着 state.mutex。
@@ -266,7 +287,7 @@ void wake_one_locked(runtime_state& state) {
         state.sleepers = sleeper->next_sleeper;
         sleeper->notified = true;
         sleeper->searching = true;
-        state.idle.fetch_sub(1);
+        leave_idle_locked(state);
         state.searching.fetch_add(1);
         sleeper->woken.notify_one();
         return;
@@ -337,7 +358,7 @@ coroutine_control* take_global(runtime_state& state) {
 // 从别的工作线程的队首拿一半，至少一根。从哪根开始看随调度次数轮转，免得都去抢同一根。
 coroutine_control* steal(runtime_state& state, vcpu& self) {
     const unsigned count = state.count.load(std::memory_order_acquire);
-    const unsigned start = self.ticks % count;
+    const unsigned start = self.ticks.load(std::memory_order_relaxed) % count;
     for (unsigned i = 0; i < count; ++i) {
         vcpu& victim = *state.workers[(start + i) % count];
         if (&victim == &self) {
@@ -362,13 +383,11 @@ coroutine_control* steal(runtime_state& state, vcpu& self) {
     return 0;
 }
 
-// 全局队列和每根工作线程的队列里有没有协程。每把锁都拿一次，见 wake_idle。
-bool has_work(runtime_state& state) {
-    {
-        std::lock_guard<std::mutex> held(state.mutex);
-        if (state.global.count != 0) {
-            return true;
-        }
+// 全局队列和每根工作线程（含备用的）的队列里有没有协程。每把锁都拿一次，见 wake_idle。
+// 调用方拿着 state.mutex。
+bool queued_locked(runtime_state& state) {
+    if (state.global.count != 0) {
+        return true;
     }
     const unsigned count = state.count.load(std::memory_order_acquire);
     for (unsigned i = 0; i < count; ++i) {
@@ -379,6 +398,11 @@ bool has_work(runtime_state& state) {
         }
     }
     return false;
+}
+
+bool has_work(runtime_state& state) {
+    std::lock_guard<std::mutex> held(state.mutex);
+    return queued_locked(state);
 }
 
 // 找活的那根找到了。它要是最后一根，可能还有别的活没人看见，再叫醒一根（有闲着的话）。
@@ -517,7 +541,7 @@ void poll_now(runtime_state& state) {
 // 引擎里，不然 I/O 和定时器要等到有谁再闲下来才有人管。调用方拿着 state.mutex。
 void stop_polling_locked(runtime_state& state, vcpu& self) {
     state.polling = false;
-    state.idle.fetch_sub(1);
+    leave_idle_locked(state);
     if (state.poll_notified) {
         state.poll_notified = false;
         self.searching = true;   // 叫醒它的那一方已经记过数了
@@ -561,6 +585,9 @@ void idle(runtime_state& state, vcpu& self) {
     bool poller = false;
     {
         std::lock_guard<std::mutex> held(state.mutex);
+        if (!self.has_slot.load()) {
+            return;   // 名额刚被交出去，回去当备用线程
+        }
         if (self.searching) {
             self.searching = false;
             state.searching.fetch_sub(1);
@@ -592,7 +619,7 @@ void idle(runtime_state& state, vcpu& self) {
             link = &(*link)->next_sleeper;
         }
         *link = self.next_sleeper;
-        state.idle.fetch_sub(1);
+        leave_idle_locked(state);
         return;
     }
 
@@ -611,7 +638,7 @@ void idle(runtime_state& state, vcpu& self) {
 coroutine_control* find_work(runtime_state& state, vcpu& self) {
     fire_timers(state);
     // 一直有活时也每 61 次看一眼引擎和全局队列：本地队列不空的话，前者没人收，后者没人取（Go 也用 61）。
-    if (++self.ticks % 61 == 0) {
+    if ((self.ticks.fetch_add(1, std::memory_order_relaxed) + 1) % 61 == 0) {
         poll_now(state);
         if (coroutine_control* const body = take_global(state)) {
             return body;
@@ -627,10 +654,10 @@ coroutine_control* find_work(runtime_state& state, vcpu& self) {
 }
 
 void run(runtime_state& state, vcpu& self, coroutine_control* body) {
-    self.current = body;   // park_prepare 要知道挂起的是哪根
+    self.current.store(body, std::memory_order_relaxed);   // park_prepare 要知道挂起的是哪根
     self.parking = false;
     const bool alive = coroutine_resume(body);
-    self.current = 0;
+    self.current.store(0, std::memory_order_relaxed);
 
     if (!alive) {
         coroutine_destroy(body);
@@ -647,8 +674,25 @@ void run(runtime_state& state, vcpu& self, coroutine_control* body) {
     make_ready(state, body);
 }
 
+// 名额交出去了，手上那根协程也跑完了：排进备用名单，等监控线程把名额交回来。
+void become_spare(runtime_state& state, vcpu& self) {
+    std::unique_lock<std::mutex> held(state.mutex);
+    if (self.has_slot.load()) {
+        return;
+    }
+    self.next_spare = state.spares;
+    state.spares = &self;
+    while (!self.has_slot.load()) {
+        self.woken.wait(held);
+    }
+}
+
 void worker_loop(runtime_state& state, vcpu& self) {
     for (;;) {
+        if (!self.has_slot.load()) {
+            become_spare(state, self);
+            continue;
+        }
         coroutine_control* const body = find_work(state, self);
         if (!body) {
             idle(state, self);
@@ -689,6 +733,8 @@ void background_main(background_threads* pool) noexcept {
     }
 }
 
+// ---- 起线程 ----------------------------------------------------------------------
+
 // 线程起不来是资源耗尽，和内存不够一样打印诊断后终止。线程不 join：进程退出时随进程结束。
 template <typename F>
 void start_thread(F entry, const char* failure) {
@@ -704,12 +750,87 @@ void start_thread(F entry, const char* failure) {
 #endif
 }
 
-// ---- 运行时的启动 ------------------------------------------------------------------
-
 void worker_main(runtime_state* state, vcpu* self) noexcept {
     current_vcpu = self;
     worker_loop(*state, *self);
 }
+
+void start_worker(runtime_state& state, vcpu& worker) {
+    runtime_state* const shared = &state;
+    vcpu* const self = &worker;
+    start_thread([shared, self] { worker_main(shared, self); }, "wavvix: 起不来工作线程");
+}
+
+// ---- 监控线程 ------------------------------------------------------------------------
+
+// 把卡住的那根的名额交给一根备用线程，没有备用的就新起一根，总数到了 worker_limit 就不交。
+// 调用方拿着 state.mutex。
+void hand_off_locked(runtime_state& state, vcpu& stuck) {
+    vcpu* spare = state.spares;
+    if (spare) {
+        state.spares = spare->next_spare;
+    } else {
+        const unsigned count = state.count.load();
+        if (count == worker_limit) {
+            return;   // 只能等它自己回来
+        }
+        spare = new (std::nothrow) vcpu();
+        if (!spare) {
+            return;   // 下一次再试
+        }
+        state.workers[count] = spare;
+        state.count.store(count + 1, std::memory_order_release);
+        start_worker(state, *spare);
+    }
+    stuck.has_slot.store(false);
+    spare->has_slot.store(true);
+    spare->woken.notify_one();
+}
+
+// 监控线程。有工作线程忙着的时候隔 1 毫秒看一次（Windows 默认的定时器精度约 15.6 毫秒）：
+// 一根有名额的工作线程连着两次都停在同一根协程里，又没有闲着的工作线程、而还有协程排着，
+// 就把它的名额交出去。卡在阻塞调用里和算个不停一样对待：卡住的那根接着跑完手上那根协程，
+// 之后去当备用线程（worker_loop）。没有闲着的工作线程时，到点的定时器和完成的 I/O 也没人收，
+// 所以先替它们收一次，叫醒的协程排进全局队列。全都闲着时睡到有谁忙起来（leave_idle_locked）。
+void monitor_main(runtime_state* state) noexcept {
+    unsigned seen[worker_limit] = {};
+    unsigned stalled[worker_limit] = {};
+    std::unique_lock<std::mutex> held(state->mutex);
+    for (;;) {
+        if (state->idle.load() == static_cast<int>(state->slots)) {
+            state->monitor_sleeping = true;
+            while (state->monitor_sleeping) {
+                state->monitor_woken.wait(held);
+            }
+            continue;
+        }
+        state->monitor_woken.wait_for(held, std::chrono::milliseconds(1));
+        if (state->idle.load() == 0) {
+            held.unlock();
+            fire_timers(*state);
+            poll_now(*state);
+            held.lock();
+        }
+
+        const unsigned count = state->count.load();
+        for (unsigned i = 0; i < count; ++i) {
+            vcpu& worker = *state->workers[i];
+            const unsigned ticks = worker.ticks.load(std::memory_order_relaxed);
+            if (!worker.has_slot.load() || worker.current.load(std::memory_order_relaxed) == 0 || ticks != seen[i]) {
+                seen[i] = ticks;
+                stalled[i] = 0;
+                continue;
+            }
+            if (++stalled[i] < 2 || state->idle.load() != 0 || !queued_locked(*state)) {
+                continue;
+            }
+            hand_off_locked(*state, worker);
+            stalled[i] = 0;
+        }
+    }
+}
+
+// ---- 运行时的启动 ------------------------------------------------------------------
 
 // 工作线程的 vcpu 先全部建好再起线程：别的线程来拿协程时，count 以内的每一格都已经在了。
 runtime_state* start_runtime() {
@@ -727,14 +848,16 @@ runtime_state* start_runtime() {
         if (!worker) {
             die("wavvix: 内存不足，起不来工作线程");
         }
+        worker->has_slot.store(true, std::memory_order_relaxed);
         state->workers[i] = worker;
     }
+    state->slots = count;
     state->count.store(count, std::memory_order_release);
 
     for (unsigned i = 0; i < count; ++i) {
-        vcpu* const worker = state->workers[i];
-        start_thread([state, worker] { worker_main(state, worker); }, "wavvix: 起不来工作线程");
+        start_worker(*state, *state->workers[i]);
     }
+    start_thread([state] { monitor_main(state); }, "wavvix: 起不来监控线程");
     return state;
 }
 
@@ -788,7 +911,7 @@ void scheduler_submit(coroutine_control* body) {
 
 void park_prepare(park_token& token) noexcept {
     if (in_coroutine()) {
-        token.owner = this_worker()->current;
+        token.owner = this_worker()->current.load(std::memory_order_relaxed);
         token.parker = 0;
         return;
     }

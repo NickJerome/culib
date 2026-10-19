@@ -77,14 +77,15 @@ TEST(runtime, runs_coroutines_on_worker_threads) {
 }
 
 TEST(runtime, uses_the_worker_count_it_was_given) {
-    // culib_test 在 main 里把 WAVVIX_MAXPROCS 设成 4：同时占着线程的协程最多分到 4 根线程上。
+    // culib_test 在 main 里把 WAVVIX_MAXPROCS 设成 4：同时跑协程的最多 4 根线程。每根协程只占线程
+    // 200 微秒，不到监控线程把它当成卡住的时间，不会多出线程来。
     std::mutex guard;
     std::set<std::thread::id> threads;
     wavvix::wait_group group;
     for (int i = 0; i < 32; ++i) {
         group.go([&] {
             const wavvix::stopwatch busy;   // 占着工作线程，别的协程只能去别的线程
-            while (busy.elapsed() < ms(2)) {
+            while (busy.elapsed() < std::chrono::microseconds(200)) {
             }
             std::lock_guard<std::mutex> held(guard);
             threads.insert(std::this_thread::get_id());
