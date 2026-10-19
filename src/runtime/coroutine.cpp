@@ -1,4 +1,4 @@
-// coroutine 的平台无关部分：控制块、trampoline、ASan 注解。
+// coroutine 的平台无关部分：控制块、trampoline、ASan 与 TSan 的注解。
 // 换栈的汇编在 src/runtime/asm/ 下；栈向分配器要，见 src/mem/stack.cpp。
 
 #include <culib/detail/fiber.h>
@@ -24,6 +24,15 @@ extern "C" {
 void __sanitizer_start_switch_fiber(void** fake_stack_save, const void* bottom, std::size_t size);
 void __sanitizer_finish_switch_fiber(void* fake_stack_save, const void** bottom_old,
                                      std::size_t* size_old);
+}
+#endif
+
+#if WAVVIX_DETAIL_TSAN_FIBERS
+extern "C" {
+void* __tsan_get_current_fiber();
+void* __tsan_create_fiber(unsigned flags);
+void __tsan_destroy_fiber(void* fiber);
+void __tsan_switch_to_fiber(void* fiber, unsigned flags);
 }
 #endif
 
@@ -78,6 +87,25 @@ inline void asan_after_switch(coroutine_control* arrived, bool from_resumer = fa
 #endif
 }
 
+// TSan 不认识自己换栈：每根协程在 TSan 里有一个上下文，真正切栈之前告诉它切到哪一个。
+// 切换带着先后关系，和同一根线程上先后执行一致；协程换了线程，靠调度器自己的同步排先后。
+inline void tsan_switch_into(coroutine_control* entering) {
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    entering->tsan_resumer = __tsan_get_current_fiber();
+    __tsan_switch_to_fiber(entering->tsan_fiber, 0);
+#else
+    (void)entering;
+#endif
+}
+
+inline void tsan_switch_back(const coroutine_control* leaving) {
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    __tsan_switch_to_fiber(leaving->tsan_resumer, 0);
+#else
+    (void)leaving;
+#endif
+}
+
 [[noreturn]] void die(const char* what) {
     // 误用的诊断直接写 stderr：不分配内存、不依赖流
     std::fputs(what, stderr);
@@ -107,6 +135,7 @@ void trampoline(context_transfer from) {
     // 跑完了，切回去且**永不返回**。current 不用动：控制一落到 resume() 里
     // 那个 jump 的下一条指令，resume() 自己就会把它恢复成外层那根。
     asan_before_switch(self, 0);
+    tsan_switch_back(self);
     wavvix_jump_context(self->resumer, 0);
     die("wavvix::coroutine: 已结束的协程又被切进来了");
 }
@@ -175,6 +204,10 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
 #endif
     control->next_ready = 0;
     control->park_state.store(0, std::memory_order_relaxed);
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    control->tsan_fiber = __tsan_create_fiber(0);
+    control->tsan_resumer = 0;
+#endif
     return control;
 }
 
@@ -199,6 +232,9 @@ void coroutine_destroy(coroutine_control* control) noexcept {
     if (control->memory.base) {
         mem::detail::release_stack(control->memory);
     }
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    __tsan_destroy_fiber(control->tsan_fiber);
+#endif
     control->~coroutine_control();
     ::operator delete(control);
 }
@@ -221,6 +257,7 @@ bool coroutine_resume(coroutine_control* control) noexcept {
     control->started = true;
 
     asan_before_switch(leaving, control);
+    tsan_switch_into(control);
     const context_transfer back = wavvix_jump_context(control->context, control);
     asan_after_switch(leaving);
     current = leaving;
@@ -248,6 +285,7 @@ void coroutine_yield() noexcept {
     }
 
     asan_before_switch(self, 0);
+    tsan_switch_back(self);
     const context_transfer back = wavvix_jump_context(self->resumer, 0);
     // 被 resume 回来了。current 已经由 resume() 设成我们，不用自己动
     asan_after_switch(self, true);

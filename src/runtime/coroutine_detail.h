@@ -18,6 +18,17 @@
 #  endif
 #endif
 
+#define WAVVIX_DETAIL_TSAN_FIBERS 0
+#if defined(__SANITIZE_THREAD__)
+#  undef WAVVIX_DETAIL_TSAN_FIBERS
+#  define WAVVIX_DETAIL_TSAN_FIBERS 1
+#elif defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+#    undef WAVVIX_DETAIL_TSAN_FIBERS
+#    define WAVVIX_DETAIL_TSAN_FIBERS 1
+#  endif
+#endif
+
 namespace wavvix {
 namespace detail {
 
@@ -60,6 +71,10 @@ struct coroutine_control {
     void* fake_stack;
     const void* resumer_stack_bottom;
     std::size_t resumer_stack_size;
+#endif
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    void* tsan_fiber;     // 这根协程在 TSan 里的上下文
+    void* tsan_resumer;   // 切回去的那一侧
 #endif
     coroutine_control* next_ready;
     std::atomic<int> park_state;

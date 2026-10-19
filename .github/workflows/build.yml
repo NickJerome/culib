@@ -144,6 +144,24 @@ jobs:
               setarch "$(uname -m)" -R build/os_stop_tsan "$mode"
             done
           '
+      - name: run the runtime under ThreadSanitizer
+        shell: bash
+        timeout-minutes: 30
+        env:
+          TSAN_OPTIONS: halt_on_error=0:second_deadlock_stack=1
+          CULIB_CI_STRICT: '1'
+        # 协程换栈按 TSan 的 fiber 接口标注过（src/runtime/coroutine.cpp）。两个程序都跑完再判结果，
+        # 一次看全所有报告；有报告时 TSan 以 66 退出，CULIB_CI_STRICT 也会拦。
+        # setarch -R 关掉地址随机化：runner 的内核随机位数多，映射可能落到 TSan 留给影子内存的地址上，
+        # 和上一步一样。
+        run: |
+          xmake f -m debug --toolchain=gcc --cxxflags="-fsanitize=thread -fno-omit-frame-pointer" --ldflags="-fsanitize=thread" --ccache=n -y
+          bash .github/report-failure.sh xmake build -y culib_test runtime_order_test
+          status=0
+          for program in culib_test runtime_order_test; do
+            bash .github/report-failure.sh setarch "$(uname -m)" -R "build/linux/x86_64/debug/$program" || status=1
+          done
+          exit $status
 
   build:
     name: ${{ matrix.target.name }} / ${{ matrix.mode }}
