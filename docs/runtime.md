@@ -214,3 +214,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`ae41c69` 的 CI](https://github.com/NickJerome/culib/actions/runs/39222753801) 24/24 通过：项数和 `9cad3fd` 那次相同，误用诊断 Linux / macOS 的 debug 构建 12 条、release 构建 11 条，Windows 11 条，无异常构建 10 条。栈溢出那条的结局印在 OK 行里：Windows 的两个作业都是 `0xC00000FD`，Linux 是信号 11（SIGSEGV），macOS 是信号 10（SIGBUS）；`0xC0000005` 这次没有再出现。报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
 
 2026-10-19 Windows 上进程开着 CET 影子栈时运行时改成报错退出以后，本机（i7-12700，Windows 10 22H2，支持 CET）重新验证过：Windows MSVC 2022 x64 release / debug 的 14 个测试目标全部通过，多出的一个是 `cet_test`：它用 `/CETCOMPAT` 链接，子进程以那句诊断加 abort 结束；去掉检查时子进程以 `0xC0000409` 终止，测试失败，连跑三遍都一样。同时改了测试用的临时文件名：`fs`、`config`、`log` 的测试用的目录、文件和命名管道名带上进程号。改之前同时跑两个 `culib_test`，三轮都有 `fs` 的测试失败；改之后三轮都是两边 370 项全部通过。MSYS2 的 MinGW-w64 GCC 15.2 跑 `tests/mingw_windows.sh` 全部通过；改过的 POSIX 侧文件在 WSL2 上用 GCC 11.4 和 Clang 14 做过 `-fsyntax-only`。
+
+[`5b82477` 的 CI](https://github.com/NickJerome/culib/actions/runs/39226069857) 24/24 通过，项数不变。`cet_test` 在 MSVC 的 release、debug 两个作业里都真的跑了：runner 的 CPU 和系统支持 CET，用 `/CETCOMPAT` 链接的子进程以那句诊断终止，打印 PASS，没有 SKIP。报告里的诊断只有 10 个非 Windows 作业里同一条 `No cached files found`：构建缓存的键里有 `tests/xmake.lua` 的哈希，这次改了它，缓存第一次没命中。
