@@ -87,25 +87,6 @@ inline void asan_after_switch(coroutine_control* arrived, bool from_resumer = fa
 #endif
 }
 
-// TSan 不认识自己换栈：每根协程在 TSan 里有一个上下文，真正切栈之前告诉它切到哪一个。
-// 切换带着先后关系，和同一根线程上先后执行一致；协程换了线程，靠调度器自己的同步排先后。
-inline void tsan_switch_into(coroutine_control* entering) {
-#if WAVVIX_DETAIL_TSAN_FIBERS
-    entering->tsan_resumer = __tsan_get_current_fiber();
-    __tsan_switch_to_fiber(entering->tsan_fiber, 0);
-#else
-    (void)entering;
-#endif
-}
-
-inline void tsan_switch_back(const coroutine_control* leaving) {
-#if WAVVIX_DETAIL_TSAN_FIBERS
-    __tsan_switch_to_fiber(leaving->tsan_resumer, 0);
-#else
-    (void)leaving;
-#endif
-}
-
 [[noreturn]] void die(const char* what) {
     // 误用的诊断直接写 stderr：不分配内存、不依赖流
     std::fputs(what, stderr);
@@ -135,7 +116,9 @@ void trampoline(context_transfer from) {
     // 跑完了，切回去且**永不返回**。current 不用动：控制一落到 resume() 里
     // 那个 jump 的下一条指令，resume() 自己就会把它恢复成外层那根。
     asan_before_switch(self, 0);
-    tsan_switch_back(self);
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    __tsan_switch_to_fiber(self->tsan_resumer, 0);
+#endif
     wavvix_jump_context(self->resumer, 0);
     die("wavvix::coroutine: 已结束的协程又被切进来了");
 }
@@ -257,7 +240,14 @@ bool coroutine_resume(coroutine_control* control) noexcept {
     control->started = true;
 
     asan_before_switch(leaving, control);
-    tsan_switch_into(control);
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    // TSan 不认识自己换栈：每根协程在 TSan 里有一个上下文，切栈之前告诉它切到哪一个。切换带着
+    // 先后关系，和同一根线程上先后执行一致；协程换了线程，靠调度器自己的同步排先后。
+    // 这几行必须写在真正跳转的函数里：TSan 按函数的进出维护每个上下文的调用栈，放进一个不内联的
+    // 小函数的话，它进来时记在这一侧、返回时记到了那一侧，那一侧的调用栈就被弹空。
+    control->tsan_resumer = __tsan_get_current_fiber();
+    __tsan_switch_to_fiber(control->tsan_fiber, 0);
+#endif
     const context_transfer back = wavvix_jump_context(control->context, control);
     asan_after_switch(leaving);
     current = leaving;
@@ -285,7 +275,9 @@ void coroutine_yield() noexcept {
     }
 
     asan_before_switch(self, 0);
-    tsan_switch_back(self);
+#if WAVVIX_DETAIL_TSAN_FIBERS
+    __tsan_switch_to_fiber(self->tsan_resumer, 0);   // 同 coroutine_resume：不能放进函数里
+#endif
     const context_transfer back = wavvix_jump_context(self->resumer, 0);
     // 被 resume 回来了。current 已经由 resume() 设成我们，不用自己动
     asan_after_switch(self, true);
