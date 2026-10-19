@@ -7,6 +7,7 @@
 #include <culib/stopwatch.h>
 #include <culib/test.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -198,6 +199,22 @@ TEST(runtime_order, wakes_sleepers_in_time_order_when_they_expire_in_one_round) 
     });
 
     EXPECT(order, ==, "ABC");
+}
+
+TEST(runtime_order, a_short_sleep_lasts_about_as_long_as_asked) {
+    // Windows 上等待的超时按系统定时器的节拍到期，默认约 15.6 毫秒；事件引擎另设了高精度定时器，
+    // 所以睡 1 毫秒在三个平台上都是 1 毫秒出头。看中位数，个别几次被系统拖慢不要紧。
+    std::vector<long long> slept;   // 微秒
+    in_coroutine([&] {
+        for (int i = 0; i < 21; ++i) {
+            const wavvix::stopwatch watch;
+            wavvix::sleep_for(ms(1));
+            slept.push_back(std::chrono::duration_cast<std::chrono::microseconds>(watch.elapsed()).count());
+        }
+    });
+
+    std::sort(slept.begin(), slept.end());
+    EXPECT(slept[10], <, 5000);
 }
 
 TEST(runtime_order, nonpositive_sleep_returns_without_suspending) {

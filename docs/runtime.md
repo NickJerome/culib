@@ -70,7 +70,9 @@ Windows 上监控线程用高精度的可等待定时器睡，要 Windows 10 180
 
 `yield()` 在协程里让出，排到就绪队列的末尾；在协程外等同 `std::this_thread::yield()`。`sleep_for(d)` 在协程里只挂起这根协程，在协程外睡当前线程；零或负时长立即返回，要让出一次请用 `yield()`。
 
-定时器整个进程一份。到点的协程按时限的先后排回就绪队列，不按挂起的先后，几个时限在同一刻到期时也一样；排回去以后由几根工作线程同时跑起来，谁先跑完就说不准了。Windows 默认的定时器精度约 15.6 ms，相差不到这么多的时限分不出先后。
+定时器整个进程一份。到点的协程按时限的先后排回就绪队列，不按挂起的先后，几个时限在同一刻到期时也一样；排回去以后由几根工作线程同时跑起来，谁先跑完就说不准了。
+
+Windows 上等在完成端口上的超时按系统定时器的节拍到期，默认约 15.6 毫秒；运行时另设一个高精度定时器把等待按时叫醒（要 Windows 10 1803 以上），所以协程里 `sleep_for(1ms)` 在 Windows 上也是 1 毫秒出头，本机实测中位数 1.4 毫秒。更早的系统上退回按节拍醒。协程外的 `sleep_for` 和普通线程上的限时等待用的是 `std::this_thread::sleep_for` 和条件变量，在 Windows 上仍按节拍醒。
 
 ## 套接字
 
@@ -203,3 +205,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 2026-10-19 协程栈改成自己的池、默认 1008 KiB、Windows 上按需提交以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 13 个测试目标全部通过，`culib_test` 370 项（多了深递归、复用深栈后在深处抛异常的 2 条），误用诊断 11 条（多了栈溢出那条，以 `STATUS_STACK_OVERFLOW` 终止），全部示例编过；MSYS2 的 MinGW-w64 GCC 15.2 跑 `tests/mingw_windows.sh` 全部通过。WSL2 上 GCC 11.4 按 `-Wall -Wextra -Wpedantic -Werror` 构建 debug / release：`culib_test` 374 项、`runtime_order_test` 37 项全部通过，误用诊断 debug 12 条（栈溢出被保护页拦住，SIGSEGV）、release 11 条；改过的文件另用 Clang 14 和 GCC 在开关异常、debug / release 下做了 `-fsyntax-only`。两个反向验证、内存和创建耗时的对比见[实现说明](implementation-notes.md#协程栈)。
 
 [`5d63026` 的 CI](https://github.com/NickJerome/culib/actions/runs/39214766196) 24/24 通过：`culib_test` Linux 374 项、macOS 371 项、Windows 与 MinGW 370 项（各多了那 2 条），GCC 4.8、ASan + UBSan 和 TSan 与 Linux 相同，无异常构建 367 项（只多了深递归那 1 条）；`runtime_order_test` 依次 37、35、32 项，不变；误用诊断 Linux / macOS 的 debug 构建 12 条、release 构建 11 条，Windows 11 条，无异常构建 10 条。栈溢出那条在 Windows 的两个作业、Linux 和 macOS 的五个 debug 作业里都按预期终止；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
+
+2026-10-19 Windows 上协程的定时器改由高精度定时器按时叫醒以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 13 个测试目标全部通过，`runtime_order_test` 33 项（多了「睡 1 毫秒的中位数在 5 毫秒以内」的 1 条）；release 下 `xmake test` 连跑 20 遍、`runtime_order_test` 连跑 30 遍、`culib_test` 连跑 10 遍全部通过，18 个空转进程占满 CPU 时两个程序各连跑 10 遍也全部通过。MSYS2 的 MinGW-w64 GCC 15.2 跑 `tests/mingw_windows.sh` 全部通过。WSL2 上 GCC 11.4 构建 debug / release 的 `runtime_order_test` 38 项全部通过，新加的那条连睡 21 次用了 23.1、23.6 毫秒。改过的文件另用 Windows 上的 clang 22 做过 `-fsyntax-only`，打开了 `-Wcast-function-type-strict`。新加的那条在强制走退路的构建上失败，做法和数据见[实现说明](implementation-notes.md#按时醒)。

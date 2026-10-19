@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <new>
 
 // GetQueuedCompletionStatusEx 和 OVERLAPPED_ENTRY 要 Vista 以上；下限由 xmake.lua
@@ -18,13 +19,112 @@
 #include <mswsock.h>
 #include <windows.h>
 
+// 旧一些的 SDK 和 MinGW 头文件里没有这个标志。
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#  define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
 namespace wavvix {
 namespace detail {
+
+namespace {
+
+// ---- 按时醒 ---------------------------------------------------------------------------
+//
+// GetQueuedCompletionStatusEx 的超时按系统定时器的节拍到期，默认约 15.6 毫秒，协程里 sleep_for(1ms)
+// 要睡十几毫秒。所以带超时的等待另设一个高精度定时器，用等待完成包把它接到完成端口上：到点时端口里
+// 多一个包，等待就醒了。毫秒超时照旧，只是兜底。Go 的 netpoll 也这么做。
+// 等待完成包的函数在 ntdll 里，learn.microsoft.com 有文档，但没有头文件和导入库，只能 GetProcAddress。
+
+typedef LONG(NTAPI* create_packet_function)(HANDLE* packet, ACCESS_MASK access, void* attributes);
+typedef LONG(NTAPI* associate_packet_function)(HANDLE packet, HANDLE port, HANDLE target, void* key,
+                                               void* context, LONG status, ULONG_PTR information,
+                                               BOOLEAN* already_signaled);
+typedef LONG(NTAPI* cancel_packet_function)(HANDLE packet, BOOLEAN remove_queued);
+
+struct wake_timer {
+    HANDLE timer;     // 高精度定时器；为空表示建不起来，只按毫秒超时醒
+    HANDLE packet;    // 等待完成包：定时器到点时往端口里投一个包
+    associate_packet_function associate;
+    cancel_packet_function cancel;
+};
+
+template <typename Function>
+Function ntdll_function(const char* name) {
+    const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) {
+        return 0;
+    }
+    // 经整数转一道：函数指针之间直接转，GCC 和 clang 会报 -Wcast-function-type
+    return reinterpret_cast<Function>(reinterpret_cast<std::uintptr_t>(::GetProcAddress(ntdll, name)));
+}
+
+// 建不起来就返回空的：Windows 10 1803 以前没有高精度定时器，较老的 Wine 没有等待完成包。
+wake_timer open_wake_timer() {
+    wake_timer wake = {0, 0, 0, 0};
+    const create_packet_function create =
+        ntdll_function<create_packet_function>("NtCreateWaitCompletionPacket");
+    const associate_packet_function associate =
+        ntdll_function<associate_packet_function>("NtAssociateWaitCompletionPacket");
+    const cancel_packet_function cancel =
+        ntdll_function<cancel_packet_function>("NtCancelWaitCompletionPacket");
+    if (!create || !associate || !cancel) {
+        return wake;
+    }
+
+    const HANDLE timer =
+        ::CreateWaitableTimerExW(0, 0, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!timer) {
+        return wake;
+    }
+    HANDLE packet = 0;
+    if (create(&packet, GENERIC_ALL, 0) < 0) {   // NTSTATUS，负数是失败
+        ::CloseHandle(timer);
+        return wake;
+    }
+
+    wake.timer = timer;
+    wake.packet = packet;
+    wake.associate = associate;
+    wake.cancel = cancel;
+    return wake;
+}
+
+void close_wake_timer(wake_timer& wake) {
+    if (!wake.timer) {
+        return;
+    }
+    (void)wake.cancel(wake.packet, TRUE);
+    ::CloseHandle(wake.packet);
+    ::CloseHandle(wake.timer);
+}
+
+// 让端口在 timeout 以后多一个包。设的时候已经到点的话，包当场就投进去。
+void arm_wake_timer(wake_timer& wake, HANDLE port, std::chrono::nanoseconds timeout) {
+    if (!wake.timer) {
+        return;
+    }
+    // 一个包同一时刻只能关联一次，先撤掉上一次的。上一次的包可能正在投（等待被别的事叫醒，
+    // 之后定时器才到点），这时撤不下来，下面的关联也会失败，这一次就只按毫秒超时醒。
+    (void)wake.cancel(wake.packet, TRUE);
+
+    // 负数是相对时间，单位 100 纳秒。零头进上去，不早醒。
+    const std::chrono::nanoseconds::rep ns = timeout.count();
+    LARGE_INTEGER due;
+    due.QuadPart = -static_cast<LONGLONG>(ns / 100 + (ns % 100 != 0 ? 1 : 0));
+    if (!::SetWaitableTimer(wake.timer, &due, 0, 0, 0, FALSE)) {
+        return;
+    }
+    (void)wake.associate(wake.packet, port, wake.timer, 0, 0, 0, 0, 0);
+}
+
+}  // namespace
 
 class io_engine {
 public:
     HANDLE port;
     std::atomic<std::size_t> pending;    // 还在飞的操作数
+    wake_timer wake;                     // 带超时的等待靠它按时醒
 };
 
 namespace {
@@ -82,11 +182,13 @@ io_engine* io_engine_create() noexcept {
     }
     engine->port = port;
     engine->pending.store(0, std::memory_order_relaxed);
+    engine->wake = open_wake_timer();
     return engine;
 }
 
 void io_engine_destroy(io_engine* engine) noexcept {
     if (!engine) return;
+    close_wake_timer(engine->wake);
     if (engine->port) ::CloseHandle(engine->port);
     delete engine;
 }
@@ -198,6 +300,9 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
     if (!engine) return;
     const long milliseconds = io_timeout_ms(timeout);
     const DWORD limit = (milliseconds < 0) ? INFINITE : static_cast<DWORD>(milliseconds);
+    if (timeout.count() > 0) {
+        arm_wake_timer(engine->wake, engine->port, timeout);
+    }
 
     OVERLAPPED_ENTRY entries[64];
     const ULONG capacity = static_cast<ULONG>(sizeof entries / sizeof entries[0]);
@@ -210,7 +315,7 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
 
     for (ULONG i = 0; i < count; ++i) {
         OVERLAPPED* const overlapped = entries[i].lpOverlapped;
-        if (!overlapped) continue;    // 不是我们投的（比如 PostQueuedCompletionStatus）
+        if (!overlapped) continue;    // 唤醒（io_engine_notify）和按时醒的包，不带请求
         io_request* const request = request_of(overlapped);
 
         // 结果已经在完成项里，**不需要再做一次系统调用**。用 GetOverlappedResult 取

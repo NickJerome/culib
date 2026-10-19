@@ -185,6 +185,30 @@ Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序
 
 句柄关联由创建句柄的调用方完成，引擎不缓存“已关联的句柄值”，因为系统会复用这个数值。完成项通过 OVERLAPPED 地址找到请求，完成键无需另存索引。后端未启用 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS：同步成功同样等待完成包，保证内核持有 OVERLAPPED 期间请求一直存活；不为省去一次让出再增加一套同步完成分支。读方向的 ERROR_HANDLE_EOF / ERROR_BROKEN_PIPE 统一返回 0 字节，写方向保留错误，与 POSIX 语义一致。
 
+### 按时醒
+
+`GetQueuedCompletionStatusEx` 的超时按系统定时器的节拍到期，默认约 15.6 毫秒。协程的定时器靠等在引擎里的那根线程按最早的时限醒，所以协程里 `sleep_for(1ms)` 原来要睡 15 毫秒上下。CI 上也看得到（[`134e177` 那次](https://github.com/NickJerome/culib/actions/runs/39215374595)）：等 20 毫秒的测试在 Windows 上用 31 毫秒左右，在 Linux 上是 20 毫秒出头。
+
+现在带超时的等待另设一个高精度定时器（`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`，Windows 10 1803 起），用等待完成包把它接到完成端口上：`NtAssociateWaitCompletionPacket` 让定时器到点时往端口里投一个包，等待就醒了。这个包不带 `OVERLAPPED`，和 `io_engine_notify()` 的唤醒包一样被跳过。毫秒超时照旧传给 `GetQueuedCompletionStatusEx`，只是兜底。Go 的 netpoll 也这么做（`netpoll_windows.go` 的 `netpollQueueTimer`）；它每根 M 一套定时器和包，这里同一时刻只有一根线程在 `io_engine_wait()` 里（`poll_mutex`），整个引擎一套就够。等待完成包的三个函数在 ntdll 里，learn.microsoft.com 从 2023 年起有文档，但没有头文件和导入库，只能 `GetProcAddress`。
+
+一个包同一时刻只能关联一次。等待常被 I/O 或唤醒提前叫醒，那时定时器还没到点，所以每次设之前先 `NtCancelWaitCompletionPacket(packet, TRUE)` 撤掉上一次的；已经到点、包还在端口里没取走的，也一并撤掉。撤不下来（上一次的包正在投）时，后面的关联会失败，这一次只按毫秒超时醒。用一个独立程序在本机（Windows 10 22H2）核对过这几种情况：从没关联过时撤销返回 `STATUS_CANCELLED`；已经关联时再关联返回 `STATUS_INVALID_PARAMETER_1`；到点前撤销、到点后包还在端口里时撤销都返回成功，端口里不留包；包取走以后撤销返回 `STATUS_CANCELLED`；关联时定时器已经到点，包当场投进端口。
+
+同一个程序量的精度（各 100 次，跑两遍）：
+
+| 等多久 | 只用超时：中位数 | 定时器 + 等待完成包：中位数 / 最大 |
+| --- | ---: | ---: |
+| 1 毫秒 | 14.1、14.1 毫秒 | 1.40、1.38 / 2.24 毫秒 |
+| 2 毫秒 | 13.1、13.1 毫秒 | 2.43、2.41 / 3.14 毫秒 |
+| 5 毫秒 | 10.1、10.1 毫秒 | 5.37、5.36 / 9.84 毫秒 |
+
+每次带超时的等待多三个系统调用，一共约 0.6 微秒。协程里 `sleep_for(1ms)` 的中位数从 15.46、15.49 毫秒变成 1.39、1.37 毫秒（同一个程序，改动前后各跑两遍）。
+
+建不起来时（Windows 10 1803 以前没有高精度定时器，较老的 Wine 没有等待完成包）退回原来的做法，只按毫秒超时醒。`runtime_order.a_short_sleep_lasts_about_as_long_as_asked` 查睡 1 毫秒的中位数在 5 毫秒以内：把函数名改错、强制走这条退路时它失败（中位数 15.5 毫秒），其余测试照常通过。
+
+只管协程。协程外的 `sleep_for` 就是 `std::this_thread::sleep_for`，普通线程上的限时等待用条件变量，它们在 Windows 上仍按节拍醒。
+
+没用 `timeBeginPeriod(1)`：它让进程里所有的等待都按 1 毫秒醒，系统定时器中断跟着变密、更耗电，还要链接 winmm。Go 也只在建不起高精度定时器时才调它（`os_windows.go` 的 `osRelax`）。也没用 APC（定时器到点时往线程里排一个 APC，在可警告状态下等端口）：APC 只排给设定时器的那根线程，而等在端口里的线程每次可能不同；可警告的等待还会顺带执行别人排给这根线程的 APC。
+
 ## [`park.h`](../src/runtime/park.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-sync-and-timeout-design.md)。
