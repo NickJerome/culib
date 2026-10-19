@@ -1,4 +1,4 @@
-// Linux 事件引擎：epoll。每个 fd 在接管时用边沿触发登记读写两个方向，之后不再改兴趣集；
+// 事件引擎的 epoll 后端。每个 fd 在接管时用边沿触发登记读写两个方向，之后不再改兴趣集；
 // fd 关闭时内核自动把它从 epoll 里摘掉。
 
 #include "io_engine_posix.h"
@@ -16,10 +16,9 @@
 namespace wavvix {
 namespace detail {
 
-class io_engine {
-public:
+struct io_engine {
     int epoll_fd;
-    int wake_fd;
+    int wake_fd;                         // 唤醒源，io_engine_enable_notify 以前是 -1
     io_fd_table slots;
     io_fd_locks locks;
     std::atomic<std::size_t> pending;    // 还在等的请求数
@@ -50,21 +49,18 @@ io_engine* io_engine_create() noexcept {
     }
     engine->epoll_fd = epoll_fd;
     engine->wake_fd = -1;
-    engine->pending.store(0, std::memory_order_relaxed);
     return engine;
 }
 
 void io_engine_destroy(io_engine* engine) noexcept {
-    if (!engine) return;
-    if (engine->wake_fd >= 0) ::close(engine->wake_fd);
-    if (engine->epoll_fd >= 0) ::close(engine->epoll_fd);
+    if (engine->wake_fd >= 0) {
+        ::close(engine->wake_fd);
+    }
+    ::close(engine->epoll_fd);
     delete engine;
 }
 
 bool io_engine_enable_notify(io_engine* engine) noexcept {
-    if (!engine) {
-        return false;
-    }
     if (engine->wake_fd >= 0) {
         return true;
     }
@@ -84,7 +80,7 @@ bool io_engine_enable_notify(io_engine* engine) noexcept {
 }
 
 bool io_engine_notify(io_engine* engine) noexcept {
-    if (!engine || engine->wake_fd < 0) {
+    if (engine->wake_fd < 0) {
         return false;
     }
     // EAGAIN 表示计数器满了，唤醒已经挂着。
@@ -100,49 +96,33 @@ int io_accept_socket(int listener) noexcept {
 }
 
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept {
-    if (!engine || handle < 0) {
-        return false;
-    }
-
-    const std::uint32_t events = static_cast<std::uint32_t>(EPOLLIN) |
-                                 static_cast<std::uint32_t>(EPOLLOUT) |
+    const std::uint32_t events = static_cast<std::uint32_t>(EPOLLIN) | static_cast<std::uint32_t>(EPOLLOUT) |
                                  static_cast<std::uint32_t>(EPOLLET);
     return watch(engine->epoll_fd, handle, events);
 }
 
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
-    if (!engine) {
-        request.transferred = -1;
-        request.failure = EBADF;
-        return false;
-    }
     return io_enqueue(engine->slots, engine->locks, engine->pending, request);
 }
 
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept {
-    if (!engine) return;
-    const bool finite = timeout.count() >= 0;
-    const std::chrono::steady_clock::time_point started = finite
-        ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     std::chrono::nanoseconds remaining = timeout;
-
     epoll_event events[64];
     const int capacity = static_cast<int>(sizeof events / sizeof events[0]);
     int ready;
     for (;;) {
-        ready = ::epoll_wait(engine->epoll_fd, events, capacity,
-                             static_cast<int>(io_timeout_ms(remaining)));
-        if (ready >= 0) break;
-        if (errno == EINTR) {
-            if (!io_retry_timeout(timeout, started, remaining)) return;
-            continue;
+        ready = ::epoll_wait(engine->epoll_fd, events, capacity, static_cast<int>(io_timeout_ms(remaining)));
+        if (ready >= 0) {
+            break;
         }
-        return;
+        if (errno != EINTR || !io_retry_timeout(timeout, started, remaining)) {
+            return;
+        }
     }
 
-    const std::uint32_t failed = static_cast<std::uint32_t>(EPOLLERR) |
-                                 static_cast<std::uint32_t>(EPOLLHUP);
+    const std::uint32_t failed = static_cast<std::uint32_t>(EPOLLERR) | static_cast<std::uint32_t>(EPOLLHUP);
     for (int i = 0; i < ready; ++i) {
         const int fd = events[i].data.fd;
         if (fd == engine->wake_fd) {
@@ -161,11 +141,11 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
 
 // 撤销是同步的：摘得下来就再也不会交回；摘不下来说明分发已经把它做完、交回去了。
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
-    return engine && io_dequeue(engine->slots, engine->locks, engine->pending, request);
+    return io_dequeue(engine->slots, engine->locks, engine->pending, request);
 }
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {
-    return engine ? engine->pending.load(std::memory_order_relaxed) : 0;
+    return engine->pending.load(std::memory_order_relaxed);
 }
 
 }  // namespace detail
