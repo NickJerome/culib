@@ -311,6 +311,32 @@ result<directory_handle> directory_handle::open(string_view path) {
     return directory_handle(dir);
 }
 
+namespace {
+
+// 类型只用 readdir 顺带给的 d_type，不补 stat：给不了就是 unknown，调用方需要时自己查。
+#if defined(DT_DIR)
+entry_kind hint_of(const struct dirent& item) {
+    switch (item.d_type) {
+        case DT_REG:
+            return entry_kind::regular_file;
+        case DT_DIR:
+            return entry_kind::directory;
+        case DT_LNK:
+            return entry_kind::link;
+        case DT_UNKNOWN:
+            return entry_kind::unknown;
+        default:
+            return entry_kind::other;
+    }
+}
+#else
+entry_kind hint_of(const struct dirent&) {
+    return entry_kind::unknown;
+}
+#endif
+
+}  // namespace
+
 result<bool> directory_handle::next(string_view& name, entry_kind& hint) {
     DIR* dir = static_cast<DIR*>(handle_);
     if (!dir) {
@@ -329,29 +355,8 @@ result<bool> directory_handle::next(string_view& name, entry_kind& hint) {
         if (std::strcmp(item->d_name, ".") == 0 || std::strcmp(item->d_name, "..") == 0) {
             continue;
         }
-
         name = string_view(item->d_name);
-        // 类型只用 d_type 顺带给的提示，绝不补 stat：hint 给不了就是 unknown，
-        // 调用方真需要类型会自己按需 query。missing 永远不会从这里出来。
-        hint = entry_kind::unknown;
-#if defined(DT_DIR)
-        switch (item->d_type) {
-            case DT_REG:
-                hint = entry_kind::regular_file;
-                break;
-            case DT_DIR:
-                hint = entry_kind::directory;
-                break;
-            case DT_LNK:
-                hint = entry_kind::link;
-                break;
-            case DT_UNKNOWN:
-                break;
-            default:
-                hint = entry_kind::other;
-                break;
-        }
-#endif
+        hint = hint_of(*item);
         return true;
     }
 }
@@ -450,6 +455,24 @@ result<void> copy_contents(std::intptr_t source, string_view from, std::intptr_t
     }
 }
 
+// 不覆盖时带 O_EXCL：目标是悬空链接也报 already_exists，不会透过链接把文件建到它指的地方。
+// 覆盖时不带 O_TRUNC，截断要等查过是不是同一个文件。O_NONBLOCK 免得已有的 fifo 没人读时卡住。
+int open_target(const char* path, bool overwrite) {
+    return open_retrying(path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NONBLOCK | (overwrite ? 0 : O_EXCL));
+}
+
+// 权限跟着源走，不管目标是新建的还是被覆盖的。关闭也会失败（比如网络盘写回出错），要报出来。
+result<void> finish_target(std::intptr_t& target, string_view to, mode_t mode) {
+    if (::fchmod(static_cast<int>(target), mode & 07777) != 0) {
+        return from_errno("设置权限", to, errno);
+    }
+    const unsigned long code = detail::close_file(target);
+    if (code != 0) {
+        return detail::file_error("关闭", to, code);
+    }
+    return result<void>();
+}
+
 result<void> copy_file_native(string_view from, string_view to, bool overwrite) {
     const c_path native_from(from);
     const c_path native_to(to);
@@ -468,10 +491,7 @@ result<void> copy_file_native(string_view from, string_view to, bool overwrite) 
         return checked;
     }
 
-    // 不覆盖时带 O_EXCL：目标是悬空链接也报 already_exists，不会透过链接把文件建到它指的地方。
-    // 覆盖时不带 O_TRUNC，截断要等查过是不是同一个文件。O_NONBLOCK 免得已有的 fifo 没人读时卡住。
-    const int flags = O_WRONLY | O_CREAT | O_CLOEXEC | O_NONBLOCK | (overwrite ? 0 : O_EXCL);
-    std::intptr_t target = open_retrying(native_to.get(), flags);
+    std::intptr_t target = open_target(native_to.get(), overwrite);
     if (target < 0) {
         return from_errno("创建", to, errno);   // EEXIST 映射成 already_exists
     }
@@ -482,20 +502,11 @@ result<void> copy_file_native(string_view from, string_view to, bool overwrite) 
             return prepared;
         }
     }
-
     const result<void> copied = copy_contents(source, from, target, to);
     if (copied.is_err()) {
         return copied;
     }
-    // 权限跟着源走，不管目标是新建的还是被覆盖的。
-    if (::fchmod(static_cast<int>(target), source_info.st_mode & 07777) != 0) {
-        return from_errno("设置权限", to, errno);
-    }
-    const unsigned long code = detail::close_file(target);   // 关闭也会失败（比如网络盘写回出错），要报出来
-    if (code != 0) {
-        return detail::file_error("关闭", to, code);
-    }
-    return result<void>();
+    return finish_target(target, to, source_info.st_mode);
 }
 
 result<void> rename_native(string_view from, string_view to) {

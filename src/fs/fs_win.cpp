@@ -11,6 +11,7 @@
 #include "directory.h"
 #include "file.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -678,18 +679,53 @@ result<path> temp_directory_path() {
 namespace detail {
 namespace {
 
-// FindFirstFile 的句柄 + 当前项 + 名字的 UTF-8 缓冲（next 给的视图指向这里）。
-// 公共侧的 directory_handle 只持一个 void*，指向这个。
-// empty_open：目录确实存在但里面没东西——FindFirstFile 一个都没抓到，
-// 没有原生句柄可留，读完标志直接置位。
-// pending：FindFirstFileW 已经取回了第一项，还没轮到交给调用方。
+// directory_handle 持有的状态：FindFirstFileW 的句柄、当前项，以及名字的 UTF-8 缓冲
+// （next 给出的视图指向 name）。空目录没有原生句柄，exhausted 一开始就置位。
+// pending 表示 FindFirstFileW 取回的第一项还没交给调用方。
 struct find_state {
-    HANDLE handle;
+    HANDLE handle = INVALID_HANDLE_VALUE;
     WIN32_FIND_DATAW data;
     std::string name;
-    bool exhausted;
-    bool pending;
+    bool exhausted = false;
+    bool pending = false;
+
+    ~find_state() {
+        if (handle != INVALID_HANDLE_VALUE) {
+            ::FindClose(handle);
+        }
+    }
 };
+
+// 非空的目录路径接上 "\*"，已经以分隔符结尾时只接 "*"。
+std::wstring find_pattern(std::wstring directory) {
+    const wchar_t last = directory.back();
+    if (last != L'\\' && last != L'/') {
+        directory += L'\\';
+    }
+    directory += L'*';
+    return directory;
+}
+
+// FindFirstFileW 对空目录也可能报找不到，和路径不存在、不是目录分不开，所以查一次目录本身的属性。
+// 空目录返回成功，其余情况返回对应的错误。
+result<void> check_empty(const std::wstring& directory, string_view path, DWORD code) {
+    if (code != ERROR_NO_MORE_FILES && !is_missing_code(code)) {
+        return from_last_error("打开目录", path, code);
+    }
+    const DWORD attributes = ::GetFileAttributesW(directory.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        return from_last_error("打开目录", path, ::GetLastError());   // 不存在或者没权限
+    }
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return make_error(error_kind::not_found, path.to_string() + " 不是目录");   // 对齐 POSIX 的 ENOTDIR
+    }
+    // 链接目标没了的 junction 也算不存在，POSIX 的 opendir 同样报 ENOENT。
+    // 只有 ERROR_NO_MORE_FILES 明确表示目录存在而且是空的。
+    if (code != ERROR_NO_MORE_FILES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        return make_error(error_kind::not_found, path.to_string() + " 的链接目标不存在");
+    }
+    return result<void>();
+}
 
 entry_kind hint_from_attributes(DWORD attributes) {
     if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
@@ -707,73 +743,34 @@ entry_kind hint_from_attributes(DWORD attributes) {
 }  // namespace
 
 result<directory_handle> directory_handle::open(string_view path) {
-    // 空路径绝不退化成「当前目录 + *」：FindFirstFileW("*") 会按当前工作目录
-    // 解析，列出别人脚下的目录。POSIX 的 opendir("") 报 ENOENT，这里对齐成 not_found。
+    // 空路径不能退化成 "*"，那会列出当前工作目录。POSIX 的 opendir("") 报 ENOENT，这里同样报 not_found。
     if (path.empty()) {
         return make_error(error_kind::not_found, "打开目录失败：路径为空");
     }
     const result<std::wstring> wide = wide_path(path);
     if (wide.is_err()) {
-        return std::move(wide).error();   // 含 NUL 在这里就 invalid_argument，磁盘碰不到
+        return std::move(wide).error();   // 含 NUL 时是 invalid_argument，不碰磁盘
     }
-    std::wstring pattern = wide.value();
-    if (!pattern.empty() && pattern[pattern.size() - 1] != L'\\' &&
-        pattern[pattern.size() - 1] != L'/') {
-        pattern += L'\\';
-    }
-    pattern += L'*';
 
-    find_state* state = new find_state;
+    const std::wstring pattern = find_pattern(wide.value());
+    std::unique_ptr<find_state> state(new find_state());
     state->handle = ::FindFirstFileW(pattern.c_str(), &state->data);
     if (state->handle != INVALID_HANDLE_VALUE) {
-        state->exhausted = false;
         state->pending = true;
-        return directory_handle(state);
+        return directory_handle(state.release());
     }
-    const DWORD code = ::GetLastError();
-    // FindFirstFile 报「找不到」有两种截然不同的原因：目录是空的（或这个文件系统
-    // 对空目录报 FILE_NOT_FOUND），和那个路径根本不存在 / 不是目录。光看错误码分
-    // 不开，查一次目录本身的属性来断案。
-    if (code == ERROR_NO_MORE_FILES || is_missing_code(code)) {
-        const DWORD attributes = ::GetFileAttributesW(wide.value().c_str());
-        if (attributes != INVALID_FILE_ATTRIBUTES &&
-            (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
-            // 链接目标没了的 junction 也算「不存在」：POSIX 的 opendir 同样报 ENOENT。
-            // NO_MORE_FILES 才是「目录在、里面是空的」的明确信号。
-            (code == ERROR_NO_MORE_FILES ||
-             (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0)) {
-            state->handle = INVALID_HANDLE_VALUE;
-            state->exhausted = true;
-            state->pending = false;
-            return directory_handle(state);   // 空目录：零个元素，零个错误
-        }
-        if (attributes != INVALID_FILE_ATTRIBUTES) {
-            delete state;
-            if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-                return make_error(error_kind::not_found,
-                                  path.to_string() + " 的链接目标不存在");
-            }
-            return make_error(error_kind::not_found,
-                              path.to_string() + " 不是目录");   // 对齐 POSIX 的 ENOTDIR
-        }
-        const DWORD second = ::GetLastError();
-        delete state;
-        return from_last_error("打开目录", path, second);   // 不存在 / 没权限，报真实的
+    const result<void> empty = check_empty(wide.value(), path, ::GetLastError());
+    if (empty.is_err()) {
+        return std::move(empty).error();
     }
-    delete state;
-    return from_last_error("打开目录", path, code);
+    state->exhausted = true;
+    return directory_handle(state.release());
 }
 
 directory_handle::directory_handle(void* handle) noexcept : handle_(handle) {}
 
 directory_handle::~directory_handle() {
-    if (handle_) {
-        find_state* state = static_cast<find_state*>(handle_);
-        if (state->handle != INVALID_HANDLE_VALUE) {
-            ::FindClose(state->handle);
-        }
-        delete state;
-    }
+    delete static_cast<find_state*>(handle_);
 }
 
 directory_handle::directory_handle(directory_handle&& other) noexcept
@@ -783,13 +780,7 @@ directory_handle::directory_handle(directory_handle&& other) noexcept
 
 directory_handle& directory_handle::operator=(directory_handle&& other) noexcept {
     if (this != &other) {
-        if (handle_) {
-            find_state* state = static_cast<find_state*>(handle_);
-            if (state->handle != INVALID_HANDLE_VALUE) {
-                ::FindClose(state->handle);
-            }
-            delete state;
-        }
+        delete static_cast<find_state*>(handle_);
         handle_ = other.handle_;
         other.handle_ = 0;
     }
