@@ -1,7 +1,7 @@
 ﻿#pragma once
 
-// connect / accept / 收发只能在协程内调用；第一次 I/O 后句柄归属该工作线程。
-// 移动不改变线程归属。关闭、析构或覆盖对象前，不得仍有协程在它上面等待。
+// connect / accept / 收发在协程里只挂起协程，在普通线程（包括 main）里阻塞线程。
+// 一个套接字可以交给任何协程或线程用，一边读一边写也行。关闭、析构或覆盖对象前，不得仍有谁在它上面等待。
 
 #include <culib/result.h>
 #include <culib/string_view.h>
@@ -76,7 +76,6 @@ public:
     // 按系统地址顺序尝试，共用 DNS 之后的预算；预绑定时只试同族地址并保留本地端口。
     result<void> connect(string_view host, std::uint16_t port,
                          std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
-    // 新连接尚未归属任何工作线程，可以交给另一根线程上的协程。
     result<socket> accept(std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
 
     // TCP read 返回部分数据；非零容量读到 0 表示 EOF。
@@ -109,7 +108,6 @@ private:
                               std::chrono::nanoseconds timeout);
 
     std::uintptr_t native_;
-    const void* owner_;
     protocol type_;
     address_family family_;
     phase phase_;

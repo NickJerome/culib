@@ -3,6 +3,7 @@
 
 #include "io_engine_posix.h"
 
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <new>
@@ -22,7 +23,8 @@ public:
     int kq;
     bool notify_enabled;
     io_fd_table slots;
-    std::size_t pending;    // 还在等的请求数
+    io_fd_locks locks;
+    std::atomic<std::size_t> pending;    // 还在等的请求数
 };
 
 namespace {
@@ -73,7 +75,7 @@ io_engine* io_engine_create() noexcept {
     }
     engine->kq = kq;
     engine->notify_enabled = false;
-    engine->pending = 0;
+    engine->pending.store(0, std::memory_order_relaxed);
     return engine;
 }
 
@@ -122,7 +124,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         request.failure = EBADF;
         return false;
     }
-    return io_enqueue(engine->slots, engine->pending, request);
+    return io_enqueue(engine->slots, engine->locks, engine->pending, request);
 }
 
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
@@ -162,21 +164,18 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         // 这里不提交变更，所以不会收到 EV_ERROR。EV_EOF 不单独处理：read() 会返回 0，
         // 和 epoll 那边同一条路。
         const bool reading = events[i].filter == EVFILT_READ;
-        io_dispatch(engine->slots, engine->pending, static_cast<int>(events[i].ident), reading,
-                    !reading, completed);
+        io_dispatch(engine->slots, engine->locks, engine->pending, static_cast<int>(events[i].ident),
+                    reading, !reading, completed);
     }
 }
 
+// 撤销是同步的：摘得下来就再也不会交回；摘不下来说明分发已经把它做完、交回去了。
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
-    if (engine) {
-        io_dequeue(engine->slots, engine->pending, request);
-    }
-    // 撤销是同步的；无论已完成还是刚摘除，都不会再有通知。
-    return true;
+    return engine && io_dequeue(engine->slots, engine->locks, engine->pending, request);
 }
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {
-    return engine != 0 ? engine->pending : 0;
+    return engine ? engine->pending.load(std::memory_order_relaxed) : 0;
 }
 
 }  // namespace detail

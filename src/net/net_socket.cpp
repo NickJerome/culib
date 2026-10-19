@@ -13,6 +13,14 @@ error timed_out() {
     return make_error(error_kind::timeout, "socket operation timed out");
 }
 
+// 新建或者新接的套接字马上登记到事件引擎上，之后在哪根线程上读写都行。
+result<void> adopt(std::uintptr_t native) {
+    if (!wavvix::detail::scheduler_adopt(detail::io_handle_of(native))) {
+        return make_error(error_kind::io, "cannot register socket with the event engine");
+    }
+    return result<void>();
+}
+
 result<void> connect_addresses(socket& client, const std::vector<endpoint>& addresses,
                                std::chrono::nanoseconds timeout, const endpoint* local) {
     detail::io_budget budget(timeout);
@@ -44,18 +52,15 @@ result<void> connect_addresses(socket& client, const std::vector<endpoint>& addr
 }  // namespace
 
 socket::socket(protocol type) noexcept
-    : native_(invalid_handle()), owner_(nullptr), type_(type),
-      family_(address_family::ipv4), phase_(phase::closed) {}
+    : native_(invalid_handle()), type_(type), family_(address_family::ipv4), phase_(phase::closed) {}
 
 socket::~socket() {
     close();
 }
 
 socket::socket(socket&& other) noexcept
-    : native_(other.native_), owner_(other.owner_), type_(other.type_),
-      family_(other.family_), phase_(other.phase_) {
+    : native_(other.native_), type_(other.type_), family_(other.family_), phase_(other.phase_) {
     other.native_ = invalid_handle();
-    other.owner_ = nullptr;
     other.phase_ = phase::closed;
 }
 
@@ -66,12 +71,10 @@ socket& socket::operator=(socket&& other) noexcept {
 
     close();
     native_ = other.native_;
-    owner_ = other.owner_;
     type_ = other.type_;
     family_ = other.family_;
     phase_ = other.phase_;
     other.native_ = invalid_handle();
-    other.owner_ = nullptr;
     other.phase_ = phase::closed;
     return *this;
 }
@@ -81,7 +84,6 @@ void socket::close() noexcept {
         detail::close_socket(native_);
     }
     native_ = invalid_handle();
-    owner_ = nullptr;
     phase_ = phase::closed;
 }
 
@@ -98,6 +100,11 @@ result<void> socket::bind(const endpoint& local) {
         return opened.error();
     }
     native_ = opened.value();
+    result<void> adopted = adopt(native_);
+    if (adopted.is_err()) {
+        close();
+        return adopted.error();
+    }
     result<void> bound = detail::bind_socket(native_, local);
     if (bound.is_err()) {
         close();
@@ -155,10 +162,11 @@ result<void> socket::connect(const endpoint& peer, std::chrono::nanoseconds time
         }
         native_ = opened.value();
         family_ = peer.family();
-    }
-    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
-        close();
-        return make_error(error_kind::io, "cannot adopt TCP socket");
+        result<void> adopted = adopt(native_);
+        if (adopted.is_err()) {
+            close();
+            return adopted.error();
+        }
     }
 
     phase_ = phase::connecting;
@@ -201,9 +209,6 @@ result<socket> socket::accept(std::chrono::nanoseconds timeout) {
     if (phase_ != phase::listening) {
         return make_error(error_kind::invalid_argument, "accept requires a listening socket");
     }
-    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
-        return make_error(error_kind::io, "cannot adopt TCP listener");
-    }
 
     result<std::uintptr_t> accepted = detail::accept_socket(native_, family_, timeout);
     if (accepted.is_err()) {
@@ -213,6 +218,10 @@ result<socket> socket::accept(std::chrono::nanoseconds timeout) {
     client.native_ = accepted.value();
     client.family_ = family_;
     client.phase_ = phase::connected;
+    result<void> adopted = adopt(client.native_);
+    if (adopted.is_err()) {
+        return adopted.error();   // client 析构时关掉它
+    }
     return result<socket>(std::move(client));
 }
 
@@ -243,9 +252,6 @@ result<std::size_t> socket::transfer(void* buffer, std::size_t size, bool readin
     }
     if (!buffer) {
         return make_error(error_kind::invalid_argument, "transfer buffer is null");
-    }
-    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
-        return make_error(error_kind::io, "cannot adopt TCP socket");
     }
 
     wavvix::detail::io_request request;
@@ -315,9 +321,6 @@ result<void> socket::send_to(const void* buffer, std::size_t size, const endpoin
     if (size > static_cast<std::size_t>(UINT_MAX)) {
         return make_error(error_kind::out_of_range, "UDP datagram is too large");
     }
-    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
-        return make_error(error_kind::io, "cannot adopt UDP socket");
-    }
 
     detail::socket_address address;
     detail::encode_address(peer, address);
@@ -353,9 +356,6 @@ result<datagram> socket::recv_from(void* buffer, std::size_t capacity,
     }
     if (capacity > static_cast<std::size_t>(UINT_MAX)) {
         return make_error(error_kind::out_of_range, "receive buffer is too large");
-    }
-    if (!wavvix::detail::scheduler_bind(detail::io_handle_of(native_), owner_)) {
-        return make_error(error_kind::io, "cannot adopt UDP socket");
     }
 
     detail::socket_address address;

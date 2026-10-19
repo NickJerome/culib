@@ -136,25 +136,3 @@ TEST(call_blocking, queues_calls_beyond_the_thread_limit) {
     EXPECT(finished.load(), ==, 100);
     EXPECT(peak.load() <= 64, ==, true);
 }
-
-TEST(call_blocking, wakes_each_caller_on_its_own_worker) {
-    std::atomic<int> completed(0);
-    std::atomic<int> moved(0);
-    wavvix::wait_group group;
-    for (unsigned i = 0; i < 4; ++i) {
-        group.go([&] {
-            const std::thread::id home = std::this_thread::get_id();
-            for (int n = 0; n < 50; ++n) {
-                wavvix::call_blocking([] {});
-                if (std::this_thread::get_id() != home) {
-                    moved.fetch_add(1);
-                }
-                completed.fetch_add(1);
-            }
-        });
-    }
-    group.wait();
-
-    EXPECT(completed.load(), ==, 200);
-    EXPECT(moved.load(), ==, 0);
-}

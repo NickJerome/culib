@@ -2,6 +2,7 @@
 
 #include "io_engine.h"
 
+#include <atomic>
 #include <cstddef>
 #include <new>
 
@@ -23,7 +24,7 @@ namespace detail {
 class io_engine {
 public:
     HANDLE port;
-    std::size_t pending;    // 还在飞的操作数
+    std::atomic<std::size_t> pending;    // 还在飞的操作数
 };
 
 namespace {
@@ -69,9 +70,10 @@ Function socket_extension(SOCKET socket, GUID id) {
 }  // namespace
 
 io_engine* io_engine_create() noexcept {
-    // 最后那个参数是「允许多少根线程同时取完成项」。取 1：每根工作线程有自己的完成端口，
-    // 协程也不换线程（coroutine 设计 3.13）。
-    const HANDLE port = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 1);
+    // 最后那个参数是「允许多少根线程同时处理完成项」：在端口上取过完成项、还没阻塞的线程都算在处理。
+    // 取过的工作线程随后会去跑协程，算上限的话，等在端口里的那根就会被扣着、拿不到完成项和唤醒，
+    // 所以不设上限（Go 的 netpoll 也是 _DWORD_MAX）。同一时刻在等的本来就只有一根（io_engine_wait）。
+    const HANDLE port = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, MAXDWORD);
     if (!port) return 0;
     io_engine* const engine = new (std::nothrow) io_engine();
     if (!engine) {
@@ -79,7 +81,7 @@ io_engine* io_engine_create() noexcept {
         return 0;
     }
     engine->port = port;
-    engine->pending = 0;
+    engine->pending.store(0, std::memory_order_relaxed);
     return engine;
 }
 
@@ -113,6 +115,8 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
 
     // 同一请求可能再次提交；每次构造一个全零的 OVERLAPPED。
     OVERLAPPED* const overlapped = new (request.overlapped.bytes) OVERLAPPED();
+    // 提交之前先记上：完成包可能在提交的调用返回之前就被别的线程取走，那边要减掉这一个。
+    engine->pending.fetch_add(1, std::memory_order_relaxed);
 
     const HANDLE handle = static_cast<HANDLE>(request.handle);
     DWORD moved = 0;
@@ -126,6 +130,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         if (!accept) {
             request.transferred = -1;
             request.failure = ::WSAGetLastError();
+            engine->pending.fetch_sub(1, std::memory_order_relaxed);
             return false;
         }
         const DWORD address_length = static_cast<DWORD>(sizeof(sockaddr_storage) + 16);
@@ -140,6 +145,7 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
         if (!connect) {
             request.transferred = -1;
             request.failure = ::WSAGetLastError();
+            engine->pending.fetch_sub(1, std::memory_order_relaxed);
             return false;
         }
         finished = connect(socket, static_cast<const sockaddr*>(request.address),
@@ -178,12 +184,12 @@ bool io_engine_arm(io_engine* engine, io_request& request) noexcept {
             // 真失败：**不会有完成包来**，所以不能挂起协程，否则它永远醒不过来。
             request.transferred = -1;
             request.failure = static_cast<int>(failed);
+            engine->pending.fetch_sub(1, std::memory_order_relaxed);
             return false;
         }
     }
 
     // 未启用 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS；同步成功也须等待完成包。
-    ++engine->pending;
     return true;
 }
 
@@ -237,7 +243,7 @@ void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
         }
 
         completed.push(request);
-        if (engine->pending) --engine->pending;
+        engine->pending.fetch_sub(1, std::memory_order_relaxed);
     }
 }
 
@@ -251,7 +257,7 @@ bool io_engine_cancel(io_engine* engine, io_request& request) noexcept {
 }
 
 std::size_t io_engine_pending(const io_engine* engine) noexcept {
-    return engine != 0 ? engine->pending : 0;
+    return engine ? engine->pending.load(std::memory_order_relaxed) : 0;
 }
 
 }  // namespace detail

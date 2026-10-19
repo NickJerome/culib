@@ -1,4 +1,4 @@
-// 统一 socket 的 Windows 后端。状态与协议校验、connect/accept 前的 scheduler_bind、
+// 统一 socket 的 Windows 后端。状态与协议校验、登记到事件引擎、
 // 连接失败后的句柄关闭都由公共层负责；这里只做平台调用。
 
 #include "net_socket_detail.h"
@@ -132,7 +132,7 @@ result<void> connect_socket(std::uintptr_t native, const endpoint& peer, bool bo
         }
     }
 
-    // 地址与请求都活在本栈帧：scheduler_io 挂起协程直到完成包被取回，帧不会动。
+    // 地址与请求都活在本栈帧：scheduler_io 等到完成包被取回才返回，帧不会动。
     socket_address address;
     encode_address(peer, address);
     wavvix::detail::io_request request;
@@ -143,7 +143,7 @@ result<void> connect_socket(std::uintptr_t native, const endpoint& peer, bool bo
     request.address_length = address.length;
     wavvix::detail::scheduler_io(request, timeout);
     if (request.transferred < 0) {
-        // 失败不关句柄，也不在这里 scheduler_bind——公共层拥有句柄。
+        // 失败不关句柄——公共层拥有句柄。
         return socket_error("connect", request.failure);
     }
     if (::setsockopt(socket, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, 0, 0) == SOCKET_ERROR) {

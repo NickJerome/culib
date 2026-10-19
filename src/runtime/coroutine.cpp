@@ -78,21 +78,6 @@ inline void asan_after_switch(coroutine_control* arrived, bool from_resumer = fa
 #endif
 }
 
-// 线程序号不能复用；操作系统线程 ID 可能在线程退出后被重用。
-std::atomic<unsigned long long> next_thread_serial(1);
-#if defined(_MSC_VER)
-__declspec(thread) unsigned long long thread_serial = 0;
-#else
-__thread unsigned long long thread_serial = 0;   // __thread 要求常量初始化，所以从 0 起
-#endif
-
-unsigned long long current_thread_serial() noexcept {
-    if (thread_serial == 0) {
-        thread_serial = next_thread_serial.fetch_add(1, std::memory_order_relaxed);
-    }
-    return thread_serial;
-}
-
 [[noreturn]] void die(const char* what) {
     // 误用的诊断直接写 stderr：不分配内存、不依赖流
     std::fputs(what, stderr);
@@ -126,7 +111,7 @@ void trampoline(context_transfer from) {
     die("wavvix::coroutine: 已结束的协程又被切进来了");
 }
 
-// 第一次 resume 时在当前线程上分配栈，摆好第一帧。协程从此绑在这根线程上，栈也在这根线程上释放。
+// 第一次 resume 时分配栈，摆好第一帧。
 void allocate_stack_for(coroutine_control* control) {
     const stack_memory memory = mem::detail::allocate_stack(control->usable);
     if (!memory.base) {
@@ -181,7 +166,6 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
     control->memory.total = 0;
     control->memory.guard = 0;
     control->usable = stack_size;   // 还没有栈：先记下要多大
-    control->owner = 0;             // 第一次 resume 才绑线程
     control->started = false;
     control->finished = false;
 #if WAVVIX_DETAIL_ASAN_FIBERS
@@ -190,6 +174,7 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
     control->resumer_stack_size = 0;
 #endif
     control->next_ready = 0;
+    control->park_state.store(0, std::memory_order_relaxed);
     return control;
 }
 
@@ -226,18 +211,6 @@ bool coroutine_resume(coroutine_control* control) noexcept {
         die("wavvix::coroutine: 协程不能 resume 自己");
     }
 
-    // 首次 resume 绑定线程；跨线程迁移会破坏 TLS 和异常状态。
-    const unsigned long long here = current_thread_serial();
-    if (control->owner == 0) {
-        control->owner = here;
-    } else if (control->owner != here) {
-        std::fprintf(stderr,
-                     "wavvix::coroutine: 协程绑定在第 %llu 根线程上，不能从第 %llu 根 resume。\n"
-                     "  换线程会让 thread_local 和异常状态在协程脚下变掉，而且不会报错。\n"
-                     "  见 coroutine 设计文档 3.12。\n",
-                     control->owner, here);
-        std::abort();
-    }
     if (!control->started) {
         allocate_stack_for(control);
     }

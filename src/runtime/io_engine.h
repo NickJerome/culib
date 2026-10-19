@@ -1,6 +1,7 @@
 #pragma once
 
-// 事件引擎的内部接口。
+// 事件引擎的内部接口。运行时整个进程只建一个；除了 io_engine_wait 同一时刻只能有一根线程在调，
+// 其余函数都可以在任何线程上同时调用。
 
 #include <chrono>
 #include <cstddef>
@@ -23,9 +24,9 @@ enum io_operation {
     io_transfer, io_socket_transfer, io_datagram_transfer, io_accept, io_connect
 };
 
-// 一次 I/O 的全部状态。**活在挂起协程自己的栈上**，所以不需要任何分配——
-// 而 Windows 要求 OVERLAPPED 活到完成包取回来为止，协程挂起期间栈不会动，
-// 正好满足（协程绑在第一次运行它的工作线程上，见 coroutine 设计 3.13）。
+// 一次 I/O 的全部状态。**活在等待者自己的栈上**，所以不需要任何分配——
+// 而 Windows 要求 OVERLAPPED 活到完成包取回来为止，等待期间栈不会动（协程换了线程也不动），
+// 正好满足。
 struct io_request {
     io_request() noexcept
         : operation(io_transfer), address(0), address_length(0), truncated(false),
@@ -60,8 +61,8 @@ struct io_request {
     int failure;                  // transferred < 0 时的 errno / Win32 错误码
 
     // ---- 引擎内部，调用方不要动 ----
-    // 挂起凭据。**引擎只负责把这个指针原样交回去，一个字段都不读**——「这根协程可以
-    // 继续了」之后怎么排队是调度器的事。调用方（scheduler_io）用同一个 token 挂起自己。
+    // 挂起凭据。**引擎只负责把这个指针原样交回去，一个字段都不读**——「等待者可以
+    // 继续了」之后怎么叫醒是调度器的事。调用方（scheduler_io）用同一个 token 挂起自己。
     park_token* waiter;
     io_request* next;             // 等待链；完成后复用为完成队列的链指针
 #if defined(_WIN32)
@@ -110,11 +111,12 @@ io_engine* io_engine_create() noexcept;
 void io_engine_destroy(io_engine* engine) noexcept;
 
 // 启用唤醒源，成功后其他线程可调用 io_engine_notify() 打断 io_engine_wait()。
-// 每根工作线程启动时调用一次；不调用的引擎（测试里直接建的那种）没有唤醒源。
+// 运行时建引擎时调用一次；不调用的引擎（测试里直接建的那种）没有唤醒源。
+// 唤醒是粘的：没人在等时发出的那一次，留给下一次 io_engine_wait 立刻返回。
 bool io_engine_enable_notify(io_engine* engine) noexcept;
 bool io_engine_notify(io_engine* engine) noexcept;
 
-// 在句柄第一次参与 I/O 前调用，**必须调**：IOCP 在这里关联完成端口；epoll / kqueue 在这里
+// 句柄建好以后、第一次参与 I/O 之前调用，**必须调**：IOCP 在这里关联完成端口；epoll / kqueue 在这里
 // 用边沿触发登记读写两个方向，之后不再改，没接管的 fd 永远等不到事件。
 // 持有句柄生命周期的调用方负责调用，不能按会被系统复用的句柄值缓存关联状态。
 bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
@@ -133,16 +135,17 @@ int io_open_socket(int domain, int type, int protocol) noexcept;
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept;
 
 // 带超时地等。完成的操作把结果写进各自的 io_request，并把请求追加到
-// completed。timeout 为负表示无限等。调用方须在请求离开栈帧前取完完成项。
+// completed。timeout 为负表示无限等。同一时刻只能有一根线程在这里等。
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept;
 
-// 撤销已提交的操作。true：已撤干净，不再有通知，可释放 request。
-// false：完成通知仍会到来，调用方必须等到通知后才能释放 request 及其 OVERLAPPED。
+// 撤销已提交的操作。true：已经撤下来，引擎不会再交回它，结果由调用方填。
+// false：完成会经 io_engine_wait 交回来（或者已经交回来了），调用方必须等到那时才能释放
+// request 及其 OVERLAPPED。
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept;
 
-// 还有几个操作没回来，也就是**阻塞在 I/O 上的协程数**——调度器不另记一份。
-// 就绪队列一直不空时，调度器靠它决定要不要不等待地收一次完成。给 0 就是都回来了。
+// 还有几个操作没交回来，也就是**等在 I/O 上的等待者数**——调度器不另记一份。
+// 工作线程一直有活时，调度器靠它决定要不要不等待地收一次完成。给 0 就是都回来了。
 std::size_t io_engine_pending(const io_engine* engine) noexcept;
 
 // 把纳秒超时折成毫秒，给 epoll_wait 和 GetQueuedCompletionStatusEx 用（两边都要毫秒）。

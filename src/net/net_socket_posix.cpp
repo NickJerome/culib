@@ -88,7 +88,7 @@ result<endpoint> socket_endpoint(std::uintptr_t native, bool peer) {
                           static_cast<int>(length));
 }
 
-// 句柄归调用方：状态校验、scheduler_bind 和失败后的关闭都在公共层做。
+// 句柄归调用方：状态校验、登记到事件引擎和失败后的关闭都在公共层做。
 // POSIX 的 connect 不区分是否预绑定，bound 参数在这里用不上。
 result<void> connect_socket(std::uintptr_t native, const endpoint& peer, bool /*bound*/,
                             std::chrono::nanoseconds timeout) {
@@ -108,7 +108,7 @@ result<void> connect_socket(std::uintptr_t native, const endpoint& peer, bool /*
     return result<void>();
 }
 
-// 监听句柄同样已在公共层绑好调度线程；新句柄尚未归属任何线程，直接交回。
+// 新句柄由公共层登记到事件引擎上。
 // POSIX 的 accept 直接返回对端家族的套接字，family 参数在这里用不上。
 result<std::uintptr_t> accept_socket(std::uintptr_t native, address_family /*family*/,
                                      std::chrono::nanoseconds timeout) {

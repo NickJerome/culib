@@ -417,7 +417,7 @@ TEST(net_udp, unreachable_candidate_does_not_break_later_receive) {
     }
     unused.close();
 
-    // 三次收发都在同一根协程里，probe 和 reply 都绑在它所在的工作线程上。
+    // 三次收发都在同一根协程里，按次序发生。
     wavvix::wait_group group;
     bool probe_sent = false;
     bool reply_sent = false;

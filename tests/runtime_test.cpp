@@ -3,6 +3,7 @@
 
 #include <culib/coroutine.h>
 #include <culib/stopwatch.h>
+#include <culib/sync.h>
 #include <culib/test.h>
 
 #include <atomic>
@@ -210,6 +211,76 @@ TEST(runtime, wait_inside_a_coroutine_waits_for_children_on_other_workers) {
     outer.wait();
 
     EXPECT(all_seen, ==, true);
+}
+
+// ---- 换线程 ------------------------------------------------------------------------
+
+TEST(runtime, idle_workers_take_coroutines_queued_on_a_busy_one) {
+    // 协程里起的协程先排在本线程上；这根线程忙着的时候，闲着的工作线程把它们拿走。
+    std::mutex guard;
+    std::set<std::thread::id> threads;
+    wavvix::wait_group group;
+    group.go([&] {
+        wavvix::wait_group children;
+        for (int i = 0; i < 8; ++i) {
+            children.go([&] {
+                const wavvix::stopwatch busy;
+                while (busy.elapsed() < ms(5)) {
+                }
+                std::lock_guard<std::mutex> held(guard);
+                threads.insert(std::this_thread::get_id());
+            });
+        }
+        children.wait();
+    });
+    group.wait();
+
+    EXPECT(threads.size() >= std::size_t(2), ==, true);
+}
+
+TEST(runtime, a_parked_coroutine_continues_on_another_worker) {
+    // 协程挂起的时候，它原来那根工作线程被占着：叫醒以后只能由别的工作线程接着跑，栈上的东西都还在。
+    // 占位协程从这根协程里起，排在本线程上，这根协程一挂起它就接着在这里跑；偶尔会被闲着的线程
+    // 先拿走，那一次不算，重来。
+    bool occupied = false;
+    bool moved = false;
+    int value = 0;
+    for (int attempt = 0; attempt < 50 && !occupied; ++attempt) {
+        wavvix::channel<int> wake(1);
+        std::atomic<int> where(0);   // 1：占位协程在原来那根线程上；2：在别的线程上
+        std::atomic<bool> release(false);
+        std::thread::id before;
+        std::thread::id after;
+        wavvix::wait_group occupiers;
+        wavvix::wait_group group;
+        group.go([&] {
+            const int local = 7;
+            before = std::this_thread::get_id();
+            const std::thread::id home = before;
+            occupiers.go([&where, &release, home] {
+                where.store(std::this_thread::get_id() == home ? 1 : 2);
+                while (!release.load()) {
+                }
+            });
+            int got = 0;
+            wake.receive(got);
+            after = std::this_thread::get_id();
+            value = local + got;
+        });
+        while (where.load() == 0) {
+            std::this_thread::yield();
+        }
+        occupied = where.load() == 1;
+        wake.send(35);
+        group.wait();
+        release.store(true);
+        occupiers.wait();
+        moved = after != before;
+    }
+
+    EXPECT(occupied, ==, true);
+    EXPECT(moved, ==, true);
+    EXPECT(value, ==, 42);
 }
 
 // ---- 参数与可调用对象 --------------------------------------------------------------

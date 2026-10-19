@@ -1,6 +1,6 @@
 # 网络地址与统一套接字
 
-`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析，以及协程中的 TCP 和 UDP 收发。监听、连接和收发都由一个 `net::socket` 承担：构造时只记下 `protocol`（默认 TCP），原生套接字要到 `bind` / `connect` 时才创建。原先的 `tcp_listener` / `tcp_stream` / `udp_socket` 三类句柄已合并为它，不提供旧类型别名。
+`<culib/net.h>` 提供数字 IP 地址、显式 DNS 解析，以及 TCP 和 UDP 收发。监听、连接和收发都由一个 `net::socket` 承担：构造时只记下 `protocol`（默认 TCP），原生套接字要到 `bind` / `connect` 时才创建。原先的 `tcp_listener` / `tcp_stream` / `udp_socket` 三类句柄已合并为它，不提供旧类型别名。
 
 ## 地址
 
@@ -38,7 +38,7 @@ group.go([&] {
 group.wait();
 ```
 
-完整的可运行回环示例见 [`examples/net_echo.cpp`](../examples/net_echo.cpp)，用 `xmake run example_net_echo` 启动。`bind`、`listen`、`local_endpoint` / `peer_endpoint`、地址解析和 `close` 可以在协程外调用；`connect`、`accept`、`read` / `read_exactly` / `write`、`send_to` / `recv_from` 只能在协程里调用。协程的用法见[协程运行时](runtime.md)。
+完整的可运行回环示例见 [`examples/net_echo.cpp`](../examples/net_echo.cpp)，用 `xmake run example_net_echo` 启动。所有操作在协程里和协程外都能调用：会等的那些（`connect`、`accept`、`read` / `read_exactly` / `write`、`send_to` / `recv_from`）在协程里只挂起协程，在普通线程（包括 `main`）里阻塞那根线程。协程的用法见[协程运行时](runtime.md)。
 
 协议和阶段决定操作是否可用：`listen`（要求先 `bind`）、`accept`、`read` / `read_exactly` / `write` 只对 TCP 有效；`send_to` / `recv_from` 只对 UDP 有效，且 UDP 必须先 `bind`。`peer_endpoint` 只对已连接的 TCP 有效。用错协议或阶段返回错误，已有连接保持原样。非零长度配空指针是 `invalid_argument`；已连接 TCP 的零长度读写直接成功；`read` 返回 0，`read_exactly` / `write` 返回成功的 `result<void>`。
 
@@ -50,12 +50,12 @@ UDP：`send_to` 一次发送一个完整报文，成功返回 `result<void>`；`
 
 超时返回后，内部取消仍会等到内核不再引用请求才收场；`accept` 的取消竞态里已经到达的连接会被关闭。缓冲区须活到 I/O 返回。句柄上还有未完成的操作时，不得 `close`、移动覆盖或析构它。
 
-### 套接字绑在一根工作线程上
+### 套接字不属于哪根线程
 
-套接字第一次 I/O（`connect` 在连接时，监听器是第一次 `accept`，其余是第一次读写或收发）就绑到当时所在的工作线程，登记在那根线程的事件引擎上；之后在别的工作线程上操作打印诊断后终止。Windows 上一个套接字只能关联一个完成端口，epoll / kqueue 那边也是每根线程一个引擎，所以不能让它跟着协程换线程。
+运行时的事件引擎整个进程一个。套接字建出来（`bind`、没绑定过的 `connect`、`accept` 返回的新连接）就登记在它上面：epoll / kqueue 用边沿触发登记读写两个方向，Windows 关联到那个完成端口。之后套接字可以交给任何协程或线程：
 
-- 要在另一根协程里用同一个连接（比如一根收、一根发），在第一次读写它的那根协程里用 `go()` 起那根协程：协程里起的协程排在本线程上。
-- `accept` 返回的新连接在第一次 I/O 之前不属于任何工作线程，可以交给任何一根协程处理，例如 `go(handler, std::move(stream))`。
+- 一根协程读、另一根写同一个连接没问题；同一个方向上同时有几个在等，按先来后到交付。
+- 读写之间协程换了工作线程，或者干脆把连接按值移给另一根协程（`go(handler, std::move(stream))`），都没有关系。
 
 ## 主机名连接
 

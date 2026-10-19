@@ -188,8 +188,8 @@ TEST(net, tcp_listener_rebinds_port_left_in_time_wait) {
     EXPECT(again.listen().is_ok(), ==, true);
 }
 
-TEST(net, accepted_stream_can_go_to_another_coroutine_before_first_use) {
-    // 刚 accept 出来、还没读写过的连接可以交给另一根协程，按值移过去。
+TEST(net, a_stream_in_use_can_go_to_another_coroutine) {
+    // 读过的连接照样可以按值移给另一根协程，那根协程在哪根工作线程上跑都行。
     socket listener(protocol::tcp);
     listener.bind(endpoint::parse("127.0.0.1", 0).value()).value();
     listener.listen().value();
@@ -207,12 +207,13 @@ TEST(net, accepted_stream_can_go_to_another_coroutine_before_first_use) {
         if (accepted.is_err()) {
             return;
         }
+        char request = 0;
+        if (accepted.value().read_exactly(&request, 1, ms(1000)).is_err() || request != 'q') {
+            return;
+        }
         wavvix::wait_group handlers;
         handlers.go([&](socket stream) {
-            char request = 0;
-            if (stream.read_exactly(&request, 1, ms(1000)).is_err() || request != 'q') {
-                return;
-            }
+            wavvix::sleep_for(ms(1));
             handler_ok = stream.write("r", 1, ms(1000)).is_ok();
         }, std::move(accepted).value());
         handlers.wait();
@@ -230,6 +231,45 @@ TEST(net, accepted_stream_can_go_to_another_coroutine_before_first_use) {
 
     EXPECT(handler_ok, ==, true);
     EXPECT(client_ok, ==, true);
+}
+
+TEST(net, a_plain_thread_can_use_sockets_directly) {
+    // 协程外也能连、能读写：等的时候阻塞的是这根线程。
+    socket listener(protocol::tcp);
+    listener.bind(endpoint::parse("127.0.0.1", 0).value()).value();
+    listener.listen().value();
+    const wavvix::result<endpoint> local = listener.local_endpoint();
+    EXPECT(local.is_ok(), ==, true);
+    if (local.is_err()) {
+        return;
+    }
+
+    wavvix::wait_group server;
+    server.go([&] {
+        wavvix::result<socket> accepted = listener.accept(ms(2000));
+        if (accepted.is_err()) {
+            return;
+        }
+        char request[4] = {};
+        if (accepted.value().read_exactly(request, sizeof request, ms(2000)).is_ok()) {
+            (void)accepted.value().write(request, sizeof request, ms(2000));
+        }
+    });
+
+    socket client(protocol::tcp);
+    const bool connected = client.connect(local.value(), ms(2000)).is_ok();
+    const bool sent = connected && client.write("ping", 4, ms(2000)).is_ok();
+    char reply[4] = {};
+    const bool received = sent && client.read_exactly(reply, sizeof reply, ms(2000)).is_ok();
+    char extra = 0;
+    const wavvix::result<std::size_t> silent = client.read(&extra, 1, ms(30));
+    server.wait();
+
+    EXPECT(connected, ==, true);
+    EXPECT(received, ==, true);
+    EXPECT(std::string(reply, sizeof reply), ==, "ping");
+    // 对端写完以后就关了：读到 EOF，或者在这之前超时，都不能卡住这根线程
+    EXPECT(silent.is_err() || silent.value() == 0, ==, true);
 }
 
 TEST(net, two_coroutines_share_a_stream) {

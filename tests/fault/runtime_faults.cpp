@@ -6,7 +6,6 @@
 
 #include <culib/coroutine.h>
 #include <culib/detail/fiber.h>
-#include <culib/net.h>
 #include <culib/os.h>
 #include <culib/sync.h>
 
@@ -17,11 +16,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <new>
 #include <string>
-#include <thread>
-#include <utility>
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -81,9 +77,6 @@ void operator delete[](void* memory) noexcept {
 
 namespace {
 
-using wavvix::net::endpoint;
-namespace net = wavvix::net;
-
 // ---- 每种情形：都应当打印诊断后终止 ------------------------------------------------
 
 void workers_from_the_environment(const char* value) {
@@ -116,42 +109,36 @@ void stack_unavailable() {
     worker.resume();
 }
 
-void fiber_moved_to_another_thread() {
-    wavvix::detail::fiber worker([] { wavvix::detail::fiber::yield(); });
-    worker.resume();
-    std::thread other([&] { worker.resume(); });
-    other.join();
-}
-
-// 两根工作线程：第一根协程连上以后一直占着它那根线程，所以从 main 起的第二根协程只能
-// 落到另一根工作线程上，在那里用同一个连接。
-void socket_used_on_two_workers() {
-    wavvix::os::setenv("WAVVIX_MAXPROCS", "2").value();
-    net::socket listener;
-    listener.bind("127.0.0.1", 0).value();
-    listener.listen().value();
-    const endpoint local = listener.local_endpoint().value();
-    net::socket stream;
-    std::atomic<bool> connected(false);
-    std::atomic<bool> never(false);
-    wavvix::go([&] {
-        stream.connect(local, std::chrono::seconds(1)).value();
-        connected.store(true);
-        // 不让出：这根工作线程一直被占着。循环里必须有原子读——没有副作用的死循环在 C++
-        // 里是未定义行为，Clang 会把它整个删掉，协程就落到后面的代码里去了。
-        while (!never.load()) {
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+// 异常的处理状态按线程保存：catch 块里挂起，换了线程或者别的协程插进来都会把它弄乱。
+void suspend_inside_a_catch_block() {
+    wavvix::wait_group group;
+    group.go([] {
+        try {
+            throw 1;
+        } catch (int) {
+            wavvix::yield();
         }
     });
-    while (!connected.load()) {
-        std::this_thread::yield();
-    }
-    wavvix::go([&] {
-        const char byte = 'x';
-        const wavvix::result<void> sent = stream.write(&byte, 1, std::chrono::seconds(1));
-        (void)sent;
-    });
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    group.wait();
 }
+
+struct suspends_when_destroyed {
+    ~suspends_when_destroyed() { wavvix::sleep_for(std::chrono::milliseconds(1)); }
+};
+
+void suspend_while_unwinding() {
+    wavvix::wait_group group;
+    group.go([] {
+        try {
+            suspends_when_destroyed guard;
+            throw 1;
+        } catch (int) {
+        }
+    });
+    group.wait();
+}
+#endif
 
 void channel_without_capacity() {
     wavvix::channel<int> values(0);
@@ -186,8 +173,10 @@ const fault_case cases[] = {
     {"too_many_workers", &too_many_workers, "WAVVIX_MAXPROCS 必须是"},
     {"out_of_memory", &out_of_memory, "内存不足，建不起协程"},
     {"stack_unavailable", &stack_unavailable, "栈内存不够，跑不起协程"},
-    {"fiber_moved_to_another_thread", &fiber_moved_to_another_thread, "协程绑定在第"},
-    {"socket_used_on_two_workers", &socket_used_on_two_workers, "不能换线程用"},
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    {"suspend_inside_a_catch_block", &suspend_inside_a_catch_block, "协程不能在 catch 块里"},
+    {"suspend_while_unwinding", &suspend_while_unwinding, "协程不能在 catch 块里"},
+#endif
     {"channel_without_capacity", &channel_without_capacity, "容量至少为 1"},
     {"channel_send_after_close", &channel_send_after_close, "已经关闭，不能再 send"},
     {"channel_closed_twice", &channel_closed_twice, "重复关闭"},

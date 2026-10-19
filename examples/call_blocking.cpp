@@ -26,7 +26,7 @@ int main() {
 
     wavvix::wait_group group;
     group.go([&] {
-        // 协程里起的协程先排在本线程上：它能转起来，说明等 call_blocking 时这根线程没被占住。
+        // 等 call_blocking 的时候只挂起这根协程，另一根照常转。
         wavvix::wait_group other;
         other.go([&] {
             while (!returned.load()) {
@@ -41,6 +41,6 @@ int main() {
     group.wait();
 
     std::printf("answer: %d\n", answer);
-    std::printf("等它的 50 ms 里，同一根工作线程上的另一根协程转了 %ld 轮\n", spins);
+    std::printf("等它的 50 ms 里，另一根协程转了 %ld 轮\n", spins);
     return answer == 42 ? 0 : 1;
 }

@@ -2,6 +2,7 @@
 
 // coroutine 的内部接口。不是公共头文件，使用方不该包含。
 
+#include <atomic>
 #include <cstddef>
 
 #include "../mem/stack.h"
@@ -44,7 +45,7 @@ context_transfer wavvix_jump_context(void* to, void* data) noexcept;
 using mem::detail::stack_memory;
 
 // 控制块和可调用对象放在同一块堆内存里，栈在第一次 resume 时才分配（memory.base 在那之前为空）。
-// 调度器用 next_ready 串起就绪队列。
+// 调度器用 next_ready 串起就绪队列，用 park_state 对齐挂起和唤醒（见 scheduler.cpp 的 run）。
 struct coroutine_control {
     void* context;
     void* resumer;
@@ -53,7 +54,6 @@ struct coroutine_control {
     void* body;
     stack_memory memory;
     std::size_t usable;
-    unsigned long long owner;
     bool started;
     bool finished;
 #if WAVVIX_DETAIL_ASAN_FIBERS
@@ -62,6 +62,7 @@ struct coroutine_control {
     std::size_t resumer_stack_size;
 #endif
     coroutine_control* next_ready;
+    std::atomic<int> park_state;
 };
 
 }  // namespace detail

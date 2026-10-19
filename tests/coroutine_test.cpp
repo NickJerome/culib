@@ -2,6 +2,7 @@
 #include <culib/detail/fiber.h>
 #include <culib/test.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -252,26 +253,41 @@ TEST(fiber, runs_many_of_them_interleaved) {
     }
 }
 
-// 协程绑定在**第一次 resume 它的那根线程**上，不是构造它的那根。
-// 所以「主线程造一批、分给工作线程跑」是允许的，而迁移会 abort。
-// abort 那一侧在 tests/fault/runtime_faults.cpp 里。
-TEST(fiber, binds_to_the_thread_that_first_resumes_it) {
-    int ran = 0;
+// 协程可以换线程继续：一次 resume 在一根线程上，下一次在另一根上，栈上的东西都还在。
+TEST(fiber, continues_on_another_thread) {
+    std::thread::id first;
+    std::thread::id second;
+    int kept = 0;
     fiber worker([&] {
-        ++ran;
+        int local = 41;
+        first = std::this_thread::get_id();
         fiber::yield();
-        ++ran;
+        second = std::this_thread::get_id();
+        kept = local + 1;
     });
 
-    // 在工作线程上从头跑到尾：绑定发生在那边，不在主线程
-    std::thread worker_thread([&] {
-        while (worker.resume()) {
+    // 第一根线程等第二根跑完才退出：两根同时活着，线程 id 才不会被复用。
+    std::atomic<int> step(0);
+    std::thread one([&] {
+        worker.resume();
+        step.store(1);
+        while (step.load() != 2) {
+            std::this_thread::yield();
         }
     });
-    worker_thread.join();
+    std::thread two([&] {
+        while (step.load() != 1) {
+            std::this_thread::yield();
+        }
+        worker.resume();
+        step.store(2);
+    });
+    one.join();
+    two.join();
 
-    EXPECT(ran, ==, 2);
     EXPECT(worker.done(), ==, true);
+    EXPECT(kept, ==, 42);
+    EXPECT(first != second, ==, true);
 }
 
 // 栈来自分配器，释放后会被别的协程复用；每根都把自己的栈写满再核对，

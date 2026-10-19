@@ -2,7 +2,7 @@
 #include <culib/config.h>
 #include <culib/flag.h>
 #include <culib/fs.h>
-#include "runtime/wait_set.h"
+#include "runtime/timer_heap.h"
 #include "mem/pages.h"
 
 #include <cstdio>
@@ -20,44 +20,41 @@ int main() {
     if (wavvix::flag::parse(2, arguments).is_err() || port.value() != 9000)
         return 3;
 
-    wavvix::detail::wait_set waiting;
-    wavvix::detail::park_token tokens[100] = {};
+    wavvix::detail::timer_heap timers;
+    wavvix::detail::park_token tokens[100];
     for (int i = 0; i < 100; ++i) {
-        tokens[i].timed = i != 99;
-        tokens[i].deadline = wavvix::detail::park_instant() +
-            std::chrono::milliseconds(98 - i);
-        waiting.add(tokens[i]);
+        tokens[i].deadline = wavvix::detail::park_instant() + std::chrono::milliseconds(99 - i);
+        timers.push(tokens[i]);
     }
-    // Remove arbitrary waits before their deadlines; untimed waits stay counted.
-    for (int i = 0; i < 99; i += 2) waiting.remove(tokens[i]);
-    if (waiting.size() != 50) return 4;
-    for (int i = 97; i >= 1; i -= 2) {
-        if (waiting.next() != &tokens[i]) return 5;
-        waiting.remove(tokens[i]);
+    // Remove arbitrary timers before their deadlines; removing twice is harmless.
+    for (int i = 0; i < 100; i += 2) {
+        timers.remove(tokens[i]);
+        timers.remove(tokens[i]);
     }
-    if (waiting.next() || waiting.size() != 1) return 6;
-    waiting.remove(tokens[99]);
-    waiting.remove(tokens[99]);
-    if (!waiting.empty()) return 7;
+    for (int i = 99; i >= 1; i -= 2) {
+        if (timers.top() != &tokens[i]) return 4;
+        timers.remove(tokens[i]);
+    }
+    if (timers.top() || !timers.empty()) return 5;
 
     // Equal deadlines retain insertion order, including after cancellation.
     for (int i = 0; i < 3; ++i) {
         tokens[i].deadline = wavvix::detail::park_instant();
-        waiting.add(tokens[i]);
+        timers.push(tokens[i]);
     }
-    waiting.remove(tokens[1]);
-    if (waiting.next() != &tokens[0]) return 8;
-    waiting.remove(tokens[0]);
-    if (waiting.next() != &tokens[2]) return 9;
-    waiting.remove(tokens[2]);
-    if (!waiting.empty()) return 10;
+    timers.remove(tokens[1]);
+    if (timers.top() != &tokens[0]) return 6;
+    timers.remove(tokens[0]);
+    if (timers.top() != &tokens[2]) return 7;
+    timers.remove(tokens[2]);
+    if (!timers.empty()) return 8;
 
     namespace memory = wavvix::mem::detail;
     char* const block = static_cast<char*>(memory::pages::allocate(17));
-    if (!block || block[0] != 0 || block[16] != 0) return 11;
+    if (!block || block[0] != 0 || block[16] != 0) return 9;
     block[16] = 'x';
-    if (!memory::pages::release(block, 17)) return 12;
+    if (!memory::pages::release(block, 17)) return 10;
 
-    std::puts("[PASS] layers: config, flags, paths, waits and pages work independently");
+    std::puts("[PASS] layers: config, flags, paths, timers and pages work independently");
     return 0;
 }

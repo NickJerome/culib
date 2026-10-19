@@ -1,7 +1,7 @@
 // 事件引擎的跨平台行为与完成包生命周期测试。
 //
-// 在 runtime_order_test 里跑：只有一根工作线程，句柄登记在那根线程的引擎上，读写它的协程
-// 都由一根协程用 go() 起出来，同一轮起步，次序确定。
+// 在 runtime_order_test 里跑：只有一根工作线程，读写句柄的协程都由一根协程用 go() 起出来，
+// 同一轮起步，次序确定。
 
 #include <culib/coroutine.h>
 #include <culib/test.h>
@@ -159,18 +159,17 @@ bool make_linked(io_handle& left, io_handle& right) {
 
 #endif
 
-// 两端都能收发的一对句柄。要在协程里构造：两个句柄登记到当前工作线程的引擎上——
-// epoll / kqueue 在这里用边沿触发登记，IOCP 在这里关联完成端口，见 io_engine.h。
+// 两端都能收发的一对句柄，都登记到运行时的事件引擎上——epoll / kqueue 在这里用边沿触发登记，
+// IOCP 在这里关联完成端口，见 io_engine.h。
 class linked_pair {
 public:
-    linked_pair() : left(no_handle()), right(no_handle()), left_owner_(0), right_owner_(0) {
+    linked_pair() : left(no_handle()), right(no_handle()) {
         if (!make_linked(left, right)) {
             left = no_handle();
             right = no_handle();
             return;
         }
-        if (!wavvix::detail::scheduler_bind(left, left_owner_) ||
-            !wavvix::detail::scheduler_bind(right, right_owner_)) {
+        if (!wavvix::detail::scheduler_adopt(left) || !wavvix::detail::scheduler_adopt(right)) {
             close_handle(left);
             close_handle(right);
         }
@@ -188,9 +187,6 @@ public:
 private:
     linked_pair(const linked_pair&);
     linked_pair& operator=(const linked_pair&);
-
-    const void* left_owner_;
-    const void* right_owner_;
 };
 
 // 在协程里跑 body，等它结束。
@@ -301,18 +297,22 @@ bool engine_ready(int fd) {
 // ---- 引擎本身 ----------------------------------------------------------------------
 
 #if !defined(_WIN32)
-TEST(io_engine, fd_table_growth_preserves_waiters_on_failure) {
+TEST(io_engine, fd_table_keeps_slots_in_place_as_it_grows) {
+    // 别的线程可能正拿着格子的地址：建新块不能挪动已有的格子。
     wavvix::detail::io_fd_table slots;
-    if (!EXPECT(slots.ensure(7), ==, true)) {
+    EXPECT(slots.find(7) == 0, ==, true);
+    wavvix::detail::io_fd_slot* const slot = slots.ensure(7);
+    if (!EXPECT(slot != 0, ==, true)) {
         return;
     }
-    EXPECT(slots[7].readers, ==, static_cast<io_request*>(0));
+    EXPECT(slot->readers, ==, static_cast<io_request*>(0));
     io_request waiting;
-    slots[7].readers = &waiting;
+    slot->readers = &waiting;
 
-    EXPECT(slots.ensure(static_cast<std::size_t>(-1)), ==, false);
-    EXPECT(slots.size(), ==, 16u);
-    EXPECT(slots[7].readers, ==, &waiting);
+    EXPECT(slots.ensure(100000) != 0, ==, true);
+    EXPECT(slots.ensure(static_cast<std::size_t>(-1)) == 0, ==, true);
+    EXPECT(slots.find(7) == slot, ==, true);
+    EXPECT(slot->readers, ==, &waiting);
 }
 
 // Linux 建的时候一次设好标志，macOS 建完再补，两边都由这一条检查。

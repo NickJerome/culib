@@ -41,7 +41,8 @@ namespace detail {
 
 class fiber {
 public:
-    // 可调用对象存在堆上的控制块里；栈在第一次 resume() 时由那根线程分配，之后不能换线程 resume。
+    // 可调用对象存在堆上的控制块里；栈在第一次 resume() 时分配。可以在不同的线程上 resume，
+    // 但同一时刻只能有一根线程在跑它。
     template <typename F>
     explicit fiber(F&& body, std::size_t stack_size = default_stack_size,
                    fiber_failure* failure = 0)

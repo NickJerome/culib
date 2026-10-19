@@ -492,8 +492,6 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     bool read_failed = false;
     std::size_t spins = 0;
     std::size_t spins_at_resume = 0;
-    std::thread::id worker_thread;
-    std::thread::id worker_after_resume;
 
 #ifdef _WIN32
     // 写端。wait_for 有上限；任何失败路径都先把管道连接并关掉，把可能卡在
@@ -577,7 +575,6 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     // 裸的 fs::open / read / close——没有任何 call_blocking 包装。
     wavvix::wait_group group;
     group.go([&] {
-        worker_thread = std::this_thread::get_id();
         // 旁观协程从读协程里起：协程里起的协程排在本线程上，读协程还阻塞在 open 里的时候
         // 它就能跑起来——这是裸 fs 调用被挪出工作线程的观测证据。
         wavvix::wait_group observer;
@@ -597,7 +594,6 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
         // open 一返回就取 spins：此刻旁观协程跑过的次数就是「等待期间工作线程是否
         // 空闲」的直接读数。
         spins_at_resume = spins;
-        worker_after_resume = std::this_thread::get_id();
         if (opened.is_err()) {
             read_failed = true;
             return;
@@ -629,6 +625,4 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     EXPECT(content, ==, payload);  // 读到写端 close 为止，一个字节不少
     // open 返回时旁观协程至少让出过一次：阻塞发生在别的线程上，工作线程一直空闲可跑。
     EXPECT(spins_at_resume >= 1, ==, true);
-    // 协程在自己的工作线程上恢复：被挪出去的是操作本身，不是协程本身。
-    EXPECT(worker_thread == worker_after_resume, ==, true);
 }

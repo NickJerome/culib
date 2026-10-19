@@ -1,4 +1,4 @@
-// 协程感知的同步原语实现。等待者可以在任何一根工作线程上，也可以是普通线程，唤醒经 scheduler_wake 送过去。
+// 协程感知的同步原语实现。等待者可以是任何一根工作线程上的协程，也可以是普通线程，唤醒经 scheduler_wake 送过去。
 
 #include <culib/coroutine.h>
 #include <culib/sync.h>
@@ -48,7 +48,7 @@ park_token* dequeue(park_token*& head, park_token*& tail) {
     return token;
 }
 
-// 超时者自己摘链；交棒者已经摘走时直接返回。
+// 到点的等待者自己摘链；交棒者已经摘走（而且叫不醒它）时直接返回。
 void withdraw(park_token*& head, park_token*& tail, park_token& token) {
     if (!token.queued) {
         return;
@@ -152,9 +152,6 @@ bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
     if (detail::scheduler_park(token, timeout)) {
         return true;   // 交棒给我们了
     }
-    if (!detail::scheduler_give_up(token)) {
-        return true;   // 超时的同时交棒已经发出
-    }
     std::lock_guard<std::mutex> state(state_);
     withdraw(head_, tail_, token);   // 到点了，自己摘掉
     return false;
@@ -197,13 +194,10 @@ bool condition_variable::wait_for(mutex& held, std::chrono::nanoseconds timeout)
         enqueue(head_, tail_, token);
     }
     held.unlock();
-    bool notified = detail::scheduler_park(token, timeout);
+    const bool notified = detail::scheduler_park(token, timeout);
     if (!notified) {
-        notified = !detail::scheduler_give_up(token);
-        if (!notified) {
-            std::lock_guard<std::mutex> state(state_);
-            withdraw(head_, tail_, token);
-        }
+        std::lock_guard<std::mutex> state(state_);
+        withdraw(head_, tail_, token);
     }
     held.lock();   // 不管通知还是超时，返回时锁都重新拿在手里
     return notified;

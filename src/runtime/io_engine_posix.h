@@ -4,11 +4,12 @@
 
 #include "io_engine.h"
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
-#include <limits>
+#include <mutex>
 #include <new>
 
 #include <unistd.h>
@@ -29,49 +30,76 @@ struct io_fd_slot {
     io_request* writers;
 };
 
-inline io_fd_slot io_empty_slot() {
-    const io_fd_slot empty = {0, 0};
-    return empty;
-}
-
+// fd 下标表按块分配，块建好以后不再移动也不释放，别的线程拿着格子的地址也不会失效。
+// 最多 4096 块、每块 1024 格，也就是 fd 小于 4M。
 class io_fd_table {
 public:
-    io_fd_table() noexcept : slots_(0), size_(0) {}
-    ~io_fd_table() noexcept { delete[] slots_; }
+    io_fd_table() noexcept {
+        for (std::size_t i = 0; i < chunk_count; ++i) {
+            chunks_[i].store(0, std::memory_order_relaxed);
+        }
+    }
+    ~io_fd_table() noexcept {
+        for (std::size_t i = 0; i < chunk_count; ++i) {
+            delete[] chunks_[i].load(std::memory_order_relaxed);
+        }
+    }
     io_fd_table(const io_fd_table&) = delete;
     io_fd_table& operator=(const io_fd_table&) = delete;
 
-    std::size_t size() const noexcept { return size_; }
-    io_fd_slot& operator[](std::size_t index) noexcept { return slots_[index]; }
+    // 已经建好的格子；所在的块还没建或者超出上限返回 0。
+    io_fd_slot* find(std::size_t index) const noexcept {
+        if (index >= chunk_count * chunk_size) {
+            return 0;
+        }
+        io_fd_slot* const chunk = chunks_[index / chunk_size].load(std::memory_order_acquire);
+        return chunk ? &chunk[index % chunk_size] : 0;
+    }
 
-    bool ensure(std::size_t index) noexcept {
-        if (index < size_) return true;
-        const std::size_t limit = static_cast<std::size_t>(
-            (std::numeric_limits<std::ptrdiff_t>::max)()) / sizeof(io_fd_slot);
-        if (index > (limit - 2) / 2) return false;
-        const std::size_t capacity = index * 2 + 2;
-        io_fd_slot* const grown = new (std::nothrow) io_fd_slot[capacity];
-        if (!grown) return false;
-        for (std::size_t i = 0; i < size_; ++i) grown[i] = slots_[i];
-        for (std::size_t i = size_; i < capacity; ++i) grown[i] = io_empty_slot();
-        delete[] slots_;
-        slots_ = grown;
-        size_ = capacity;
-        return true;
+    // 需要时建出格子所在的块。超出上限或者分配失败返回 0。
+    io_fd_slot* ensure(std::size_t index) noexcept {
+        io_fd_slot* const found = find(index);
+        if (found || index >= chunk_count * chunk_size) {
+            return found;
+        }
+        io_fd_slot* const fresh = new (std::nothrow) io_fd_slot[chunk_size]();
+        if (!fresh) {
+            return 0;
+        }
+        io_fd_slot* existing = 0;
+        if (!chunks_[index / chunk_size].compare_exchange_strong(existing, fresh, std::memory_order_acq_rel,
+                                                                   std::memory_order_acquire)) {
+            delete[] fresh;   // 别的线程先建好了这一块
+            return &existing[index % chunk_size];
+        }
+        return &fresh[index % chunk_size];
     }
 
 private:
-    io_fd_slot* slots_;
-    std::size_t size_;
+    static const std::size_t chunk_size = 1024;
+    static const std::size_t chunk_count = 4096;
+
+    std::atomic<io_fd_slot*> chunks_[chunk_count];
+};
+
+// 同一个 fd 的等待链由同一把锁护着：登记（试一次、做不了就排队）、事件分发和撤销都在锁里，
+// 所以边沿事件不会落进「试过了、还没排上」的空当。按 fd 取模分成 64 把。
+class io_fd_locks {
+public:
+    std::mutex& of(int fd) noexcept { return locks_[static_cast<std::size_t>(fd) % count]; }
+
+private:
+    static const std::size_t count = 64;
+    std::mutex locks_[count];
 };
 
 // 把链头摘下来交还给调度器。结果（transferred / failure）调用方已经填在请求里了。
 inline void io_hand_back(io_request*& head, io_completion_batch& completed,
-                         std::size_t& pending) {
+                         std::atomic<std::size_t>& pending) {
     io_request* const request = head;
     head = request->next;
     completed.push(request);
-    if (pending) --pending;
+    pending.fetch_sub(1, std::memory_order_relaxed);
 }
 
 // 把一个请求从它所在的等待链上摘下来。给「调用方超时了，撤掉这次操作」用。
@@ -217,7 +245,8 @@ inline bool io_try_now(io_request& request) {
 //
 // 同方向已经有人在排队时不试：先来先服务，免得后来的抢走前面那个在等的数据。
 // 不试也不会漏：边沿触发下，队首等的那次事件还会来，到时候一路做到 EAGAIN。
-inline bool io_enqueue(io_fd_table& slots, std::size_t& pending, io_request& request) noexcept {
+inline bool io_enqueue(io_fd_table& slots, io_fd_locks& locks, std::atomic<std::size_t>& pending,
+                       io_request& request) noexcept {
     if (request.handle < 0) {
         request.transferred = -1;
         request.failure = EBADF;
@@ -225,39 +254,49 @@ inline bool io_enqueue(io_fd_table& slots, std::size_t& pending, io_request& req
     }
 
     const std::size_t index = static_cast<std::size_t>(request.handle);
-    const bool queued = index < slots.size() &&
-        (request.direction == io_read ? slots[index].readers : slots[index].writers) != 0;
+    std::lock_guard<std::mutex> held(locks.of(request.handle));
+    io_fd_slot* slot = slots.find(index);
+    const bool queued = slot && (request.direction == io_read ? slot->readers : slot->writers) != 0;
     if (!queued && io_try_now(request)) {
         return false;
     }
-    if (!slots.ensure(index)) {
+    if (!slot) {
+        slot = slots.ensure(index);
+    }
+    if (!slot) {
         request.transferred = -1;
         request.failure = ENOMEM;
         return false;
     }
 
-    io_fd_slot& slot = slots[index];
     request.next = 0;
-    io_request** tail = request.direction == io_read ? &slot.readers : &slot.writers;
+    io_request** tail = request.direction == io_read ? &slot->readers : &slot->writers;
     while (*tail) {
         tail = &(*tail)->next;
     }
     *tail = &request;
-    ++pending;
+    pending.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
-// 把超时的请求从等待链上摘掉。摘不到说明它已经完成了；两种情况都不会再有通知。
-inline void io_dequeue(io_fd_table& slots, std::size_t& pending, io_request& request) noexcept {
-    if (request.handle < 0 || static_cast<std::size_t>(request.handle) >= slots.size()) {
-        return;
+// 把超时的请求从等待链上摘掉。返回 false 表示摘不到：它已经完成、交回去了。
+inline bool io_dequeue(io_fd_table& slots, io_fd_locks& locks, std::atomic<std::size_t>& pending,
+                       io_request& request) noexcept {
+    if (request.handle < 0) {
+        return false;
     }
 
-    io_fd_slot& slot = slots[static_cast<std::size_t>(request.handle)];
-    io_request*& head = request.direction == io_read ? slot.readers : slot.writers;
-    if (io_unlink(head, request) && pending != 0) {
-        --pending;
+    std::lock_guard<std::mutex> held(locks.of(request.handle));
+    io_fd_slot* const slot = slots.find(static_cast<std::size_t>(request.handle));
+    if (!slot) {
+        return false;
     }
+    io_request*& head = request.direction == io_read ? slot->readers : slot->writers;
+    if (!io_unlink(head, request)) {
+        return false;
+    }
+    pending.fetch_sub(1, std::memory_order_relaxed);
+    return true;
 }
 
 // 把链头那个请求做掉并交还给调度器。
@@ -265,7 +304,7 @@ inline void io_dequeue(io_fd_table& slots, std::size_t& pending, io_request& req
 // 返回 false 表示这一轮没完成：链空了，或者 EAGAIN（别的东西先把数据拿走了）。
 // EAGAIN 时**请求留在链上，不唤醒协程**，等下一次边沿事件。
 inline bool io_complete(io_request*& head, io_completion_batch& completed,
-                        std::size_t& pending) {
+                        std::atomic<std::size_t>& pending) {
     if (!head) return false;
     if (!io_try_now(*head)) return false;
     io_hand_back(head, completed, pending);
@@ -275,19 +314,23 @@ inline bool io_complete(io_request*& head, io_completion_batch& completed,
 // 一个 fd 来了读或写的事件。边沿触发下同一个状态不会再报第二次，所以把这个方向
 // 排着的请求一直做到 EAGAIN 或者队列空。错误和对端关闭不单独处理：直接做系统调用，
 // 让它把错误码或者 0 字节报出来。
-inline void io_dispatch(io_fd_table& slots, std::size_t& pending, int fd, bool readable,
-                        bool writable, io_completion_batch& completed) noexcept {
-    if (fd < 0 || static_cast<std::size_t>(fd) >= slots.size()) {
+inline void io_dispatch(io_fd_table& slots, io_fd_locks& locks, std::atomic<std::size_t>& pending, int fd,
+                        bool readable, bool writable, io_completion_batch& completed) noexcept {
+    if (fd < 0) {
         return;
     }
 
-    io_fd_slot& slot = slots[static_cast<std::size_t>(fd)];
+    std::lock_guard<std::mutex> held(locks.of(fd));
+    io_fd_slot* const slot = slots.find(static_cast<std::size_t>(fd));
+    if (!slot) {
+        return;
+    }
     if (readable) {
-        while (io_complete(slot.readers, completed, pending)) {
+        while (io_complete(slot->readers, completed, pending)) {
         }
     }
     if (writable) {
-        while (io_complete(slot.writers, completed, pending)) {
+        while (io_complete(slot->writers, completed, pending)) {
         }
     }
 }

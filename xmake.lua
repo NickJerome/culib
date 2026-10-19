@@ -73,9 +73,12 @@ target("culib")
     -- xmake 的描述作用域里 raise / assert / error 全是 nil（都报 unknown interface），
     -- 而那个错误会让 xmake f 失败、却让后续的 xmake 沿用上一份还有效的配置继续构建。
     -- 结果是改了配置看不出来、二进制还是旧的，白跑两轮验证。门禁放在 C++ 里更可靠。
-    -- 每个函数、数据单独成段，使用方链接时即可剔除未用到的代码
+    -- 每个函数、数据单独成段，使用方链接时即可剔除未用到的代码。
+    -- /GT：协程在挂起点会换线程，MSVC 默认会把线程局部变量的地址留在寄存器里跨过函数调用，
+    -- 这个开关让它每次重新取（文档叫 fiber-safe TLS）。GCC / Clang 没有对应的开关，
+    -- 调度器只在不内联的函数里读线程局部变量，见 src/runtime/scheduler.cpp 的 this_worker。
     if is_plat("windows") then
-        add_cxflags("/Gy")
+        add_cxflags("/Gy", "/GT")
     else
         add_cxflags("-ffunction-sections", "-fdata-sections")
     end
