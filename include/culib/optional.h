@@ -47,9 +47,20 @@ public:
 
     bool has_value() const noexcept { return this->has_; }
 
-    T& value() & noexcept { check(); return this->value_; }
-    const T& value() const& noexcept { check(); return this->value_; }
-    T&& value() && noexcept { check(); return std::move(this->value_); }
+    T& value() & noexcept {
+        check();
+        return this->value_;
+    }
+
+    const T& value() const& noexcept {
+        check();
+        return this->value_;
+    }
+
+    T&& value() && noexcept {
+        check();
+        return std::move(this->value_);
+    }
 
     template <typename U>
     T value_or(U&& fallback) const& {
@@ -64,7 +75,11 @@ public:
     void reset() noexcept { this->clear(); }
 
 private:
-    void check() const noexcept { if (!has_value()) detail::optional_bad_value(); }
+    void check() const noexcept {
+        if (!has_value()) {
+            detail::optional_bad_value();
+        }
+    }
 };
 
 // 和 nullopt 的比较：只问有没有值，不碰 T，所以 T 不需要可比较。

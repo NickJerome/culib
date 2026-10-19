@@ -109,7 +109,10 @@ protected:
 
     ~optional_storage() { destroy(); }
 
-    void clear() noexcept { destroy(); has_ = false; }
+    void clear() noexcept {
+        destroy();
+        has_ = false;
+    }
 
 private:
     // 赋值要先销毁旧值再构造新值，移动构造不能抛异常，否则中途失败会留下无效状态。

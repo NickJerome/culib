@@ -69,12 +69,35 @@ public:
     bool is_ok() const noexcept { return this->ok_; }
     bool is_err() const noexcept { return !this->ok_; }
 
-    T& value() & noexcept { check_value(); return this->value_; }
-    const T& value() const& noexcept { check_value(); return this->value_; }
-    T&& value() && noexcept { check_value(); return std::move(this->value_); }
-    wavvix::error& error() & noexcept { check_error(); return this->error_; }
-    const wavvix::error& error() const& noexcept { check_error(); return this->error_; }
-    wavvix::error&& error() && noexcept { check_error(); return std::move(this->error_); }
+    T& value() & noexcept {
+        check_value();
+        return this->value_;
+    }
+
+    const T& value() const& noexcept {
+        check_value();
+        return this->value_;
+    }
+
+    T&& value() && noexcept {
+        check_value();
+        return std::move(this->value_);
+    }
+
+    wavvix::error& error() & noexcept {
+        check_error();
+        return this->error_;
+    }
+
+    const wavvix::error& error() const& noexcept {
+        check_error();
+        return this->error_;
+    }
+
+    wavvix::error&& error() && noexcept {
+        check_error();
+        return std::move(this->error_);
+    }
 
     // 失败时返回 fallback。
     template <typename U>
@@ -86,8 +109,17 @@ public:
         return is_ok() ? std::move(this->value_) : static_cast<T>(std::forward<U>(fallback));
     }
 private:
-    void check_value() const noexcept { if (is_err()) detail::result_bad_value(this->error_); }
-    void check_error() const noexcept { if (is_ok()) detail::result_bad_error(); }
+    void check_value() const noexcept {
+        if (is_err()) {
+            detail::result_bad_value(this->error_);
+        }
+    }
+
+    void check_error() const noexcept {
+        if (is_ok()) {
+            detail::result_bad_error();
+        }
+    }
 };
 
 template <>
@@ -103,12 +135,33 @@ public:
 
     bool is_ok() const noexcept { return this->ok_; }
     bool is_err() const noexcept { return !this->ok_; }
-    void value() const noexcept { if (is_err()) detail::result_bad_value(this->error_); }
-    wavvix::error& error() & noexcept { check_error(); return this->error_; }
-    const wavvix::error& error() const& noexcept { check_error(); return this->error_; }
-    wavvix::error&& error() && noexcept { check_error(); return std::move(this->error_); }
+
+    void value() const noexcept {
+        if (is_err()) {
+            detail::result_bad_value(this->error_);
+        }
+    }
+
+    wavvix::error& error() & noexcept {
+        check_error();
+        return this->error_;
+    }
+
+    const wavvix::error& error() const& noexcept {
+        check_error();
+        return this->error_;
+    }
+
+    wavvix::error&& error() && noexcept {
+        check_error();
+        return std::move(this->error_);
+    }
 private:
-    void check_error() const noexcept { if (is_ok()) detail::result_bad_error(); }
+    void check_error() const noexcept {
+        if (is_ok()) {
+            detail::result_bad_error();
+        }
+    }
 };
 
 }  // namespace wavvix

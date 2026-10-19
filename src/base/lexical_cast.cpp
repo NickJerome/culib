@@ -199,11 +199,17 @@ bool is_strict_decimal(string_view text) {
         ++i;
     }
     std::size_t integer_digits = 0;
-    while (i < text.size() && digit_value(text[i]) <= 9) { ++i; ++integer_digits; }
+    while (i < text.size() && digit_value(text[i]) <= 9) {
+        ++i;
+        ++integer_digits;
+    }
     std::size_t fraction_digits = 0;
     if (i < text.size() && text[i] == '.') {
         ++i;
-        while (i < text.size() && digit_value(text[i]) <= 9) { ++i; ++fraction_digits; }
+        while (i < text.size() && digit_value(text[i]) <= 9) {
+            ++i;
+            ++fraction_digits;
+        }
     }
     if (integer_digits == 0 && fraction_digits == 0) {
         return false;
@@ -214,7 +220,10 @@ bool is_strict_decimal(string_view text) {
             ++i;
         }
         std::size_t exponent_digits = 0;
-        while (i < text.size() && digit_value(text[i]) <= 9) { ++i; ++exponent_digits; }
+        while (i < text.size() && digit_value(text[i]) <= 9) {
+            ++i;
+            ++exponent_digits;
+        }
         if (exponent_digits == 0) {
             return false;
         }
