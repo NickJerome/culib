@@ -8,6 +8,7 @@
 
 #include <culib/detail/coroutine_call.h>
 #include <culib/detail/fiber.h>
+#include <culib/detail/list.h>
 
 #include <chrono>
 #include <cstddef>
@@ -19,8 +20,6 @@
 namespace wavvix {
 
 namespace detail {
-
-struct park_token;
 
 // 接管一根装好函数的协程，排进运行时。第一次调用时启动运行时。
 void scheduler_submit(coroutine_control* body);
@@ -52,7 +51,7 @@ void go(F&& body, Args&&... args) {
 // wait() 返回以后可以接着往组里加。还有协程没结束时析构，打印诊断后终止。
 class wait_group {
 public:
-    wait_group() noexcept : running_(0), head_(0), tail_(0) {}
+    wait_group() noexcept : running_(0) {}
     ~wait_group();
     wait_group(const wait_group&) = delete;
     wait_group& operator=(const wait_group&) = delete;
@@ -108,10 +107,9 @@ private:
     void add();
     void done() noexcept;
 
-    std::mutex state_;
+    std::mutex state_;            // 保护 running_ 和 waiters_
     std::size_t running_;
-    detail::park_token* head_;   // 在 wait() 里等的，先来先服务
-    detail::park_token* tail_;
+    detail::list_node waiters_;   // 在 wait() 里等的
 };
 
 // 协程里让出，排到就绪队列的末尾；协程外等同 std::this_thread::yield()。

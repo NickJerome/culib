@@ -2,6 +2,8 @@
 
 // 挂起时使用的内部凭据。等待者可以是协程，也可以是普通线程。
 
+#include <culib/detail/list.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -29,10 +31,11 @@ struct thread_parker {
 // 唤醒者和到点的一方各做一次比较交换，先换成的那一方说了算。
 enum park_state { park_waiting, park_woken, park_timed_out };
 
-struct park_token {
+// 一次挂起，放在等待者的栈上。基类把它挂进某个同步原语的等待队列，在那个原语的锁里读写。
+struct park_token : list_node {
     park_token() noexcept
         : owner(0), parker(0), io(0), state(park_waiting), delivered(false), timed(false),
-          io_cancelled(false), heap_index(0), order(0), next(0), prev(0), queued(false) {}
+          io_cancelled(false), heap_index(0), order(0) {}
 
     coroutine_control* owner;  // 挂起的协程；普通线程等待者为空
     thread_parker* parker;     // 普通线程等待者的等待器；协程等待者为空
@@ -46,11 +49,6 @@ struct park_token {
     park_instant deadline;
     std::size_t heap_index;
     std::uint64_t order;       // 相同时限按挂起的次序
-
-    // 等待队列（mutex、channel、wait_group 各自先来先服务的队列），在各自的锁里读写
-    park_token* next;
-    park_token* prev;          // 超时退出时常数时间摘链
-    bool queued;
 };
 
 // 记下等待者是谁：在协程里记下这根协程，否则记下本线程的等待器。
@@ -60,7 +58,6 @@ void park_prepare(park_token& token) noexcept;
 // 挂起，直到被唤醒或者到点。调用方先调 park_prepare，并保持凭据活到返回。
 // 在协程里只挂起协程，返回时可能已经换了一根工作线程；在其他地方阻塞当前线程。
 // 负 timeout 表示无限等待；返回 true 表示被唤醒，false 表示到点了。等 I/O 时结果看请求本身。
-// 不修改 token.next。
 bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout);
 
 // 任何线程都能调。返回 false 表示等待者已经到点放弃，这次唤醒作废。

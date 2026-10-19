@@ -84,7 +84,10 @@ bool settled;   // 已经交还给调度器了，之后再 wake 无效
 
 ```cpp
 void mutex::unlock() {
-    if (!hand_over(head_, tail_)) held_ = false;   // 没人接才真放开
+    std::lock_guard<std::mutex> state(state_);
+    if (!wake_one(waiters_)) {
+        held_ = false;   // 没人接才真放开
+    }
 }
 ```
 
