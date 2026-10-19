@@ -292,8 +292,10 @@ TEST(runtime_order, a_timer_fires_while_the_only_worker_is_stuck) {
     EXPECT(woke_while_stuck, ==, true);
 }
 
-TEST(runtime_order, still_runs_one_coroutine_at_a_time_after_a_hand_off) {
-    // 交接以后多了一根线程，但同一时刻能跑协程的仍然只有一根：卡住的那根跑完手上的协程就去当备用。
+TEST(runtime_order, goes_back_to_one_coroutine_at_a_time_after_a_hand_off) {
+    // 交接以后多了一根线程，但卡住的那根跑完手上的协程就去当备用，同一时刻跑协程的又只剩一根。
+    // 机器忙的时候，跑协程的线程被系统挂起两个监控周期也会被当成卡住、交接一次，那一轮里会看到
+    // 两根同时在跑；所以试几轮，有一轮只看到一根就行。卡住的那根要是一直不交还名额，每一轮都是两根。
     std::atomic<bool> ran(false);
     in_coroutine([&] {
         wavvix::wait_group children;
@@ -302,26 +304,30 @@ TEST(runtime_order, still_runs_one_coroutine_at_a_time_after_a_hand_off) {
         children.wait();
     });
 
-    std::atomic<int> inside(0);
-    std::atomic<int> peak(0);
-    wavvix::wait_group group;
-    for (int i = 0; i < 8; ++i) {
-        group.go([&] {
-            for (int round = 0; round < 50; ++round) {
-                const int now = inside.fetch_add(1) + 1;
-                int seen = peak.load();
-                while (now > seen && !peak.compare_exchange_weak(seen, now)) {
+    int peak = 0;
+    for (int attempt = 0; attempt < 5 && peak != 1; ++attempt) {
+        std::atomic<int> inside(0);
+        std::atomic<int> seen_peak(0);
+        wavvix::wait_group group;
+        for (int i = 0; i < 8; ++i) {
+            group.go([&] {
+                for (int round = 0; round < 50; ++round) {
+                    const int now = inside.fetch_add(1) + 1;
+                    int seen = seen_peak.load();
+                    while (now > seen && !seen_peak.compare_exchange_weak(seen, now)) {
+                    }
+                    const wavvix::stopwatch busy;
+                    while (busy.elapsed() < std::chrono::microseconds(2)) {
+                    }
+                    inside.fetch_sub(1);
+                    wavvix::yield();
                 }
-                const wavvix::stopwatch busy;
-                while (busy.elapsed() < std::chrono::microseconds(20)) {
-                }
-                inside.fetch_sub(1);
-                wavvix::yield();
-            }
-        });
+            });
+        }
+        group.wait();
+        peak = seen_peak.load();
     }
-    group.wait();
 
     EXPECT(ran.load(), ==, true);
-    EXPECT(peak.load(), ==, 1);
+    EXPECT(peak, ==, 1);
 }
