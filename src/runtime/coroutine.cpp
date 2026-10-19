@@ -112,6 +112,7 @@ void trampoline(context_transfer from) {
     self->invoke(self->body);
     self->destroy(self->body);
     self->finished = true;
+    mem::detail::note_stack_growth(self->memory);   // 还在这根栈上：记下它长到了哪里
 
     // 跑完了，切回去且**永不返回**。current 不用动：控制一落到 resume() 里
     // 那个 jump 的下一条指令，resume() 自己就会把它恢复成外层那根。
@@ -122,6 +123,9 @@ void trampoline(context_transfer from) {
     wavvix_jump_context(self->resumer, 0);
     die("wavvix::coroutine: 已结束的协程又被切进来了");
 }
+
+static_assert(default_stack_size == mem::detail::pooled_stack_size,
+              "the default coroutine stack must be one slot of the stack pool");
 
 // 第一次 resume 时分配栈，摆好第一帧。
 void allocate_stack_for(coroutine_control* control) {
@@ -134,7 +138,7 @@ void allocate_stack_for(coroutine_control* control) {
     char* const top = align_down(memory.base + memory.total, 16);
     control->memory = memory;
     control->usable = static_cast<std::size_t>(top - (memory.base + memory.guard));
-    control->context = wavvix_make_context(top, control->usable, &trampoline);
+    control->context = wavvix_make_context(top, control->usable, &trampoline, memory.committed);
 }
 
 }  // namespace
@@ -213,6 +217,9 @@ void coroutine_destroy(coroutine_control* control) noexcept {
         control->destroy(control->body);
     }
     if (control->memory.base) {
+        if (!control->finished) {
+            control->memory.committed = 0;   // 没跑完：不知道栈长到了哪里
+        }
         mem::detail::release_stack(control->memory);
     }
 #if WAVVIX_DETAIL_TSAN_FIBERS

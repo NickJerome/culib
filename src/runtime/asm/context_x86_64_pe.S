@@ -30,8 +30,8 @@
 .text
 
 /* void* wavvix_make_context(void* stack_top, std::size_t size,
- *                           void (*entry)(context_transfer));
- * rcx = stack_top, rdx = size, r8 = entry */
+ *                           void (*entry)(context_transfer), void* committed);
+ * rcx = stack_top, rdx = size, r8 = entry, r9 = committed */
 .globl wavvix_make_context
 .align 16
 wavvix_make_context:
@@ -44,8 +44,8 @@ wavvix_make_context:
 
     negq  %rdx
     leaq  (%rcx,%rdx), %rcx       /* 栈顶 - size = 栈的低端 */
-    movq  %rcx, 0xc0(%rax)        /* stack limit */
     movq  %rcx, 0xb8(%rax)        /* deallocation stack */
+    movq  %r9,  0xc0(%rax)        /* stack limit：已经提交的下界，系统沿保护页往下按需提交 */
     xorq  %rcx, %rcx
     movq  %rcx, 0xb0(%rax)        /* fiber local storage，新协程里是空的 */
 

@@ -32,10 +32,10 @@ bool coroutine_inside() noexcept;
 
 }  // namespace detail
 
-// 默认可用栈大小。栈不会增长。release 构建没有保护页，用超了不报错，直接写坏相邻的内存；
-// debug 构建在栈底有保护页，溢出当场崩溃。递归深度随输入增长的代码（解析嵌套数据、
-// 对外部输入用 std::regex）要自己限制深度，见 docs/runtime.md。
-const std::size_t default_stack_size = 240 * 1024;
+// 默认可用栈大小，约 1 MiB，用到的页才占内存。用超了：Windows 报 STATUS_STACK_OVERFLOW 后终止；
+// Linux / macOS 的 debug 构建碰到保护页崩溃，release 构建不报错，直接写坏相邻的内存。
+// 递归深度随输入增长的代码（解析嵌套数据、对外部输入用 std::regex）要自己限制深度，见 docs/runtime.md。
+const std::size_t default_stack_size = 1008 * 1024;
 
 namespace detail {
 

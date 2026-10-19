@@ -44,9 +44,10 @@ struct context_transfer {
 
 extern "C" {
 
-// 在 stack_top（高地址）往下摆好一个新上下文，第一次被切进来时跳到 entry。
+// 在 stack_top（高地址）往下摆好一个新上下文，第一次被切进来时跳到 entry。Windows 把 stack_top - size
+// 和 committed（已经提交的下界）写进线程块的栈底和栈下界，系统按它们沿保护页往下按需提交；其他平台不用。
 void* wavvix_make_context(void* stack_top, std::size_t size,
-                          void (*entry)(context_transfer)) noexcept;
+                          void (*entry)(context_transfer), void* committed) noexcept;
 
 // 切到 to，把 data 带过去。返回切走的那一侧和对面回传的值。
 context_transfer wavvix_jump_context(void* to, void* data) noexcept;

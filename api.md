@@ -596,7 +596,7 @@ public:
 void yield();
 void sleep_for(std::chrono::nanoseconds duration);
 
-const std::size_t default_stack_size = 240 * 1024;
+const std::size_t default_stack_size = 1008 * 1024;
 ```
 
 | API | 用法与边界 |
@@ -611,7 +611,7 @@ const std::size_t default_stack_size = 240 * 1024;
 - 普通线程里起的协程排进全局队列，协程里起的协程先排进本线程的队列；闲着的工作线程从全局队列取，也从别的工作线程的队列里拿。协程在挂起点（等锁、收发 channel、网络 I/O、`sleep_for`、`yield`、`wait`）可能换到另一根工作线程上继续，所以协程之间共享数据要加锁，`thread_local`、`errno`、`std::this_thread::get_id()` 和拿在手里的 `std::mutex` 都不能跨过挂起点。在 catch 块里挂起，打印诊断后终止。规则和原因见[运行时文档](docs/runtime.md#协程在哪根线程上跑)。
 - 一根工作线程卡在阻塞调用或长循环里超过 10 毫秒，又有协程排着没人跑时，监控线程把它跑协程的名额交给另一根线程（备用的或新起的，线程总数不超过 256），同一时刻跑协程的线程数保持 `WAVVIX_MAXPROCS`。见[运行时文档](docs/runtime.md#卡住的工作线程)。
 - 函数里逃出的异常会 `std::terminate()`。内存不够时打印诊断后终止。
-- 栈固定为 240 KiB，在协程第一次运行时才分配。**release 构建里栈溢出不会被检测**：没有保护页，用超了会写坏别的内存；debug 构建有保护页，溢出当场崩溃。递归深度随输入增长的代码要自己限制深度，规则见[运行时文档](docs/runtime.md#栈溢出)。
+- 栈固定为 1008 KiB，在协程第一次运行时才分配，用到的页才占内存。栈用超了：Windows 上报 `STATUS_STACK_OVERFLOW` 后终止；Linux / macOS 的 debug 构建有保护页，溢出当场崩溃；**Linux / macOS 的 release 构建里栈溢出不会被检测**，没有保护页，用超了会写坏别的内存。递归深度随输入增长的代码要自己限制深度，规则见[运行时文档](docs/runtime.md#栈溢出)。
 - 库不检测死锁：所有协程都挂起、谁也叫不醒谁时，`wait()` 会一直等。生命周期与内存的说明见 [docs/runtime.md](docs/runtime.md)。
 
 示例：阻塞的调用直接写，卡住的工作线程有别的线程顶上。

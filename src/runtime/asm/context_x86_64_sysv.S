@@ -33,7 +33,8 @@
 .text
 
 /* void* wavvix_make_context(void* stack_top, std::size_t size,
- *                           void (*entry)(context_transfer)); */
+ *                           void (*entry)(context_transfer), void* committed);
+ * size 和 committed 只有 Windows 用得上（写进线程块），这里不用。 */
 DECLARE(wavvix_make_context)
 // ELF 与 Mach-O 都按 2^4 字节对齐；.align 的单位因格式而异。
 .p2align 4

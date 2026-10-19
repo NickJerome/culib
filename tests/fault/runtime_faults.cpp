@@ -37,6 +37,13 @@
 #  include <unistd.h>
 #endif
 
+// Linux / macOS 的 release 构建没有保护页，栈用超了不会被拦住，那里不查栈溢出。
+#if defined(_WIN32) || !defined(NDEBUG)
+#  define WAVVIX_TEST_GUARDED_STACK 1
+#else
+#  define WAVVIX_TEST_GUARDED_STACK 0
+#endif
+
 namespace {
 
 // 置位后 nothrow 的 new 全部失败，用来模拟内存耗尽。
@@ -110,6 +117,31 @@ void stack_unavailable() {
     worker.resume();
 }
 
+#if WAVVIX_TEST_GUARDED_STACK
+// 栈用超了：Windows 上栈长到保留区的底，系统报 STATUS_STACK_OVERFLOW；Linux / macOS 的 debug 构建碰到
+// 栈底的保护页。递归的终点永远到不了，只是不让编译器看出这是无穷递归。
+volatile int never = -1;
+
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+int overflow_from(int depth) {
+    volatile char frame[1024];
+    frame[0] = static_cast<char>(depth);
+    if (depth == never) {
+        return frame[0];
+    }
+    return overflow_from(depth + 1) + frame[0];
+}
+
+void stack_overflow() {
+    wavvix::detail::fiber worker([] { overflow_from(0); });
+    worker.resume();
+}
+#endif
+
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
 // 异常的处理状态按线程保存：catch 块里挂起，换了线程或者别的协程插进来都会把它弄乱。
 void suspend_inside_a_catch_block() {
@@ -146,25 +178,33 @@ void wait_group_destroyed_while_running() {
     group.go([] { wavvix::sleep_for(std::chrono::seconds(5)); });
 }
 
+// 子进程应当怎么结束：打印诊断后 abort，或者被栈的保护机制拦住。
+enum class ending { abort, stack_overflow };
+
 struct fault_case {
     const char* name;
     void (*run)();
-    const char* diagnostic;   // stderr 里应当出现的一句；空串表示只检查终止
+    ending expected;
+    const char* diagnostic;   // 以 abort 结束时 stderr 里应当出现的一句；空串表示不查
 };
 
 const fault_case cases[] = {
-    {"zero_workers", &zero_workers, "WAVVIX_MAXPROCS 必须是"},
-    {"workers_not_a_number", &workers_not_a_number, "WAVVIX_MAXPROCS 必须是"},
-    {"too_many_workers", &too_many_workers, "WAVVIX_MAXPROCS 必须是"},
-    {"out_of_memory", &out_of_memory, "内存不足，建不起协程"},
-    {"stack_unavailable", &stack_unavailable, "栈内存不够，跑不起协程"},
-#if WAVVIX_DETAIL_HAS_EXCEPTIONS
-    {"suspend_inside_a_catch_block", &suspend_inside_a_catch_block, "协程不能在 catch 块里"},
+    {"zero_workers", &zero_workers, ending::abort, "WAVVIX_MAXPROCS 必须是"},
+    {"workers_not_a_number", &workers_not_a_number, ending::abort, "WAVVIX_MAXPROCS 必须是"},
+    {"too_many_workers", &too_many_workers, ending::abort, "WAVVIX_MAXPROCS 必须是"},
+    {"out_of_memory", &out_of_memory, ending::abort, "内存不足，建不起协程"},
+    {"stack_unavailable", &stack_unavailable, ending::abort, "栈内存不够，跑不起协程"},
+#if WAVVIX_TEST_GUARDED_STACK
+    {"stack_overflow", &stack_overflow, ending::stack_overflow, ""},
 #endif
-    {"channel_without_capacity", &channel_without_capacity, "容量至少为 1"},
-    {"channel_send_after_close", &channel_send_after_close, "已经关闭，不能再 send"},
-    {"channel_closed_twice", &channel_closed_twice, "重复关闭"},
-    {"wait_group_destroyed_while_running", &wait_group_destroyed_while_running, "组里还有协程没结束"},
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+    {"suspend_inside_a_catch_block", &suspend_inside_a_catch_block, ending::abort, "协程不能在 catch 块里"},
+#endif
+    {"channel_without_capacity", &channel_without_capacity, ending::abort, "容量至少为 1"},
+    {"channel_send_after_close", &channel_send_after_close, ending::abort, "已经关闭，不能再 send"},
+    {"channel_closed_twice", &channel_closed_twice, ending::abort, "重复关闭"},
+    {"wait_group_destroyed_while_running", &wait_group_destroyed_while_running, ending::abort,
+     "组里还有协程没结束"},
 };
 
 const std::size_t case_count = sizeof cases / sizeof cases[0];
@@ -180,9 +220,11 @@ const fault_case* find_case(const char* name) {
 
 // ---- 在子进程里跑一条 ------------------------------------------------------------
 
-// 子进程的结局：aborted 为 true 表示它以 abort 终止；how 说明其他结局。
+// 子进程的结局：aborted 为 true 表示它以 abort 终止，overflowed 为 true 表示被栈的保护机制拦住
+// （Windows 的 STATUS_STACK_OVERFLOW，其他平台的 SIGSEGV / SIGBUS）；how 说明其他结局。
 struct child_outcome {
     bool aborted;
+    bool overflowed;
     std::string how;
     std::string error;   // 子进程写到 stderr 的全部内容
 };
@@ -192,6 +234,7 @@ struct child_outcome {
 child_outcome run_child(const fault_case& item) {
     child_outcome outcome;
     outcome.aborted = false;
+    outcome.overflowed = false;
 
     SECURITY_ATTRIBUTES inherit;
     inherit.nLength = sizeof inherit;
@@ -245,6 +288,9 @@ child_outcome run_child(const fault_case& item) {
         outcome.how = "取不到退出码";
     } else if (code == 3) {
         outcome.aborted = true;   // abort() 和 std::terminate 都以 3 退出
+    } else if (code == 0xC00000FD) {
+        outcome.overflowed = true;   // STATUS_STACK_OVERFLOW
+        outcome.how = "栈溢出";
     } else {
         char text[64];
         std::snprintf(text, sizeof text, "退出码 0x%08lX", static_cast<unsigned long>(code));
@@ -268,6 +314,7 @@ void prepare_child() {
 child_outcome run_child(const fault_case& item) {
     child_outcome outcome;
     outcome.aborted = false;
+    outcome.overflowed = false;
 
     int pipe_fds[2];
     if (::pipe(pipe_fds) != 0) {
@@ -315,6 +362,9 @@ child_outcome run_child(const fault_case& item) {
     if (WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT) {
         outcome.aborted = true;
         return outcome;
+    }
+    if (WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS)) {
+        outcome.overflowed = true;
     }
     char text[64];
     if (WIFSIGNALED(status)) {
@@ -382,6 +432,23 @@ bool engine_reports_enomem(std::string& why) {
 
 #endif
 
+// 子进程结束得和预期一样时返回空串，否则说明哪里不一样。
+std::string check(const fault_case& item, const child_outcome& outcome) {
+    if (item.expected == ending::stack_overflow) {
+        if (outcome.overflowed) {
+            return std::string();
+        }
+        return "应当被栈的保护机制拦住，实际" + (outcome.aborted ? std::string("以 abort 终止") : outcome.how);
+    }
+    if (!outcome.aborted) {
+        return outcome.how;
+    }
+    if (item.diagnostic[0] != '\0' && outcome.error.find(item.diagnostic) == std::string::npos) {
+        return std::string("终止了，但没有打印预期的诊断：") + item.diagnostic;
+    }
+    return std::string();
+}
+
 int run_all() {
     int passed = 0;
     int failed = 0;
@@ -399,17 +466,15 @@ int run_all() {
     for (std::size_t i = 0; i < case_count; ++i) {
         const fault_case& item = cases[i];
         const child_outcome outcome = run_child(item);
-        const bool said_it = item.diagnostic[0] == '\0' || outcome.error.find(item.diagnostic) != std::string::npos;
-        if (outcome.aborted && said_it) {
+        const std::string problem = check(item, outcome);
+        if (problem.empty()) {
             std::printf("[       OK ] runtime_faults.%s\n", item.name);
             ++passed;
             continue;
         }
 
         ++failed;
-        std::printf("[  FAILED  ] runtime_faults.%s: %s\n", item.name,
-                    outcome.aborted ? "终止了，但没有打印预期的诊断" : outcome.how.c_str());
-        std::printf("    预期诊断：%s\n", item.diagnostic);
+        std::printf("[  FAILED  ] runtime_faults.%s: %s\n", item.name, problem.c_str());
         std::printf("    子进程 stderr：%s\n", outcome.error.c_str());
     }
 

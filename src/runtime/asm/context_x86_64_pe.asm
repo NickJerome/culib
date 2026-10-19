@@ -23,8 +23,8 @@ EXTERN wavvix_context_returned : PROC
 
 .code
 
-; void* wavvix_make_context(void* stack_top, size_t size, void (*entry)(context_transfer))
-; rcx = stack_top, rdx = size, r8 = entry
+; void* wavvix_make_context(void* stack_top, size_t size, void (*entry)(context_transfer), void* committed)
+; rcx = stack_top, rdx = size, r8 = entry, r9 = committed
 wavvix_make_context PROC FRAME
     .endprolog
 
@@ -37,8 +37,8 @@ wavvix_make_context PROC FRAME
 
     neg  rdx
     lea  rcx, [rcx+rdx]           ; 栈顶 - size = 栈的低端
-    mov  [rax+00c0h], rcx         ; stack limit
     mov  [rax+00b8h], rcx         ; deallocation stack
+    mov  [rax+00c0h], r9          ; stack limit：已经提交的下界，系统沿保护页往下按需提交
     xor  rcx, rcx
     mov  [rax+00b0h], rcx         ; fiber local storage，新协程里是空的
 

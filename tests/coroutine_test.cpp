@@ -331,7 +331,69 @@ TEST(fiber, keeps_reused_stacks_usable_after_heavy_churn) {
     }
 }
 
+namespace {
+
+// 每层压 1 KiB 栈，到底以后调 at_bottom（可以为空），回来时核对这一层的内容。不内联，也不是尾调用。
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+int descend(int depth, int levels, void (*at_bottom)()) {
+    volatile char frame[1024];
+    frame[0] = static_cast<char>(depth);
+    frame[sizeof frame - 1] = static_cast<char>(depth);
+    if (depth == levels) {
+        if (at_bottom) {
+            at_bottom();
+        }
+        return levels;
+    }
+    return descend(depth + 1, levels, at_bottom) + (frame[0] - frame[sizeof frame - 1]);
+}
+
+}  // namespace
+
+// 默认栈约 1 MiB：递归 600 层、每层 1 KiB 也够用（以前的 240 KiB 不够）。Windows 上栈只提交用到的部分，
+// 这一路由系统按需提交下去。
+TEST(fiber, recurses_far_into_the_default_stack) {
+    int reached = 0;
+    fiber worker([&] { reached = descend(0, 600, 0); });
+    EXPECT(worker.resume(), ==, false);
+    EXPECT(reached, ==, 600);
+}
+
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
+namespace {
+
+void throw_from_the_bottom() {
+    throw 600;
+}
+
+}  // namespace
+
+// 一根协程把栈池里的一格用深了，下一根协程接着用这一格：已经提交的下界要跟着这一格走（Windows 换栈时
+// 写进线程块），不然在深处抛异常时，系统按线程块的范围找不到那些帧，异常抛不出来。
+TEST(fiber, throws_from_deep_in_a_reused_stack) {
+    for (int round = 0; round < 3; ++round) {
+        int reached = 0;
+        fiber deep([&] { reached = descend(0, 600, 0); });
+        EXPECT(deep.resume(), ==, false);
+        EXPECT(reached, ==, 600);
+
+        int caught = 0;
+        fiber thrower([&] {
+            try {
+                descend(0, 600, &throw_from_the_bottom);
+            } catch (int levels) {
+                caught = levels;
+            }
+        });
+        EXPECT(thrower.resume(), ==, false);
+        EXPECT(caught, ==, 600);
+    }
+}
+
 TEST(fiber, restores_resumer_stack_for_exceptions) {
     int caught = 0;
     const auto throw_and_catch = [&] {

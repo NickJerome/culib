@@ -24,7 +24,7 @@
 ## 当前边界
 
 - 分配器的实现只有 `allocator/allocator.cpp` 一个文件，平台设施（锁、线程退出、fork、时钟）在 `allocator/native_*.cpp`，内存页操作在 `mem/pages`；分配器不直接调用系统内存 API。
-- 协程栈向分配器要（`mem::aligned_alloc`），只有 debug 构建的保护页直接改 `mem/pages` 的页保护。
+- 协程栈有自己的池（`mem/stack`），和分配器并列，都只建在 `mem/pages` 上，彼此不依赖。和操作系统打交道的三步（准备一格、还掉一格的内存、读当前栈的已提交下界）在 `stack_posix.cpp` / `stack_win.cpp`。
 - `runtime/scheduler.cpp` 是运行时：工作线程和它们的就绪队列、窃取、闲着的工作线程、监控线程、定时器和普通线程上的等待；定时器的排序归 `timer_heap`。
 - 配置解析、文件读取、应用 flags 已分开；路径字符串操作已脱离磁盘 I/O。同步原语只包含 park 接口（记下等待者、挂起、唤醒），网络只包含 `scheduler_adopt`、`scheduler_io` 和建套接字的 `io_open_socket`。I/O 引擎只持有不透明的 park_token 指针。
 
@@ -36,7 +36,7 @@
 
 ## 已落实的独立单元
 
-- `mem/pages`：分配器的 OS 内存页操作；协程栈只用它的 `protect` / `unprotect` 设 debug 构建的保护页。Linux 默认允许 overcommit 时，保留下来的地址空间直接可读写、提交是空操作、归还用 `MADV_DONTNEED`，全程不改映射（原因见 [分配器实现](mem-internals.md)）。
+- `mem/pages`：分配器和协程栈共用的 OS 内存页操作：保留、提交、归还、保护、不用透明大页。Linux 默认允许 overcommit 时，保留下来的地址空间直接可读写、提交是空操作、归还用 `MADV_DONTNEED`，全程不改映射（原因见 [分配器实现](mem-internals.md)）。
 - `mem/allocator/native`：分配器唯一的锁、线程退出回调、fork 钩子、时钟和致命错误输出；`allocator.cpp` 不包含平台头文件。
 - `runtime/timer_heap`：按时限排的最小堆，时限相同按放进来的次序；只管排序，不叫醒谁、不加锁，不访问工作线程或 I/O。调度器在定时器的锁里用它，到点以后决定谁进入就绪队列。
 - `runtime/park.h`、`scheduler_io.h`：分别向同步原语和网络提供需要的接口。I/O 引擎无需知道 park_token 布局。

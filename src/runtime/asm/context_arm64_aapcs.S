@@ -33,7 +33,8 @@
 .align 2
 
 /* void* wavvix_make_context(void* stack_top, std::size_t size,
- *                           void (*entry)(context_transfer)); */
+ *                           void (*entry)(context_transfer), void* committed);
+ * size 和 committed 只有 Windows 用得上（写进线程块），这里不用。 */
 DECLARE(wavvix_make_context)
 BEGIN(wavvix_make_context)
     and  x0, x0, #~0xF            /* 栈顶对齐到 16 */
