@@ -96,7 +96,7 @@ const park_ticks no_deadline = (std::numeric_limits<park_ticks>::max)();
 struct runtime_state {
     runtime_state()
         : count(0), slots(0), engine(0), polling(false), poll_notified(false), monitor_sleeping(false), queued(0),
-          idle(0), searching(0), earliest(no_deadline) {}
+          idle(0), searching(0), last_poll(0), earliest(no_deadline) {}
 
     vcpu* workers[worker_limit];
     std::atomic<unsigned> count;   // workers 里建好的根数
@@ -118,6 +118,7 @@ struct runtime_state {
     std::atomic<int> searching;        // 被叫醒来找活、还没找到的
 
     std::mutex poll_mutex;         // 同一时刻只有一根线程在 io_engine_wait 里
+    std::atomic<park_ticks> last_poll;   // 最近一次收完成的时刻
 
     std::mutex timer_mutex;        // 护着 timers
     timer_heap timers;
@@ -241,21 +242,32 @@ void wake_idle(runtime_state& state) {
     wake_one_locked(state);
 }
 
-// 排进就绪队列：在工作线程上排进本线程的队列，否则排进全局队列。
+// 排进本线程的队列。名额交出去了就不排：队列已经跟着名额交走了（hand_off_locked），
+// 再排进来的没人跑。和交接拿同一把锁，所以两边至少有一边看得见对方。
+bool push_local(vcpu& self, coroutine_control* body) {
+    std::lock_guard<std::mutex> held(self.mutex);
+    if (!self.has_slot.load()) {
+        return false;
+    }
+    self.queue.push(body);
+    return true;
+}
+
+void push_global(runtime_state& state, coroutine_control* body) {
+    std::lock_guard<std::mutex> held(state.mutex);
+    state.global.push(body);
+    state.queued.fetch_add(1);
+    wake_one_locked(state);
+}
+
+// 排进就绪队列：有名额的工作线程排进本线程的队列，否则排进全局队列。
 void make_ready(runtime_state& state, coroutine_control* body) {
     vcpu* const self = this_worker();
-    if (!self) {
-        std::lock_guard<std::mutex> held(state.mutex);
-        state.global.push(body);
-        state.queued.fetch_add(1);
-        wake_one_locked(state);
+    if (self && push_local(*self, body)) {
+        wake_idle(state);
         return;
     }
-    {
-        std::lock_guard<std::mutex> held(self->mutex);
-        self->queue.push(body);
-    }
-    wake_idle(state);
+    push_global(state, body);
 }
 
 // 把挂起的协程放回就绪队列。它还在挂起的路上（没切出去）的话只留个记号，由它所在的工作线程
@@ -450,6 +462,12 @@ void deliver(io_completion_batch& completed) {
     }
 }
 
+// 收一次完成，记下时刻：监控线程看它决定要不要替工作线程收（poll_overdue）。调用方拿着 poll_mutex。
+void wait_engine(runtime_state& state, std::chrono::nanoseconds timeout, io_completion_batch& completed) {
+    io_engine_wait(state.engine, timeout, completed);
+    state.last_poll.store(park_clock::now().time_since_epoch().count());
+}
+
 // 一直有活的工作线程隔一阵不等待地收一次完成。有闲着的工作线程等在引擎里时它拿着 poll_mutex，
 // I/O 归它收，这里直接跳过。
 void poll_now(runtime_state& state) {
@@ -462,7 +480,7 @@ void poll_now(runtime_state& state) {
         if (!role.owns_lock()) {
             return;
         }
-        io_engine_wait(state.engine, std::chrono::nanoseconds(0), completed);
+        wait_engine(state, std::chrono::nanoseconds(0), completed);
     }
     deliver(completed);
 }
@@ -509,7 +527,7 @@ void poll_blocking(runtime_state& state, vcpu& self) {
         // 不等待地收一次的那根可能正拿着 poll_mutex，只是一瞬间。它可能顺手收走了发给这里的唤醒，
         // 所以 poll_timeout 要看一眼 poll_notified。
         std::lock_guard<std::mutex> role(state.poll_mutex);
-        io_engine_wait(state.engine, poll_timeout(state), completed);
+        wait_engine(state, poll_timeout(state), completed);
     }
     {
         std::lock_guard<std::mutex> held(state.mutex);
@@ -692,8 +710,21 @@ vcpu* start_spare_locked(runtime_state& state) {
     return spare;
 }
 
+// 把 from 队列里的协程按原来的次序接到 to 的队尾。两把锁先后拿，不同时拿着。
+void move_queue(vcpu& from, vcpu& to) {
+    run_queue moved;
+    {
+        std::lock_guard<std::mutex> held(from.mutex);
+        from.queue.move_front(from.queue.count, moved);
+    }
+    std::lock_guard<std::mutex> held(to.mutex);
+    moved.move_front(moved.count, to.queue);
+}
+
 // 把卡住的那根的名额交给一根备用线程，没有备用的就新起一根。都不行就先不交：卡住的那根总会回来，
-// 监控线程下一轮还会再试。调用方拿着 state.mutex。
+// 监控线程下一轮还会再试。队列跟着名额走：拿到名额的线程一直有活的话不会去偷，留在卡住的那根
+// 那里的协程就一直没人跑。先收回名额再搬队列，之后卡住的那根叫醒的协程排进全局队列（push_local）。
+// 调用方拿着 state.mutex。
 void hand_off_locked(runtime_state& state, vcpu& stuck) {
     vcpu* spare = take_first(state.spares);
     if (!spare) {
@@ -703,6 +734,7 @@ void hand_off_locked(runtime_state& state, vcpu& stuck) {
         return;
     }
     stuck.has_slot.store(false);
+    move_queue(stuck, *spare);
     spare->has_slot.store(true);
     spare->woken.notify_one();
 }
@@ -719,6 +751,16 @@ const std::chrono::milliseconds stall_limit(10);
 
 // 监控线程隔多久看一次。从卡住到交接是 stall_limit 再加至多两个间隔。
 const std::chrono::milliseconds monitor_interval(2);
+
+// 这么久没人收过完成，监控线程才替工作线程收。忙着的工作线程每调度 61 次自己收一次，叫醒的协程
+// 排在本线程的队列里；监控线程收的只能排进全局队列，那里每 61 次才取一根，收得勤了这些协程反而
+// 晚跑。它只管工作线程都卡在协程里、没人收的时候。Go 也是 10 毫秒。
+const std::chrono::milliseconds poll_overdue_after(10);
+
+bool poll_overdue(runtime_state& state) {
+    const park_ticks limit = std::chrono::duration_cast<park_clock::duration>(poll_overdue_after).count();
+    return park_clock::now().time_since_epoch().count() - state.last_poll.load() >= limit;
+}
 
 // 监控线程给每根工作线程记下上一次看到的调度次数，和第一次看到这个数的时刻。
 struct watch_mark {
@@ -766,9 +808,9 @@ void sleep_until_busy(runtime_state& state, std::unique_lock<std::mutex>& held) 
     }
 }
 
-// 监控线程。有工作线程忙着的时候每隔 monitor_interval 看一次。没有闲着的工作线程时，完成的 I/O
-// 也没人收，所以先替它们收一次，叫醒的协程排进全局队列。定时器不替它们叫：交给拿到名额的线程
-// 按时限的先后叫，次序才对。
+// 监控线程。有工作线程忙着的时候每隔 monitor_interval 看一次。没有闲着的工作线程、又有一阵没人
+// 收过完成时，先替它们收一次，叫醒的协程排进全局队列：不收就看不出卡住的那根后面还有活。
+// 定时器不替它们叫：交给拿到名额的线程按时限的先后叫，次序才对。
 void monitor_main(runtime_state* state) noexcept {
     watch_mark marks[worker_limit];
     std::unique_lock<std::mutex> held(state->mutex);
@@ -779,7 +821,7 @@ void monitor_main(runtime_state* state) noexcept {
         }
         held.unlock();
         sleep_precisely(monitor_interval);
-        if (state->idle.load() == 0) {
+        if (state->idle.load() == 0 && poll_overdue(*state)) {
             poll_now(*state);
         }
         held.lock();

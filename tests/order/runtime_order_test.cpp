@@ -4,6 +4,7 @@
 // 要等这根协程挂起才开始跑，所以它们在同一轮里起步，次序是确定的。
 
 #include <culib/coroutine.h>
+#include <culib/net.h>
 #include <culib/stopwatch.h>
 #include <culib/test.h>
 
@@ -291,6 +292,36 @@ TEST(runtime_order, a_worker_stuck_in_a_blocking_call_hands_its_place_over) {
     EXPECT(ran_while_stuck, ==, true);
 }
 
+TEST(runtime_order, coroutines_queued_behind_a_stuck_worker_go_with_its_place) {
+    // 排在卡住的那根后面的协程跟着名额一起交过去。拿到名额的线程这里一直有活（一根协程不停地
+    // 让出），不会闲下来去偷；排着的协程要是留在卡住的那根那里，就要等让出的那根停下才跑。
+    std::atomic<bool> released(false);
+    std::atomic<int> ran(0);
+    std::atomic<bool> all_ran(false);
+    int ran_while_stuck = 0;
+    in_coroutine([&] {
+        wavvix::wait_group children;
+        children.go([&] {
+            while (!released.load()) {
+                wavvix::yield();
+            }
+        });
+        for (int i = 0; i < 4; ++i) {
+            children.go([&] {
+                if (ran.fetch_add(1) + 1 == 4) {
+                    all_ran.store(true);
+                }
+            });
+        }
+        block_thread_until(all_ran);
+        ran_while_stuck = ran.load();
+        released.store(true);
+        children.wait();
+    });
+
+    EXPECT(ran_while_stuck, ==, 4);
+}
+
 TEST(runtime_order, a_timer_fires_while_the_only_worker_is_stuck) {
     std::atomic<bool> woke(false);
     bool woke_while_stuck = false;
@@ -306,6 +337,43 @@ TEST(runtime_order, a_timer_fires_while_the_only_worker_is_stuck) {
         children.wait();
     });
 
+    EXPECT(woke_while_stuck, ==, true);
+}
+
+TEST(runtime_order, io_completes_while_the_only_worker_is_stuck) {
+    // 卡住的那根不收完成：监控线程一阵没看到有人收，就替它收，叫醒的协程排进全局队列，名额随后交出去。
+    // 由普通线程来写：在这根协程里写的话，Windows 上要等完成，它就挂起了，卡不住。写的那根线程在
+    // Windows 上也要等有人收完成，所以先 wait 再 join：没人替它收的话，wait 让出工作线程去收。
+    std::atomic<bool> woke(false);
+    bool wrote = false;
+    bool woke_while_stuck = false;
+    in_coroutine([&] {
+        wavvix::net::socket listener;
+        if (!EXPECT(listener.bind("127.0.0.1", 0).is_ok() && listener.listen().is_ok(), ==, true)) {
+            return;
+        }
+        wavvix::net::socket client;
+        if (!EXPECT(client.connect(listener.local_endpoint().value()).is_ok(), ==, true)) {
+            return;
+        }
+        wavvix::result<wavvix::net::socket> server = listener.accept();
+        if (!EXPECT(server.is_ok(), ==, true)) {
+            return;
+        }
+        wavvix::wait_group children;
+        children.go([&] {
+            char byte = 0;
+            woke.store(server.value().read(&byte, 1).is_ok());
+        });
+        wavvix::yield();   // 让它先挂起在读上
+        std::thread writer([&] { wrote = client.write("x", 1).is_ok(); });
+        block_thread_until(woke);
+        woke_while_stuck = woke.load();
+        children.wait();
+        writer.join();
+    });
+
+    EXPECT(wrote, ==, true);
     EXPECT(woke_while_stuck, ==, true);
 }
 
