@@ -39,13 +39,52 @@
 #define WAVVIX_DETAIL_HAS_EXCEPTIONS 0
 #endif
 
-// 不内联并标记为冷路径的函数（只在出错时执行），让正常路径的代码更紧凑
+// 不内联。_COLD 另外标明只在出错时执行，让正常路径的代码更紧凑。
 #if defined(__GNUC__) || defined(__clang__)
+#define WAVVIX_DETAIL_NOINLINE __attribute__((noinline))
 #define WAVVIX_DETAIL_NOINLINE_COLD __attribute__((noinline, cold))
 #elif defined(_MSC_VER)
+#define WAVVIX_DETAIL_NOINLINE __declspec(noinline)
 #define WAVVIX_DETAIL_NOINLINE_COLD __declspec(noinline)
 #else
+#define WAVVIX_DETAIL_NOINLINE
 #define WAVVIX_DETAIL_NOINLINE_COLD
+#endif
+
+// printf 风格的参数检查。GCC 写 gnu_printf：MinGW 上 printf 指 msvcrt 的格式，不认 %zu；
+// clang 不认 gnu_printf。
+#if defined(__clang__)
+#define WAVVIX_DETAIL_PRINTF(format_index, first_index) \
+    __attribute__((__format__(__printf__, format_index, first_index)))
+#elif defined(__GNUC__)
+#define WAVVIX_DETAIL_PRINTF(format_index, first_index) \
+    __attribute__((__format__(__gnu_printf__, format_index, first_index)))
+#else
+#define WAVVIX_DETAIL_PRINTF(format_index, first_index)
+#endif
+
+// 是否开着 AddressSanitizer / ThreadSanitizer。__has_feature 要单独一层 #if：
+// GCC 和 MSVC 上它不是宏，和 defined 写在同一个 #if 里是语法错误。
+#if defined(__SANITIZE_ADDRESS__)
+#define WAVVIX_DETAIL_ASAN 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define WAVVIX_DETAIL_ASAN 1
+#  endif
+#endif
+#ifndef WAVVIX_DETAIL_ASAN
+#define WAVVIX_DETAIL_ASAN 0
+#endif
+
+#if defined(__SANITIZE_THREAD__)
+#define WAVVIX_DETAIL_TSAN 1
+#elif defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+#    define WAVVIX_DETAIL_TSAN 1
+#  endif
+#endif
+#ifndef WAVVIX_DETAIL_TSAN
+#define WAVVIX_DETAIL_TSAN 0
 #endif
 
 // 按编译器而非语言标准选择，保证 C++11/17 看到相同的类定义。

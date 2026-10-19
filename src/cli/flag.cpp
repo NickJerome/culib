@@ -2,6 +2,8 @@
 
 #include <culib/fs.h>
 
+#include "base/fatal.h"
+
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -166,9 +168,7 @@ bool is_option(string_view token) {
 namespace detail {
 
 [[noreturn]] void reject(const std::string& why) {
-    std::fprintf(stderr, "wavvix::flag: %s\n", why.c_str());
-    std::fflush(stderr);
-    std::abort();
+    wavvix::detail::fatal("wavvix::flag: %s", why.c_str());
 }
 
 void reject_bad_name(registry& self, const char* name, const char* owner) {
@@ -249,12 +249,9 @@ void read_before_parse(const void* storage) noexcept {
             break;
         }
     }
-    std::fprintf(stderr,
-                 "wavvix::flag: 在 init() / parse() 之前读取了 %s%s；"
-                 "选项的值要等命令行解析完才有意义\n",
-                 name[1] == '\0' ? "-" : "--", name);
-    std::fflush(stderr);
-    std::abort();
+    wavvix::detail::fatal("wavvix::flag: 在 init() / parse() 之前读取了 %s%s；"
+                          "选项的值要等命令行解析完才有意义",
+                          name[1] == '\0' ? "-" : "--", name);
 }
 
 bool was_given(const void* storage) noexcept {

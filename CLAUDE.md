@@ -54,7 +54,7 @@
 - 不依赖 RTTI。公共头文件不出现 `throw`、`try`、`dynamic_cast`、`typeid`；关闭异常和 RTTI（`-fno-exceptions` / `-fno-rtti`）的工程仍可使用全库。
 - **错误类型只有一种：默认的 `error`。** 不为「性能敏感」的接口另开 `enum class` ——量过了，枚举的优势在本库的场景里兑现不了（见下），而两种错误类型会让每个层边界上多一次显式转换，也让每个调用点都要先做一次选择。
 - **跨层传播时在层边界上补上下文。** 底层只知道「不是合法整数」，它永远不知道「这是 /etc/app.conf 的 port 字段」——那个信息只有中间那层同时持有，所以必须在那里拼进消息里。不补的话 `main` 拿到的是一句没有主语的话。
-- 运行时的误用（取错分支、越界等）打印一行诊断后 `std::abort()`，release 同样检查。诊断直接写 stderr，不分配内存、不依赖流。
+- 运行时的误用（取错分支、越界等）打印一行诊断后 `std::abort()`，release 同样检查。诊断直接写 stderr，不分配内存、不依赖流。库里统一调 `detail::fatal()`（`src/base/fatal.h`，printf 风格的格式串，编译器检查参数）；只有 `mem` 的分配器另有一份，因为它不能经过可能分配内存的 stdio。
 - 编译期的误用用 `static_assert` 给出一句英文说明。提示信息一律用英文，避免 MSVC 在非 UTF-8 代码页下乱码。
 
 **`error` 的实测代价**（GCC 14 `-O2`，跨 TU 不可内联，对照 `result<int, 枚举>`；完整数据见 [result 设计文档](docs/superpowers/specs/2026-10-01-result-design.md) 验证节）：
@@ -122,7 +122,7 @@
 - **最低支持 Windows 10**（2026-10-07 定，见路线图第 6 节）。`xmake.lua` 给 culib 定义 `_WIN32_WINNT=0x0A00`，各文件不再自己定。Win10 某个更新才有的 API（如 1803 的 AF_UNIX）要在模块的设计文档里写明需要哪一版。
 - **字符串编码**：对外接口中的字符串（包括文件路径）一律使用 UTF-8；Windows 下由库内部转换为 UTF-16 后调用 `W` 系列 API。
 - **公共头文件保持干净**：不包含 `<windows.h>`、`<unistd.h>` 等平台头文件，避免把 `min` / `max` 之类的宏泄漏给使用方。
-- **平台代码隔离**：平台相关实现按文件名后缀区分，即 `_win`（Windows）、`_posix`（Linux + macOS）、`_linux`、`_macos`，由 `xmake.lua` 按平台选择参与编译的文件。
+- **平台代码隔离**：平台相关实现按文件名后缀区分，即 `_win`（Windows）、`_posix`（Linux + macOS）、`_linux`、`_macos`，由 `xmake.lua` 按平台选择参与编译的文件。库里的 Windows 源文件一律经 `src/platform/win32.h` 包含 `<windows.h>`；编译器之间的差异（不内联、格式检查、是否开着 sanitizer）只在 `include/culib/detail/macros.h` 里判断一次。
 - **C++11 合规**：MSVC 没有 C++11 模式（最低即 C++14），因此以 GCC / Clang 在 `-std=c++11` 下的编译结果作为合规标准。
 - **公共类型的定义不能随语言标准变化**：culib 自己按 C++11 编译，使用方可以用更高标准。不要在高标准下别名到标准库对应物（如 `using string_view = std::string_view`），也不要只在高标准下给类增加成员；前者让公共函数签名不匹配，后者违反 ODR。跨标准转换使用两边定义相同的受约束构造模板。理由与实例见路线图 4.1。
 - **头文件**：使用 `#pragma once`；头文件中不写 `using namespace`。
@@ -183,7 +183,7 @@
 | --- | --- | --- |
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 六个目标 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/39226069857)（`5b82477`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、运行时的 TSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/39240658185)（`034478d`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、运行时的 TSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 21 个） |
 | CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |

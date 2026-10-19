@@ -5,6 +5,8 @@
 // 和 mem 一样只建在 pages 上；和操作系统打交道的三步在 stack_posix.cpp / stack_win.cpp。
 // 原因和数据见 docs/implementation-notes.md 的协程栈一节。
 
+#include <culib/detail/macros.h>
+
 #include "pages.h"
 #include "stack.h"
 #include "stack_detail.h"
@@ -13,18 +15,7 @@
 #include <mutex>
 #include <new>
 
-#define WAVVIX_DETAIL_MEM_ASAN 0
-#if defined(__SANITIZE_ADDRESS__)
-#  undef WAVVIX_DETAIL_MEM_ASAN
-#  define WAVVIX_DETAIL_MEM_ASAN 1
-#elif defined(__has_feature)
-#  if __has_feature(address_sanitizer)
-#    undef WAVVIX_DETAIL_MEM_ASAN
-#    define WAVVIX_DETAIL_MEM_ASAN 1
-#  endif
-#endif
-
-#if WAVVIX_DETAIL_MEM_ASAN
+#if WAVVIX_DETAIL_ASAN
 extern "C" void __asan_unpoison_memory_region(void const volatile* address, std::size_t size);
 #endif
 
@@ -198,7 +189,7 @@ void note_stack_growth(stack_memory& memory) noexcept {
 }
 
 void release_stack(const stack_memory& memory) noexcept {
-#if WAVVIX_DETAIL_MEM_ASAN
+#if WAVVIX_DETAIL_ASAN
     // 栈上留下的 ASan 红区要先清掉：下一根协程接着用这段内存，留着会误报。
     __asan_unpoison_memory_region(memory.base + memory.guard, memory.total - memory.guard);
 #endif

@@ -14,6 +14,7 @@
 #include <culib/lexical_cast.h>
 #include <culib/os.h>
 
+#include "base/fatal.h"
 #include "coroutine_detail.h"
 #include "park.h"
 #include "precise_sleep.h"
@@ -24,8 +25,6 @@
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
-#include <cstdio>
-#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -35,16 +34,6 @@
 
 namespace wavvix {
 namespace detail {
-
-namespace {
-
-[[noreturn]] void die(const char* what) {
-    std::fputs(what, stderr);
-    std::fputc('\n', stderr);
-    std::abort();
-}
-
-}  // namespace
 
 // 用 coroutine_control::next_ready 串起来的先进先出队列。
 struct run_queue {
@@ -176,23 +165,14 @@ typedef park_instant instant;
 // 由那根工作线程把它放回队列。所以一根协程不会同时在两根线程上跑。
 enum { coroutine_running, coroutine_parked, coroutine_woken };
 
-#if defined(_MSC_VER)
-__declspec(thread) vcpu* current_vcpu = 0;
-#else
-__thread vcpu* current_vcpu = 0;
-#endif
+thread_local vcpu* current_vcpu = 0;
 
 // 普通线程的等待器。线程退出时随线程析构：那时它不可能还在等。
 thread_local thread_parker this_thread_parker;
 
 // 本线程是哪根工作线程，不是工作线程为 0。协程在挂起点可能换线程，而编译器可以把线程局部
 // 变量的地址留在寄存器里跨过那次切换（GCC bug 26461），所以只在这个不内联的函数里读它。
-#if defined(_MSC_VER)
-__declspec(noinline)
-#else
-__attribute__((noinline))
-#endif
-vcpu* this_worker() noexcept {
+WAVVIX_DETAIL_NOINLINE vcpu* this_worker() noexcept {
     return current_vcpu;
 }
 
@@ -220,9 +200,8 @@ unsigned worker_count() {
 
     const result<unsigned> parsed = lexical_cast<unsigned>(configured.value());
     if (parsed.is_err() || parsed.value() == 0 || parsed.value() > worker_limit) {
-        std::fprintf(stderr, "wavvix: 环境变量 WAVVIX_MAXPROCS 必须是 1 到 %u 之间的整数，现在是 \"%s\"\n",
-                     worker_limit, configured.value().c_str());
-        std::abort();
+        fatal("wavvix: 环境变量 WAVVIX_MAXPROCS 必须是 1 到 %u 之间的整数，现在是 \"%s\"", worker_limit,
+              configured.value().c_str());
     }
     return parsed.value();
 }
@@ -234,9 +213,9 @@ unsigned worker_count() {
 void check_exception_state() {
 #if WAVVIX_DETAIL_HAS_EXCEPTIONS
     if (std::current_exception()) {
-        die("wavvix: 协程不能在 catch 块里挂起（等锁、收发 channel、网络 I/O、sleep_for、yield、wait "
-            "都会挂起）：异常的处理状态按线程保存，挂起以后会被同一根线程上的别的协程改掉，"
-            "换了线程继续也对不上。把这些调用挪到 catch 块外面");
+        fatal("wavvix: 协程不能在 catch 块里挂起（等锁、收发 channel、网络 I/O、sleep_for、yield、wait "
+              "都会挂起）：异常的处理状态按线程保存，挂起以后会被同一根线程上的别的协程改掉，"
+              "换了线程继续也对不上。把这些调用挪到 catch 块外面");
     }
 #endif
 }
@@ -272,7 +251,7 @@ void wake_one_locked(runtime_state& state) {
         state.poll_notified = true;
         state.searching.fetch_add(1);
         if (!io_engine_notify(state.engine)) {
-            die("wavvix: 不能唤醒等在事件引擎里的工作线程");
+            fatal("wavvix: 不能唤醒等在事件引擎里的工作线程");
         }
     }
 }
@@ -405,7 +384,7 @@ void wake_poller_before(runtime_state& state, instant deadline) {
     }
     state.poll_until = deadline;
     if (!io_engine_notify(state.engine)) {
-        die("wavvix: 不能唤醒等在事件引擎里的工作线程");
+        fatal("wavvix: 不能唤醒等在事件引擎里的工作线程");
     }
 }
 
@@ -690,7 +669,7 @@ void start_thread(F entry, const char* failure) {
     try {
         std::thread(entry).detach();
     } catch (const std::exception&) {
-        die(failure);
+        fatal("%s", failure);
     }
 #else
     (void)failure;
@@ -802,16 +781,16 @@ runtime_state* start_runtime() {
     const unsigned count = worker_count();
     runtime_state* const state = new (std::nothrow) runtime_state();
     if (!state) {
-        die("wavvix: 内存不足，起不来运行时");
+        fatal("wavvix: 内存不足，起不来运行时");
     }
     state->engine = io_engine_create();
     if (!state->engine || !io_engine_enable_notify(state->engine)) {
-        die("wavvix: 建不起事件引擎");
+        fatal("wavvix: 建不起事件引擎");
     }
     for (unsigned i = 0; i < count; ++i) {
         vcpu* const worker = new (std::nothrow) vcpu();
         if (!worker) {
-            die("wavvix: 内存不足，起不来工作线程");
+            fatal("wavvix: 内存不足，起不来工作线程");
         }
         worker->has_slot.store(true, std::memory_order_relaxed);
         state->workers[i] = worker;
@@ -863,9 +842,9 @@ bool park_thread(park_token& token, std::chrono::nanoseconds timeout) {
 
 void coroutine_creation_failed(fiber_failure failure) {
     if (failure == fiber_failure::invalid_size) {
-        die("wavvix: 栈大小不合法，至少 16 KiB");
+        fatal("wavvix: 栈大小不合法，至少 16 KiB");
     }
-    die("wavvix: 内存不足，建不起协程");
+    fatal("wavvix: 内存不足，建不起协程");
 }
 
 void scheduler_submit(coroutine_control* body) {

@@ -1,7 +1,7 @@
 #include <culib/string_view.h>
 
-#include <cstdio>
-#include <cstdlib>
+#include "fatal.h"
+
 #include <ostream>
 
 namespace wavvix {
@@ -11,11 +11,7 @@ const string_view::size_type string_view::npos = static_cast<string_view::size_t
 namespace detail {
 
 void string_view_out_of_range(const char* what, std::size_t index, std::size_t size) noexcept {
-    // 不分配内存、不依赖流，和 result 的误用诊断保持一致。
-    std::fprintf(stderr, "wavvix::string_view::%s out of range: index %zu, size %zu\n", what, index,
-                 size);
-    std::fflush(stderr);
-    std::abort();
+    fatal("wavvix::string_view::%s out of range: index %zu, size %zu", what, index, size);
 }
 
 }  // namespace detail

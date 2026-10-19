@@ -1,5 +1,6 @@
 #include <culib/coroutine.h>
 #include <culib/detail/fiber.h>
+#include <culib/detail/macros.h>
 #include <culib/test.h>
 
 #include <atomic>
@@ -8,17 +9,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-#if defined(__SANITIZE_ADDRESS__)
-#  define WAVVIX_TEST_ASAN 1
-#elif defined(__has_feature)
-#  if __has_feature(address_sanitizer)
-#    define WAVVIX_TEST_ASAN 1
-#  endif
-#endif
-#ifndef WAVVIX_TEST_ASAN
-#  define WAVVIX_TEST_ASAN 0
-#endif
 
 namespace {
 
@@ -164,7 +154,7 @@ TEST(fiber, allocates_its_stack_on_first_resume) {
     EXPECT(worker.resume(), ==, true);
     const std::uintptr_t base = worker.stack_base_address();
     EXPECT(base != 0, ==, true);
-#if !WAVVIX_TEST_ASAN
+#if !WAVVIX_DETAIL_ASAN
     // ASan 会把局部变量放到另一块 fake stack 上，所以只在不开 ASan 时核对地址落在栈里。
     // 栈底下还有 debug 构建的一页保护页，页最大 64 KiB（arm64 Linux 可以配成这么大）。
     EXPECT(local_address > base && local_address - base < worker.stack_size() + 64 * 1024, ==, true);

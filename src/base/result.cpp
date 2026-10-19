@@ -1,7 +1,7 @@
 #include <culib/result.h>
 
-#include <cstdio>
-#include <cstdlib>
+#include "fatal.h"
+
 #include <ostream>
 
 namespace wavvix {
@@ -34,23 +34,17 @@ error make_error(error_kind kind, std::string message) { return error(kind, std:
 std::ostream& operator<<(std::ostream& os, const error& value) { return os << value.to_string(); }
 
 namespace detail {
-namespace {
-// 误用诊断直接写 stderr，不依赖流、动态分配或异常。
-[[noreturn]] void die(const char* text) noexcept {
-    std::fputs(text, stderr);
-    std::abort();
-}
-}  // namespace
 
-[[noreturn]] void result_bad_error() noexcept {
-    die("wavvix::result::error() called on a success value\n");
+void result_bad_error() noexcept {
+    fatal("wavvix::result::error() called on a success value");
 }
-[[noreturn]] void result_bad_value(const wavvix::error& value) noexcept {
-    // 一次 fprintf 写完；说明为空时连中间的 ": " 一起省掉，和 to_string() 的格式一致。
-    std::fprintf(stderr, "wavvix::result::value() called on an error: %s%s%.*s\n",
-                 error_kind_name(value.kind()), value.message().empty() ? "" : ": ",
-                 static_cast<int>(value.message().size()), value.message().data());
-    std::abort();
+
+// 说明为空时连中间的 ": " 一起省掉，和 to_string() 的格式一致。
+void result_bad_value(const wavvix::error& value) noexcept {
+    fatal("wavvix::result::value() called on an error: %s%s%.*s", error_kind_name(value.kind()),
+          value.message().empty() ? "" : ": ", static_cast<int>(value.message().size()),
+          value.message().data());
 }
+
 }  // namespace detail
 }  // namespace wavvix

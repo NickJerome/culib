@@ -3,8 +3,8 @@
 
 #include <culib/bytes.h>
 
-#include <cstdio>
-#include <cstdlib>
+#include "fatal.h"
+
 #include <cstring>
 #include <limits>
 
@@ -13,13 +13,11 @@ namespace wavvix {
 namespace detail {
 
 void bytes_overcommit() {
-    std::fputs("wavvix::buffer::commit: 认账的字节数超过了 prepare 要来的空间\n", stderr);
-    std::abort();
+    fatal("wavvix::buffer::commit: 认账的字节数超过了 prepare 要来的空间");
 }
 
 void bytes_capacity_overflow() {
-    std::fputs("wavvix::buffer: 请求的缓冲空间过大\n", stderr);
-    std::abort();
+    fatal("wavvix::buffer: 请求的缓冲空间过大");
 }
 
 }  // namespace detail
@@ -66,8 +64,7 @@ void buffer::write_slow(const void* from, std::size_t length) {
         if (source >= begin && source - begin < capacity_) {
             const std::size_t index = static_cast<std::size_t>(source - begin);
             if (index < read_at_ || index >= write_at_ || length > write_at_ - index) {
-                std::fputs("wavvix::buffer::write: 源区间超出了缓冲区的有效数据\n", stderr);
-                std::abort();
+                detail::fatal("wavvix::buffer::write: 源区间超出了缓冲区的有效数据");
             }
             offset = index - read_at_;
             self_copy = true;

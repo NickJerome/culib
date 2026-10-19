@@ -5,18 +5,7 @@
 
 #include <thread>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#include <windows.h>
-
-// 旧一些的 SDK 和 MinGW 头文件里没有这个标志。
-#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
-#  define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
-#endif
+#include "platform/win32.h"
 
 namespace wavvix {
 namespace detail {

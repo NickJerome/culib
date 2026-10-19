@@ -19,13 +19,7 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#  define NOMINMAX        // 否则 windows.h 的 min / max 宏会污染使用方
-#endif
-#include <windows.h>
+#include "platform/win32.h"
 
 namespace wavvix {
 namespace fs {

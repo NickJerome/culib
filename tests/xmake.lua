@@ -10,7 +10,8 @@ target("layers_test")
     add_includedirs("../include", "../src")
     add_files("process/layers.cpp", "../src/cli/config.cpp", "../src/cli/flag.cpp",
               "../src/fs/path.cpp", "../src/base/lexical_cast.cpp",
-              "../src/base/string_view.cpp", "../src/base/result.cpp", "../src/base/optional.cpp")
+              "../src/base/string_view.cpp", "../src/base/result.cpp", "../src/base/optional.cpp",
+              "../src/base/fatal.cpp")
     if is_plat("windows", "mingw") then
         add_files("../src/mem/pages_win.cpp")
         add_defines("_WIN32_WINNT=0x0A00", "WINVER=0x0A00")

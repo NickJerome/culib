@@ -7,13 +7,7 @@
 #include "pages.h"
 #include "stack_detail.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#include <windows.h>
+#include "platform/win32.h"
 
 namespace wavvix { namespace mem { namespace detail {
 

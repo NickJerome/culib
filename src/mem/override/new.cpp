@@ -1,3 +1,4 @@
+#include <culib/detail/macros.h>
 #include <culib/mem.h>
 
 #include <cstdlib>
@@ -15,7 +16,7 @@ void* allocate_or_fail(std::size_t size) {
 
         std::new_handler handler = std::get_new_handler();
         if (!handler) {
-#if defined(__cpp_exceptions) || defined(_CPPUNWIND) || defined(__EXCEPTIONS)
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
             throw std::bad_alloc();
 #else
             std::abort();
@@ -27,7 +28,7 @@ void* allocate_or_fail(std::size_t size) {
 
 // nothrow 形式同样调用处理器，最终失败时返回空指针；处理器抛出的异常不越过 noexcept 入口
 void* allocate_nothrow(std::size_t size) noexcept {
-#if defined(__cpp_exceptions) || defined(_CPPUNWIND) || defined(__EXCEPTIONS)
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
     try {
         return allocate_or_fail(size);
     } catch (...) {

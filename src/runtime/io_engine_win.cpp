@@ -7,22 +7,9 @@
 #include <cstdint>
 #include <new>
 
-// GetQueuedCompletionStatusEx 和 OVERLAPPED_ENTRY 要 Vista 以上；下限由 xmake.lua
-// 统一定成 Windows 10（_WIN32_WINNT=0x0A00），这里不再各自兜底。
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#  define NOMINMAX        // 否则 windows.h 的 min / max 宏会污染使用方
-#endif
+#include "platform/win32.h"
 #include <winsock2.h>
 #include <mswsock.h>
-#include <windows.h>
-
-// 旧一些的 SDK 和 MinGW 头文件里没有这个标志。
-#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
-#  define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
-#endif
 
 namespace wavvix {
 namespace detail {

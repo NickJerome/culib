@@ -4,6 +4,7 @@
 #include "native.h"
 #include "../pages.h"
 
+#include <culib/detail/macros.h>
 #include <culib/mem.h>
 
 #include <atomic>
@@ -13,9 +14,6 @@
 
 #if defined(_MSC_VER)
 #include <intrin.h>
-#define WAVVIX_DETAIL_MEM_NOINLINE __declspec(noinline)
-#else
-#define WAVVIX_DETAIL_MEM_NOINLINE __attribute__((noinline))
 #endif
 
 static_assert(sizeof(void*) == 8, "wavvix::mem supports 64-bit targets only");
@@ -259,7 +257,7 @@ inline located locate(const void* address) {
 // ---- 误用 ----------------------------------------------------------------------
 
 // 不是本分配器给出的指针、块中间的地址、重复释放：打印一行诊断后 abort，release 下同样检查
-[[noreturn]] WAVVIX_DETAIL_MEM_NOINLINE void fail(const char* what, const void* ptr) {
+[[noreturn]] WAVVIX_DETAIL_NOINLINE void fail(const char* what, const void* ptr) {
     char line[128];
     std::size_t n = 0;
     for (const char* s = what; *s != '\0' && n < 96; ++s) {
@@ -815,7 +813,7 @@ void* alloc_generic(heap* h, int bin) {
     return pop(p);
 }
 
-WAVVIX_DETAIL_MEM_NOINLINE void* alloc_small_slow(int bin) {
+WAVVIX_DETAIL_NOINLINE void* alloc_small_slow(int bin) {
     heap* const h = t_heap != &empty_heap ? t_heap : heap_create();
     if (!h) {
         return 0;
@@ -903,13 +901,13 @@ void* alloc_large(std::size_t size, std::size_t alignment, bool* zeroed) {
 
 // 公开接口里不能有取地址的局部变量：开了栈保护的编译器会让每次调用都设、查一遍金丝雀
 // （Ubuntu 的 GCC 默认开，实测 alloc 每次多 12 条指令），所以大块路径单独成函数
-WAVVIX_DETAIL_MEM_NOINLINE void* alloc_large_block(std::size_t size, std::size_t alignment) {
+WAVVIX_DETAIL_NOINLINE void* alloc_large_block(std::size_t size, std::size_t alignment) {
     bool zeroed = false;
     return alloc_large(size, alignment, &zeroed);
 }
 
 // 整段都是新提交的大块读出来本来就是零，不再写一遍，也就不会把整块拖进物理内存
-WAVVIX_DETAIL_MEM_NOINLINE void* calloc_large(std::size_t total) {
+WAVVIX_DETAIL_NOINLINE void* calloc_large(std::size_t total) {
     bool zeroed = false;
     void* const p = alloc_large(total, 0, &zeroed);
     if (p && !zeroed) {
@@ -934,7 +932,7 @@ std::size_t huge_usable_size(const void* ptr) {
 // ---- 释放 ----------------------------------------------------------------------
 
 // 不在任何 chunk 里：要么是超大块，要么是误用
-WAVVIX_DETAIL_MEM_NOINLINE void free_huge(void* ptr) {
+WAVVIX_DETAIL_NOINLINE void free_huge(void* ptr) {
     if (!in_map(huge_map, ptr)) {
         fail("free of a pointer wavvix::mem did not allocate", ptr);
     }
@@ -949,7 +947,7 @@ WAVVIX_DETAIL_MEM_NOINLINE void free_huge(void* ptr) {
     pages::release(c, size);
 }
 
-WAVVIX_DETAIL_MEM_NOINLINE void free_local_slow(heap* h, page* p) {
+WAVVIX_DETAIL_NOINLINE void free_local_slow(heap* h, page* p) {
     const int bin = p->bin;
     if (p->in_full) {
         detach(h->full[bin], p);
@@ -971,7 +969,7 @@ WAVVIX_DETAIL_MEM_NOINLINE void free_local_slow(heap* h, page* p) {
 }
 
 // 大块，或者别的线程的页
-WAVVIX_DETAIL_MEM_NOINLINE void free_other(page* p, block* b) {
+WAVVIX_DETAIL_NOINLINE void free_other(page* p, block* b) {
     if (p->block_size == 0) {
         slices_free(p);
         return;

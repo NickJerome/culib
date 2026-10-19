@@ -2,32 +2,12 @@
 
 // coroutine 的内部接口。不是公共头文件，使用方不该包含。
 
+#include <culib/detail/macros.h>
+
 #include <atomic>
 #include <cstddef>
 
 #include "../mem/stack.h"
-
-#define WAVVIX_DETAIL_ASAN_FIBERS 0
-#if defined(__SANITIZE_ADDRESS__)
-#  undef WAVVIX_DETAIL_ASAN_FIBERS
-#  define WAVVIX_DETAIL_ASAN_FIBERS 1
-#elif defined(__has_feature)
-#  if __has_feature(address_sanitizer)
-#    undef WAVVIX_DETAIL_ASAN_FIBERS
-#    define WAVVIX_DETAIL_ASAN_FIBERS 1
-#  endif
-#endif
-
-#define WAVVIX_DETAIL_TSAN_FIBERS 0
-#if defined(__SANITIZE_THREAD__)
-#  undef WAVVIX_DETAIL_TSAN_FIBERS
-#  define WAVVIX_DETAIL_TSAN_FIBERS 1
-#elif defined(__has_feature)
-#  if __has_feature(thread_sanitizer)
-#    undef WAVVIX_DETAIL_TSAN_FIBERS
-#    define WAVVIX_DETAIL_TSAN_FIBERS 1
-#  endif
-#endif
 
 namespace wavvix {
 namespace detail {
@@ -68,12 +48,12 @@ struct coroutine_control {
     std::size_t usable;
     bool started;
     bool finished;
-#if WAVVIX_DETAIL_ASAN_FIBERS
+#if WAVVIX_DETAIL_ASAN
     void* fake_stack;
     const void* resumer_stack_bottom;
     std::size_t resumer_stack_size;
 #endif
-#if WAVVIX_DETAIL_TSAN_FIBERS
+#if WAVVIX_DETAIL_TSAN
     void* tsan_fiber;     // 这根协程在 TSan 里的上下文
     void* tsan_resumer;   // 切回去的那一侧
 #endif

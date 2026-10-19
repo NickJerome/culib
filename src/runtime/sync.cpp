@@ -4,31 +4,25 @@
 #include <culib/coroutine.h>
 #include <culib/sync.h>
 
+#include "base/fatal.h"
 #include "park.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include <mutex>
 
 namespace wavvix {
 
 namespace {
 
+using detail::fatal;
 using detail::list_node;
 using detail::park_token;
 
 const std::chrono::nanoseconds forever(-1);
 
-[[noreturn]] void die(const char* what) {
-    std::fputs(what, stderr);
-    std::fputc('\n', stderr);
-    std::abort();
-}
-
 // 等待者还挂着就销毁，它们永远醒不过来。
 void die_if_waiting(const list_node& waiters, const char* what) {
     if (!detail::list_empty(waiters)) {
-        die(what);
+        fatal("%s", what);
     }
 }
 
@@ -216,7 +210,7 @@ void channel_waiters::wake_everyone() {
 }
 
 void channel_misuse(channel_error what) {
-    die(channel_message(what));
+    fatal("%s", channel_message(what));
 }
 
 }  // namespace detail
@@ -224,7 +218,7 @@ void channel_misuse(channel_error what) {
 wait_group::~wait_group() {
     std::lock_guard<std::mutex> state(state_);
     if (running_ != 0) {
-        die("wavvix::wait_group 析构时组里还有协程没结束");
+        fatal("wavvix::wait_group 析构时组里还有协程没结束");
     }
 }
 

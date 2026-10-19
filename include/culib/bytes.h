@@ -2,6 +2,7 @@
 
 // 字节缓冲和显式字节序读写。
 
+#include <culib/detail/macros.h>
 #include <culib/optional.h>
 #include <culib/string_view.h>
 
@@ -14,9 +15,9 @@
 namespace wavvix {
 
 namespace detail {
-// commit 超过最近一次 prepare 的额度时，打印诊断并终止进程。
-void bytes_overcommit();
-void bytes_capacity_overflow();
+// 误用：commit 超过最近一次 prepare 的额度、要的空间大到放不下。打印诊断后终止。
+[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void bytes_overcommit();
+[[noreturn]] WAVVIX_DETAIL_NOINLINE_COLD void bytes_capacity_overflow();
 }  // namespace detail
 
 class buffer {
