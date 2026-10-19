@@ -163,6 +163,102 @@ bool is_option(string_view token) {
     return token.size() >= 2 && token[0] == '-';
 }
 
+// 一个选项：--name、--name=value、-n 或者 -n=value。
+struct option_token {
+    string_view name;    // 去掉前导 '-' 和 "=value" 以后的名字
+    string_view value;   // '=' 后面的值
+    bool has_value;
+};
+
+option_token split_option(string_view token) {
+    string_view body = token;
+    body.remove_prefix(body.size() >= 2 && body[1] == '-' ? 2 : 1);   // 长选项去两个 '-'，短选项去一个
+    option_token option;
+    const string_view::size_type equals = body.find('=');
+    option.has_value = equals != string_view::npos;
+    option.name = option.has_value ? body.substr(0, equals) : body;
+    option.value = option.has_value ? body.substr(equals + 1) : string_view();
+    return option;
+}
+
+// --help、-h，以及给了版本号时的 --version。
+bool is_builtin(const registry& self, string_view name) {
+    return name == "help" || name == "h" || (name == "version" && !self.version.empty());
+}
+
+result<void> take_builtin(registry& self, const option_token& option, string_view token) {
+    if (option.has_value) {
+        return make_error(error_kind::invalid_argument, token.to_string() + " 不接受值");
+    }
+    if (option.name == "version") {
+        self.version_requested = true;
+    } else {
+        self.help_requested = true;
+    }
+    return result<void>();
+}
+
+// 一个选项。值不在 --name=value 里时取下一个参数，next 跟着前进。
+result<void> take_option(registry& self, string_view token, int argc, char* argv[], int& next) {
+    const option_token option = split_option(token);
+    if (is_builtin(self, option.name)) {
+        return take_builtin(self, option, token);
+    }
+    entry* const which = find_by_name(self, option.name);
+    if (!which) {
+        // 未知选项报错，不收进位置参数：默默接受拼错的 --widht 是最常见的 CLI 陷阱
+        return make_error(error_kind::invalid_argument, "未知选项 " + token.to_string());
+    }
+    if (which->which == detail::kind::boolean && !option.has_value) {
+        *static_cast<bool*>(which->storage) = true;   // 布尔选项不吃下一个参数
+        which->on_command_line = true;
+        return result<void>();
+    }
+
+    string_view text = option.value;
+    if (!option.has_value) {
+        if (next >= argc || !argv[next]) {
+            return make_error(error_kind::invalid_argument, token.to_string() + " 后面缺少值");
+        }
+        text = string_view(argv[next++]);
+    }
+    const result<void> assigned = assign(*which, text);
+    if (assigned.is_err()) {
+        return assigned;
+    }
+    which->on_command_line = true;
+    return result<void>();
+}
+
+// argv 里的空指针当作空字符串。
+string_view argument_at(char* argv[], int index) {
+    return argv[index] ? string_view(argv[index]) : string_view();
+}
+
+// 逐个读命令行参数。不像选项的参数是位置参数，之后照样接着认选项；"--" 以后的全是位置参数。
+result<void> read_arguments(registry& self, int argc, char* argv[]) {
+    int next = 1;
+    while (next < argc) {
+        const string_view token = argument_at(argv, next);
+        ++next;
+        if (token == "--") {
+            break;
+        }
+        if (!is_option(token)) {
+            self.positional.push_back(token);
+            continue;
+        }
+        const result<void> taken = take_option(self, token, argc, argv, next);
+        if (taken.is_err()) {
+            return taken;
+        }
+    }
+    for (; next < argc; ++next) {
+        self.positional.push_back(argument_at(argv, next));
+    }
+    return result<void>();
+}
+
 }  // namespace
 
 namespace detail {
@@ -272,88 +368,16 @@ result<void> parse(int argc, char* argv[], string_view version) {
     registry& self = table();
     parse_attempt attempt(self);
     self.version = version.to_string();
-    self.program = (argc > 0 && argv[0]) ? fs::path(argv[0]).filename().string()
-                                        : std::string("program");
+    self.program = (argc > 0 && argv[0]) ? fs::path(argv[0]).filename().string() : std::string("program");
 
     const result<void> defaults = apply_defaults(self);
     if (defaults.is_err()) {
         return defaults;
     }
-
-    bool only_positional = false;
-    for (int i = 1; i < argc; ++i) {
-        string_view token = argv[i] ? string_view(argv[i]) : string_view();
-
-        if (only_positional) {
-            self.positional.push_back(token);
-            continue;
-        }
-        if (token == "--") {
-            only_positional = true;          // 规则 3
-            continue;
-        }
-        if (!is_option(token)) {
-            self.positional.push_back(token);   // 规则 1（继续往后解析）和规则 4
-            continue;
-        }
-
-        // 去掉前导 '-'：长选项两个，短选项一个
-        string_view body = token;
-        body.remove_prefix(body.size() >= 2 && body[1] == '-' ? 2 : 1);
-
-        // --name=value 里的 value 自带，和下一个 token 无关
-        string_view inline_value;
-        bool has_inline = false;
-        const string_view::size_type equals = body.find('=');
-        if (equals != string_view::npos) {
-            inline_value = body.substr(equals + 1);
-            body = body.substr(0, equals);
-            has_inline = true;
-        }
-
-        if (body == "help" || body == "h" ||
-            (body == "version" && !self.version.empty())) {
-            if (has_inline) {
-                return make_error(error_kind::invalid_argument,
-                                  token.to_string() + " 不接受值");
-            }
-            if (body == "version") {
-                self.version_requested = true;
-            } else {
-                self.help_requested = true;
-            }
-            continue;
-        }
-
-        entry* which = find_by_name(self, body);
-        if (!which) {
-            // 未知选项报错，不收进位置参数：静默接受拼错的 --widht 是最常见的 CLI 坑
-            return make_error(error_kind::invalid_argument,
-                              "未知选项 " + token.to_string());
-        }
-
-        if (which->which == detail::kind::boolean && !has_inline) {
-            // 规则 2：布尔选项不吃下一个 token
-            *static_cast<bool*>(which->storage) = true;
-            which->on_command_line = true;
-            continue;
-        }
-
-        string_view text = inline_value;
-        if (!has_inline) {
-            if (i + 1 >= argc || !argv[i + 1]) {
-                return make_error(error_kind::invalid_argument,
-                                  token.to_string() + " 后面缺少值");
-            }
-            text = string_view(argv[++i]);
-        }
-        const result<void> assigned = assign(*which, text);
-        if (assigned.is_err()) {
-            return assigned;
-        }
-        which->on_command_line = true;
+    const result<void> read = read_arguments(self, argc, argv);
+    if (read.is_err()) {
+        return read;
     }
-
     const result<void> missing = check_required(self);
     if (missing.is_err()) {
         return missing;
