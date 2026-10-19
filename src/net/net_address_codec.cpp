@@ -1,11 +1,9 @@
 #include "net_address_detail.h"
 
 #include <cstring>
-
-#if !defined(_WIN32)
-#  include <arpa/inet.h>
-#  include <netinet/in.h>
-#endif
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace wavvix {
 namespace net {
@@ -55,5 +53,46 @@ int winsock_startup_error() {
 #endif
 
 }  // namespace detail
+
+namespace {
+
+result<std::vector<endpoint>> lookup(string_view host, std::uint16_t port, bool numeric) {
+    if (host.empty() || host.find('\0') != string_view::npos) {
+        return make_error(error_kind::invalid_argument, "host must be nonempty and contain no NUL");
+    }
+    return detail::lookup_native(host, port, numeric);
+}
+
+}  // namespace
+
+result<endpoint> endpoint::parse(string_view numeric_ip, std::uint16_t port) {
+    result<std::vector<endpoint>> addresses = lookup(numeric_ip, port, true);
+    if (addresses.is_err()) {
+        return std::move(addresses).error();
+    }
+    return std::move(addresses.value().front());
+}
+
+result<std::vector<endpoint>> resolve(string_view host, std::uint16_t port) {
+    return lookup(host, port, false);
+}
+
+std::string endpoint::to_string() const {
+    const std::string address = detail::address_text_native(*this);
+    if (address.empty()) {
+        return std::string();
+    }
+    if (family_ == address_family::ipv4) {
+        return address + ":" + std::to_string(port_);
+    }
+
+    std::string text = "[" + address;
+    if (scope_id_) {
+        text += "%" + std::to_string(scope_id_);
+    }
+    text += "]:" + std::to_string(port_);
+    return text;
+}
+
 }  // namespace net
 }  // namespace wavvix

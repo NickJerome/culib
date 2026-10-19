@@ -104,7 +104,7 @@ Linux 的 epoll 用非阻塞 `eventfd`；macOS 用 `EVFILT_USER` 和 `NOTE_TRIGG
 
 GCC 4.8.5 使用 CI 固定摘要的同一镜像，已核实为 Debian 7.10 / glibc 2.13。39 个库源文件、测试和 22 个示例均编译通过；GCC 4.8.5 产物在 WSL 的 glibc 2.35 上运行，364 项测试和三个停止请求场景通过。本机内核配置为 `CONFIG_LEGACY_VSYSCALL_NONE=y`，旧 glibc 的运行路径会段错误：容器内测试在 193 项通过后退出 139，不能记为全量通过；归档阶段也因此仅在本地使用 `ar rcsD` 避免写时间戳。以上证明旧编译器可构建，不替代旧 glibc 环境的完整 CI。
 
-macOS 只验证了从最终源码提取的套接字 helper 在 GCC / Clang 下的语法，使用 Linux 头文件并补 `SO_NOSIGPIPE` 常量；这不等于真实 SDK 编译或 kqueue 运行验证。当前这批改动尚未推送，macOS、Linux arm64、MinGW 及新镜像的完整 CI 结果仍待取得，不能沿用上一次绿色矩阵。
+macOS 只验证了从最终源码提取的套接字 helper 在 GCC / Clang 下的语法，使用 Linux 头文件并补 `SO_NOSIGPIPE` 常量；这不等于真实 SDK 编译或 kqueue 运行验证。推送之后，macOS、Linux arm64 和 MinGW 在 CI 上都已通过（例如 `754ad6f` 的运行 39264413596）。
 
 ## [`io_engine_linux.cpp`](../src/runtime/io_engine_linux.cpp)
 
@@ -515,7 +515,7 @@ channel 不交棒：放进元素或腾出位置时叫醒一个等待者，它醒
 
 主机名 `connect` 先解析、后计时：解析直接调 `getaddrinfo`，它无法按时限中止，所以 DNS 不计入连接超时，候选按系统顺序共用同一份超时。已显式绑定的套接字只尝试地址族一致的候选，每次重试前按当前实际本地端点重新绑定，绑不上就报错——绝不悄悄换本地源地址。每次失败的尝试都关掉那次用的原生句柄；已有连接不受无效参数或不支持操作的影响。`close()` 只还句柄、保留协议，同一对象可再次 `bind` / `connect`。
 
-平台资源操作（建套接字、绑定、accept、connect、端点查询、Windows overlapped 调用与 AcceptEx / ConnectEx 上下文、UDP ICMP 抑制、POSIX 非阻塞与 close-on-exec）集中在 `net_socket_posix.cpp` / `net_socket_win.cpp`，经私有的 `net_socket_detail.h` 相接；公共 `net.h` 不包含平台头文件；内部地址编解码使用平台的 sockaddr。旧的 `net_tcp*` / `net_udp*` 实现随合并删除，不留并行旧路径。这批改动尚未取得 CI 结果，不能沿用 2026-10-08 那套接口的绿色记录。
+平台资源操作（建套接字、绑定、accept、connect、端点查询、Windows overlapped 调用与 AcceptEx / ConnectEx 上下文、UDP ICMP 抑制、POSIX 非阻塞与 close-on-exec）集中在 `net_socket_posix.cpp` / `net_socket_win.cpp`，经私有的 `net_socket_detail.h` 相接；公共 `net.h` 不包含平台头文件；内部地址编解码使用平台的 sockaddr。旧的 `net_tcp*` / `net_udp*` 实现随合并删除，不留并行旧路径。合并后的实现已在 CI 的三平台矩阵上通过（例如 `754ad6f` 的运行 39264413596）。
 
 ## [`fs_win.cpp`](../src/fs/fs_win.cpp)
 
