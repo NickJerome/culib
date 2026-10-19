@@ -26,7 +26,9 @@ public:
 }  // namespace wavvix
 
 // 组名和测试名直接字符串化，不会被展开，因此可以和宏同名（例如组名就叫 defer）。
-#define WAVVIX_TEST(suite, name) WAVVIX_DETAIL_TEST(#suite, #name, WAVVIX_DETAIL_UNIQUE_ID)
+#define WAVVIX_TEST(suite, name)                                                                 \
+    WAVVIX_DETAIL_ALLOW_COUNTER_BEGIN WAVVIX_DETAIL_TEST(#suite, #name, WAVVIX_DETAIL_UNIQUE_ID) \
+    WAVVIX_DETAIL_ALLOW_COUNTER_END
 
 // 先把唯一编号展开成数字，保证下面三处用的是同一个编号。
 #define WAVVIX_DETAIL_TEST(suite_text, name_text, id) WAVVIX_DETAIL_TEST_IMPL(suite_text, name_text, id)

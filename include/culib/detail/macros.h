@@ -14,6 +14,21 @@
 #define WAVVIX_DETAIL_UNIQUE_ID __LINE__
 #endif
 
+// 展开 WAVVIX_DETAIL_UNIQUE_ID 的宏用这一对包住。clang 22 起，-Wpedantic 把 __COUNTER__ 报成
+// 扩展（-Wc2y-extensions：C2y 才把它标准化），使用方开着 -Werror 写一句 defer 就编不过。
+// 只在认识这条警告的 clang 上屏蔽，老版本不用多屏蔽一条「未知警告」。
+#if defined(__clang__) && defined(__has_warning)
+#  if __has_warning("-Wc2y-extensions")
+#    define WAVVIX_DETAIL_ALLOW_COUNTER_BEGIN \
+         _Pragma("clang diagnostic push") _Pragma("clang diagnostic ignored \"-Wc2y-extensions\"")
+#    define WAVVIX_DETAIL_ALLOW_COUNTER_END _Pragma("clang diagnostic pop")
+#  endif
+#endif
+#ifndef WAVVIX_DETAIL_ALLOW_COUNTER_BEGIN
+#  define WAVVIX_DETAIL_ALLOW_COUNTER_BEGIN
+#  define WAVVIX_DETAIL_ALLOW_COUNTER_END
+#endif
+
 // 生成唯一的标识符，例如 WAVVIX_DETAIL_UNIQUE_NAME(wavvix_defer_)
 #define WAVVIX_DETAIL_UNIQUE_NAME(prefix) WAVVIX_DETAIL_CONCAT(prefix, WAVVIX_DETAIL_UNIQUE_ID)
 

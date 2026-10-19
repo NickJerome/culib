@@ -45,8 +45,10 @@ struct defer_maker {
 }  // namespace detail
 }  // namespace wavvix
 
-#define WAVVIX_DEFER \
-    auto WAVVIX_DETAIL_UNIQUE_NAME(wavvix_defer_) = ::wavvix::detail::defer_maker() + [&]() noexcept
+#define WAVVIX_DEFER                                                                \
+    WAVVIX_DETAIL_ALLOW_COUNTER_BEGIN                                               \
+    auto WAVVIX_DETAIL_UNIQUE_NAME(wavvix_defer_) WAVVIX_DETAIL_ALLOW_COUNTER_END = \
+        ::wavvix::detail::defer_maker() + [&]() noexcept
 
 #ifndef WAVVIX_NO_DEFER_KEYWORD
 #define defer WAVVIX_DEFER

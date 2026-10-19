@@ -16,6 +16,14 @@ Windows 的网络实现需要 `ws2_32`；当前 macOS 实现使用 POSIX 与 kqu
 作用域的一行只能展开一次。C++11 不保证复制消除，移动时转移 `active_`，保证只有
 接收者析构时执行回调；正确性不依赖编译器是否省略移动。
 
+clang 22 起，`-Wpedantic` 把 `__COUNTER__` 报成扩展（`-Wc2y-extensions`：WG14 的 N3457 在 C2y
+里把它标准化，clang 把 C++ 里的使用也算作扩展），使用方开着 `-Werror` 写一句 `defer` 或 `TEST`
+就编不过；Google Benchmark、Boost.Test、doctest 都撞上过。所以这两个宏的展开用
+`WAVVIX_DETAIL_ALLOW_COUNTER_BEGIN` / `END` 包住：在认识这条警告的 clang 上 push、忽略、pop，
+屏蔽只覆盖宏自己的展开，使用方自己写的 `__COUNTER__` 照样会报。不退回 `__LINE__`：同一行两个
+`defer` 会重名，MSVC 的 `/ZI` 也拼不了。本机 clang 22.1.3 验证过；CI 上的 clang 还没有这条警告，
+覆盖不到。
+
 ## [`io_engine.h`](../src/runtime/io_engine.h)
 
 相关设计见 [设计文档](superpowers/specs/2026-10-05-event-engine-design.md)。
