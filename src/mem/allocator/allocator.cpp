@@ -427,49 +427,64 @@ bool commit_table_locked(chunk* c, std::size_t first, std::size_t count) {
     return true;
 }
 
+// 先在已有的 chunk 里找，找不到再建一个；找到时 *out 是所在的 chunk
+std::size_t find_slices_locked(std::size_t n, std::size_t step, chunk** out) {
+    for (std::size_t i = 0; i < g.chunk_count; ++i) {
+        const std::size_t index = find_run(g.chunks[i], n, step);
+        if (index != npos) {
+            *out = g.chunks[i];
+            return index;
+        }
+    }
+    chunk* const c = chunk_create_locked();
+    if (!c) {
+        return npos;
+    }
+    *out = c;
+    return find_run(c, n, step);
+}
+
+// 有一片没提交过就整段一起提交；*zeroed 报告是不是一片都没提交过，那样读出来全零
+bool commit_slices_locked(chunk* c, std::size_t index, std::size_t n, bool* zeroed) {
+    bool some_committed = false;
+    bool all_committed = true;
+    for (std::size_t s = index; s < index + n; ++s) {
+        if (c->committed_bits[s / 64] & bit(s)) {
+            some_committed = true;
+        } else {
+            all_committed = false;
+        }
+    }
+    *zeroed = !some_committed;
+
+    char* const start = reinterpret_cast<char*>(c) + (index << slice_shift);
+    return commit_table_locked(c, index, n) && (all_committed || pages::commit(start, n << slice_shift));
+}
+
+void take_slices_locked(chunk* c, std::size_t index, std::size_t n) {
+    for (std::size_t s = index; s < index + n; ++s) {
+        c->free_bits[s / 64] &= ~bit(s);
+        c->committed_bits[s / 64] |= bit(s);
+    }
+}
+
 // 取 n 个连续 slice，起点按 step 个 slice 对齐；*zeroed 报告这段读出来是不是全零
 page* slices_alloc_locked(std::size_t n, std::size_t step, bool* zeroed) {
     maybe_purge_locked();
 
     chunk* c = 0;
-    std::size_t index = npos;
-    for (std::size_t i = 0; i < g.chunk_count && index == npos; ++i) {
-        c = g.chunks[i];
-        index = find_run(c, n, step);
-    }
-    if (index == npos) {
-        c = chunk_create_locked();
-        index = c ? find_run(c, n, step) : npos;
-    }
+    const std::size_t index = find_slices_locked(n, step, &c);
     if (index == npos) {
         return 0;
     }
-
-    // 有一片没提交过就整段一起提交；一片都没提交过的读出来全零
-    bool fresh = true;
-    bool committed = true;
-    for (std::size_t s = index; s < index + n; ++s) {
-        if (c->committed_bits[s / 64] & bit(s)) {
-            fresh = false;
-        } else {
-            committed = false;
-        }
-    }
-
-    char* const start = reinterpret_cast<char*>(c) + (index << slice_shift);
-    if (!commit_table_locked(c, index, n) || (!committed && !pages::commit(start, n << slice_shift))) {
+    if (!commit_slices_locked(c, index, n, zeroed)) {
         return 0;
     }
-
-    for (std::size_t s = index; s < index + n; ++s) {
-        c->free_bits[s / 64] &= ~bit(s);
-        c->committed_bits[s / 64] |= bit(s);
-    }
+    take_slices_locked(c, index, n);
 
     page* const p = desc_at(c, index);
     p->slices = static_cast<std::uint16_t>(n);
     p->back = 0;   // 这个 slice 以前可能是别的中等页的后半段
-    *zeroed = fresh;
     return p;
 }
 
