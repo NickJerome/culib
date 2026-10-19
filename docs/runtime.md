@@ -175,3 +175,14 @@ CI 里的 ThreadSanitizer 只编 `os` 的停止请求那一个程序，不覆盖
 - `io_engine.cancel_keeps_completed_overlapped_alive_until_packet_is_taken` 在整个程序连跑 400 遍时失败 1 次，单独连跑 600 遍也失败 1 次；单独跑时进程根本不启动运行时。这是测试的时序问题，原因和改法见[实现说明](implementation-notes.md#io_engine_wincpp)，改了以后单独连跑 600 遍没有失败。
 
 最开始连跑 20 遍时还有 1 遍失败，没有留下输出；之后整个程序又连跑了一千多遍，只见过上面两种。
+
+[`79acce3` 的 CI](https://github.com/NickJerome/culib/actions/runs/39191860485) 24/24 通过：`culib_test` Linux 372 项、macOS 369 项、Windows 与 MinGW 368 项，`runtime_order_test` 依次 37、35、32 项（各多了新加的 1 条），GCC 4.8 和 ASan + UBSan 与 Linux 相同，无异常构建 366 项和 37 项；误用诊断 POSIX 11 条（无异常构建 10 条）、Windows 10 条；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。新加的那条在 17 个作业里都用了 4.0–7.3 毫秒，也就是第一轮就过了，最忙的 ASan + UBSan 作业也没有交接。`a_worker_stuck_in_a_blocking_call_hands_its_place_over` 的耗时大约是从卡住到交接的时间，再加上被阻塞的那根线程最多睡一步；和改动之前的一次运行（[`dfd90c2`](https://github.com/NickJerome/culib/actions/runs/39187428752)）对比：
+
+| 作业 | 改之前 | 改之后 |
+| --- | --- | --- |
+| Linux（x86_64 与 arm64、GCC 与 Clang、GCC 4.8、ASan、无异常构建，共 10 个） | 2.4–8.1 毫秒 | 11.8–17.8 毫秒 |
+| Windows MSVC release / debug | 45.6 / 45.4 毫秒 | 13.0 / 23.1 毫秒 |
+| MinGW | 61.1 毫秒 | 13.8 毫秒 |
+| macOS（4 个） | 5.3–212.9 毫秒 | 24.5–123.8 毫秒 |
+
+Linux 上交接变慢是阈值提高的预期结果。macOS 的 runner 计时本来就抖得厉害，两次运行都看不出规律。
