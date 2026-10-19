@@ -201,3 +201,5 @@ Linux 上交接变慢是阈值提高的预期结果。macOS 的 runner 计时本
 TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协程始终当成同一个执行上下文，换了线程也一样：协程自己写下的内存，换线程以后读不读得到，它不检查，只检查调度器交接时用的那些数据结构有没有排好先后。
 
 2026-10-19 协程栈改成自己的池、默认 1008 KiB、Windows 上按需提交以后，本机重新验证过：Windows MSVC 2022 x64 release / debug 的 13 个测试目标全部通过，`culib_test` 370 项（多了深递归、复用深栈后在深处抛异常的 2 条），误用诊断 11 条（多了栈溢出那条，以 `STATUS_STACK_OVERFLOW` 终止），全部示例编过；MSYS2 的 MinGW-w64 GCC 15.2 跑 `tests/mingw_windows.sh` 全部通过。WSL2 上 GCC 11.4 按 `-Wall -Wextra -Wpedantic -Werror` 构建 debug / release：`culib_test` 374 项、`runtime_order_test` 37 项全部通过，误用诊断 debug 12 条（栈溢出被保护页拦住，SIGSEGV）、release 11 条；改过的文件另用 Clang 14 和 GCC 在开关异常、debug / release 下做了 `-fsyntax-only`。两个反向验证、内存和创建耗时的对比见[实现说明](implementation-notes.md#协程栈)。
+
+[`5d63026` 的 CI](https://github.com/NickJerome/culib/actions/runs/39214766196) 24/24 通过：`culib_test` Linux 374 项、macOS 371 项、Windows 与 MinGW 370 项（各多了那 2 条），GCC 4.8、ASan + UBSan 和 TSan 与 Linux 相同，无异常构建 367 项（只多了深递归那 1 条）；`runtime_order_test` 依次 37、35、32 项，不变；误用诊断 Linux / macOS 的 debug 构建 12 条、release 构建 11 条，Windows 11 条，无异常构建 10 条。栈溢出那条在 Windows 的两个作业、Linux 和 macOS 的五个 debug 作业里都按预期终止；报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。

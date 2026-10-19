@@ -107,7 +107,7 @@ Linux 上每个 chunk 一保留就整段 `MADV_NOHUGEPAGE`（`pages::no_huge_pag
 | 不标 | 257.2 KiB | 90–303 µs | 82 / 240 |
 | 标了 | 4.7 KiB | 4.6 µs | 82 / 239 |
 
-不标时栈整根进了物理内存，创建慢是因为每次缺页都要清零一个 2 MiB 的页。标了以后和 `madvise` 模式下一样。`mem_test_unit` 在 Linux 上查 `/proc/self/smaps` 里 chunk 那段映射的 `VmFlags` 带 `nh`；去掉这一行时这条检查失败。
+不标时栈整根进了物理内存，创建慢是因为每次缺页都要清零一个 2 MiB 的页。标了以后和 `madvise` 模式下一样。`mem_test_unit` 在 Linux 上查 `/proc/self/smaps` 里 chunk 那段映射的 `VmFlags` 带 `nh`；去掉这一行时这条检查失败。[`98842da` 的 CI](https://github.com/NickJerome/culib/actions/runs/39212279348) 24/24 通过，跑 `mem_test_unit` 的 9 个 Linux 作业都做了这条检查（检查数从 1258 变成 1261），macOS 和 Windows 不变。
 
 ## 大块、超大块和对齐
 
