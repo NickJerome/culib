@@ -16,6 +16,8 @@
 #include <culib/test.h>
 #include <culib/time.h>
 
+#include "scratch_name.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
@@ -42,7 +44,7 @@ class scratch {
 public:
     explicit scratch(const char* name) {
         const result<fs::path> base = fs::temp_directory_path();
-        root_ = base.value_or("C:/Temp") / (std::string("culib_fs_win_edge_") + name);
+        root_ = base.value_or("C:/Temp") / scratch_name(std::string("culib_fs_win_edge_") + name);
         (void)fs::remove_all(root_);
         ok_ = fs::create_directories(root_).is_ok();
     }

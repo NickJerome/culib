@@ -8,6 +8,8 @@
 #include <culib/fs.h>
 #include <culib/test.h>
 
+#include "scratch_name.h"
+
 #include <cstring>
 #include <string>
 #include <utility>
@@ -202,7 +204,7 @@ TEST(config, parses_an_empty_file) {
 TEST(config, loads_from_a_file_and_says_which_file_was_wrong) {
     const wavvix::result<wavvix::fs::path> temp = wavvix::fs::temp_directory_path();
     const wavvix::fs::path base = temp.is_ok() ? temp.value() : wavvix::fs::path(".");
-    const wavvix::fs::path target = base / "culib_config_test.conf";
+    const wavvix::fs::path target = base / (scratch_name("culib_config_test") + ".conf");
 
     write_fixture(target, "[server]\nport = 9000\n");
     const wavvix::result<config> good = config::load(target.string());
@@ -215,7 +217,7 @@ TEST(config, loads_from_a_file_and_says_which_file_was_wrong) {
     const wavvix::result<config> bad = config::load(target.string());
     if (EXPECT(bad.is_ok(), ==, false)) {
         EXPECT(bad.error().message().find("第 2 行") != std::string::npos, ==, true);
-        EXPECT(bad.error().message().find("culib_config_test.conf") != std::string::npos, ==,
+        EXPECT(bad.error().message().find(target.filename().string()) != std::string::npos, ==,
                true);
     }
 

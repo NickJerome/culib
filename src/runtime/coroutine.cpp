@@ -11,6 +11,7 @@
 #include <new>
 
 #include "coroutine_detail.h"
+#include "shadow_stack.h"
 
 // 未实现换栈汇编的目标必须在编译期报错。
 #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
@@ -129,6 +130,11 @@ static_assert(default_stack_size == mem::detail::pooled_stack_size,
 
 // 第一次 resume 时分配栈，摆好第一帧。
 void allocate_stack_for(coroutine_control* control) {
+    static const bool shadow_stack = shadow_stack_enabled();   // 进程里只查一次
+    if (shadow_stack) {
+        die("wavvix::coroutine: 进程开着 CET 影子栈，协程换栈会被系统直接终止；链接时去掉 /CETCOMPAT");
+    }
+
     const stack_memory memory = mem::detail::allocate_stack(control->usable);
     if (!memory.base) {
         die("wavvix::coroutine: 栈内存不够，跑不起协程；检查 ulimit -v、容器的内存上限、vm.overcommit_memory "

@@ -11,6 +11,8 @@
 #include <culib/log.h>
 #include <culib/test.h>
 
+#include "scratch_name.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -50,7 +52,7 @@ public:
     explicit scratch_log(const char* tag) {
         const wavvix::result<wavvix::fs::path> temp = wavvix::fs::temp_directory_path();
         const wavvix::fs::path base = temp.is_ok() ? temp.value() : wavvix::fs::path(".");
-        path_ = (base / (std::string("culib_log_") + tag + ".log")).string();
+        path_ = (base / (scratch_name(std::string("culib_log_") + tag) + ".log")).string();
         clean();
     }
     ~scratch_log() {
@@ -338,7 +340,7 @@ TEST(log, sink_management_from_a_coroutine_behaves_like_a_direct_call) {
 TEST(log, a_coroutine_stuck_on_the_log_mutex_does_not_stall_the_others) {
     const wavvix::result<wavvix::fs::path> temp = wavvix::fs::temp_directory_path();
     const wavvix::fs::path base = temp.is_ok() ? temp.value() : wavvix::fs::path(".");
-    const std::string fifo = (base / std::string("culib_log_jam.fifo")).string();
+    const std::string fifo = (base / (scratch_name("culib_log_jam") + ".fifo")).string();
     ::unlink(fifo.c_str());
     if (!EXPECT(::mkfifo(fifo.c_str(), 0600) == 0, ==, true)) {
         return;

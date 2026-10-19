@@ -612,6 +612,7 @@ const std::size_t default_stack_size = 1008 * 1024;
 - 一根工作线程卡在阻塞调用或长循环里超过 10 毫秒，又有协程排着没人跑时，监控线程把它跑协程的名额交给另一根线程（备用的或新起的，线程总数不超过 256），同一时刻跑协程的线程数保持 `WAVVIX_MAXPROCS`。见[运行时文档](docs/runtime.md#卡住的工作线程)。
 - 函数里逃出的异常会 `std::terminate()`。内存不够时打印诊断后终止。
 - 栈固定为 1008 KiB，在协程第一次运行时才分配，用到的页才占内存。栈用超了：Windows 上报 `STATUS_STACK_OVERFLOW` 后终止；Linux / macOS 的 debug 构建有保护页，溢出当场崩溃；**Linux / macOS 的 release 构建里栈溢出不会被检测**，没有保护页，用超了会写坏别的内存。递归深度随输入增长的代码要自己限制深度，规则见[运行时文档](docs/runtime.md#栈溢出)。
+- Windows 上程序用 `/CETCOMPAT` 链接、CPU 和系统又支持 CET 时，系统会打开用户态影子栈，而换栈不切影子栈：第一根协程跑起来之前就打印诊断并终止。用协程的程序链接时不要加 `/CETCOMPAT`。见[实现说明](docs/implementation-notes.md#cet-影子栈)。
 - 库不检测死锁：所有协程都挂起、谁也叫不醒谁时，`wait()` 会一直等。生命周期与内存的说明见 [docs/runtime.md](docs/runtime.md)。
 
 示例：阻塞的调用直接写，卡住的工作线程有别的线程顶上。

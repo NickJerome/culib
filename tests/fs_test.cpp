@@ -7,6 +7,8 @@
 #include <culib/test.h>
 #include <culib/time.h>
 
+#include "scratch_name.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -64,7 +66,7 @@ class scratch {
 public:
     explicit scratch(const char* name) {
         const result<fs::path> base = fs::temp_directory_path();
-        root_ = base.value_or("/tmp") / (std::string("culib_fs_test_") + name);
+        root_ = base.value_or("/tmp") / scratch_name(std::string("culib_fs_test_") + name);
         // 清理上次残留的目录是尽力而为；显式丢弃结果。
         (void)fs::remove_all(root_);
         ok_ = fs::create_directories(root_).is_ok();
@@ -990,7 +992,7 @@ TEST(fs, creates_directory_trees_on_reachable_unc_root) {
     if (!is_true(fs::is_directory(share))) {
         return;   // 问不成或没有：环境不具备，跳过
     }
-    const fs::path probe = share / "culib_fs_test_unc_probe";
+    const fs::path probe = share / scratch_name("culib_fs_test_unc_probe");
     (void)fs::remove_all(probe);
     // 单层 create_directory 不碰前缀循环，拿它探「可写」；写不进同样是环境不够。
     if (fs::create_directory(probe).is_err()) {

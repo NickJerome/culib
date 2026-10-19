@@ -80,7 +80,7 @@ Windows 上等在完成端口上的超时按系统定时器的节拍到期，默
 
 ## 误用与诊断
 
-运行时的误用都打印一行诊断后终止，release 构建同样检查。每一条都由 [`tests/fault/runtime_faults.cpp`](../tests/fault/runtime_faults.cpp) 在子进程里核对过诊断文字。
+运行时的误用都打印一行诊断后终止，release 构建同样检查。每一条都在子进程里核对过诊断文字：CET 那条由 [`tests/process/cet.cpp`](../tests/process/cet.cpp) 核对，只在支持 CET 的机器上跑；其余由 [`tests/fault/runtime_faults.cpp`](../tests/fault/runtime_faults.cpp) 核对。
 
 | 误用 | 诊断里的关键句 |
 | --- | --- |
@@ -90,6 +90,7 @@ Windows 上等在完成端口上的超时按系统定时器的节拍到期，默
 | 协程在 catch 块里挂起 | 协程不能在 catch 块里挂起 |
 | `wait_group` 析构时组里还有协程 | 组里还有协程没结束 |
 | `channel` 容量为 0；往关闭了的 channel send；重复关闭 | 容量至少为 1；已经关闭，不能再 send；重复关闭 |
+| Windows 上进程开着 CET 影子栈（链接时加了 `/CETCOMPAT`，CPU 和系统都支持 CET） | 进程开着 CET 影子栈 |
 
 ## 栈溢出
 
@@ -211,3 +212,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`9cad3fd` 的 CI](https://github.com/NickJerome/culib/actions/runs/39220220574) 23/24：MSVC release 那一格的 `runtime_faults.stack_overflow` 以 `0xC0000005` 结束，和这次的改动无关，见[实现说明](implementation-notes.md#windows只提交用到的部分)；其余通过。`culib_test` 的项数不变（Linux 374、macOS 371、Windows 与 MinGW 370、无异常构建 367），`runtime_order_test` 依次 38、36、33 项，各多了新加的 1 条。新加的那条在 17 个作业里连睡 21 次用了 22.7–57.8 毫秒，Windows 的三个作业是 31.2–32.0 毫秒。Windows 上等 20 毫秒的测试从 31 毫秒左右变成 20 毫秒出头：`condition_variable.wait_for_times_out_and_comes_back_holding_the_lock` 在 MSVC release、debug 和 MinGW 上从 31.58、31.63、30.93 毫秒变成 20.18、20.64、20.51 毫秒，Linux 上是 20.31 毫秒。报告里没有 SKIP，诊断只有那一条失败。
 
 [`ae41c69` 的 CI](https://github.com/NickJerome/culib/actions/runs/39222753801) 24/24 通过：项数和 `9cad3fd` 那次相同，误用诊断 Linux / macOS 的 debug 构建 12 条、release 构建 11 条，Windows 11 条，无异常构建 10 条。栈溢出那条的结局印在 OK 行里：Windows 的两个作业都是 `0xC00000FD`，Linux 是信号 11（SIGSEGV），macOS 是信号 10（SIGBUS）；`0xC0000005` 这次没有再出现。报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出。
+
+2026-10-19 Windows 上进程开着 CET 影子栈时运行时改成报错退出以后，本机（i7-12700，Windows 10 22H2，支持 CET）重新验证过：Windows MSVC 2022 x64 release / debug 的 14 个测试目标全部通过，多出的一个是 `cet_test`：它用 `/CETCOMPAT` 链接，子进程以那句诊断加 abort 结束；去掉检查时子进程以 `0xC0000409` 终止，测试失败，连跑三遍都一样。同时改了测试用的临时文件名：`fs`、`config`、`log` 的测试用的目录、文件和命名管道名带上进程号。改之前同时跑两个 `culib_test`，三轮都有 `fs` 的测试失败；改之后三轮都是两边 370 项全部通过。MSYS2 的 MinGW-w64 GCC 15.2 跑 `tests/mingw_windows.sh` 全部通过；改过的 POSIX 侧文件在 WSL2 上用 GCC 11.4 和 Clang 14 做过 `-fsyntax-only`。

@@ -7,6 +7,8 @@
 #include <culib/fs_stream.h>
 #include <culib/test.h>
 
+#include "scratch_name.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -44,7 +46,7 @@ class scratch {
 public:
     explicit scratch(const char* name) {
         const result<fs::path> base = fs::temp_directory_path();
-        root_ = base.value_or("/tmp") / (std::string("culib_fs_test_") + name);
+        root_ = base.value_or("/tmp") / scratch_name(std::string("culib_fs_test_") + name);
         (void)fs::remove_all(root_);
         ok_ = fs::create_directories(root_).is_ok();
     }
@@ -457,9 +459,10 @@ TEST(fs_stream, a_coroutine_blocked_in_file_io_does_not_stall_the_others) {
     // 排着的旁观协程就至少让出过一次（spins >= 1）；没人接手，spins 读到的是 0。
 
 #ifdef _WIN32
-    const char* const pipe_path_text = "\\\\.\\pipe\\culib_fs_stream_coroutine";
+    const std::string pipe_path_text = "\\\\.\\pipe\\" + scratch_name("culib_fs_stream_coroutine");
+    const std::wstring pipe_name(pipe_path_text.begin(), pipe_path_text.end());   // 全是 ASCII
     // 服务端实例先于协程建好，保证读端的 open 是「阻塞等连接」而不是「没人等、立即失败」。
-    const HANDLE server_pipe = ::CreateNamedPipeW(L"\\\\.\\pipe\\culib_fs_stream_coroutine",
+    const HANDLE server_pipe = ::CreateNamedPipeW(pipe_name.c_str(),
                                                   PIPE_ACCESS_OUTBOUND,
                                                   PIPE_TYPE_BYTE | PIPE_WAIT, 1, 4096, 4096, 0, 0);
     if (!EXPECT(server_pipe != INVALID_HANDLE_VALUE, ==, true)) {

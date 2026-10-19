@@ -286,7 +286,15 @@ Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序
 
 [`9cad3fd` 的 CI](https://github.com/NickJerome/culib/actions/runs/39220220574) 里，MSVC release 那一格的 `runtime_faults.stack_overflow` 以 `0xC0000005` 结束；前两次运行用的是同一个镜像、同一版 MSVC，都是 `0xC00000FD`。原因没有确定，本机复现不出来。这条用例原来只看退出码，把「系统报了栈溢出」和「之后的默认处理」混在一起。现在子进程里装一个向量化异常处理，第一时间看到 `STATUS_STACK_OVERFLOW` 就往 stderr 写一行，父进程看这一行，退出码只报出来，印在用例的 OK 行里。不放保护页、整格提交时它仍然失败：`0xC0000005`，没有那一行。
 
-没覆盖的：线程块里的 `GuaranteedStackBytes` 没有跟着切（Boost.Context 也没切，只有调过 `SetThreadStackGuarantee` 的线程才受影响）；`SwitchToFiber` 还会切 CET 影子栈，我们的换栈不切，这对开了 `/CETCOMPAT` 的程序意味着什么没有验证，和改之前一样；arm64 Windows 没有换栈汇编。
+没覆盖的：线程块里的 `GuaranteedStackBytes` 没有跟着切（Boost.Context 也没切，只有调过 `SetThreadStackGuarantee` 的线程才受影响）；arm64 Windows 没有换栈汇编。CET 影子栈见[下面](#cet-影子栈)。
+
+### CET 影子栈
+
+CPU 支持 CET（Intel 11 代、AMD Zen 3 起）时，系统可以给进程开用户态影子栈：`call` 把返回地址同时压进一个只有硬件能写的影子栈，`ret` 时两边对不上就终止进程。Windows 10 2004 起，系统给用 `/CETCOMPAT` 链接的 exe 开。换栈只切栈指针，不切影子栈：`wavvix_jump_context` 和 Boost.Context 一样用 `pop` 加 `jmp` 跳到对面，切换本身没有 `ret`，但切回调度器以后，`coroutine_resume` 的第一个 `ret` 就和影子栈对不上。本机（i7-12700，Windows 10 22H2）实测：同一个起几根协程的程序，不加 `/CETCOMPAT` 正常结束，加了以后以 `0xC0000409` 终止，没有任何输出。
+
+要真支持，每根协程得有自己的影子栈。Windows 没有给用户代码建影子栈的公开接口，只有系统的 fiber（`CreateFiber` / `SwitchToFiber`）会替它建。所以运行时在协程第一次跑起来之前查一次进程的缓解策略（`GetProcessMitigationPolicy` 的 `ProcessUserShadowStackPolicy`，见 [`shadow_stack_win.cpp`](../src/runtime/shadow_stack_win.cpp)），开着就打印诊断后终止，告诉使用方去掉 `/CETCOMPAT`。[`tests/process/cet.cpp`](../tests/process/cet.cpp) 用 `/CETCOMPAT` 链接，在子进程里起一根让出一次的协程，查它以这句诊断终止；去掉这个检查时子进程以 `0xC0000409` 终止，测试失败。协程不让出、一下子跑完的话，进程可能在那个 `ret` 之前就退出了，查不出来，所以要让出一次。机器不支持 CET 时，测试打印 SKIP。
+
+Linux 上可执行文件和它加载的库都标了 SHSTK，才可能开影子栈；链接器只在每个输入的目标文件都带这个标记时才给可执行文件标上。Ubuntu 的 GCC 默认 `-fcf-protection=full`，C++ 的目标文件都带标记，换栈汇编的目标文件没有，链接出来的程序就没有（`readelf -n` 看过）。macOS 没有 CET。所以只查 Windows。
 
 ### 为什么 Linux / macOS 的 release 不设保护页
 
@@ -347,6 +355,7 @@ Boost.Context 默认也不设保护页：`default_stack` 是用 `std::malloc` �
 | 像 Go 那样按需增长 | 要编译器在每个函数开头插检查，还要找到并改写所有指向栈的指针，C++ 都做不到。GCC 的 `-fsplit-stack` 只有 Linux 有，而且要求所有库都这样编译 | 不重开 |
 | 默认栈开到 8 MiB（Photon 的默认值） | 向分配器要时撞上它 1 TiB 的地址上限，实测同时 10 万根还行、30 万根直接失败；栈池没有这个上限，但一根栈独占一张页表，实测每根的页表从 2 KiB 涨到 4.6 KiB | 出现普遍需要更深栈的调用方时 |
 | 分配器给普通内存也按需提交（只保留，碰到再在异常处理里提交） | 用户态的读写可以，但 `ReadFile` 往没提交的页里写时直接失败（错误 998），异常处理根本没被调用 | 不重开 |
+| Windows 上改用系统 fiber（`CreateFiber` / `SwitchToFiber`），影子栈由系统建 | 换栈、栈池和保护页要整套换成 fiber 的；fiber 的切换和内存代价没量过；现在没有使用方需要 `/CETCOMPAT` | 出现必须用 `/CETCOMPAT` 链接的使用方时 |
 
 ## [`scheduler.cpp`](../src/runtime/scheduler.cpp)
 

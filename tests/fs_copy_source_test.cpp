@@ -8,6 +8,8 @@
 #include <culib/fs.h>
 #include <culib/test.h>
 
+#include "scratch_name.h"
+
 #include <cstring>
 #include <string>
 #include <sys/stat.h>
@@ -23,7 +25,7 @@ class scratch {
 public:
     explicit scratch(const char* name) {
         const result<fs::path> base = fs::temp_directory_path();
-        root_ = base.value_or("/tmp") / (std::string("culib_fs_test_") + name);
+        root_ = base.value_or("/tmp") / scratch_name(std::string("culib_fs_test_") + name);
         (void)fs::remove_all(root_);
         ok_ = fs::create_directories(root_).is_ok();
     }

@@ -72,6 +72,22 @@ target("os_stop_test")
     end
 target_end()
 
+-- 用 /CETCOMPAT 链接：支持 CET 的机器上进程开着影子栈，协程换栈不切影子栈，运行时要在第一根协程
+-- 跑起来之前打印诊断并终止。只有 MSVC 这样链接；机器不支持 CET 时测试打印 SKIP。
+if is_plat("windows") then
+target("cet_test")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests")
+    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
+    add_files("process/cet.cpp")
+    add_deps("culib")
+    add_ldflags("/CETCOMPAT", {force = true})
+    add_tests("default", {run_timeout = 30000})
+target_end()
+end
+
 -- 运行时的误用和内存耗尽都是打印诊断后终止，每种情形在子进程里跑；还替换了全局 nothrow new。
 target("runtime_faults_test")
     set_kind("binary")
