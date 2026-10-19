@@ -625,8 +625,8 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 
     wavvix::mutex lock;
     wavvix::go([&] {
-        wavvix::lock_guard<wavvix::mutex> held(lock);
-        update(shared);                    // 这中间可以放心让出
+        std::lock_guard<wavvix::mutex> held(lock);   // wavvix::mutex 满足 Lockable，标准库的作用域锁直接用
+        update(shared);                               // 这中间可以放心让出
     });
 
 名字和 std:: 对齐（`lock` / `try_lock` / `try_lock_for` / `unlock`、`wait` / `notify_one` / `notify_all`），所以看名字就会用。
@@ -640,7 +640,7 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 
 用 `wavvix::mutex` 而不是 `std::mutex`，是因为**临界区中间会挂起**：
 
-    wavvix::lock_guard<wavvix::mutex> held(lock);
+    std::lock_guard<wavvix::mutex> held(lock);
     auto got = stream.read(buffer, sizeof buffer);   // 网络 I/O，这里会挂起
     cache[key] = parse(buffer, got);                  // 挂起期间别的协程拿不到锁，看不到一半的状态
 

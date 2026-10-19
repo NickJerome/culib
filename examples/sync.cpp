@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -17,7 +18,6 @@ typedef std::chrono::milliseconds ms;
 
 using wavvix::channel;
 using wavvix::condition_variable;
-using wavvix::lock_guard;
 using wavvix::mutex;
 
 }  // namespace
@@ -31,7 +31,7 @@ int main() {
         for (int i = 0; i < 8; ++i) {
             group.go([&] {
                 for (int n = 0; n < 10000; ++n) {
-                    lock_guard<mutex> held(lock);
+                    std::lock_guard<mutex> held(lock);
                     ++counter;
                 }
             });
@@ -48,7 +48,7 @@ int main() {
         for (int i = 0; i < 2; ++i) {
             const char name = static_cast<char>('a' + i);
             group.go([&trace, &lock, name] {
-                lock_guard<mutex> held(lock);
+                std::lock_guard<mutex> held(lock);
                 trace += name;
                 wavvix::sleep_for(ms(5));   // 中间挂起，另一根进不来
                 trace += name;
@@ -108,7 +108,7 @@ int main() {
             group.go([&] {
                 permits.send(0);   // 已经有 3 根在里面就挂起
                 {
-                    lock_guard<mutex> held(lock);
+                    std::lock_guard<mutex> held(lock);
                     ++inside;
                     if (inside > peak) {
                         peak = inside;
@@ -116,7 +116,7 @@ int main() {
                 }
                 wavvix::sleep_for(ms(10));   // 假装在干一件慢活
                 {
-                    lock_guard<mutex> held(lock);
+                    std::lock_guard<mutex> held(lock);
                     --inside;
                 }
                 char permit = 0;

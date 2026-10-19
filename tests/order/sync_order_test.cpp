@@ -8,13 +8,13 @@
 #include <culib/test.h>
 
 #include <chrono>
+#include <mutex>
 #include <string>
 
 namespace {
 
 using wavvix::channel;
 using wavvix::condition_variable;
-using wavvix::lock_guard;
 using wavvix::mutex;
 
 typedef std::chrono::milliseconds ms;
@@ -39,7 +39,7 @@ TEST(mutex_order, serializes_critical_sections_that_yield) {
         for (int i = 0; i < 2; ++i) {
             const char name = static_cast<char>('a' + i);
             children.go([&trace, &lock, name] {
-                lock_guard<mutex> held(lock);
+                std::lock_guard<mutex> held(lock);
                 trace += name;
                 wavvix::sleep_for(ms(5));   // 临界区中间让出
                 trace += name;
@@ -136,7 +136,7 @@ TEST(condition_variable_order, notify_all_wakes_everyone_in_arrival_order) {
         for (int i = 0; i < 3; ++i) {
             const char name = names[i];
             children.go([&order, &lock, &ready, &go, name] {
-                lock_guard<mutex> held(lock);
+                std::lock_guard<mutex> held(lock);
                 while (!go) {
                     ready.wait(lock);
                 }
@@ -146,7 +146,7 @@ TEST(condition_variable_order, notify_all_wakes_everyone_in_arrival_order) {
         children.go([&] {
             wavvix::sleep_for(ms(10));
             {
-                lock_guard<mutex> held(lock);
+                std::lock_guard<mutex> held(lock);
                 go = true;
             }
             ready.notify_all();

@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -20,7 +21,6 @@ namespace {
 
 using wavvix::channel;
 using wavvix::condition_variable;
-using wavvix::lock_guard;
 using wavvix::mutex;
 
 typedef std::chrono::milliseconds ms;
@@ -45,7 +45,7 @@ TEST(mutex, protects_state_shared_by_several_workers) {
     for (int i = 0; i < 8; ++i) {
         group.go([&] {
             for (int n = 0; n < 2000; ++n) {
-                lock_guard<mutex> held(lock);
+                std::lock_guard<mutex> held(lock);
                 const long seen = total;
                 if (n % 64 == 0) {
                     wavvix::yield();   // 临界区中间让出，别的协程照样进不来
@@ -95,7 +95,7 @@ TEST(mutex, is_shared_by_plain_threads_and_coroutines) {
     for (int i = 0; i < 4; ++i) {
         group.go([&] {
             for (int n = 0; n < 1000; ++n) {
-                lock_guard<mutex> held(lock);
+                std::lock_guard<mutex> held(lock);
                 const long seen = total;
                 if (n % 64 == 0) {
                     wavvix::yield();
@@ -108,7 +108,7 @@ TEST(mutex, is_shared_by_plain_threads_and_coroutines) {
     for (int i = 0; i < 2; ++i) {
         threads.push_back(std::thread([&] {
             for (int n = 0; n < 1000; ++n) {
-                lock_guard<mutex> held(lock);
+                std::lock_guard<mutex> held(lock);
                 ++total;
             }
         }));
@@ -174,6 +174,32 @@ TEST(mutex, try_lock_for_on_a_plain_thread_gives_up_in_time) {
     lock.unlock();
 }
 
+TEST(mutex, works_with_std_unique_lock) {
+    // 满足标准库的 Lockable，所以 std::unique_lock 能延后加锁、带时限加锁、提前解锁。
+    mutex lock;
+    std::unique_lock<mutex> mine(lock);   // main 线程拿着
+    bool got_while_held = true;
+    bool got_after_release = false;
+    wavvix::wait_group group;
+    group.go([&] {
+        std::unique_lock<mutex> theirs(lock, std::defer_lock);
+        got_while_held = theirs.try_lock_for(ms(1));
+    });
+    group.wait();
+
+    mine.unlock();
+    group.go([&] {
+        std::unique_lock<mutex> theirs(lock, std::defer_lock);
+        got_after_release = theirs.try_lock_for(ms(1000));
+    });
+    group.wait();
+
+    EXPECT(got_while_held, ==, false);
+    EXPECT(got_after_release, ==, true);
+    EXPECT(lock.try_lock(), ==, true);   // unique_lock 析构时放开了
+    lock.unlock();
+}
+
 // ---- condition_variable -----------------------------------------------------------
 
 TEST(condition_variable, wakes_a_waiter_on_another_worker) {
@@ -184,7 +210,7 @@ TEST(condition_variable, wakes_a_waiter_on_another_worker) {
 
     wavvix::wait_group group;
     group.go([&] {
-        lock_guard<mutex> held(lock);
+        std::lock_guard<mutex> held(lock);
         while (queue.empty()) {
             ready.wait(lock);
         }
@@ -193,7 +219,7 @@ TEST(condition_variable, wakes_a_waiter_on_another_worker) {
     group.go([&] {
         wavvix::sleep_for(ms(10));
         {
-            lock_guard<mutex> held(lock);
+            std::lock_guard<mutex> held(lock);
             queue.push_back(42);
         }
         ready.notify_one();
@@ -229,7 +255,7 @@ TEST(condition_variable, a_coroutine_waiter_is_notified_from_a_plain_thread) {
     bool woke = false;
     wavvix::wait_group group;
     group.go([&] {
-        lock_guard<mutex> held(lock);
+        std::lock_guard<mutex> held(lock);
         while (!go) {
             ready.wait(lock);
         }
@@ -238,7 +264,7 @@ TEST(condition_variable, a_coroutine_waiter_is_notified_from_a_plain_thread) {
 
     wavvix::sleep_for(ms(10));
     {
-        lock_guard<mutex> held(lock);   // main 线程上直接拿锁
+        std::lock_guard<mutex> held(lock);   // main 线程上直接拿锁
         go = true;
     }
     ready.notify_one();
@@ -255,14 +281,14 @@ TEST(condition_variable, a_plain_thread_waits_until_a_coroutine_notifies) {
     group.go([&] {
         wavvix::sleep_for(ms(10));
         {
-            lock_guard<mutex> held(lock);
+            std::lock_guard<mutex> held(lock);
             value = 7;
         }
         ready.notify_all();
     });
 
     {
-        lock_guard<mutex> held(lock);
+        std::lock_guard<mutex> held(lock);
         while (value == 0) {
             ready.wait(lock);   // main 线程在这里阻塞
         }

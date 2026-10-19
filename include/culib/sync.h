@@ -55,6 +55,9 @@ enum class channel_error {
 // 持有者和等待者可以在不同的线程上，一方在协程里、一方在普通线程里也行。
 //
 // 公平：等待者按先来后到排队，`unlock()` 交给队首那个。所以不会饿死。
+//
+// 满足标准库的 Lockable：作用域锁直接用 std::lock_guard<wavvix::mutex>，要延后加锁、带时限加锁
+// 就用 std::unique_lock。
 class mutex {
 public:
     mutex() : held_(false), head_(0), tail_(0) {}
@@ -83,7 +86,7 @@ private:
 
 // 条件变量。和 std:: 一样：**必须持有那把锁才能 wait**，wait 期间锁是放开的。
 //
-//     wavvix::lock_guard<wavvix::mutex> held(lock);
+//     std::lock_guard<wavvix::mutex> held(lock);
 //     while (queue.empty()) {                       // 照例用 while，不是 if
 //         ready.wait(lock);
 //     }
@@ -176,23 +179,6 @@ private:
     std::deque<T> items_;
     std::size_t capacity_;
     bool closed_;
-};
-
-// 作用域锁，和 std::lock_guard 一样。
-//
-// 用 `defer { lock.unlock(); };` 也行（那是本库自己的办法），但这个更难写错：
-// 加锁和解锁是同一条语句的两端，不存在「顺序写反」。
-template <typename Mutex>
-class lock_guard {
-public:
-    explicit lock_guard(Mutex& target) : target_(target) { target_.lock(); }
-    ~lock_guard() { target_.unlock(); }
-
-private:
-    lock_guard(const lock_guard&);
-    lock_guard& operator=(const lock_guard&);
-
-    Mutex& target_;
 };
 
 }  // namespace wavvix

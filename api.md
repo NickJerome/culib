@@ -64,7 +64,7 @@ target("app")
 | `flag.h` | `option<T>`、五种选项别名、`init`、`parse` | `wavvix::flag` |
 | `config.h` | `config` | `wavvix` |
 | `coroutine.h` | `go`、`wait_group`、`yield`、`sleep_for` | `wavvix` |
-| `sync.h` | `mutex`、`condition_variable`、`channel`、`lock_guard` | `wavvix` |
+| `sync.h` | `mutex`、`condition_variable`、`channel` | `wavvix` |
 | `net.h` | `endpoint`、`resolve`、`protocol`、`socket`、`datagram` | `wavvix::net` |
 | `fs.h` | `path`、查询、目录操作、`directory_iterator`、`file`、`open` | `wavvix::fs` |
 | `fs_stream.h` | `ofstream`（标准流状态的输出文件流） | `wavvix::fs` |
@@ -694,17 +694,11 @@ public:
     bool receive(T& out);
     void close();
 };
-
-template<class Mutex> class lock_guard {
-public:
-    explicit lock_guard(Mutex& target);
-    ~lock_guard();
-};
 ```
 
-`mutex` 非递归，`unlock` 把锁直接交给排在最前面的等待者，所以不会饿死。`lock`、`try_lock_for`、`wait`、`wait_for` 会等待；`try_lock`、`unlock`、`notify_one`、`notify_all` 不等待。`try_lock_for` 的零或负时长只尝试一次，返回 `false` 表示没拿到。
+`mutex` 非递归，`unlock` 把锁直接交给排在最前面的等待者，所以不会饿死。它满足标准库的 Lockable：作用域锁直接用 `std::lock_guard<wavvix::mutex>`，要延后加锁、带时限加锁就用 `std::unique_lock`。`lock`、`try_lock_for`、`wait`、`wait_for` 会等待；`try_lock`、`unlock`、`notify_one`、`notify_all` 不等待。`try_lock_for` 的零或负时长只尝试一次，返回 `false` 表示没拿到。
 
-条件变量等待前须持有传入的锁；等待期间释放，返回前重新持有。`wait_for` 超时返回 `false`，零或负时长立即返回 `false` 且仍持有锁。用 `while` 重查条件；重新拿锁可能继续等待，超时时长不是严格的函数返回上限。`lock_guard` 构造加锁、析构解锁。
+条件变量等待前须持有传入的锁；等待期间释放，返回前重新持有。`wait_for` 超时返回 `false`，零或负时长立即返回 `false` 且仍持有锁。用 `while` 重查条件；重新拿锁可能继续等待，超时时长不是严格的函数返回上限。
 
 `channel<T>` 是容量固定的先进先出队列，`capacity` 至少为 1。`send` 满了等，`receive` 空了等；`close` 叫醒所有在等的，之后 `receive` 把剩下的取完就返回 `false`。往已经关闭的 channel `send`、重复 `close`、容量为 0，都打印诊断后终止。限制同时在跑的协程数用容量为 N 的 channel：`send` 占一个名额，`receive` 还一个。
 

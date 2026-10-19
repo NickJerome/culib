@@ -64,7 +64,7 @@ bool settled;   // 已经交还给调度器了，之后再 wake 无效
 | `mutex` | `lock` / `try_lock` / `try_lock_for` / `unlock` |
 | `semaphore` | `acquire` / `try_acquire` / `try_acquire_for` / `release` / `count` |
 | `condition_variable` | `wait` / `wait_for` / `notify_one` / `notify_all` |
-| `lock_guard<T>` | RAII |
+| `lock_guard<T>` | RAII（2026-10-19 删掉：`mutex` 满足标准库的 Lockable，直接用 `std::lock_guard` / `std::unique_lock`，两个同样的类只多一次选择） |
 
 三个带 `_for` 的方法对零或负时长都不挂起：`try_lock_for` / `try_acquire_for` 先做一次立即尝试；`condition_variable::wait_for` 直接返回超时且保持锁。无限等待由 `lock` / `acquire` / `wait` 表达，不能把内部 `scheduler_park` 使用的负数哨兵泄漏成公开接口的意外行为。
 
