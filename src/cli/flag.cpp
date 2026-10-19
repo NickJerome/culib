@@ -4,6 +4,7 @@
 
 #include "base/fatal.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -132,6 +133,42 @@ const char* type_label(detail::kind which) {
         case detail::kind::text: return "<str>";
     }
     return "";
+}
+
+// 用法里一行的左半边：所有拼写，再加值的类型，如 "  -p, --port <int>"。
+std::string usage_head(const entry& which) {
+    std::string head = "  ";
+    for (std::size_t i = 0; i < which.aliases.size(); ++i) {
+        append_spelling(head, which.aliases[i]);
+        head += ", ";
+    }
+    append_spelling(head, which.name);
+    const char* label = type_label(which.which);
+    if (label[0] != '\0') {
+        head += " ";
+        head += label;
+    }
+    return head;
+}
+
+// 说明后面的补充：必填，或者默认值。
+std::string usage_note(const entry& which) {
+    if (which.is_required) {
+        return "（必填）";
+    }
+    if (!which.default_text.empty()) {
+        return "（默认 " + which.default_text + "）";
+    }
+    return std::string();
+}
+
+// 左半边补空格到 widest + 2 列，再接上说明。
+void append_usage_line(std::string& out, const std::string& head, std::size_t widest,
+                       const std::string& text) {
+    out += head;
+    out.append(widest + 2 - head.size(), ' ');
+    out += text;
+    out += "\n";
 }
 
 result<void> apply_defaults(registry& self) {
@@ -409,60 +446,31 @@ bool version_requested() noexcept { return table().version_requested; }
 const std::vector<string_view>& args() noexcept { return table().positional; }
 
 std::string usage() {
-    registry& self = table();
-    std::string out = "用法：" + (self.program.empty() ? std::string("program") : self.program) +
-                      " [选项]... [参数]...\n\n选项：\n";
-
-    // 先把每一行的左半边生成出来，算出最宽的，再对齐右半边
-    std::vector<std::string> heads;
-    std::size_t widest = 0;
-    heads.reserve(self.entries.size());
-    for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        const entry& which = self.entries[i];
-        std::string head = "  ";
-        for (std::size_t j = 0; j < which.aliases.size(); ++j) {
-            append_spelling(head, which.aliases[j]);
-            head += ", ";
-        }
-        append_spelling(head, which.name);
-        const char* label = type_label(which.which);
-        if (label[0] != '\0') {
-            head += " ";
-            head += label;
-        }
-        if (head.size() > widest) {
-            widest = head.size();
-        }
-        heads.push_back(head);
-    }
+    const registry& self = table();
     const std::string help_head = "  -h, --help";
     const std::string version_head = "  --version";
-    if (help_head.size() > widest) {
-        widest = help_head.size();
+
+    // 先生成每一行的左半边，算出最宽的，再对齐右半边
+    std::vector<std::string> heads;
+    heads.reserve(self.entries.size());
+    std::size_t widest = help_head.size();
+    if (!self.version.empty()) {
+        widest = std::max(widest, version_head.size());
     }
-    if (!self.version.empty() && version_head.size() > widest) {
-        widest = version_head.size();
+    for (std::size_t i = 0; i < self.entries.size(); ++i) {
+        heads.push_back(usage_head(self.entries[i]));
+        widest = std::max(widest, heads[i].size());
     }
 
+    std::string out = "用法：" + (self.program.empty() ? std::string("program") : self.program) +
+                      " [选项]... [参数]...\n\n选项：\n";
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
         const entry& which = self.entries[i];
-        out += heads[i];
-        out.append(widest + 2 - heads[i].size(), ' ');
-        out += which.help ? which.help : "";
-        if (which.is_required) {
-            out += "（必填）";
-        } else if (!which.default_text.empty()) {
-            out += "（默认 " + which.default_text + "）";
-        }
-        out += "\n";
+        append_usage_line(out, heads[i], widest, (which.help ? which.help : "") + usage_note(which));
     }
-    out += help_head;
-    out.append(widest + 2 - help_head.size(), ' ');
-    out += "显示这段用法\n";
+    append_usage_line(out, help_head, widest, "显示这段用法");
     if (!self.version.empty()) {
-        out += version_head;
-        out.append(widest + 2 - version_head.size(), ' ');
-        out += "显示版本号\n";
+        append_usage_line(out, version_head, widest, "显示版本号");
     }
     return out;
 }
