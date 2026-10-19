@@ -8,6 +8,7 @@
 #include <culib/test.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -448,13 +449,12 @@ TEST(fs_stream, closed_file_rejects_io_and_close_is_idempotent) {
 // ---------------------------------------------------------------------------
 
 TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
-    // 确定性的阻塞夹具：POSIX 用 FIFO（两端 open 在内核里互相等），Windows 用命名
-    // 管道（客户端 open 阻塞到服务端 ConnectNamedPipe）。没有任何 sleep：读协程的
-    // fs::open(read) 只有等到写端出现才会返回，等待窗口由夹具本身钉死。
+    // 阻塞夹具：POSIX 用 FIFO（两端 open 在内核里互相等），Windows 用命名管道。
+    // 写端等读协程进来以后再等 50 毫秒才打开（POSIX）或写入（Windows），读协程这段时间
+    // 一直等在 open（POSIX）或第一次 read（Windows）里。
     //
-    // 判据是观察到的调度，而不是操作自己上报线程：读协程在 open 返回后马上取
-    // spins——若那次 open 真在别的线程上等，工作线程空闲期间必然被旁观协程用掉
-    // 至少一次让出（spins >= 1）；若 open 同步地占着工作线程，spins 读到的是 0。
+    // 判据是观察到的调度：读协程在第一块数据到的时候取 spins——等的期间工作线程空出来，
+    // 排着的旁观协程就至少让出过一次（spins >= 1）；要是读协程占着工作线程，spins 读到的是 0。
 
 #ifdef _WIN32
     const char* const pipe_path_text = "\\\\.\\pipe\\culib_fs_stream_coroutine";
@@ -490,7 +490,7 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     bool written = false;
     std::string content;
     bool read_failed = false;
-    std::size_t spins = 0;
+    std::atomic<std::size_t> spins(0);   // 旁观协程可能被别的工作线程拿走
     std::size_t spins_at_resume = 0;
 
 #ifdef _WIN32
@@ -514,6 +514,7 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
             ::CloseHandle(server_pipe);
             return;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));   // 读协程等在第一次 read 里
         std::size_t offset = 0;
         while (offset < payload.size()) {
             const DWORD chunk = static_cast<DWORD>(
@@ -553,6 +554,7 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
             release_the_reader();  // 失败路径也要把可能已进 open 的读端放出来
             return;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));   // 读协程等在 open 里
         // open_mode::write 对 FIFO 同样阻塞到读端出现；写完 close 触发读端 EOF。
         result<fs::file> opened = fs::open(pipe_path, fs::open_mode::write);
         if (opened.is_err()) {
@@ -579,8 +581,8 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
         // 它就能跑起来——这是裸 fs 调用被挪出工作线程的观测证据。
         wavvix::wait_group observer;
         observer.go([&] {
-            while (spins < 64) {
-                ++spins;
+            while (spins.load() < 64) {
+                spins.fetch_add(1);
                 wavvix::yield();
             }
         });
@@ -591,17 +593,20 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
         changed.notify_all();
 
         result<fs::file> opened = fs::open(pipe_path, fs::open_mode::read);
-        // open 一返回就取 spins：此刻旁观协程跑过的次数就是「等待期间工作线程是否
-        // 空闲」的直接读数。
-        spins_at_resume = spins;
         if (opened.is_err()) {
             read_failed = true;
             return;
         }
         fs::file handle = std::move(opened).value();
         char buffer[4096];
+        bool first = true;
         for (;;) {
             const result<std::size_t> got = handle.read(buffer, sizeof(buffer));
+            if (first) {
+                // 第一块数据一到就取 spins：此刻旁观协程跑过的次数说明等的期间工作线程是否空出来了。
+                spins_at_resume = spins.load();
+                first = false;
+            }
             if (got.is_err()) {
                 read_failed = true;
                 break;
@@ -623,6 +628,6 @@ TEST(fs_stream, bare_file_io_in_a_coroutine_does_not_stall_the_worker) {
     EXPECT(read_failed, ==, false);
     EXPECT(written, ==, true);
     EXPECT(content, ==, payload);  // 读到写端 close 为止，一个字节不少
-    // open 返回时旁观协程至少让出过一次：阻塞发生在别的线程上，工作线程一直空闲可跑。
+    // 第一块数据到的时候旁观协程至少让出过一次：等的期间工作线程空了出来。
     EXPECT(spins_at_resume >= 1, ==, true);
 }
