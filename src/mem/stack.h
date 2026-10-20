@@ -28,9 +28,15 @@ void note_stack_growth(stack_memory& memory) noexcept;
 // 别的都不做系统调用：空闲格常留 1024 个，多出来的等 trim_stacks 还。
 void release_stack(const stack_memory& memory) noexcept;
 
+// 本线程以后还回来的栈先留在线程手边（最多 32 格），取的时候先用它们，不拿栈池的锁；不够或者满了一次和
+// 栈池换 16 格。只给不退出的线程用（工作线程）：线程退出时手边的格子不还给栈池。
+void cache_stacks_on_this_thread() noexcept;
+
 // 把多出来的空闲栈的内存还给系统，一次最多 at_most 根。由监控线程定期调。
 void trim_stacks(std::size_t at_most) noexcept;
 // 还有几根多出来的空闲栈没还。
 std::size_t surplus_stacks() noexcept;
+// 到现在为止 trim_stacks 一共还了几根。
+std::size_t trimmed_stacks() noexcept;
 
 } } } // namespace wavvix::mem::detail

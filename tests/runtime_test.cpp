@@ -411,7 +411,9 @@ TEST(runtime, a_sleeping_coroutine_wakes_up_after_its_time) {
 TEST(runtime, gives_surplus_stacks_back_to_the_system_after_a_peak) {
     // 同时活着的协程多于常留的 1024 根空闲栈时，多出来的栈在协程结束时先挂着，监控线程再分批还给系统。
     // 全都起来了才一起放行：机器慢的时候，先起的可能早就结束了，栈被后起的接着用，凑不出高峰。
+    // 看一共还了几根，不看高峰刚过时还剩几根：协程结束得慢的时候（ASan），监控线程边产生边还，那一刻可能已经还完。
     static const int count = 5000;
+    const std::size_t trimmed_before = wavvix::mem::detail::trimmed_stacks();
     std::atomic<int> started(0);
     wavvix::mutex lock;
     wavvix::condition_variable opened;
@@ -435,15 +437,14 @@ TEST(runtime, gives_surplus_stacks_back_to_the_system_after_a_peak) {
     opened.notify_all();
     lock.unlock();
     group.wait();
-    const std::size_t after_peak = wavvix::mem::detail::surplus_stacks();
 
     const wavvix::stopwatch watch;
-    std::size_t left = after_peak;
+    std::size_t left = wavvix::mem::detail::surplus_stacks();
     while (left != 0 && watch.elapsed() < std::chrono::seconds(5)) {
         std::this_thread::sleep_for(ms(5));
         left = wavvix::mem::detail::surplus_stacks();
     }
 
-    EXPECT(after_peak > 0, ==, true);
+    EXPECT(wavvix::mem::detail::trimmed_stacks() > trimmed_before, ==, true);
     EXPECT(left == 0, ==, true);
 }

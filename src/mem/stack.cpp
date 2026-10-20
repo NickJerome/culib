@@ -32,6 +32,8 @@ namespace {
 
 const std::size_t region_slots = 64;    // 一次保留这么多格
 const std::size_t keep_limit = 1024;    // 准备好的空闲格常留这么多，再多的由 trim_stacks 把内存还给系统
+const std::size_t cache_slots = 32;     // 工作线程手边最多留这么多格
+const std::size_t cache_batch = 16;     // 手边空了或者满了，一次和栈池换这么多格
 
 struct stack_pool {
     wavvix::detail::spin_lock lock;
@@ -39,8 +41,18 @@ struct stack_pool {
     std::size_t ready_count;
     stack_slot* surplus;       // 超出 keep_limit 的准备好的空闲格，等着把内存还给系统
     std::size_t surplus_count;
+    std::size_t trimmed;       // 一共还了几根
     stack_slot* idle;          // 还没准备过、或者内存已经还给系统的格
 };
+
+// 一根工作线程手边的空闲格，都已经准备好。只有调过 cache_stacks_on_this_thread 的线程用。
+struct stack_cache {
+    stack_slot* slots[cache_slots];
+    std::size_t count;
+    bool enabled;
+};
+
+thread_local stack_cache cache;
 
 void push(stack_slot*& list, stack_slot* slot) {
     slot->next = list;
@@ -118,9 +130,8 @@ stack_slot* take_slot(stack_pool& p) {
 }
 
 // 准备好的格子挂回去。常留的已经够了就挂到多出来的那一串上，内存由 trim_stacks 还，
-// 协程结束时不做系统调用。
-void put_ready(stack_pool& p, stack_slot* slot) {
-    const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
+// 协程结束时不做系统调用。调用方拿着锁。
+void put_ready_locked(stack_pool& p, stack_slot* slot) {
     if (p.ready_count < keep_limit) {
         push(p.ready, slot);
         ++p.ready_count;
@@ -128,6 +139,35 @@ void put_ready(stack_pool& p, stack_slot* slot) {
     }
     push(p.surplus, slot);
     ++p.surplus_count;
+}
+
+void put_ready(stack_pool& p, stack_slot* slot) {
+    if (!cache.enabled) {
+        const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
+        put_ready_locked(p, slot);
+        return;
+    }
+    if (cache.count == cache_slots) {
+        const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
+        for (std::size_t i = 0; i < cache_batch; ++i) {
+            put_ready_locked(p, cache.slots[--cache.count]);
+        }
+    }
+    cache.slots[cache.count++] = slot;
+}
+
+// 手边空了：从栈池拿一批准备好的格子，拿不到返回 0。
+stack_slot* refill_cache(stack_pool& p) {
+    const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
+    while (cache.count < cache_batch && p.ready) {
+        --p.ready_count;
+        cache.slots[cache.count++] = pop(p.ready);
+    }
+    while (cache.count < cache_batch && p.surplus) {
+        --p.surplus_count;
+        cache.slots[cache.count++] = pop(p.surplus);
+    }
+    return cache.count != 0 ? cache.slots[--cache.count] : 0;
 }
 
 void put_idle(stack_pool& p, stack_slot* slot) {
@@ -172,7 +212,18 @@ stack_memory allocate_stack(std::size_t usable) noexcept {
 
     stack_memory out = {0, 0, 0, 0, 0};
     stack_pool* const p = pool();
-    stack_slot* const slot = p ? take_slot(*p) : 0;
+    if (!p) {
+        return out;
+    }
+    stack_slot* slot = 0;
+    if (cache.count != 0) {
+        slot = cache.slots[--cache.count];
+    } else if (cache.enabled) {
+        slot = refill_cache(*p);
+    }
+    if (!slot) {
+        slot = take_slot(*p);
+    }
     if (!slot) {
         return out;
     }
@@ -193,6 +244,10 @@ stack_memory allocate_stack(std::size_t usable) noexcept {
     out.committed = slot->committed;
     out.slot = slot;
     return out;
+}
+
+void cache_stacks_on_this_thread() noexcept {
+    cache.enabled = true;
 }
 
 void note_stack_growth(stack_memory& memory) noexcept {
@@ -236,6 +291,7 @@ void trim_stacks(std::size_t at_most) noexcept {
         for (std::size_t i = 0; i < at_most && p->surplus; ++i) {
             push(taken, pop(p->surplus));
             --p->surplus_count;
+            ++p->trimmed;
         }
     }
 
@@ -255,6 +311,15 @@ std::size_t surplus_stacks() noexcept {
     }
     const std::lock_guard<wavvix::detail::spin_lock> held(p->lock);
     return p->surplus_count;
+}
+
+std::size_t trimmed_stacks() noexcept {
+    stack_pool* const p = pool();
+    if (!p) {
+        return 0;
+    }
+    const std::lock_guard<wavvix::detail::spin_lock> held(p->lock);
+    return p->trimmed;
 }
 
 } } } // namespace wavvix::mem::detail

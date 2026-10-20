@@ -72,9 +72,9 @@ Windows 上监控线程用高精度的可等待定时器睡，要 Windows 10 180
 
 ### 内存
 
-`go()` 分配一次：控制块和可调用对象在同一块里，经全局的 `operator new`。**栈在协程第一次运行时才分配**，从协程栈自己的池里取一格，协程结束时还回去，下一根协程接着用。所以排在队列里还没开始的协程不占栈，起一大批再慢慢跑不会一下子吃掉 `数量 × 栈大小` 的内存。
+`go()` 分配一次：控制块和可调用对象在同一块里，经全局的 `operator new`。没有覆盖 `new` 时它是 libc 的 `malloc`：协程在一根工作线程上起、在另一根上结束，释放要和起协程的那根抢 `malloc` 的锁。8 根工作线程一起起协程时，链上 `culib_new_override`（换成 culib 的分配器）每根从 0.40 µs 降到 0.19 µs，见[实现说明](implementation-notes.md#工作线程手边的栈)。**栈在协程第一次运行时才分配**，从协程栈自己的池里取一格，协程结束时还回去，下一根协程接着用。所以排在队列里还没开始的协程不占栈，起一大批再慢慢跑不会一下子吃掉 `数量 × 栈大小` 的内存。
 
-栈固定为 1008 KiB 可用，每根占 1 MiB 地址空间。用到的页才占物理内存，开了透明大页的系统上也一样；Windows 上也只提交用到的部分，起步 12 KiB。挂在 `sleep_for` 上的协程实测每根约 6 KiB（常驻 4.2 KiB，页表 2 KiB）。严格 overcommit（`vm.overcommit_memory=2`）的 Linux 按整根记提交量，每根 1 MiB，同时在跑的协程数要计入提交预算。高峰过后，栈池常留 1024 根准备好的空闲栈，它们用过的页还占着；再多的由监控线程分批还给系统，每秒约 3.2 万根：10 万根协程的高峰过后 4 秒内，内存回到高峰之前。
+栈固定为 1008 KiB 可用，每根占 1 MiB 地址空间。用到的页才占物理内存，开了透明大页的系统上也一样；Windows 上也只提交用到的部分，起步 12 KiB。挂在 `sleep_for` 上的协程实测每根约 6 KiB（常驻 4.2 KiB，页表 2 KiB）。严格 overcommit（`vm.overcommit_memory=2`）的 Linux 按整根记提交量，每根 1 MiB，同时在跑的协程数要计入提交预算。高峰过后，栈池常留 1024 根准备好的空闲栈，每根工作线程手边另留最多 32 根，它们用过的页还占着；再多的由监控线程分批还给系统，每秒约 3.2 万根：10 万根协程的高峰过后 4 秒内，内存回到高峰之前。
 
 ## yield 与 sleep_for
 
@@ -339,3 +339,7 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`ce52538` 的 CI](https://github.com/NickJerome/culib/actions/runs/39397847169) 23/24：MSVC release 那一格的 `runtime_faults.stack_overflow` 又以 `0xC0000005` 结束，`CONTEXT` 11567 字节、扩展状态 0x608E7，和 `9bf6b0b` 那次一样分到了带 AMX 的机器，见[实现说明](implementation-notes.md#windows只提交用到的部分)。其余 23 个作业通过，项数和 `8eacec7` 那次相同；报告里没有 SKIP，诊断只有那一条失败。
 
 2026-10-20 全局队列换成单独的一把自旋锁，`notify_all` 这类一次叫醒一串的攒成一批排进就绪队列，原因和测量见[实现说明](implementation-notes.md#闲着的工作线程)。新加的 `condition_variable.notify_all_wakes_coroutines_and_plain_threads_in_one_go` 让 64 根协程（一半用 50 微秒的 `wait_for` 等）和 2 根普通线程反复等同一个条件变量，`notify_all` 50 轮，本机约 5 毫秒；临时让攒好的一批丢掉一根，这条就挂住。本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 386 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建、ASan + UBSan 和 Clang 14 的 TSan 下全部通过（391 项，无异常构建 384 项；`runtime_order_test` 41 项），ASan 和 TSan 没有报告；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。
+
+[`7ec897a` 的 CI](https://github.com/NickJerome/culib/actions/runs/39401580921) 24/24 通过：`culib_test` Linux 391 项、macOS 388 项、Windows 与 MinGW 386 项、无异常构建 384 项，`runtime_order_test` 41、39、36 项。新加的那条在 Linux 和 Windows 的作业里用了 3.5 到 162 毫秒，macOS 上慢一些，284 到 967 毫秒。栈溢出那条都以 `0xC00000FD` 结束；报告里没有 SKIP，也没有任何诊断。
+
+2026-10-20 工作线程手边留几格空闲栈，原因和测量见[实现说明](implementation-notes.md#工作线程手边的栈)。`runtime.gives_surplus_stacks_back_to_the_system_after_a_peak` 改成看一共还给系统的根数：原来看高峰刚过那一刻还剩几根，WSL2 的 ASan 构建里那一刻已经被监控线程还完了，失败了一次；改了以后 ASan 下连跑 5 遍都过（约 0.5 秒），去掉监控线程还栈的那一行，两条断言都失败。本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 386 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建、ASan + UBSan 和 Clang 14 的 TSan 下全部通过（391 项，无异常构建 384 项；`runtime_order_test` 41 项），ASan 和 TSan 没有报告；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。

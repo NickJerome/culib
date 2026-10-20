@@ -825,6 +825,7 @@ void start_thread(F entry, const char* failure) {
 
 void worker_main(runtime_state* state, vcpu* self) noexcept {
     current_vcpu = self;
+    mem::detail::cache_stacks_on_this_thread();   // 工作线程不退出
     worker_loop(*state, *self);
 }
 
