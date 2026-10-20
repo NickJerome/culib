@@ -25,6 +25,12 @@ stack_memory allocate_stack(std::size_t usable) noexcept;
 // 协程结束前、还在这根栈上时调用：记下栈长到了哪里，下一根协程接着用。只有 Windows 有事做。
 void note_stack_growth(stack_memory& memory) noexcept;
 // committed 为空表示不知道栈长到了哪里（协程没跑完就销毁了）：这一格先把内存还给系统，下次重新准备。
+// 别的都不做系统调用：空闲格常留 1024 个，多出来的等 trim_stacks 还。
 void release_stack(const stack_memory& memory) noexcept;
+
+// 把多出来的空闲栈的内存还给系统，一次最多 at_most 根。由监控线程定期调。
+void trim_stacks(std::size_t at_most) noexcept;
+// 还有几根多出来的空闲栈没还。
+std::size_t surplus_stacks() noexcept;
 
 } } } // namespace wavvix::mem::detail

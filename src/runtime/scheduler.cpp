@@ -852,6 +852,9 @@ const std::chrono::milliseconds stall_limit(10);
 // 监控线程隔多久看一次。从卡住到交接是 stall_limit 再加至多两个间隔。
 const std::chrono::milliseconds monitor_interval(2);
 
+// 监控线程每次把多少根多出来的空闲栈还给系统。一根一次系统调用，每秒最多还 3.2 万根。
+const std::size_t stacks_per_trim = 64;
+
 // 这么久没人收过完成，监控线程才替工作线程收。忙着的工作线程每调度 61 次自己收一次，叫醒的协程
 // 排在本线程的队列里；监控线程收的只能排进全局队列，那里每 61 次才取一根，收得勤了这些协程反而
 // 晚跑。它只管工作线程都卡在协程里、没人收的时候。Go 也是 10 毫秒。
@@ -908,19 +911,21 @@ void sleep_until_busy(runtime_state& state, std::unique_lock<std::mutex>& held) 
     }
 }
 
-// 监控线程。有工作线程忙着的时候每隔 monitor_interval 看一次。没有闲着的工作线程、又有一阵没人
-// 收过完成时，先替它们收一次，叫醒的协程排进全局队列：不收就看不出卡住的那根后面还有活。
-// 定时器不替它们叫：交给拿到名额的线程按时限的先后叫，次序才对。
+// 监控线程。有工作线程忙着、或者还有多出来的空闲栈的时候，每隔 monitor_interval 看一次。
+// 没有闲着的工作线程、又有一阵没人收过完成时，先替它们收一次，叫醒的协程排进全局队列：不收就看不出
+// 卡住的那根后面还有活。定时器不替它们叫：交给拿到名额的线程按时限的先后叫，次序才对。
+// 多出来的空闲栈每次还一批：协程结束时不做系统调用，高峰过后内存在这里慢慢还给系统。
 void monitor_main(runtime_state* state) noexcept {
     watch_mark marks[worker_limit];
     std::unique_lock<std::mutex> held(state->mutex);
     for (;;) {
-        if (state->idle.load() == static_cast<int>(state->slots)) {
+        if (state->idle.load() == static_cast<int>(state->slots) && mem::detail::surplus_stacks() == 0) {
             sleep_until_busy(*state, held);
             continue;
         }
         held.unlock();
         sleep_precisely(monitor_interval);
+        mem::detail::trim_stacks(stacks_per_trim);
         if (state->idle.load() == 0 && poll_overdue(*state)) {
             poll_now(*state);
         }

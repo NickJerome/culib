@@ -74,7 +74,7 @@ Windows 上监控线程用高精度的可等待定时器睡，要 Windows 10 180
 
 `go()` 分配一次：控制块和可调用对象在同一块里，经全局的 `operator new`。**栈在协程第一次运行时才分配**，从协程栈自己的池里取一格，协程结束时还回去，下一根协程接着用。所以排在队列里还没开始的协程不占栈，起一大批再慢慢跑不会一下子吃掉 `数量 × 栈大小` 的内存。
 
-栈固定为 1008 KiB 可用，每根占 1 MiB 地址空间。用到的页才占物理内存，开了透明大页的系统上也一样；Windows 上也只提交用到的部分，起步 12 KiB。挂在 `sleep_for` 上的协程实测每根约 6 KiB（常驻 4.2 KiB，页表 2 KiB）。严格 overcommit（`vm.overcommit_memory=2`）的 Linux 按整根记提交量，每根 1 MiB，同时在跑的协程数要计入提交预算。高峰过后，栈池最多留 1024 根准备好的空闲栈，它们用过的页还占着；再多的在还回来时把内存还给系统。
+栈固定为 1008 KiB 可用，每根占 1 MiB 地址空间。用到的页才占物理内存，开了透明大页的系统上也一样；Windows 上也只提交用到的部分，起步 12 KiB。挂在 `sleep_for` 上的协程实测每根约 6 KiB（常驻 4.2 KiB，页表 2 KiB）。严格 overcommit（`vm.overcommit_memory=2`）的 Linux 按整根记提交量，每根 1 MiB，同时在跑的协程数要计入提交预算。高峰过后，栈池常留 1024 根准备好的空闲栈，它们用过的页还占着；再多的由监控线程分批还给系统，每秒约 3.2 万根：10 万根协程的高峰过后 4 秒内，内存回到高峰之前。
 
 ## yield 与 sleep_for
 
@@ -306,3 +306,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 2026-10-20 叫醒挪到 `state.mutex` 外面，原因和测量见[实现说明](implementation-notes.md#闲着的工作线程)。本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 383 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍（排除会耗尽本机临时端口的 `io_engine.carries_many_concurrent_readers`）、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建、ASan + UBSan 和 Clang 14 的 TSan 下，除 `net.reports_an_unknown_host_as_not_found` 以外全部通过，ASan 和 TSan 没有报告。那一条 10 秒后失败，因为这时 WSL 的 DNS 不应答（`getent hosts example.com` 也要 20 秒才失败），和这次改动无关；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。
 
 [`652f410` 的 CI](https://github.com/NickJerome/culib/actions/runs/39383093872) 24/24 通过：项数和 `a0466ec` 那次相同，`net.reports_an_unknown_host_as_not_found` 在各个作业里都通过了。两个 MSVC 作业都分到了支持 CET 的机器，`cet` 都真跑了；栈溢出那条都以 `0xC00000FD` 结束，`CONTEXT` 1663 字节。报告里没有 SKIP，也没有任何诊断。
+
+2026-10-20 多出来的空闲栈改由监控线程还给系统，原因和测量见[实现说明](implementation-notes.md#高峰过后还内存)。新加的 `runtime.gives_surplus_stacks_back_to_the_system_after_a_peak` 起 5000 根协程同时睡 50 毫秒，结束后多出来的空闲栈在 5 秒内全部还掉（本机 MSVC release 下用了 0.21 秒）。本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 384 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建、ASan + UBSan 和 Clang 14 的 TSan 下，除了 DNS 仍然不应答而失败的 `net.reports_an_unknown_host_as_not_found` 以外全部通过（389 项里 388 项，无异常构建 382 项里 381 项；`runtime_order_test` 41 项），ASan 和 TSan 没有报告；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。

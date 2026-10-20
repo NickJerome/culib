@@ -6,6 +6,8 @@
 #include <culib/sync.h>
 #include <culib/test.h>
 
+#include "mem/stack.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -361,4 +363,25 @@ TEST(runtime, a_sleeping_coroutine_wakes_up_after_its_time) {
     group.wait();
 
     EXPECT(slept >= ms(18), ==, true);
+}
+
+TEST(runtime, gives_surplus_stacks_back_to_the_system_after_a_peak) {
+    // 同时活着的协程多于常留的 1024 根空闲栈时，多出来的栈在协程结束时先挂着，监控线程再分批还给系统。
+    static const int count = 5000;
+    wavvix::wait_group group;
+    for (int i = 0; i < count; ++i) {
+        group.go([] { wavvix::sleep_for(ms(50)); });
+    }
+    group.wait();
+    const std::size_t after_peak = wavvix::mem::detail::surplus_stacks();
+
+    const wavvix::stopwatch watch;
+    std::size_t left = after_peak;
+    while (left != 0 && watch.elapsed() < std::chrono::seconds(5)) {
+        std::this_thread::sleep_for(ms(5));
+        left = wavvix::mem::detail::surplus_stacks();
+    }
+
+    EXPECT(after_peak > 0, ==, true);
+    EXPECT(left == 0, ==, true);
 }

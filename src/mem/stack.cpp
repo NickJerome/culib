@@ -30,14 +30,29 @@ struct stack_slot {
 namespace {
 
 const std::size_t region_slots = 64;    // 一次保留这么多格
-const std::size_t keep_limit = 1024;    // 准备好的空闲格最多留这么多，再多的把内存还给系统
+const std::size_t keep_limit = 1024;    // 准备好的空闲格常留这么多，再多的由 trim_stacks 把内存还给系统
 
 struct stack_pool {
     std::mutex mutex;
-    stack_slot* ready;         // 准备好的空闲格，后进先出
+    stack_slot* ready;         // 准备好的空闲格，后进先出，最多 keep_limit 个
     std::size_t ready_count;
+    stack_slot* surplus;       // 超出 keep_limit 的准备好的空闲格，等着把内存还给系统
+    std::size_t surplus_count;
     stack_slot* idle;          // 还没准备过、或者内存已经还给系统的格
 };
+
+void push(stack_slot*& list, stack_slot* slot) {
+    slot->next = list;
+    list = slot;
+}
+
+stack_slot* pop(stack_slot*& list) {
+    stack_slot* const slot = list;
+    if (slot) {
+        list = slot->next;
+    }
+    return slot;
+}
 
 std::size_t round_up(std::size_t value, std::size_t unit) {
     return (value + unit - 1) / unit * unit;
@@ -79,46 +94,44 @@ bool add_region_locked(stack_pool& p) {
     for (std::size_t i = 0; i < region_slots; ++i) {
         slots[i].base = base + i * slot;
         slots[i].committed = 0;
-        slots[i].next = p.idle;
-        p.idle = &slots[i];
+        push(p.idle, &slots[i]);
     }
     return true;
 }
 
-// 先取准备好的，再取没准备的，都没有就再保留一个区域。
+// 先取准备好的，再取多出来的（也准备好了），再取没准备的，都没有就再保留一个区域。
 stack_slot* take_slot(stack_pool& p) {
     const std::lock_guard<std::mutex> held(p.mutex);
     if (p.ready) {
-        stack_slot* const slot = p.ready;
-        p.ready = slot->next;
         --p.ready_count;
-        return slot;
+        return pop(p.ready);
     }
-
+    if (p.surplus) {
+        --p.surplus_count;
+        return pop(p.surplus);
+    }
     if (!p.idle && !add_region_locked(p)) {
         return 0;
     }
-    stack_slot* const slot = p.idle;
-    p.idle = slot->next;
-    return slot;
+    return pop(p.idle);
 }
 
-// 准备好的格子挂回去；已经留够了就不挂，返回 false。
-bool put_ready(stack_pool& p, stack_slot* slot) {
+// 准备好的格子挂回去。常留的已经够了就挂到多出来的那一串上，内存由 trim_stacks 还，
+// 协程结束时不做系统调用。
+void put_ready(stack_pool& p, stack_slot* slot) {
     const std::lock_guard<std::mutex> held(p.mutex);
-    if (p.ready_count == keep_limit) {
-        return false;
+    if (p.ready_count < keep_limit) {
+        push(p.ready, slot);
+        ++p.ready_count;
+        return;
     }
-    slot->next = p.ready;
-    p.ready = slot;
-    ++p.ready_count;
-    return true;
+    push(p.surplus, slot);
+    ++p.surplus_count;
 }
 
 void put_idle(stack_pool& p, stack_slot* slot) {
     const std::lock_guard<std::mutex> held(p.mutex);
-    slot->next = p.idle;
-    p.idle = slot;
+    push(p.idle, slot);
 }
 
 // 比一格大的栈单独保留，用完直接还。只有自己指定了栈大小的 fiber 会走到这里。
@@ -201,13 +214,46 @@ void release_stack(const stack_memory& memory) noexcept {
 
     stack_pool& p = *pool();
     slot->committed = memory.committed;
-    if (slot->committed && put_ready(p, slot)) {
+    if (slot->committed) {
+        put_ready(p, slot);
         return;
     }
 
     clear_stack(slot->base, memory.total, memory.guard);
-    slot->committed = 0;
     put_idle(p, slot);
+}
+
+void trim_stacks(std::size_t at_most) noexcept {
+    stack_pool* const p = pool();
+    if (!p) {
+        return;
+    }
+
+    stack_slot* taken = 0;
+    {
+        const std::lock_guard<std::mutex> held(p->mutex);
+        for (std::size_t i = 0; i < at_most && p->surplus; ++i) {
+            push(taken, pop(p->surplus));
+            --p->surplus_count;
+        }
+    }
+
+    const std::size_t total = slot_size();
+    const std::size_t guard = guard_size();
+    while (stack_slot* const slot = pop(taken)) {
+        clear_stack(slot->base, total, guard);   // 系统调用不拿着锁做
+        slot->committed = 0;
+        put_idle(*p, slot);
+    }
+}
+
+std::size_t surplus_stacks() noexcept {
+    stack_pool* const p = pool();
+    if (!p) {
+        return 0;
+    }
+    const std::lock_guard<std::mutex> held(p->mutex);
+    return p->surplus_count;
 }
 
 } } } // namespace wavvix::mem::detail
