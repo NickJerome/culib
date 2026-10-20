@@ -3,7 +3,11 @@
 
 #include <cerrno>
 #include <cfenv>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <string>
 
@@ -156,6 +160,61 @@ TEST(lexical_cast, parses_floating_point) {
     EXPECT(parsed<double>("1E-3"), ==, 0.001);
     EXPECT(parsed<double>("00.5"), ==, 0.5);
     EXPECT(parsed<float>("1.5"), ==, 1.5f);
+}
+
+TEST(lexical_cast, parses_exact_decimals_like_strtod) {
+    // 尾数和 10 的幂都能精确表示的走快路，不调 strtod；结果要和 strtod 逐位相同（正零负零也算）。
+    // 也混进超出精确范围的（19 位尾数、两位数的指数），那些照旧交给 strtod。
+    std::uint64_t state = 88172645463325252ull;
+    int mismatches = 0;
+    for (int round = 0; round < 20000; ++round) {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        std::string text;
+        if (state & 1) {
+            text += '-';
+        }
+        const int digits = 1 + static_cast<int>((state >> 8) % 19);
+        const int point = static_cast<int>((state >> 16) % (digits + 1));
+        std::uint64_t source = state >> 20;
+        for (int d = 0; d < digits; ++d) {
+            if (d == point && d != 0) {
+                text += '.';
+            }
+            text += static_cast<char>('0' + source % 10);
+            source /= 10;
+        }
+        if ((state >> 40) & 1) {
+            const int power = static_cast<int>((state >> 41) % 61) - 30;
+            text += 'e';
+            text += to_string(power);
+        }
+        const double expected = std::strtod(text.c_str(), 0);
+        const float expected_float = std::strtof(text.c_str(), 0);
+        const result<double> got = lexical_cast<double>(text);
+        const result<float> got_float = lexical_cast<float>(text);
+        const bool double_ok = got.is_ok() && std::memcmp(&expected, &got.value(), sizeof expected) == 0;
+        // 超出 float 的范围时 strtof 给无穷大，lexical_cast 报 out_of_range
+        const bool float_overflow = expected_float == std::numeric_limits<float>::infinity() ||
+                                    expected_float == -std::numeric_limits<float>::infinity();
+        const bool float_ok = float_overflow
+                                  ? got_float.is_err() && got_float.error().kind() == error_kind::out_of_range
+                                  : got_float.is_ok() &&
+                                        std::memcmp(&expected_float, &got_float.value(), sizeof expected_float) == 0;
+        if (!double_ok || !float_ok) {
+            if (++mismatches <= 5) {
+                EXPECT(text, ==, "parses like strtod");
+            }
+        }
+    }
+    EXPECT(mismatches, ==, 0);
+
+    EXPECT(parsed<double>("9007199254740993"), ==, 9007199254740992.0);   // 2^53 + 1：超出精确范围
+    EXPECT(parsed<double>("1e23"), ==, 1e23);                              // 10 挪进尾数
+    EXPECT(parsed<double>("0.1"), ==, 0.1);
+    const double negative_zero = parsed<double>("-0.0e5");
+    EXPECT(std::signbit(negative_zero), ==, true);
 }
 
 TEST(lexical_cast, rejects_malformed_floating_point) {

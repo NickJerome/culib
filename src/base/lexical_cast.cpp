@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <clocale>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -186,88 +187,177 @@ result<bool> parse_bool(string_view text) {
     return malformed(text, why);
 }
 
-// 浮点解析分两步：这里严格校验语法，换算交给 strtof / strtod。
+namespace {
+
+// 浮点解析：严格校验语法的同时拆出尾数和指数，能精确算的直接算，不行再交给 strtof / strtod。
 //
 // locale：转换器的小数点看 LC_NUMERIC。不调 setlocale（进程级，会影响别的线程），而是把输入里的
 // '.' 换成当前 locale 的小数点再交给它，to_string 那边也是这么做的。
 
-// 严格校验 [+-]?(数字[.数字]?|.数字)([eE][+-]?数字)? 的形状。
+// 十进制数拆成的几部分，值是 mantissa × 10^exponent。有效数字多于 19 位时 mantissa 装不下，exact 为假，
+// 之后只校验语法。
+struct decimal {
+    decimal() : negative(false), exact(true), digits(0), mantissa(0), exponent(0) {}
+
+    bool negative;
+    bool exact;
+    int digits;   // 有效数字，不算前导零
+    std::uint64_t mantissa;
+    long long exponent;
+};
+
+bool is_digit(char ch) { return ch >= '0' && ch <= '9'; }
+
+void add_digit(decimal& number, char ch) {
+    if (!number.exact || (number.mantissa == 0 && ch == '0')) {
+        return;
+    }
+    if (number.digits == 19) {
+        number.exact = false;   // 再多一位 uint64 可能装不下
+        return;
+    }
+    ++number.digits;
+    number.mantissa = number.mantissa * 10 + static_cast<unsigned>(ch - '0');
+}
+
+// 严格校验 [+-]?(数字[.数字]?|.数字)([eE][+-]?数字)? 的形状，顺便拆出各部分。
 // 转换器自己会接受十六进制浮点（0x1p3）和前导空白，所以必须先过这一道。
-bool is_strict_decimal(string_view text) {
+bool scan_decimal(string_view text, decimal& number) {
     std::size_t i = 0;
     if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+        number.negative = text[i] == '-';
         ++i;
     }
-    std::size_t integer_digits = 0;
-    while (i < text.size() && digit_value(text[i]) <= 9) {
-        ++i;
-        ++integer_digits;
+    const std::size_t first = i;
+    for (; i < text.size() && is_digit(text[i]); ++i) {
+        add_digit(number, text[i]);
     }
-    std::size_t fraction_digits = 0;
+    std::size_t length = i - first;
     if (i < text.size() && text[i] == '.') {
         ++i;
-        while (i < text.size() && digit_value(text[i]) <= 9) {
-            ++i;
-            ++fraction_digits;
+        for (; i < text.size() && is_digit(text[i]); ++i) {
+            add_digit(number, text[i]);
+            --number.exponent;
+            ++length;
         }
     }
-    if (integer_digits == 0 && fraction_digits == 0) {
+    if (length == 0) {
         return false;
     }
     if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
         ++i;
+        bool negative_power = false;
         if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+            negative_power = text[i] == '-';
             ++i;
         }
-        std::size_t exponent_digits = 0;
-        while (i < text.size() && digit_value(text[i]) <= 9) {
-            ++i;
-            ++exponent_digits;
+        const std::size_t power_first = i;
+        long long power = 0;
+        for (; i < text.size() && is_digit(text[i]); ++i) {
+            if (power < 1000000) {   // 再大也是溢出或者下溢，不用算准
+                power = power * 10 + (text[i] - '0');
+            }
         }
-        if (exponent_digits == 0) {
+        if (i == power_first) {
             return false;
         }
+        number.exponent += negative_power ? -power : power;
     }
     return i == text.size();
 }
 
+// 尾数和 10 的幂都能精确表示时，一次乘或除只舍入一次，结果就是正确舍入的（Clinger 1990），
+// 在哪种舍入模式下都和正确舍入的 strtod 一致。double 的尾数不超过 2^53、10 的幂到 10^22；float 是
+// 2^24、10^10。要按目标类型的精度算：x86-64 和 arm64 都是，只支持 64 位（编了 -ffast-math 就不保证了）。
 template <typename T>
-result<T> parse_floating(string_view text, T (*convert)(const char*, char**),
-                         const char* type_name) {
-    if (text.empty()) {
-        return malformed(text, "是空的，不是数字");
-    }
+struct exact_decimal;
 
-    // inf / infinity / nan，大小写不敏感。不认的话 to_string 的输出就解析不回来。
-    {
-        string_view body = text;
-        bool negative = false;
-        if (body[0] == '+' || body[0] == '-') {
-            negative = body[0] == '-';
-            body.remove_prefix(1);
-        }
-        char folded[8];
-        if (!body.empty() && body.size() <= sizeof folded) {
-            for (std::size_t i = 0; i < body.size(); ++i) {
-                folded[i] = lowered(body[i]);
-            }
-            const string_view value(folded, body.size());
-            if (value == "inf" || value == "infinity") {
-                const T infinity = std::numeric_limits<T>::infinity();
-                return negative ? -infinity : infinity;
-            }
-            if (value == "nan") {
-                return std::numeric_limits<T>::quiet_NaN();
-            }
-        }
+template <>
+struct exact_decimal<double> {
+    static double power(int n) {
+        static const double powers[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
+                                        1e8,  1e9,  1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+                                        1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+        return powers[n];
     }
+    static const int max_power = 22;
+    static const std::uint64_t max_mantissa = std::uint64_t(1) << 53;
+};
 
-    if (!is_strict_decimal(text)) {
-        return malformed(text, "不是合法数字");
+template <>
+struct exact_decimal<float> {
+    static float power(int n) {
+        static const float powers[] = {1e0f, 1e1f, 1e2f, 1e3f, 1e4f, 1e5f,
+                                       1e6f, 1e7f, 1e8f, 1e9f, 1e10f};
+        return powers[n];
     }
+    static const int max_power = 10;
+    static const std::uint64_t max_mantissa = std::uint64_t(1) << 24;
+};
 
-    // strtof / strtod 要 '\0' 结尾，而视图不保证；顺便换成当前 locale 的小数点。
-    // 短输入走栈上缓冲区，长输入（"0.000…1" 这种）才分配。
+// 在精确范围里就算出来写进 out，返回 true；否则返回 false，交给 strtod。
+template <typename T>
+bool exact_value(decimal number, T& out) {
+    const long long max_power = exact_decimal<T>::max_power;
+    const std::uint64_t max_mantissa = exact_decimal<T>::max_mantissa;
+    if (!number.exact) {
+        return false;
+    }
+    if (number.mantissa == 0) {
+        out = number.negative ? -T(0) : T(0);
+        return true;
+    }
+    // 指数大了、尾数小：把 10 挪进尾数，只要尾数还能精确表示（"1e30" 是 10^8 × 10^22）
+    while (number.exponent > max_power && number.mantissa <= max_mantissa / 10) {
+        number.mantissa *= 10;
+        --number.exponent;
+    }
+    if (number.mantissa > max_mantissa || number.exponent > max_power || number.exponent < -max_power) {
+        return false;
+    }
+    T value = static_cast<T>(number.mantissa);
+    if (number.exponent < 0) {
+        value /= exact_decimal<T>::power(static_cast<int>(-number.exponent));
+    } else {
+        value *= exact_decimal<T>::power(static_cast<int>(number.exponent));
+    }
+    out = number.negative ? -value : value;
+    return true;
+}
+
+// inf / infinity / nan，大小写不敏感，可以带符号。不认的话 to_string 的输出就解析不回来。
+template <typename T>
+bool parse_special(string_view text, T& out) {
+    bool negative = false;
+    if (!text.empty() && (text[0] == '+' || text[0] == '-')) {
+        negative = text[0] == '-';
+        text.remove_prefix(1);
+    }
+    char folded[8];
+    if (text.empty() || text.size() > sizeof folded) {
+        return false;
+    }
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        folded[i] = lowered(text[i]);
+    }
+    const string_view value(folded, text.size());
+    if (value == "inf" || value == "infinity") {
+        out = negative ? -std::numeric_limits<T>::infinity() : std::numeric_limits<T>::infinity();
+        return true;
+    }
+    if (value == "nan") {
+        out = std::numeric_limits<T>::quiet_NaN();
+        return true;
+    }
+    return false;
+}
+
+enum class conversion { done, malformed, out_of_range, too_long };
+
+// 交给 strtof / strtod 换算。它们要 '\0' 结尾，而视图不保证；顺便换成当前 locale 的小数点。
+// 短输入走栈上缓冲区，长输入（"0.000…1" 这种）才分配。text 已经过 scan_decimal。
+template <typename T>
+conversion convert_with_libc(string_view text, T (*convert)(const char*, char**), T& value) {
     const char* point = std::localeconv()->decimal_point;
     if (!point || !point[0]) {
         point = ".";
@@ -277,7 +367,7 @@ result<T> parse_floating(string_view text, T (*convert)(const char*, char**),
     const std::size_t dot_at = dot ? static_cast<std::size_t>(dot - text.data()) : text.size();
     const std::size_t extra = dot ? point_size - 1 : 0;
     if (text.size() >= (std::numeric_limits<std::size_t>::max)() - extra) {
-        return make_error(error_kind::out_of_range, "浮点输入太长");
+        return conversion::too_long;
     }
     const std::size_t local_length = text.size() + extra;
     char stack_buffer[64];
@@ -299,23 +389,69 @@ result<T> parse_floating(string_view text, T (*convert)(const char*, char**),
     char* stopped = copy;
     const int saved_errno = errno;
     errno = 0;
-    const T value = convert(copy, &stopped);
+    value = convert(copy, &stopped);
     const bool range_error = errno == ERANGE;
     errno = saved_errno;
     if (stopped != copy + local_length) {
         // 语法已经校验过，走到这里说明转换器的接受范围比我们窄，不该发生
-        return malformed(text, "不是合法数字");
+        return conversion::malformed;
     }
     // 向零舍入时，溢出可能返回有限的最大值；下溢仍允许舍入到 0 或次正规数。
     if (value == std::numeric_limits<T>::infinity() ||
         value == -std::numeric_limits<T>::infinity() ||
         (range_error && (value == (std::numeric_limits<T>::max)() ||
                          value == -(std::numeric_limits<T>::max)()))) {
-        return make_error(error_kind::out_of_range,
-                          quoted(text) + " 超出 " + type_name + " 的范围");
+        return conversion::out_of_range;
     }
-    return value;
+    return conversion::done;
 }
+
+template <typename T>
+result<T> parse_floating(string_view text, T (*convert)(const char*, char**),
+                         const char* type_name) {
+    if (text.empty()) {
+        return malformed(text, "是空的，不是数字");
+    }
+    decimal number;
+    T value = 0;
+    if (!scan_decimal(text, number)) {
+        if (parse_special(text, value)) {
+            return value;
+        }
+        return malformed(text, "不是合法数字");
+    }
+    if (exact_value(number, value)) {
+        return value;
+    }
+    switch (convert_with_libc(text, convert, value)) {
+        case conversion::done:
+            return value;
+        case conversion::malformed:
+            return malformed(text, "不是合法数字");
+        case conversion::out_of_range:
+            return make_error(error_kind::out_of_range, quoted(text) + " 超出 " + type_name + " 的范围");
+        case conversion::too_long:
+            break;
+    }
+    return make_error(error_kind::out_of_range, "浮点输入太长");
+}
+
+// 格式化出来的候选能不能按同一类型原样读回。不分配：候选不到 40 个字符，换算用栈上缓冲区；
+// 有效数字不超过 16 位，多数走精确的快路，不用 strtod。
+template <typename T>
+bool reads_back(string_view text, T (*convert)(const char*, char**), T expected) {
+    decimal number;
+    T value = 0;
+    if (!scan_decimal(text, number)) {
+        return false;
+    }
+    if (!exact_value(number, value) && convert_with_libc(text, convert, value) != conversion::done) {
+        return false;
+    }
+    return value == expected;
+}
+
+}  // namespace
 
 result<float> parse_float(string_view text) {
     return parse_floating<float>(text, &std::strtof, "float");
@@ -382,7 +518,7 @@ std::size_t normalize_decimal_point(char* buffer, std::size_t length) {
 // 从目标类型的十进制精度开始试，取第一个能按同一类型原样读回的表示。
 template <typename T>
 std::size_t format_floating(T value, char* buffer, std::size_t capacity,
-                            T (*parse)(const char*, char**)) {
+                            T (*convert)(const char*, char**)) {
     if (value != value) {
         if (capacity < 3) {
             return 0;
@@ -412,17 +548,11 @@ std::size_t format_floating(T value, char* buffer, std::size_t capacity,
         if (written <= 0 || static_cast<std::size_t>(written) >= sizeof scratch) {
             continue;
         }
-        if (precision != std::numeric_limits<T>::max_digits10) {
-            // snprintf 和 strtof/strtod 使用同一 locale；只对选中的结果规范化小数点。
-            char* end = scratch;
-            const int saved_errno = errno;
-            const T parsed = parse(scratch, &end);
-            errno = saved_errno;
-            if (end != scratch + written || parsed != value) {
-                continue;
-            }
-        }
         const std::size_t length = normalize_decimal_point(scratch, static_cast<std::size_t>(written));
+        if (precision != std::numeric_limits<T>::max_digits10 &&
+            !detail::reads_back(string_view(scratch, length), convert, value)) {
+            continue;
+        }
         if (length > capacity) {
             return 0;
         }

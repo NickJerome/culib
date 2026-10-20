@@ -359,3 +359,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`c6dd6d9` 的 CI](https://github.com/NickJerome/culib/actions/runs/39426381920) 23/24：sanitizer 作业的 ASan 那一步里，`runtime_order.runs_every_coroutine_on_the_one_worker` 看到协程在 2 根线程上跑过（这一轮用了 46 毫秒）。那个作业并行跑各个测试程序，唯一的工作线程被系统挂起 10 毫秒以上，名额就会交出去；这条测试原来只跑一轮，现在和别的次序测试一样试 5 轮。其余 23 个作业：`culib_test` Linux 398 项、macOS 395 项、Windows 与 MinGW 394 项、无异常构建 390 项；windows-msvc / release 那台 runner 不开影子栈，`cet` 跳过。没有别的诊断。
 
 [`b708431` 的 CI](https://github.com/NickJerome/culib/actions/runs/39460206896)（连同 `764d687`）24/24 通过：`culib_test` Linux 398 项、macOS 395 项、Windows 与 MinGW 394 项、无异常构建 390 项，`runtime_order_test` 41、39、36 项；标准矩阵的 12 个作业都编出了记分板。没有 SKIP。诊断只有一类：改了构建缓存的键，各作业报「没有找到缓存」。
+
+[`9466f42` 的 CI](https://github.com/NickJerome/culib/actions/runs/39463739161) 22/24：两个 macOS arm64 作业一直没排上 runner（GitHub 报 `The job was not acquired by Runner of type hosted even after multiple attempts`，arm64 的 macOS runner 容量不足），被取消，没有日志；其余 22 个通过。紧接着的 [`cf6677a` 的 CI](https://github.com/NickJerome/culib/actions/runs/39467594773) 包含它的改动，24/24 通过、日志齐全：`culib_test` Linux 400 项、macOS 397 项、Windows 与 MinGW 395 项、无异常构建 392 项，`runtime_order_test` 41、39、36 项；没有 SKIP，也没有诊断。
