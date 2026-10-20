@@ -125,13 +125,9 @@ mutex::~mutex() {
     die_if_waiting(waiters_, "wavvix::mutex 销毁时还有协程在等它");
 }
 
-void mutex::lock() {
+void mutex::lock_slow() {
+    state_.unlock();
     wait_for_lock(forever);
-}
-
-bool mutex::try_lock() {
-    std::lock_guard<detail::spin_lock> state(state_);
-    return claim_locked();
 }
 
 bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
@@ -141,17 +137,12 @@ bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
     return wait_for_lock(timeout);
 }
 
-// 平时放开锁再叫醒队首，让它和刚来的一起抢；叫醒的那个还没来抢，就不再叫别人：持锁的一放开马上又拿，
-// 每次都叫的话，醒来的多半抢不到，白白挂起一次。叫醒的那个排在本线程的队列里，要等这根协程挂起才轮得到；
-// 它还没来、这根又来放锁，说明这根不会很快挂起，就叫一根闲着的线程把它偷走（scheduler_nudge），
-// 不然它要等监控线程的下一次检查，饥饿模式也就晚了。直接交接的时候 held_ 保持为真，只是锁换了主人。
-void mutex::unlock() {
-    state_.lock();
-    if (detail::list_empty(waiters_)) {
-        held_ = false;   // 没人等：直接放开
-        state_.unlock();
-        return;
-    }
+// 有人排着才走到这里。平时放开锁再叫醒队首，让它和刚来的一起抢；叫醒的那个还没来抢，就不再叫别人：
+// 持锁的一放开马上又拿，每次都叫的话，醒来的多半抢不到，白白挂起一次。叫醒的那个排在本线程的队列里，
+// 要等这根协程挂起才轮得到；它还没来、这根又来放锁，说明这根不会很快挂起，就叫一根闲着的线程把它
+// 偷走（scheduler_nudge），不然它要等监控线程的下一次检查，饥饿模式也就晚了。直接交接的时候 held_
+// 保持为真，只是锁换了主人。
+void mutex::unlock_slow() {
     wake_batch woken;
     bool nudge = false;
     if (!starving_ || !hand_over_locked(woken)) {
@@ -167,15 +158,6 @@ void mutex::unlock() {
     if (nudge) {
         detail::scheduler_nudge();
     }
-}
-
-// 锁空着、又轮得到自己就拿下：直接交接的时候有人排着，刚来的不抢。调用方拿着 state_。
-bool mutex::claim_locked() noexcept {
-    if (held_ || (starving_ && !detail::list_empty(waiters_))) {
-        return false;
-    }
-    held_ = true;
-    return true;
 }
 
 // 拿不到就排队挂起，醒来再抢，直到拿到锁或者到点；负的 timeout 表示一直等。从第一次排队算起等了

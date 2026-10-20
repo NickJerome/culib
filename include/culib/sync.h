@@ -58,16 +58,48 @@ public:
     mutex() noexcept : held_(false), starving_(false), waking_(false), nudged_(false) {}
     ~mutex();
 
-    void lock();
-    bool try_lock();
+    // 拿得到、或者没人排队时，拿放锁都只是进出一次 state_，在这里内联；别的情形走慢路径。
+    void lock() {
+        state_.lock();
+        if (claim_locked()) {
+            state_.unlock();
+            return;
+        }
+        lock_slow();
+    }
+
+    bool try_lock() {
+        state_.lock();
+        const bool got = claim_locked();
+        state_.unlock();
+        return got;
+    }
 
     // 最多等 timeout；零或负值只试一次。
     bool try_lock_for(std::chrono::nanoseconds timeout);
 
-    void unlock();
+    void unlock() {
+        state_.lock();
+        if (detail::list_empty(waiters_)) {
+            held_ = false;
+            state_.unlock();
+            return;
+        }
+        unlock_slow();
+    }
 
 private:
-    bool claim_locked() noexcept;
+    // 锁空着、又轮得到自己就拿下：直接交接的时候有人排着，刚来的不抢。调用方拿着 state_。
+    bool claim_locked() noexcept {
+        if (held_ || (starving_ && !detail::list_empty(waiters_))) {
+            return false;
+        }
+        held_ = true;
+        return true;
+    }
+
+    void lock_slow();     // 拿着 state_ 进来
+    void unlock_slow();   // 拿着 state_ 进来，有人排着
     bool wait_for_lock(std::chrono::nanoseconds timeout);
     bool hand_over_locked(detail::wake_batch& woken);
 
