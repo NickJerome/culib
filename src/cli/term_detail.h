@@ -1,6 +1,8 @@
 #pragma once
 
-// term 里按平台分的那三件事。不是公共头文件。
+// term 里按平台分的那三件事，和日志要用的那几个函数。不是公共头文件。
+
+#include <cstddef>
 
 namespace wavvix {
 namespace term {
@@ -26,6 +28,13 @@ bool environment_allows_color(const char* no_color, const char* term) noexcept;
 // 读进程现在的环境变量，按上面的规则判断。POSIX 读 NO_COLOR 和 TERM；Windows 只读
 // NO_COLOR，而且绕开 CRT，理由见 term_win.cpp。
 bool environment_allows_color() noexcept;
+
+// 这根标准流现在该不该上色：颜色模式每次都看，是不是终端和环境变量只在第一次问时看（term.cpp）。
+bool colorize(stream_kind which) noexcept;
+
+// 往 out 里写开启码、恢复码，返回写了几个字节。out 至少 16 字节。
+std::size_t start_codes(char* out, unsigned char fore, unsigned char back) noexcept;
+std::size_t finish_codes(char* out, unsigned char fore, unsigned char back) noexcept;
 
 }  // namespace detail
 }  // namespace term

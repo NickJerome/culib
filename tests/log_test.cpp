@@ -561,6 +561,42 @@ TEST(log, console_lines_match_file_lines) {
     EXPECT(printed, ==, file.read());
 }
 
+TEST(log, console_colors_only_the_level_name) {
+    // 强制上色时只有级别名套上颜色码（ERROR 是红色 31，恢复前景色 39），其余和文件里那一行一样。
+    // 颜色码和整行一起写出，中间不会插进别的输出。
+    scratch_log file("console_color_file");
+    scratch_log errors("console_color_stderr");
+    const std::shared_ptr<sink> target = open_sink(file.path());
+    if (!EXPECT(static_cast<bool>(target), ==, true)) {
+        return;
+    }
+    const std::shared_ptr<logger> net = wavvix::log::make_logger("net");
+    net->add_sink(wavvix::log::console_sink());
+    net->add_sink(target);
+
+    const wavvix::term::color_mode previous = wavvix::term::current_color_mode();
+    wavvix::term::set_color_mode(wavvix::term::color_mode::always);
+    std::string printed;
+    {
+        const stderr_capture capture(errors.path());
+        if (!EXPECT(capture.ok(), ==, true)) {
+            wavvix::term::set_color_mode(previous);
+            return;
+        }
+        LOG_ERROR_TO(net) << "handshake failed";
+        printed = capture.text();
+    }
+    wavvix::term::set_color_mode(previous);
+
+    std::string expected = file.read();
+    const std::size_t name = expected.find("ERROR");
+    if (!EXPECT(name != std::string::npos, ==, true)) {
+        return;
+    }
+    expected.replace(name, 5, "\033[31mERROR\033[39m");
+    EXPECT(printed, ==, expected);
+}
+
 // ---- 登记表 ------------------------------------------------------------------------------
 
 TEST(log, finds_a_registered_logger_by_name) {

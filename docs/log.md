@@ -45,7 +45,7 @@ int main() {
 
 | 工厂函数 | 写到哪里 |
 | --- | --- |
-| `console_sink()` | stderr。只给级别名上色；stderr 不是终端或者设了 `NO_COLOR` 时不上色。所有控制台 sink 共用一把锁，级别各管各的 |
+| `console_sink()` | stderr，整行一次写出。只给级别名上色；stderr 不是终端或者设了 `NO_COLOR` 时不上色，这两样在第一次输出时看一次。所有控制台 sink 共用一把锁，级别各管各的 |
 | `file_sink(path)` | 文件末尾。打不开当场返回错误，不等到写的时候 |
 | `rotating_file_sink(path, max_bytes, keep_files)` | 同上，再加轮转。`max_bytes` 或 `keep_files` 为 0 返回 `invalid_argument` |
 

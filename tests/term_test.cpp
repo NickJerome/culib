@@ -69,19 +69,19 @@ TEST(term, builds_the_ansi_codes_byte_for_byte) {
     std::ostringstream one;
     wavvix::term::detail::start(one, 31, 0);
     one << "error";
-    wavvix::term::detail::finish(one, 31, 0, 0);
+    wavvix::term::detail::finish(one, 31, 0);
     EXPECT(one.str(), ==, "\033[31merror\033[39m");
 
     std::ostringstream two;
     wavvix::term::detail::start(two, 0, 43);
     two << "warning";
-    wavvix::term::detail::finish(two, 0, 43, 0);
+    wavvix::term::detail::finish(two, 0, 43);
     EXPECT(two.str(), ==, "\033[43mwarning\033[49m");
 
     std::ostringstream both;
     wavvix::term::detail::start(both, 37, 41);
     both << " FAIL ";
-    wavvix::term::detail::finish(both, 37, 41, 0);
+    wavvix::term::detail::finish(both, 37, 41);
     EXPECT(both.str(), ==, "\033[37;41m FAIL \033[39;49m");
 }
 
@@ -89,7 +89,7 @@ TEST(term, restores_only_the_layer_it_set) {
     // 恢复用 39 / 49 而不是 0。用 0 会把调用方在外面设的别的属性（粗体之类）
     // 一起抹掉，那是「我只想染个色」的人想不到的。
     std::ostringstream one;
-    wavvix::term::detail::finish(one, 31, 0, 0);
+    wavvix::term::detail::finish(one, 31, 0);
     EXPECT(one.str(), ==, "\033[39m");
     EXPECT(one.str().find('0'), ==, std::string::npos);
 }

@@ -8,8 +8,10 @@
 namespace wavvix {
 namespace term {
 
+// automatic：标准流接的是终端、NO_COLOR 没设或为空（POSIX 上 TERM 也不是 dumb）才上色。这几样在
+// 第一次输出时看一次，之后运行中途重定向标准流、改环境变量都不再跟着变。
 enum class color_mode {
-    automatic,   // 自己判断，见上。取名 automatic 是因为 auto 是关键字
+    automatic,   // 取名 automatic 是因为 auto 是关键字
     always,
     never
 };
@@ -59,9 +61,9 @@ namespace detail {
 // 引入 <iostream>；公共头文件只用 <ostream>）。
 bool colorize(std::ostream& out);
 
-// 写开启码，返回一个不透明的记号原样交回 finish。
-unsigned long start(std::ostream& out, unsigned char fore, unsigned char back);
-void finish(std::ostream& out, unsigned char fore, unsigned char back, unsigned long token);
+// 写开启码和恢复码。
+void start(std::ostream& out, unsigned char fore, unsigned char back);
+void finish(std::ostream& out, unsigned char fore, unsigned char back);
 
 }  // namespace detail
 
@@ -88,9 +90,9 @@ std::ostream& operator<<(std::ostream& out, const styled<T>& what) {
         return out << what.what_;
     }
 
-    const unsigned long token = detail::start(out, fore, back);
+    detail::start(out, fore, back);
     out << what.what_;
-    detail::finish(out, fore, back, token);
+    detail::finish(out, fore, back);
     return out;
 }
 

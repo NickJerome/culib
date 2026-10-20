@@ -688,10 +688,15 @@ logger、sink、登记表和轮转。结构上要紧的有三件事：
 
 term 里和平台无关的那部分：颜色模式、「该不该上色」的判断、ANSI 颜色码。
 
-**只有这个文件引入 <iostream>。** 判断「这个流是不是 std::cout」要比较地址，
-而公共头文件不能引入 <iostream>（开发约定：公共头文件不引入 <iostream>）。
+**库里只有这个文件和测试框架（`src/testing/test.cpp`）引入 <iostream>。** 判断「这个流是不是 std::cout」
+要比较地址，而公共头文件不能引入 <iostream>（开发约定：公共头文件不引入 <iostream>）。
 代价是 GCC 13 以前的 libstdc++ 会因此多一个 main 之前的静态对象——但用到
-std::cout 的程序本来就有它。
+std::cout 的程序本来就有它。日志的控制台 sink 不经过 iostream，整行拼好用一次 `fwrite` 写给 stderr。
+
+**是不是终端、环境变量只看一次。** 第一次问某根标准流该不该上色时查一次 `isatty`（Windows 上是
+`GetConsoleMode`）和 NO_COLOR / TERM，记在一个原子量里；颜色模式每次都看。原来每次输出都查，
+日志的控制台 sink 每行要多 2 到 4 次系统调用，工作线程每行还读一次环境变量，和改环境变量的线程是数据竞争。
+代价是运行中途重定向标准流、改 NO_COLOR 不再跟着变。
 
 ## [`os_win.cpp`](../src/platform/os_win.cpp)
 

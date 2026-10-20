@@ -8,11 +8,11 @@
 #include <culib/time.h>
 
 #include "base/fatal.h"
+#include "term_detail.h"
 
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -134,14 +134,32 @@ std::mutex& console_mutex() {
     return *shared;
 }
 
+// 级别名套上颜色的那一行：前半截、开启码、级别名、恢复码、后半截。
+std::string colored_line(const record& entry, term::style how) {
+    const std::size_t name_length = std::strlen(name_of(entry.at));
+    char codes[16];
+    std::string line;
+    line.reserve(entry.text.size() + 2 * sizeof codes);
+    line.append(entry.text, 0, entry.level_offset);
+    line.append(codes, term::detail::start_codes(codes, how.foreground_code(), how.background_code()));
+    line.append(entry.text, entry.level_offset, name_length);
+    line.append(codes, term::detail::finish_codes(codes, how.foreground_code(), how.background_code()));
+    line.append(entry.text, entry.level_offset + name_length, std::string::npos);
+    return line;
+}
+
+// 整行一次写出：分几次写的话，同一个终端上别的输出（fatal() 的诊断、别的进程）会插进一行中间。
 void write_console(const record& entry) {
-    const char* const name = name_of(entry.at);
-    const std::size_t after = entry.level_offset + std::strlen(name);
+    const term::style how = style_of(entry.at);
+    std::string colored;
+    const std::string* line = &entry.text;
+    if (how.colored() && term::detail::colorize(term::detail::stream_err)) {
+        colored = colored_line(entry, how);
+        line = &colored;
+    }
     const std::lock_guard<std::mutex> held(console_mutex());
-    std::clog.write(entry.text.data(), static_cast<std::streamsize>(entry.level_offset));
-    std::clog << style_of(entry.at)(name);
-    std::clog.write(entry.text.data() + after, static_cast<std::streamsize>(entry.text.size() - after));
-    std::clog.flush();
+    std::fwrite(line->data(), 1, line->size(), stderr);
+    std::fflush(stderr);
 }
 
 // path → path.1，path.1 → path.2，…，超出 keep_files 的删掉。调用方已经关了文件。

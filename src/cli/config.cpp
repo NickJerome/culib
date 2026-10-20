@@ -27,6 +27,12 @@ string_view trimmed(string_view text) {
     return text.substr(from, to - from);
 }
 
+// 一行后半截只剩空白或注释。
+bool only_comment(string_view rest) {
+    const string_view kept = trimmed(rest);
+    return kept.empty() || kept[0] == '#' || kept[0] == ';';
+}
+
 // 提取值并去掉行尾注释；引号未闭合或其后有非注释内容时置 bad。
 string_view value_of(string_view text, bool& bad) {
     const string_view body = trimmed(text);
@@ -37,9 +43,7 @@ string_view value_of(string_view text, bool& bad) {
             bad = true;    // 引号没闭上
             return string_view();
         }
-        // 闭引号后只允许空白或注释。
-        const string_view rest = trimmed(body.substr(closing + 1));
-        if (!rest.empty() && rest[0] != '#' && rest[0] != ';') {
+        if (!only_comment(body.substr(closing + 1))) {
             bad = true;
             return string_view();
         }
@@ -79,12 +83,16 @@ bool next_line(string_view text, std::size_t& at, string_view& line) {
     return true;
 }
 
-// [段名]，段名去掉两边空白以后不能是空的。
+// [段名]，后面可以跟注释。段名去掉两边空白以后不能是空的。
 result<void> read_section(string_view line, std::size_t row, std::string& section) {
-    if (line[line.size() - 1] != ']') {
+    const std::size_t closing = line.find(']');
+    if (closing == string_view::npos) {
         return malformed(row, "段名少了右方括号");
     }
-    const string_view name = trimmed(line.substr(1, line.size() - 2));
+    if (!only_comment(line.substr(closing + 1))) {
+        return malformed(row, "右方括号后面只能跟注释");
+    }
+    const string_view name = trimmed(line.substr(1, closing - 1));
     if (name.empty()) {
         return malformed(row, "段名是空的");
     }

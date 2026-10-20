@@ -63,6 +63,21 @@ TEST(config, turns_sections_into_dotted_keys) {
     EXPECT(one.get("server.host").value(), ==, "0.0.0.0");
 }
 
+TEST(config, allows_a_comment_after_a_section_header) {
+    // 照 api-guide 里那份示例的写法：段名后面跟行尾注释。
+    const config one = parsed(
+        "[server]                     # 段，下面的键变成 server.xxx\n"
+        "port = 8080\n"
+        "[client] ; 分号注释也行\n"
+        "retries = 3\n");
+    EXPECT(one.get("server.port").value_or("?"), ==, "8080");
+    EXPECT(one.get("client.retries").value_or("?"), ==, "3");
+
+    const wavvix::result<config> junk = config::parse("[server] port = 1\n");
+    if (!EXPECT(junk.is_ok(), ==, false)) return;
+    EXPECT(junk.error().message().find("第 1 行") != std::string::npos, ==, true);
+}
+
 TEST(config, ignores_comments_and_blank_lines) {
     const config one = parsed(
         "# 井号注释\n"
