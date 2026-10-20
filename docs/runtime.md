@@ -111,7 +111,7 @@ Windows 上等在完成端口上的超时按系统定时器的节拍到期，默
 | Windows | 报 `STATUS_STACK_OVERFLOW` 后终止 | 同左 |
 | Linux / macOS | 碰到栈底的保护页，收到 SIGSEGV / SIGBUS | 不报错，悄悄写坏相邻的内存 |
 
-Windows 上栈和线程栈一样只提交用到的部分，最底下留一段不提交，长到那里系统就报栈溢出，不用另设保护页。进程的退出码通常是 `0xC00000FD`；CI 上见过四次 `0xC0000005`，很可能是分到带 AMX 的机器时，异常分发本身又溢出了一次（见[实现说明](implementation-notes.md#windows只提交用到的部分)）。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
+Windows 上栈和线程栈一样只提交用到的部分，长到栈底附近系统就报栈溢出，不用另设保护页。异常分发要在剩下的栈上进行，带 AMX 的机器上分发要 12 KiB 多，系统默认留的不够；所以工作线程要系统多留 32 KiB，协程栈能用的深度因此约 968 KiB，进程以 `0xC00000FD` 终止（见[实现说明](implementation-notes.md#windows溢出时留给异常分发的栈)）。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
 
 Linux / macOS 的 debug 构建在每根栈的最底下设保护页，溢出当场崩溃，调试器里能看到越界那一刻的调用栈。代价是 Linux 默认设置下 debug 构建最多约 3 万根同时在跑的协程。怀疑 release 程序里有栈溢出时（卡死或崩溃发生在无关的协程里），用 debug 构建重现。
 
@@ -361,3 +361,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`b708431` 的 CI](https://github.com/NickJerome/culib/actions/runs/39460206896)（连同 `764d687`）24/24 通过：`culib_test` Linux 398 项、macOS 395 项、Windows 与 MinGW 394 项、无异常构建 390 项，`runtime_order_test` 41、39、36 项；标准矩阵的 12 个作业都编出了记分板。没有 SKIP。诊断只有一类：改了构建缓存的键，各作业报「没有找到缓存」。
 
 [`9466f42` 的 CI](https://github.com/NickJerome/culib/actions/runs/39463739161) 22/24：两个 macOS arm64 作业一直没排上 runner（GitHub 报 `The job was not acquired by Runner of type hosted even after multiple attempts`，arm64 的 macOS runner 容量不足），被取消，没有日志；其余 22 个通过。紧接着的 [`cf6677a` 的 CI](https://github.com/NickJerome/culib/actions/runs/39467594773) 包含它的改动，24/24 通过、日志齐全：`culib_test` Linux 400 项、macOS 397 项、Windows 与 MinGW 395 项、无异常构建 392 项，`runtime_order_test` 41、39、36 项；没有 SKIP，也没有诊断。
+
+[`8a1199d` 的 CI](https://github.com/NickJerome/culib/actions/runs/39469914069) 23/24：MSVC release 那一格的 `runtime_faults.stack_overflow` 又以 `0xC0000005` 结束，`CONTEXT` 11567 字节、扩展状态 0x608E7，是第 5 次分到带 AMX 的机器；原因和修法见[实现说明](implementation-notes.md#windows溢出时留给异常分发的栈)。其余 23 个作业通过：`culib_test` Linux 401 项、macOS 398 项、Windows 与 MinGW 396 项、无异常构建 393 项，`runtime_order_test` 41、39、36 项。[`1d1e841` 的 CI](https://github.com/NickJerome/culib/actions/runs/39472620727) 24/24 通过，项数相同；唯一的 SKIP 是 MSVC debug 那一格的 `cet`（分到的机器不给影子栈），诊断只有源码依赖检查的一个作业报「没有找到缓存」。[`a328d6b` 的 CI](https://github.com/NickJerome/culib/actions/runs/39475190897) 24/24 通过，项数相同，没有 SKIP，也没有诊断。

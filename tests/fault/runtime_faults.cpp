@@ -122,27 +122,24 @@ void stack_unavailable() {
 }
 
 #if WAVVIX_TEST_GUARDED_STACK
-// 栈用超了：Windows 上栈长到保留区的底，系统报 STATUS_STACK_OVERFLOW；Linux / macOS 的 debug 构建碰到
-// 栈底的保护页。递归的终点永远到不了，只是不让编译器看出这是无穷递归。
-volatile int never = -1;
-
-#if defined(_MSC_VER)
-__declspec(noinline)
-#else
-__attribute__((noinline))
-#endif
-int overflow_from(int depth) {
+// 每层用掉 1 KiB 栈，一共 levels 层。
+WAVVIX_DETAIL_NOINLINE int use_stack(int levels) {
     volatile char frame[1024];
-    frame[0] = static_cast<char>(depth);
-    if (depth == never) {
+    frame[0] = static_cast<char>(levels);
+    if (levels <= 1) {
         return frame[0];
     }
-    return overflow_from(depth + 1) + frame[0];
+    return use_stack(levels - 1) + frame[0];
 }
 
+// 栈用超了：Windows 上栈长到栈底附近，系统报 STATUS_STACK_OVERFLOW；Linux / macOS 的 debug 构建碰到
+// 栈底的保护页。层数从 volatile 里读，编译器看不出它大到用不完。
+volatile int too_deep = 1 << 30;
+
 void stack_overflow() {
-    wavvix::detail::fiber worker([] { overflow_from(0); });
-    worker.resume();
+    wavvix::wait_group group;
+    group.go([] { use_stack(too_deep); });
+    group.wait();
 }
 #endif
 
@@ -252,12 +249,10 @@ struct child_outcome {
 #if defined(_WIN32)
 
 // 子进程第一时间看到 STATUS_STACK_OVERFLOW 就往 stderr 写这一行，再照常交给系统。拦没拦住看这一行：
-// 系统随后的默认处理跑在溢出后剩下的那点栈上，最后的退出码不一定是 STATUS_STACK_OVERFLOW
-// （CI 上见过 0xC0000005）。
+// 系统随后的默认处理跑在溢出后剩下的那点栈上，最后的退出码不一定是 STATUS_STACK_OVERFLOW。
 const char overflow_marker[] = "STATUS_STACK_OVERFLOW\n";
 
-// 异常分发要放上栈的 CONTEXT（含扩展状态）多大。溢出以后分发就在剩下的那点栈上跑，CI 上偶尔连 VEH
-// 都没进去就以 0xC0000005 结束；记下这两个数，对照是不是只出在 CONTEXT 大的机器上。
+// 异常分发要放上栈的 CONTEXT（含扩展状态）多大，印在 OK 行里，看得出这次跑在什么样的机器上。
 std::string context_note() {
     DWORD length = 0;
     ::InitializeContext(NULL, CONTEXT_ALL | CONTEXT_XSTATE, NULL, &length);
@@ -267,8 +262,12 @@ std::string context_note() {
     return text;
 }
 
+// 写那一行之前先用掉 12 KiB 栈。分发异常时 CONTEXT 压在溢出后剩下的栈上，带 AMX 的机器上有 11.3 KiB，
+// 别的机器 1.6–3.2 KiB；多用这一截，每台机器上查的都是剩下的栈够不够 AMX 的机器用。不够时这个函数跑不完，
+// 进程以 0xC0000005 结束，没有那一行。
 LONG CALLBACK note_stack_overflow(EXCEPTION_POINTERS* info) {
     if (info->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+        use_stack(12);
         DWORD written = 0;
         ::WriteFile(::GetStdHandle(STD_ERROR_HANDLE), overflow_marker, sizeof overflow_marker - 1, &written,
                     NULL);

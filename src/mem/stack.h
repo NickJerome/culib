@@ -32,6 +32,9 @@ void release_stack(const stack_memory& memory) noexcept;
 // 栈池换 16 格。只给不退出的线程用（工作线程）：线程退出时手边的格子不还给栈池。
 void cache_stacks_on_this_thread() noexcept;
 
+// 本线程要在这些栈上跑协程：栈溢出时让系统多留一段栈报告溢出。只有 Windows 有事做，每根线程调一次。
+void keep_room_for_overflow() noexcept;
+
 // 把多出来的空闲栈的内存还给系统，一次最多 at_most 根。由监控线程定期调。
 void trim_stacks(std::size_t at_most) noexcept;
 // 还有几根多出来的空闲栈没还。

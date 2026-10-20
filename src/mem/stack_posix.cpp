@@ -42,4 +42,7 @@ char* committed_bound() noexcept {
     return 0;
 }
 
+// 溢出的信号不在溢出的栈上投递：没装处理函数时内核直接结束进程，装了的要用 sigaltstack 另给一根栈。
+void keep_room_for_overflow() noexcept {}
+
 } } } // namespace wavvix::mem::detail

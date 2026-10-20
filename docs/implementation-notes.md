@@ -347,7 +347,7 @@ Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序
 
 ### Windows：只提交用到的部分
 
-和线程栈一样：保留整格，提交栈顶两页，下面一页设成 `PAGE_GUARD`。碰到保护页时系统再提交一页、把保护页往下挪；长到保护区（最底下 16 KiB，从不提交）就报 `STATUS_STACK_OVERFLOW`。起步只占 12 KiB 提交额度。
+和线程栈一样：保留整格，提交栈顶两页，下面一页设成 `PAGE_GUARD`。碰到保护页时系统再提交一页、把保护页往下挪；离可用部分的底（线程块里的 `DeallocationStack`）不到系统留的余量时报 `STATUS_STACK_OVERFLOW`，余量见[下面](#windows溢出时留给异常分发的栈)。最底下 16 KiB 的保护区从不提交。起步只占 12 KiB 提交额度。
 
 系统怎么判断该不该扩栈，微软没写成文档。本机（Windows 10 19045 x64）实测和反汇编的结论：
 
@@ -362,13 +362,24 @@ Windows 测试先确认读操作完成，再取消并取包，覆盖这个时序
 
 实测：起步 12 KiB，递归 500 层（每层 1 KiB）后 540 KiB，超出保留范围时以 `0xC00000FD` 终止。两个反向验证：不记已提交下界时，复用深栈的协程在深处抛异常，进程以 `0xE06D7363` 终止（`fiber.throws_from_deep_in_a_reused_stack`）；不放保护页、整格提交时，溢出变成访问违例 `0xC0000005`（`runtime_faults.stack_overflow` 失败）。单独保留、提交、放保护页、释放一根栈约 5 µs，所以这几步只在一格第一次用时做。
 
-溢出时系统先报 `STATUS_STACK_OVERFLOW`，异常就在剩下的栈上分发。本机量过还剩多少：出错时 rsp 离 `DeallocationStack` 约 15.8 KiB，系统把已提交的下界放到 `DeallocationStack` 往上一页，所以还有约 11.7 KiB，分发到向量化异常处理时用掉 2.5 KiB（其中 `CONTEXT` 连扩展状态 1663 字节）。同一段递归放在线程栈上，出错时 rsp 离 `DeallocationStack` 16.1 KiB，和协程栈一样。
+### Windows：溢出时留给异常分发的栈
 
-[`9cad3fd` 的 CI](https://github.com/NickJerome/culib/actions/runs/39220220574) 里，MSVC release 那一格的 `runtime_faults.stack_overflow` 以 `0xC0000005` 结束；前两次运行用的是同一个镜像、同一版 MSVC，都是 `0xC00000FD`。原因没有确定，本机复现不出来。这条用例原来只看退出码，把「系统报了栈溢出」和「之后的默认处理」混在一起。现在子进程里装一个向量化异常处理，第一时间看到 `STATUS_STACK_OVERFLOW` 就往 stderr 写一行，父进程看这一行，退出码只报出来，印在用例的 OK 行里。不放保护页、整格提交时它仍然失败：`0xC0000005`，没有那一行。
+溢出时系统先报 `STATUS_STACK_OVERFLOW`，异常就在剩下的栈上分发：`CONTEXT` 连扩展状态压上栈，再调向量化异常处理和各帧的处理函数。`CONTEXT` 的大小随 CPU 打开的扩展状态变：本机 1663 字节，带 AVX-512 的 3247 或 3263 字节，带 AMX 的 11567 字节（扩展状态 0x608E7）。CI 的 Windows runner 里有带 AMX 的机器。
 
-[`9bf6b0b` 的 CI](https://github.com/NickJerome/culib/actions/runs/39375520160) 里又出现一次，这次用例印出了分发异常用的 `CONTEXT` 大小：11567 字节，扩展状态 0x608E7，比本机多了 AVX-512 和 AMX（第 17、18 位）。存下来的 CI 日志里，通过的 31 个 Windows 作业的 `CONTEXT` 是 1663、3247 或 3263 字节，扩展状态里都没有 AMX。溢出以后留给异常分发的栈约 11.7 KiB，装不下 11.5 KiB 的 `CONTEXT`，所以很可能是 runner 分到带 AMX 的机器时，分发本身又溢出了一次，变成访问违例。[`ce52538` 的 CI](https://github.com/NickJerome/culib/actions/runs/39397847169) 里又是一样的 11567 字节、0x608E7。还没有修：要修得在栈底按 `CONTEXT` 的实际大小多留出空间，本机没有 AMX，验证不了。
+系统默认留的余量放不下后一种。本机（Windows 10 19045 x64）量的：出错时 rsp 离 `DeallocationStack` 15776 字节，已提交的下界在 `DeallocationStack` 往上一页，剩 11680 字节；分发到向量化异常处理用掉 2768 字节，其中 `CONTEXT` 1663 字节、其余约 1.1 KiB。换成 11567 字节的 `CONTEXT`，分发本身就要再溢出一次，进程以 `0xC0000005` 结束，什么都看不到。CI 上以 `0xC0000005` 失败的 5 次，`CONTEXT` 都是 11567 字节；查过的通过的 Windows 作业都不带 AMX。
 
-没覆盖的：线程块里的 `GuaranteedStackBytes` 没有跟着切（Boost.Context 也没切，只有调过 `SetThreadStackGuarantee` 的线程才受影响）；arm64 Windows 没有换栈汇编。CET 影子栈见[下面](#cet-影子栈)。
+所以工作线程起来时调一次 `SetThreadStackGuarantee`，要系统溢出时多留出 32 KiB（`mem::detail::keep_room_for_overflow`）。这个保证记在线程块的 `GuaranteedStackBytes` 里，换栈汇编不切它，设一次管这根线程上跑的所有协程。本机量的，协程里递归到溢出，向量化异常处理里再用掉若干 KiB 栈：
+
+| | 出错时 rsp 离 `DeallocationStack` | 进到处理函数时还剩 | 处理函数再用 |
+| --- | ---: | ---: | --- |
+| 不设保证 | 15776 字节 | 8912 字节 | 8 KiB 可以，10 KiB 以 `0xC0000005` 结束 |
+| 保证 32 KiB | 40432 字节 | 33552 字节 | 30 KiB 可以，34 KiB 以 `0xC0000005` 结束 |
+
+带 AMX 的机器上分发多用约 9.7 KiB，进到处理函数时还剩约 23 KiB。代价是协程栈能用的深度少 24656 字节（1008 KiB 的 2.4%）；起步提交不变，多留的那段只在溢出时才提交。
+
+`runtime_faults.stack_overflow` 用 `go()` 起一根协程递归到溢出，子进程里的向量化异常处理先用掉 12 KiB 栈，再往 stderr 写一行，父进程看这一行，退出码印在 OK 行里。多用的那一截相当于 AMX 机器上多出来的 `CONTEXT`，所以每台机器上查的都是剩下的栈够不够 AMX 的机器用。反向验证：去掉 `keep_room_for_overflow` 这一行调用，这条在本机以 `0xC0000005` 失败、没有那一行，和 CI 上 AMX 机器的现象一样；不放保护页、整格提交时也失败。
+
+没覆盖的：只有工作线程设了保证，`detail::fiber` 在别的线程上跑的协程（只有测试这么用）还是默认的余量；协程里再调 `SetThreadStackGuarantee` 会改掉这根工作线程上所有协程的保证（只能往大改）；arm64 Windows 没有换栈汇编。CET 影子栈见[下面](#cet-影子栈)。
 
 ### CET 影子栈
 
