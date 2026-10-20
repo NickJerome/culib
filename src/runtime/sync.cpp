@@ -199,12 +199,14 @@ bool mutex::wait_for_lock(std::chrono::nanoseconds timeout) {
 // 其实没等满 1 毫秒，就退回平时的做法。调用方拿着 state_。
 bool mutex::hand_over_locked() {
     while (park_token* const token = dequeue(waiters_)) {
+        // 叫醒以后它可能马上在别的线程上拿着锁返回，栈上的 waiter 就没了：要用的先读出来，要写的先写好。
         mutex_waiter& first = static_cast<mutex_waiter&>(*token);
-        first.handed = true;   // 叫醒之前写好：它可能马上就在别的线程上跑起来
+        const park_instant since = first.since;
+        first.handed = true;
         if (!detail::scheduler_wake(first)) {
             continue;   // 已经到点放弃了，它不会再看 handed
         }
-        if (detail::list_empty(waiters_) || park_clock::now() - first.since < starvation_after) {
+        if (detail::list_empty(waiters_) || park_clock::now() - since < starvation_after) {
             starving_ = false;
         }
         return true;
