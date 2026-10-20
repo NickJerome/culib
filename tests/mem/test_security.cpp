@@ -3,6 +3,7 @@
 #include <culib/mem.h>
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -78,6 +79,14 @@ void free_inside_huge_block() {
     wavvix::mem::free(need(wavvix::mem::alloc(huge_size)) + 64);
 }
 
+// chunk 后半段、还没用过的 slice 里的野指针。那里的描述符原来用到才提交，读它直接访问违例，
+// 打印不出诊断（Windows、macOS）。chunk 是 64 MiB、按自身对齐，slice 是 64 KiB，见 docs/mem-internals.md
+void free_into_unused_part_of_chunk() {
+    const std::uintptr_t block = reinterpret_cast<std::uintptr_t>(need(wavvix::mem::alloc(64)));
+    const std::uintptr_t chunk = block & ~((std::uintptr_t(1) << 26) - 1);
+    wavvix::mem::free(reinterpret_cast<void*>(chunk + (std::uintptr_t(1000) << 16)));
+}
+
 void double_free() {
     unsigned char* const p = need(wavvix::mem::alloc(64));
     wavvix::mem::free(p);
@@ -145,6 +154,7 @@ const case_def cases[] = {
     {"free_inside_large_head", free_inside_large_head},
     {"free_inside_large_tail", free_inside_large_tail},
     {"free_inside_huge_block", free_inside_huge_block},
+    {"free_into_unused_part_of_chunk", free_into_unused_part_of_chunk},
     {"double_free", double_free},
     {"double_free_after_other_frees", double_free_after_other_frees},
     {"double_free_first_by_other_thread", double_free_first_by_other_thread},

@@ -5,23 +5,38 @@
 
 namespace wavvix { namespace mem { namespace detail {
 
+// Linux 默认允许 overcommit 时提交、归还都不改映射；严格 overcommit 和 macOS 上保留时是不可访问的，
+// 提交才改成可读写。release 不设保护区，连保护区一起提交、一起归还：只改可用的部分的话，每格会拆成
+// 不可访问和可读写两个映射，栈多了就碰到 vm.max_map_count 的上限（Linux 默认约 6.5 万个映射）。
+#if defined(NDEBUG)
+
 char* prepare_stack(char* base, std::size_t total, std::size_t guard) noexcept {
-    // Linux 默认允许 overcommit 时什么都不做；严格 overcommit 和 macOS 上这一步才真的提交
-    if (!pages::commit(base + guard, total - guard)) {
+    if (!pages::commit(base, total)) {
         return 0;
     }
-#if !defined(NDEBUG)
-    // debug：溢出当场崩溃。改了保护会把映射拆开，release 不设，见 docs/implementation-notes.md
-    if (!pages::protect(base, guard)) {
+    return base + guard;
+}
+
+void clear_stack(char* base, std::size_t total, std::size_t guard) noexcept {
+    (void)guard;
+    pages::decommit(base, total);
+}
+
+#else
+
+// debug：保护区设成不可访问，溢出当场崩溃。代价是每格两个映射，见 docs/implementation-notes.md。
+char* prepare_stack(char* base, std::size_t total, std::size_t guard) noexcept {
+    if (!pages::commit(base + guard, total - guard) || !pages::protect(base, guard)) {
         return 0;
     }
-#endif
     return base + guard;
 }
 
 void clear_stack(char* base, std::size_t total, std::size_t guard) noexcept {
     pages::decommit(base + guard, total - guard);
 }
+
+#endif
 
 char* committed_bound() noexcept {
     return 0;

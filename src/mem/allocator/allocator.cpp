@@ -145,20 +145,17 @@ struct heap {
 };
 
 // chunk 开头 64 KiB 放位图，接着是描述符表（每个 slice 一项，共 128 KiB），之后才是可分配的 slice。
-// 描述符表按 64 KiB 一段、用到才提交；按 64 KiB 提交也照顾到 16 KiB、64 KiB 的系统页。
+// 建 chunk 时头部和描述符表一起提交：free 拿到野指针时要能读描述符、报出误用，表的哪一段都不能缺。
 const std::size_t header_bytes = slice_size;
-const std::size_t table_unit = slice_size;
 const std::size_t header_slices = (header_bytes + chunk_slices * desc_stride) / slice_size;
 
 struct chunk {
     std::uint64_t free_bits[bitmap_words];        // 1：空闲
     std::uint64_t committed_bits[bitmap_words];   // 1：提交过，可能还占着物理内存
-    std::uint64_t table_bits;                     // 描述符表的哪几段已经提交
     std::size_t huge_size;                        // 非零：整段只装一个超大块，这是保留的总字节数
     std::size_t huge_offset;                      // 超大块相对起点的偏移
 };
 static_assert(sizeof(chunk) <= header_bytes, "the chunk header fits in its first 64 KiB");
-static_assert(chunk_slices * desc_stride / table_unit <= 64, "descriptor table units fit in table_bits");
 
 // ---- 全局状态：都在静态区清零，不需要构造 --------------------------------------
 
@@ -350,12 +347,12 @@ chunk* chunk_create_locked() {
     }
     // 块稀疏地落在 chunk 里：开了透明大页的系统上，碰一个字节就可能占满 2 MiB
     pages::no_huge_pages(base, chunk_size);
-    if (!pages::commit(base, header_bytes) || !mark(chunk_map, base, true)) {
+    if (!pages::commit(base, header_slices * slice_size) || !mark(chunk_map, base, true)) {
         pages::release(base, chunk_size);
         return 0;
     }
 
-    // 新映射全是零：committed_bits、table_bits 和超大块字段本来就是 0
+    // 新映射全是零：committed_bits 和超大块字段本来就是 0
     chunk* const c = static_cast<chunk*>(base);
     for (std::size_t w = 0; w < bitmap_words; ++w) {
         c->free_bits[w] = ~std::uint64_t(0);
@@ -409,24 +406,6 @@ std::size_t find_run(const chunk* c, std::size_t n, std::size_t step) {
     return npos;
 }
 
-// 描述符表用到哪段提交哪段
-bool commit_table_locked(chunk* c, std::size_t first, std::size_t count) {
-    const std::size_t begin = first * desc_stride / table_unit;
-    const std::size_t end = ((first + count) * desc_stride - 1) / table_unit;
-    for (std::size_t unit = begin; unit <= end; ++unit) {
-        if (c->table_bits & bit(unit)) {
-            continue;
-        }
-
-        char* const at = reinterpret_cast<char*>(c) + header_bytes + unit * table_unit;
-        if (!pages::commit(at, table_unit)) {
-            return false;
-        }
-        c->table_bits |= bit(unit);
-    }
-    return true;
-}
-
 // 先在已有的 chunk 里找，找不到再建一个；找到时 *out 是所在的 chunk
 std::size_t find_slices_locked(std::size_t n, std::size_t step, chunk** out) {
     for (std::size_t i = 0; i < g.chunk_count; ++i) {
@@ -458,7 +437,7 @@ bool commit_slices_locked(chunk* c, std::size_t index, std::size_t n, bool* zero
     *zeroed = !some_committed;
 
     char* const start = reinterpret_cast<char*>(c) + (index << slice_shift);
-    return commit_table_locked(c, index, n) && (all_committed || pages::commit(start, n << slice_shift));
+    return all_committed || pages::commit(start, n << slice_shift);
 }
 
 void take_slices_locked(chunk* c, std::size_t index, std::size_t n) {

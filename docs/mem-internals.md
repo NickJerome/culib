@@ -9,8 +9,8 @@
 | 层次 | 大小 | 说明 |
 | --- | --- | --- |
 | chunk | 64 MiB，按 64 MiB 对齐 | 任何地址 `& ~(64 MiB - 1)` 就是它所在 chunk 的起点。最多 16384 个（1 TiB），只增不减 |
-| chunk 头 | 开头 64 KiB | 空闲位图、已提交位图（各 2 KiB）、描述符表的提交记录 |
-| 描述符表 | 接着 128 KiB | 每个 slice 一个页描述符，间隔 128 字节；按 64 KiB 一段、用到才提交 |
+| chunk 头 | 开头 64 KiB | 空闲位图、已提交位图 |
+| 描述符表 | 接着 128 KiB | 每个 slice 一个页描述符，间隔 128 字节；建 chunk 时和头部一起提交 |
 | slice | 64 KiB | 每个 chunk 1024 个，前 3 个是头部，从第 4 个开始可分配 |
 | 页 | 1 或 8 个 slice | 8 KiB 以内的尺寸档一页一个 slice（64 KiB）；8–64 KiB 的一页 8 个 slice（512 KiB），每页至少 8 块 |
 | 大块 | 若干连续 slice | 64 KiB 以上，直接占 slice，起点至少 64 KiB 对齐 |
@@ -29,7 +29,7 @@ result.p = desc_at(c, index - back);
 result.offset = (at & (slice_size - 1)) + (back << slice_shift);
 ```
 
-描述符间隔 128 字节而不是 64：相邻两页的描述符分属不同线程时，不共用一对缓存行，原型上实测更快。描述符表按 64 KiB 一段，在用到时提交；64 KiB 同时满足 4 KiB、16 KiB（Apple Silicon）和 64 KiB 的系统页，`mprotect` 的地址总是对齐的。
+描述符间隔 128 字节而不是 64：相邻两页的描述符分属不同线程时，不共用一对缓存行，原型上实测更快。描述符表在建 chunk 时和头部一起提交（共 192 KiB，Linux 默认允许 overcommit 时提交是空操作，碰到的页才占物理内存）。原来按 64 KiB 一段、用到才提交：`free` 拿到落在 chunk 里、但描述符那一段还没提交的野指针时，读描述符直接访问违例，打印不出诊断（Windows、macOS 和严格 overcommit 的 Linux 上）。
 
 ## 分配和释放
 
@@ -58,7 +58,7 @@ inline void* alloc_bin(int bin) {
 
 ## 并发
 
-全局只有一把锁（POSIX 的 pthread mutex、Windows 的 SRWLOCK），常量初始化、从不析构，进程收尾阶段一直可用。它保护 chunk 列表、slice 位图、描述符表的提交记录、共享池和空闲堆链表，只在慢路径上取。不取锁的地方：
+全局只有一把锁（POSIX 的 pthread mutex、Windows 的 SRWLOCK），常量初始化、从不析构，进程收尾阶段一直可用。它保护 chunk 列表、slice 位图、共享池和空闲堆链表，只在慢路径上取。不取锁的地方：
 
 - `thread_free`：其他线程只用 CAS 往上压，拥有者一次 `exchange` 整串摘走，不存在 ABA。
 - 拥有者字段：释放时 relaxed 读，只用来决定走哪条路；接手共享池的页时 release 写。

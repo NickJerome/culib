@@ -353,3 +353,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`6eb4446` 的 CI](https://github.com/NickJerome/culib/actions/runs/39418100438) 24/24 通过：`culib_test` Linux 392 项、macOS 389 项、Windows 与 MinGW 387 项、无异常构建 384 项，`runtime_order_test` 41、39、36 项；栈溢出那条都以 `0xC00000FD` 结束。报告里没有 SKIP，也没有任何诊断。
 
 [`695d8ff` 的 CI](https://github.com/NickJerome/culib/actions/runs/39419634295) 和 [`ac78a49` 的 CI](https://github.com/NickJerome/culib/actions/runs/39421848912) 都是 24/24 通过：`culib_test` 依次是 Linux 394 / 396 项、macOS 391 / 393 项、Windows 与 MinGW 389 / 391 项、无异常构建 386 / 388 项；报告里没有 SKIP，也没有任何诊断。
+
+[`dbd655c` 的 CI](https://github.com/NickJerome/culib/actions/runs/39423456887) 24/24 通过：`culib_test` Linux 398 项、macOS 395 项、Windows 与 MinGW 394 项、无异常构建 390 项，`runtime_order_test` 41、39、36 项。报告里有一处 SKIP：windows-msvc / debug 那台 runner 不给 `/CETCOMPAT` 的程序开影子栈，`cet` 那条跳过；release 那台开着，同一条通过。没有任何诊断。
