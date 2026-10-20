@@ -9,10 +9,10 @@
 #include <culib/detail/coroutine_call.h>
 #include <culib/detail/fiber.h>
 #include <culib/detail/list.h>
+#include <culib/detail/spin_lock.h>
 
 #include <chrono>
 #include <cstddef>
-#include <mutex>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -107,7 +107,7 @@ private:
     void add();
     void done() noexcept;
 
-    std::mutex state_;            // 保护 running_ 和 waiters_
+    detail::spin_lock state_;     // 保护 running_ 和 waiters_
     std::size_t running_;
     detail::list_node waiters_;   // 在 wait() 里等的
 };

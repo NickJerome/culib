@@ -6,6 +6,7 @@
 // 原因和数据见 docs/implementation-notes.md 的协程栈一节。
 
 #include <culib/detail/macros.h>
+#include <culib/detail/spin_lock.h>
 
 #include "pages.h"
 #include "stack.h"
@@ -33,7 +34,7 @@ const std::size_t region_slots = 64;    // 一次保留这么多格
 const std::size_t keep_limit = 1024;    // 准备好的空闲格常留这么多，再多的由 trim_stacks 把内存还给系统
 
 struct stack_pool {
-    std::mutex mutex;
+    wavvix::detail::spin_lock lock;
     stack_slot* ready;         // 准备好的空闲格，后进先出，最多 keep_limit 个
     std::size_t ready_count;
     stack_slot* surplus;       // 超出 keep_limit 的准备好的空闲格，等着把内存还给系统
@@ -101,7 +102,7 @@ bool add_region_locked(stack_pool& p) {
 
 // 先取准备好的，再取多出来的（也准备好了），再取没准备的，都没有就再保留一个区域。
 stack_slot* take_slot(stack_pool& p) {
-    const std::lock_guard<std::mutex> held(p.mutex);
+    const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
     if (p.ready) {
         --p.ready_count;
         return pop(p.ready);
@@ -119,7 +120,7 @@ stack_slot* take_slot(stack_pool& p) {
 // 准备好的格子挂回去。常留的已经够了就挂到多出来的那一串上，内存由 trim_stacks 还，
 // 协程结束时不做系统调用。
 void put_ready(stack_pool& p, stack_slot* slot) {
-    const std::lock_guard<std::mutex> held(p.mutex);
+    const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
     if (p.ready_count < keep_limit) {
         push(p.ready, slot);
         ++p.ready_count;
@@ -130,7 +131,7 @@ void put_ready(stack_pool& p, stack_slot* slot) {
 }
 
 void put_idle(stack_pool& p, stack_slot* slot) {
-    const std::lock_guard<std::mutex> held(p.mutex);
+    const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
     push(p.idle, slot);
 }
 
@@ -231,7 +232,7 @@ void trim_stacks(std::size_t at_most) noexcept {
 
     stack_slot* taken = 0;
     {
-        const std::lock_guard<std::mutex> held(p->mutex);
+        const std::lock_guard<wavvix::detail::spin_lock> held(p->lock);
         for (std::size_t i = 0; i < at_most && p->surplus; ++i) {
             push(taken, pop(p->surplus));
             --p->surplus_count;
@@ -252,7 +253,7 @@ std::size_t surplus_stacks() noexcept {
     if (!p) {
         return 0;
     }
-    const std::lock_guard<std::mutex> held(p->mutex);
+    const std::lock_guard<wavvix::detail::spin_lock> held(p->lock);
     return p->surplus_count;
 }
 

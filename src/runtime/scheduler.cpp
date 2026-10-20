@@ -12,6 +12,7 @@
 
 #include <culib/coroutine.h>
 #include <culib/detail/macros.h>
+#include <culib/detail/spin_lock.h>
 #include <culib/lexical_cast.h>
 #include <culib/os.h>
 
@@ -77,7 +78,7 @@ const park_ticks no_deadline = (std::numeric_limits<park_ticks>::max)();
 struct worker_timers {
     worker_timers() : earliest(no_deadline) {}
 
-    std::mutex mutex;
+    spin_lock lock;
     timer_heap heap;
     std::atomic<park_ticks> earliest;   // heap 里最早的时限，没有时为 no_deadline
 };
@@ -86,7 +87,7 @@ struct worker_timers {
 struct vcpu : list_node {
     vcpu() : current(0), ticks(0), has_slot(false), parking(false), searching(false), notified(false) {}
 
-    std::mutex mutex;              // 护着 queue：这根线程自己和来拿协程的线程都要拿它
+    spin_lock lock;                // 护着 queue：这根线程自己和来拿协程的线程都要拿它
     run_queue queue;
 
     // 这根线程自己写，监控线程读
@@ -279,7 +280,7 @@ void wake_idle(runtime_state& state) {
 // 排进本线程的队列，返回排进去以后队里有几根。名额交出去了就不排、返回 0：队列已经跟着名额交走了
 // （hand_off_locked），再排进来的没人跑。和交接拿同一把锁，所以两边至少有一边看得见对方。
 std::size_t push_local(vcpu& self, coroutine_control* body) {
-    std::lock_guard<std::mutex> held(self.mutex);
+    std::lock_guard<spin_lock> held(self.lock);
     if (!self.has_slot.load()) {
         return 0;
     }
@@ -324,7 +325,7 @@ void make_runnable(runtime_state& state, coroutine_control* body) {
 }
 
 coroutine_control* pop_local(vcpu& self) {
-    std::lock_guard<std::mutex> held(self.mutex);
+    std::lock_guard<spin_lock> held(self.lock);
     return self.queue.pop();
 }
 
@@ -352,7 +353,7 @@ coroutine_control* steal(runtime_state& state, vcpu& self) {
 
         run_queue taken;
         {
-            std::lock_guard<std::mutex> held(victim.mutex);
+            std::lock_guard<spin_lock> held(victim.lock);
             victim.queue.move_front(victim.queue.count - victim.queue.count / 2, taken);
         }
         coroutine_control* const body = taken.pop();
@@ -360,7 +361,7 @@ coroutine_control* steal(runtime_state& state, vcpu& self) {
             continue;
         }
         if (taken.count != 0) {
-            std::lock_guard<std::mutex> held(self.mutex);
+            std::lock_guard<spin_lock> held(self.lock);
             taken.move_front(taken.count, self.queue);
         }
         return body;
@@ -377,7 +378,7 @@ bool queued_locked(runtime_state& state) {
     const unsigned count = state.count.load(std::memory_order_acquire);
     for (unsigned i = 0; i < count; ++i) {
         vcpu& other = *state.workers[i];
-        std::lock_guard<std::mutex> held(other.mutex);
+        std::lock_guard<spin_lock> held(other.lock);
         if (other.queue.count != 0) {
             return true;
         }
@@ -404,7 +405,7 @@ void stop_searching(runtime_state& state, vcpu& self) {
 
 // ---- 定时器 ----------------------------------------------------------------------------
 
-// 调用方拿着 timers.mutex。
+// 调用方拿着 timers.lock。
 void publish_earliest(worker_timers& timers) {
     const park_token* const next = timers.heap.top();
     timers.earliest.store(next ? next->deadline.time_since_epoch().count() : no_deadline);
@@ -450,7 +451,7 @@ void add_timer(runtime_state& state, park_token& token, park_instant deadline) {
     token.timers = &timers;
     bool first = false;
     {
-        std::lock_guard<std::mutex> held(timers.mutex);
+        std::lock_guard<spin_lock> held(timers.lock);
         timers.heap.push(token);
         first = timers.heap.top() == &token;
         if (first) {
@@ -465,7 +466,7 @@ void add_timer(runtime_state& state, park_token& token, park_instant deadline) {
 // 被叫醒的等待者自己把定时器撤掉；已经到点的，定时器那边撤过了。
 void remove_timer(park_token& token) {
     worker_timers& timers = *token.timers;
-    std::lock_guard<std::mutex> held(timers.mutex);
+    std::lock_guard<spin_lock> held(timers.lock);
     if (!token.timed) {
         return;
     }
@@ -514,7 +515,7 @@ worker_timers* earliest_due(runtime_state& state, park_instant now) {
 // 取下这一组里最早的定时器，它到点了、放弃也成功了就返回它的协程。凭据在等待者的栈上，等待者要先拿
 // 这一组的锁撤掉自己的定时器才能返回，所以放弃那一步也在锁里做；锁外只碰协程本身。
 coroutine_control* take_due(worker_timers& timers, park_instant now) {
-    std::lock_guard<std::mutex> held(timers.mutex);
+    std::lock_guard<spin_lock> held(timers.lock);
     park_token* const token = timers.heap.top();
     if (!token || token->deadline > now) {
         return 0;   // 别的线程先取走了
@@ -819,10 +820,10 @@ vcpu* start_spare_locked(runtime_state& state) {
 void move_queue(vcpu& from, vcpu& to) {
     run_queue moved;
     {
-        std::lock_guard<std::mutex> held(from.mutex);
+        std::lock_guard<spin_lock> held(from.lock);
         from.queue.move_front(from.queue.count, moved);
     }
-    std::lock_guard<std::mutex> held(to.mutex);
+    std::lock_guard<spin_lock> held(to.lock);
     moved.move_front(moved.count, to.queue);
 }
 
@@ -892,7 +893,7 @@ park_clock::duration running_for(vcpu& worker, watch_mark& mark, park_instant no
 }
 
 bool has_queued(vcpu& worker) {
-    std::lock_guard<std::mutex> held(worker.mutex);
+    std::lock_guard<spin_lock> held(worker.lock);
     return worker.queue.count != 0;
 }
 

@@ -118,7 +118,7 @@ const char* channel_message(detail::channel_error what) {
 }  // namespace
 
 mutex::~mutex() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     die_if_waiting(waiters_, "wavvix::mutex 销毁时还有协程在等它");
 }
 
@@ -127,7 +127,7 @@ void mutex::lock() {
 }
 
 bool mutex::try_lock() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     return claim_locked();
 }
 
@@ -140,7 +140,7 @@ bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
 
 // 平时放开锁再叫醒队首，让它和刚来的一起抢。直接交接的时候 held_ 保持为真，只是锁换了主人。
 void mutex::unlock() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     if (starving_ && hand_over_locked()) {
         return;
     }
@@ -166,7 +166,7 @@ bool mutex::wait_for_lock(std::chrono::nanoseconds timeout) {
         mutex_waiter waiter;
         std::chrono::nanoseconds left(0);
         {
-            std::lock_guard<std::mutex> state(state_);
+            std::lock_guard<detail::spin_lock> state(state_);
             if (claim_locked()) {
                 return true;
             }
@@ -184,7 +184,7 @@ bool mutex::wait_for_lock(std::chrono::nanoseconds timeout) {
             }
         }
         if (!detail::scheduler_park(waiter, left)) {
-            std::lock_guard<std::mutex> state(state_);
+            std::lock_guard<detail::spin_lock> state(state_);
             detail::list_del_init(waiter);   // 到点了；unlock 可能已经把它摘下
             return false;
         }
@@ -216,7 +216,7 @@ bool mutex::hand_over_locked() {
 }
 
 condition_variable::~condition_variable() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     die_if_waiting(waiters_, "wavvix::condition_variable 销毁时还有协程在等它");
 }
 
@@ -224,7 +224,7 @@ condition_variable::~condition_variable() {
 void condition_variable::wait(mutex& held) {
     park_token token;
     {
-        std::lock_guard<std::mutex> state(state_);
+        std::lock_guard<detail::spin_lock> state(state_);
         enqueue(waiters_, token);
     }
     held.unlock();
@@ -238,13 +238,13 @@ bool condition_variable::wait_for(mutex& held, std::chrono::nanoseconds timeout)
     }
     park_token token;
     {
-        std::lock_guard<std::mutex> state(state_);
+        std::lock_guard<detail::spin_lock> state(state_);
         enqueue(waiters_, token);
     }
     held.unlock();
     const bool notified = detail::scheduler_park(token, timeout);
     if (!notified) {
-        std::lock_guard<std::mutex> state(state_);
+        std::lock_guard<detail::spin_lock> state(state_);
         detail::list_del_init(token);
     }
     held.lock();
@@ -252,12 +252,12 @@ bool condition_variable::wait_for(mutex& held, std::chrono::nanoseconds timeout)
 }
 
 void condition_variable::notify_one() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     wake_one(waiters_);
 }
 
 void condition_variable::notify_all() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     wake_all(waiters_);
 }
 
@@ -296,14 +296,14 @@ void channel_misuse(channel_error what) {
 }  // namespace detail
 
 wait_group::~wait_group() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     if (running_ != 0) {
         fatal("wavvix::wait_group 析构时组里还有协程没结束");
     }
 }
 
 void wait_group::add() {
-    std::lock_guard<std::mutex> state(state_);
+    std::lock_guard<detail::spin_lock> state(state_);
     ++running_;
 }
 
@@ -311,7 +311,7 @@ void wait_group::add() {
 void wait_group::done() noexcept {
     list_node waiters;
     {
-        std::lock_guard<std::mutex> state(state_);
+        std::lock_guard<detail::spin_lock> state(state_);
         --running_;
         if (running_ != 0) {
             return;
@@ -324,7 +324,7 @@ void wait_group::done() noexcept {
 void wait_group::wait() {
     park_token token;
     {
-        std::lock_guard<std::mutex> state(state_);
+        std::lock_guard<detail::spin_lock> state(state_);
         if (running_ == 0) {
             return;
         }

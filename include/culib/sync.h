@@ -4,6 +4,7 @@
 // 在协程里等待只挂起协程，在普通线程里阻塞线程；等待者和唤醒者可以在不同的线程上。
 
 #include <culib/detail/list.h>
+#include <culib/detail/spin_lock.h>
 
 #include <chrono>
 #include <cstddef>
@@ -67,7 +68,7 @@ private:
     bool wait_for_lock(std::chrono::nanoseconds timeout);
     bool hand_over_locked();
 
-    std::mutex state_;            // 保护 held_、starving_ 和 waiters_
+    detail::spin_lock state_;     // 保护 held_、starving_ 和 waiters_
     bool held_;
     bool starving_;               // unlock 直接把锁交给队首
     detail::list_node waiters_;
@@ -93,7 +94,7 @@ public:
     void notify_all();
 
 private:
-    std::mutex state_;            // 保护 waiters_
+    detail::spin_lock state_;     // 保护 waiters_
     detail::list_node waiters_;
 };
 
