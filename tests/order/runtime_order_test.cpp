@@ -30,9 +30,8 @@ void in_coroutine(F body) {
     group.wait();
 }
 
-}  // namespace
-
-TEST(runtime_order, runs_every_coroutine_on_the_one_worker) {
+// 16 根协程各让出一次，返回它们一共在几根线程上跑过。
+std::size_t threads_running_coroutines() {
     std::mutex guard;
     std::set<std::thread::id> threads;
     wavvix::wait_group group;
@@ -44,8 +43,20 @@ TEST(runtime_order, runs_every_coroutine_on_the_one_worker) {
         });
     }
     group.wait();
+    return threads.size();
+}
 
-    EXPECT(threads.size(), ==, std::size_t(1));
+}  // namespace
+
+TEST(runtime_order, runs_every_coroutine_on_the_one_worker) {
+    // 机器忙的时候，工作线程被系统挂起 10 毫秒以上会被当成卡住、把名额交出去，剩下的协程在接手的
+    // 线程上跑，所以试几轮。
+    std::size_t threads = 0;
+    for (int attempt = 0; attempt < 5 && threads != 1; ++attempt) {
+        threads = threads_running_coroutines();
+    }
+
+    EXPECT(threads, ==, std::size_t(1));
 }
 
 TEST(runtime_order, starts_a_queued_coroutine_while_another_keeps_yielding) {

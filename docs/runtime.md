@@ -355,3 +355,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`695d8ff` 的 CI](https://github.com/NickJerome/culib/actions/runs/39419634295) 和 [`ac78a49` 的 CI](https://github.com/NickJerome/culib/actions/runs/39421848912) 都是 24/24 通过：`culib_test` 依次是 Linux 394 / 396 项、macOS 391 / 393 项、Windows 与 MinGW 389 / 391 项、无异常构建 386 / 388 项；报告里没有 SKIP，也没有任何诊断。
 
 [`dbd655c` 的 CI](https://github.com/NickJerome/culib/actions/runs/39423456887) 24/24 通过：`culib_test` Linux 398 项、macOS 395 项、Windows 与 MinGW 394 项、无异常构建 390 项，`runtime_order_test` 41、39、36 项。报告里有一处 SKIP：windows-msvc / debug 那台 runner 不给 `/CETCOMPAT` 的程序开影子栈，`cet` 那条跳过；release 那台开着，同一条通过。没有任何诊断。
+
+[`c6dd6d9` 的 CI](https://github.com/NickJerome/culib/actions/runs/39426381920) 23/24：sanitizer 作业的 ASan 那一步里，`runtime_order.runs_every_coroutine_on_the_one_worker` 看到协程在 2 根线程上跑过（这一轮用了 46 毫秒）。那个作业并行跑各个测试程序，唯一的工作线程被系统挂起 10 毫秒以上，名额就会交出去；这条测试原来只跑一轮，现在和别的次序测试一样试 5 轮。其余 23 个作业：`culib_test` Linux 398 项、macOS 395 项、Windows 与 MinGW 394 项、无异常构建 390 项；windows-msvc / release 那台 runner 不开影子栈，`cet` 跳过。没有别的诊断。
