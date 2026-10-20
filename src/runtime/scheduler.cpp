@@ -197,12 +197,23 @@ void check_exception_state() {
 
 // ---- 就绪队列与闲着的工作线程 ----------------------------------------------------------
 
-// 闲着的工作线程少了一根。监控线程在全都闲着的时候睡，有一根忙起来就叫醒它。调用方拿着 state.mutex。
-void leave_idle_locked(runtime_state& state) {
+// 要叫醒的线程。在 state.mutex 里定下来，放了锁再叫（wake_up）：叫醒是系统调用，放在锁里会拖长
+// 别人等这把锁的时间。Go 的 startm 也是先放 sched.lock 再叫。
+struct wakeup {
+    wakeup() : sleeper(0), poller(false), monitor(false) {}
+
+    vcpu* sleeper;   // 睡在自己条件变量上的工作线程
+    bool poller;     // 等在引擎里的那根
+    bool monitor;    // 监控线程
+};
+
+// 闲着的工作线程少了一根。监控线程在全都闲着的时候睡，有一根忙起来就要叫醒它，记进 out。
+// 调用方拿着 state.mutex。
+void leave_idle_locked(runtime_state& state, wakeup& out) {
     state.idle.fetch_sub(1);
     if (state.monitor_sleeping) {
         state.monitor_sleeping = false;
-        state.monitor_woken.notify_one();
+        out.monitor = true;
     }
 }
 
@@ -216,27 +227,38 @@ vcpu* take_first(list_node& workers) {
     return first;
 }
 
-// 叫醒一根闲着的工作线程来找活：有闲着的、又没有正在找活的才叫——正在找活的那根睡下之前
-// 会把所有队列再看一遍（idle）。先叫睡在条件变量上的，都没有再叫等在引擎里的那根。
-// 被叫醒的记成找活的。调用方拿着 state.mutex。
-void wake_one_locked(runtime_state& state) {
+// 挑一根闲着的工作线程来找活，记进 out：有闲着的、又没有正在找活的才挑——正在找活的那根睡下之前
+// 会把所有队列再看一遍（idle）。先挑睡在条件变量上的，都没有再挑等在引擎里的那根。
+// 挑中的记成找活的。调用方拿着 state.mutex，放了锁以后用 wake_up 叫醒。
+void wake_one_locked(runtime_state& state, wakeup& out) {
     if (state.idle.load() == 0 || state.searching.load() != 0) {
         return;
     }
     if (vcpu* const sleeper = take_first(state.sleepers)) {
         sleeper->notified = true;
         sleeper->searching = true;
-        leave_idle_locked(state);
+        leave_idle_locked(state, out);
         state.searching.fetch_add(1);
-        sleeper->woken.notify_one();
+        out.sleeper = sleeper;
         return;
     }
     if (state.polling && !state.poll_notified) {
         state.poll_notified = true;
         state.searching.fetch_add(1);
-        if (!io_engine_notify(state.engine)) {
-            fatal("wavvix: 不能唤醒等在事件引擎里的工作线程");
-        }
+        out.poller = true;
+    }
+}
+
+// 放了 state.mutex 以后，叫醒锁里定下的线程。
+void wake_up(runtime_state& state, const wakeup& target) {
+    if (target.monitor) {
+        state.monitor_woken.notify_one();
+    }
+    if (target.sleeper) {
+        target.sleeper->woken.notify_one();
+    }
+    if (target.poller && !io_engine_notify(state.engine)) {
+        fatal("wavvix: 不能唤醒等在事件引擎里的工作线程");
     }
 }
 
@@ -246,8 +268,12 @@ void wake_idle(runtime_state& state) {
     if (state.idle.load() == 0 || state.searching.load() != 0) {
         return;
     }
-    std::lock_guard<std::mutex> held(state.mutex);
-    wake_one_locked(state);
+    wakeup target;
+    {
+        std::lock_guard<std::mutex> held(state.mutex);
+        wake_one_locked(state, target);
+    }
+    wake_up(state, target);
 }
 
 // 排进本线程的队列。名额交出去了就不排：队列已经跟着名额交走了（hand_off_locked），
@@ -262,10 +288,14 @@ bool push_local(vcpu& self, coroutine_control* body) {
 }
 
 void push_global(runtime_state& state, coroutine_control* body) {
-    std::lock_guard<std::mutex> held(state.mutex);
-    state.global.push(body);
-    state.queued.fetch_add(1);
-    wake_one_locked(state);
+    wakeup target;
+    {
+        std::lock_guard<std::mutex> held(state.mutex);
+        state.global.push(body);
+        state.queued.fetch_add(1);
+        wake_one_locked(state, target);
+    }
+    wake_up(state, target);
 }
 
 // 排进就绪队列：有名额的工作线程排进本线程的队列，否则排进全局队列。
@@ -357,10 +387,14 @@ bool has_work(runtime_state& state) {
 
 // 找活的那根找到了。它要是最后一根，可能还有别的活没人看见，再叫醒一根（有闲着的话）。
 void stop_searching(runtime_state& state, vcpu& self) {
-    std::lock_guard<std::mutex> held(state.mutex);
-    self.searching = false;
-    state.searching.fetch_sub(1);
-    wake_one_locked(state);
+    wakeup target;
+    {
+        std::lock_guard<std::mutex> held(state.mutex);
+        self.searching = false;
+        state.searching.fetch_sub(1);
+        wake_one_locked(state, target);
+    }
+    wake_up(state, target);
 }
 
 // ---- 定时器 ----------------------------------------------------------------------------
@@ -392,11 +426,13 @@ bool has_due(const worker_timers& timers) {
 
 // 等在引擎里的那根会睡到 poll_until；新的时限更早，就叫它起来重新算。
 void wake_poller_before(runtime_state& state, park_instant deadline) {
-    std::lock_guard<std::mutex> held(state.mutex);
-    if (!state.polling || deadline >= state.poll_until) {
-        return;
+    {
+        std::lock_guard<std::mutex> held(state.mutex);
+        if (!state.polling || deadline >= state.poll_until) {
+            return;
+        }
+        state.poll_until = deadline;
     }
-    state.poll_until = deadline;
     if (!io_engine_notify(state.engine)) {
         fatal("wavvix: 不能唤醒等在事件引擎里的工作线程");
     }
@@ -530,14 +566,14 @@ void poll_now(runtime_state& state) {
 
 // 不再等在引擎里。被叫醒过的话它就是来找活的。还有睡着的就叫醒一根：它找不到活就会来接着等在
 // 引擎里，不然 I/O 和定时器要等到有谁再闲下来才有人管。调用方拿着 state.mutex。
-void stop_polling_locked(runtime_state& state, vcpu& self) {
+void stop_polling_locked(runtime_state& state, vcpu& self, wakeup& out) {
     state.polling = false;
-    leave_idle_locked(state);
+    leave_idle_locked(state, out);
     if (state.poll_notified) {
         state.poll_notified = false;
         self.searching = true;   // 叫醒它的那一方已经记过数了
     }
-    wake_one_locked(state);
+    wake_one_locked(state, out);
 }
 
 // 等在引擎里要等多久，并记下会在哪一刻醒（wake_poller_before 拿它比）。已经被叫过就不等；
@@ -572,10 +608,12 @@ void poll_blocking(runtime_state& state, vcpu& self) {
         std::lock_guard<std::mutex> role(state.poll_mutex);
         wait_engine(state, poll_timeout(state), completed);
     }
+    wakeup target;
     {
         std::lock_guard<std::mutex> held(state.mutex);
-        stop_polling_locked(state, self);
+        stop_polling_locked(state, self, target);
     }
+    wake_up(state, target);
     deliver(completed);
 }
 
@@ -600,12 +638,12 @@ bool register_idle_locked(runtime_state& state, vcpu& self) {
 // 原来在找活的接着算找活的：它登记闲着之前排进来的协程，排的时候看见有人在找，没有叫醒谁；它拿走
 // 一根以后要由 stop_searching 再叫醒一根，剩下的才有人管。Go 的 findrunnable 也这样做。
 // 调用方拿着 state.mutex。
-void unregister_idle_locked(runtime_state& state, vcpu& self, bool poller, bool was_searching) {
+void unregister_idle_locked(runtime_state& state, vcpu& self, bool poller, bool was_searching, wakeup& out) {
     if (poller) {
-        stop_polling_locked(state, self);
+        stop_polling_locked(state, self, out);
     } else if (!self.notified) {
         list_del_init(self);
-        leave_idle_locked(state);
+        leave_idle_locked(state, out);
     }
     if (was_searching && !self.searching) {
         self.searching = true;
@@ -632,8 +670,12 @@ void idle(runtime_state& state, vcpu& self) {
     }
 
     if (has_work(state)) {
-        std::lock_guard<std::mutex> held(state.mutex);
-        unregister_idle_locked(state, self, poller, was_searching);
+        wakeup target;
+        {
+            std::lock_guard<std::mutex> held(state.mutex);
+            unregister_idle_locked(state, self, poller, was_searching, target);
+        }
+        wake_up(state, target);
         return;
     }
     if (poller) {
