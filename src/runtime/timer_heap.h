@@ -1,11 +1,12 @@
 #pragma once
 
+#include "base/fatal.h"
 #include "park.h"
 
 #include <cstddef>
 #include <cstdint>
-#include <utility>
-#include <vector>
+#include <cstring>
+#include <new>
 
 namespace wavvix {
 namespace detail {
@@ -14,18 +15,24 @@ namespace detail {
 // 凭据归调用方，移出之前必须一直活着。
 class timer_heap {
 public:
-    timer_heap() noexcept : order_(0) {}
+    timer_heap() noexcept : items_(0), size_(0), capacity_(0), order_(0) {}
+    ~timer_heap() { delete[] items_; }
     timer_heap(const timer_heap&) = delete;
     timer_heap& operator=(const timer_heap&) = delete;
 
-    bool empty() const noexcept { return timers_.empty(); }
-    park_token* top() const noexcept { return timers_.empty() ? 0 : timers_.front(); }
+    bool empty() const noexcept { return size_ == 0; }
+    park_token* top() const noexcept { return size_ == 0 ? 0 : items_[0]; }
 
+    // 内存不够时打印诊断后终止：调用方这时已经把凭据交了出去（排进了等待队列、交给了事件引擎），
+    // 没法退回。
     void push(park_token& token) {
+        if (size_ == capacity_) {
+            grow();
+        }
         token.order = order_++;
-        token.heap_index = timers_.size();
+        token.heap_index = size_;
         token.timed = true;
-        timers_.push_back(&token);
+        items_[size_++] = &token;
         sift_up(token.heap_index);
     }
 
@@ -36,15 +43,15 @@ public:
         }
         token.timed = false;
         const std::size_t index = token.heap_index;
-        const std::size_t last = timers_.size() - 1;
+        const std::size_t last = size_ - 1;
         if (index == last) {
-            timers_.pop_back();
+            --size_;
             return;
         }
 
         swap(index, last);
-        timers_.pop_back();
-        if (index != 0 && less(timers_[index], timers_[(index - 1) / 2])) {
+        --size_;
+        if (index != 0 && less(items_[index], items_[(index - 1) / 2])) {
             sift_up(index);
         } else {
             sift_down(index);
@@ -57,16 +64,32 @@ private:
                (left->deadline == right->deadline && left->order < right->order);
     }
 
+    void grow() {
+        const std::size_t capacity = capacity_ == 0 ? 64 : capacity_ * 2;
+        park_token** const items = new (std::nothrow) park_token*[capacity];
+        if (!items) {
+            fatal("wavvix: 内存不足，登记不了定时器");
+        }
+        if (size_ != 0) {
+            std::memcpy(items, items_, size_ * sizeof(park_token*));
+        }
+        delete[] items_;
+        items_ = items;
+        capacity_ = capacity;
+    }
+
     void swap(std::size_t a, std::size_t b) noexcept {
-        std::swap(timers_[a], timers_[b]);
-        timers_[a]->heap_index = a;
-        timers_[b]->heap_index = b;
+        park_token* const kept = items_[a];
+        items_[a] = items_[b];
+        items_[b] = kept;
+        items_[a]->heap_index = a;
+        items_[b]->heap_index = b;
     }
 
     void sift_up(std::size_t index) noexcept {
         while (index != 0) {
             const std::size_t parent = (index - 1) / 2;
-            if (!less(timers_[index], timers_[parent])) {
+            if (!less(items_[index], items_[parent])) {
                 break;
             }
             swap(index, parent);
@@ -77,12 +100,12 @@ private:
     void sift_down(std::size_t index) noexcept {
         for (;;) {
             const std::size_t left = index * 2 + 1;
-            if (left >= timers_.size()) {
+            if (left >= size_) {
                 break;
             }
             const std::size_t right = left + 1;
-            const std::size_t child = right < timers_.size() && less(timers_[right], timers_[left]) ? right : left;
-            if (!less(timers_[child], timers_[index])) {
+            const std::size_t child = right < size_ && less(items_[right], items_[left]) ? right : left;
+            if (!less(items_[child], items_[index])) {
                 break;
             }
             swap(index, child);
@@ -90,8 +113,10 @@ private:
         }
     }
 
+    park_token** items_;
+    std::size_t size_;
+    std::size_t capacity_;
     std::uint64_t order_;
-    std::vector<park_token*> timers_;
 };
 
 }  // namespace detail

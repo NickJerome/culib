@@ -1,5 +1,5 @@
-// 同步原语。等待者排在各自原语的队列里；唤醒一律经 scheduler_wake，
-// 所以等待者是协程还是普通线程、在哪根线程上，这里都不用管。
+// 同步原语。等待者排在各自原语的队列里；唤醒在锁里经 scheduler_claim 抢到，放了锁经 scheduler_deliver
+// 送到，所以等待者是协程还是普通线程、在哪根线程上，这里都不用管。
 
 #include <culib/coroutine.h>
 #include <culib/sync.h>
@@ -18,6 +18,7 @@ using detail::list_node;
 using detail::park_clock;
 using detail::park_instant;
 using detail::park_token;
+using detail::wake_batch;
 
 const std::chrono::nanoseconds forever(-1);
 
@@ -78,18 +79,20 @@ park_token* dequeue(list_node& waiters) {
     return token;
 }
 
-// 叫醒队首，跳过已经到点放弃的。没人可叫返回 false。
-bool wake_one(list_node& waiters) {
+// 摘下队首，跳过已经到点放弃的，抢到的记进 woken。调用方拿着等待队列的锁，放了锁再送到。
+void claim_first(list_node& waiters, wake_batch& woken) {
     while (park_token* const token = dequeue(waiters)) {
-        if (detail::scheduler_wake(*token)) {
-            return true;
+        if (detail::scheduler_claim(*token, woken)) {
+            return;
         }
     }
-    return false;
 }
 
-void wake_all(list_node& waiters) {
-    detail::scheduler_wake_all(waiters);
+// 等待者整串摘下，抢到的都记进 woken。
+void claim_all(list_node& waiters, wake_batch& woken) {
+    while (park_token* const token = dequeue(waiters)) {
+        detail::scheduler_claim(*token, woken);
+    }
 }
 
 // 排队，放开 held，被唤醒后再拿回 held。
@@ -138,12 +141,19 @@ bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
 
 // 平时放开锁再叫醒队首，让它和刚来的一起抢。直接交接的时候 held_ 保持为真，只是锁换了主人。
 void mutex::unlock() {
-    std::lock_guard<detail::spin_lock> state(state_);
-    if (starving_ && hand_over_locked()) {
+    state_.lock();
+    if (detail::list_empty(waiters_)) {
+        held_ = false;   // 没人等：直接放开
+        state_.unlock();
         return;
     }
-    held_ = false;
-    wake_one(waiters_);
+    wake_batch woken;
+    if (!starving_ || !hand_over_locked(woken)) {
+        held_ = false;
+        claim_first(waiters_, woken);
+    }
+    state_.unlock();
+    detail::scheduler_deliver(woken);
 }
 
 // 锁空着、又轮得到自己就拿下：直接交接的时候有人排着，刚来的不抢。调用方拿着 state_。
@@ -193,15 +203,15 @@ bool mutex::wait_for_lock(std::chrono::nanoseconds timeout) {
     }
 }
 
-// 直接把锁交给队首，跳过已经到点放弃的，交出去了返回 true。没人可交，或者接手的是最后一个、或者它
-// 其实没等满 1 毫秒，就退回平时的做法。调用方拿着 state_。
-bool mutex::hand_over_locked() {
+// 直接把锁交给队首，跳过已经到点放弃的。交出去了返回 true，接手的记进 woken，由调用方放了锁再送到。
+// 没人可交，或者接手的是最后一个、或者它其实没等满 1 毫秒，就退回平时的做法。调用方拿着 state_。
+bool mutex::hand_over_locked(wake_batch& woken) {
     while (park_token* const token = dequeue(waiters_)) {
-        // 叫醒以后它可能马上在别的线程上拿着锁返回，栈上的 waiter 就没了：要用的先读出来，要写的先写好。
+        // 抢到以后它可能马上在别的线程上拿着锁返回，栈上的 waiter 就没了：要用的先读出来，要写的先写好。
         mutex_waiter& first = static_cast<mutex_waiter&>(*token);
         const park_instant since = first.since;
         first.handed = true;
-        if (!detail::scheduler_wake(first)) {
+        if (!detail::scheduler_claim(first, woken)) {
             continue;   // 已经到点放弃了，它不会再看 handed
         }
         if (detail::list_empty(waiters_) || park_clock::now() - since < starvation_after) {
@@ -250,13 +260,21 @@ bool condition_variable::wait_for(mutex& held, std::chrono::nanoseconds timeout)
 }
 
 void condition_variable::notify_one() {
-    std::lock_guard<detail::spin_lock> state(state_);
-    wake_one(waiters_);
+    wake_batch woken;
+    {
+        std::lock_guard<detail::spin_lock> state(state_);
+        claim_first(waiters_, woken);
+    }
+    detail::scheduler_deliver(woken);
 }
 
 void condition_variable::notify_all() {
-    std::lock_guard<detail::spin_lock> state(state_);
-    wake_all(waiters_);
+    wake_batch woken;
+    {
+        std::lock_guard<detail::spin_lock> state(state_);
+        claim_all(waiters_, woken);
+    }
+    detail::scheduler_deliver(woken);
 }
 
 namespace detail {
@@ -274,17 +292,24 @@ void channel_waiters::wait_for_room(std::unique_lock<std::mutex>& held) {
     wait_on(senders_, held);
 }
 
+// channel 的锁是 std::mutex，拿着它送到也不要紧。
 void channel_waiters::wake_receiver() {
-    wake_one(receivers_);
+    wake_batch woken;
+    claim_first(receivers_, woken);
+    scheduler_deliver(woken);
 }
 
 void channel_waiters::wake_sender() {
-    wake_one(senders_);
+    wake_batch woken;
+    claim_first(senders_, woken);
+    scheduler_deliver(woken);
 }
 
 void channel_waiters::wake_everyone() {
-    wake_all(receivers_);
-    wake_all(senders_);
+    wake_batch woken;
+    claim_all(receivers_, woken);
+    claim_all(senders_, woken);
+    scheduler_deliver(woken);
 }
 
 void channel_misuse(channel_error what) {
@@ -305,18 +330,18 @@ void wait_group::add() {
     ++running_;
 }
 
-// 把等待者整串摘下来，放开锁再唤醒：被唤醒的一方可能马上析构这个组。
+// 放开锁再送到：被唤醒的一方可能马上析构这个组。
 void wait_group::done() noexcept {
-    list_node waiters;
+    wake_batch woken;
     {
         std::lock_guard<detail::spin_lock> state(state_);
         --running_;
         if (running_ != 0) {
             return;
         }
-        detail::list_splice_init(waiters_, waiters);
+        claim_all(waiters_, woken);
     }
-    wake_all(waiters);
+    detail::scheduler_deliver(woken);
 }
 
 void wait_group::wait() {

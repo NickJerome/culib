@@ -87,34 +87,34 @@ stack_pool* pool() {
     return state;
 }
 
-// 再保留一个区域，把它的格子都挂到 idle 上。区域和格子的记录都不还，进程退出时随进程释放。
-// 调用方拿着锁。
-bool add_region_locked(stack_pool& p) {
+// 再保留一个区域，返回它的格子串成的一串，失败返回 0。区域和格子的记录都不还，进程退出时随进程释放。
+// 有系统调用和分配，不拿着栈池的锁做。
+stack_slot* reserve_region() {
     const std::size_t slot = slot_size();
     const std::size_t size = region_slots * slot;
     char* const base = static_cast<char*>(pages::reserve(size, 64 * 1024));
     if (!base) {
-        return false;
+        return 0;
     }
 
     stack_slot* const slots = new (std::nothrow) stack_slot[region_slots];
     if (!slots) {
         pages::release(base, size);
-        return false;
+        return 0;
     }
 
     pages::no_huge_pages(base, size);   // 栈只碰顶上几页，开了透明大页时一碰就是 2 MiB
+    stack_slot* list = 0;
     for (std::size_t i = 0; i < region_slots; ++i) {
         slots[i].base = base + i * slot;
         slots[i].committed = 0;
-        push(p.idle, &slots[i]);
+        push(list, &slots[i]);
     }
-    return true;
+    return list;
 }
 
-// 先取准备好的，再取多出来的（也准备好了），再取没准备的，都没有就再保留一个区域。
-stack_slot* take_slot(stack_pool& p) {
-    const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
+// 先取准备好的，再取多出来的（也准备好了），再取没准备的。调用方拿着锁。
+stack_slot* take_free_locked(stack_pool& p) {
     if (p.ready) {
         --p.ready_count;
         return pop(p.ready);
@@ -123,10 +123,27 @@ stack_slot* take_slot(stack_pool& p) {
         --p.surplus_count;
         return pop(p.surplus);
     }
-    if (!p.idle && !add_region_locked(p)) {
+    return pop(p.idle);
+}
+
+// 都没有就在锁外再保留一个区域，取一格，其余挂到 idle 上。两根线程同时保留时多出来的格子也挂上去。
+stack_slot* take_slot(stack_pool& p) {
+    {
+        const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
+        if (stack_slot* const slot = take_free_locked(p)) {
+            return slot;
+        }
+    }
+    stack_slot* region = reserve_region();
+    if (!region) {
         return 0;
     }
-    return pop(p.idle);
+    stack_slot* const slot = pop(region);
+    const std::lock_guard<wavvix::detail::spin_lock> held(p.lock);
+    while (stack_slot* const rest = pop(region)) {
+        push(p.idle, rest);
+    }
+    return slot;
 }
 
 // 准备好的格子挂回去。常留的已经够了就挂到多出来的那一串上，内存由 trim_stacks 还，

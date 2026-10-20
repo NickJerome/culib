@@ -16,6 +16,8 @@ namespace wavvix {
 
 namespace detail {
 
+struct wake_batch;
+
 // channel 里和 T 无关的一半：收、发两条等待队列。调用方持有 channel 的状态锁。
 class channel_waiters {
 public:
@@ -66,7 +68,7 @@ public:
 private:
     bool claim_locked() noexcept;
     bool wait_for_lock(std::chrono::nanoseconds timeout);
-    bool hand_over_locked();
+    bool hand_over_locked(detail::wake_batch& woken);
 
     detail::spin_lock state_;     // 保护 held_、starving_ 和 waiters_
     bool held_;

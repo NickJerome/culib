@@ -37,43 +37,6 @@
 namespace wavvix {
 namespace detail {
 
-// 就绪队列，先进先出。
-struct run_queue {
-    run_queue() noexcept : count(0) {}
-
-    void push(coroutine_control* body) noexcept {
-        list_add_tail(*body, items);
-        ++count;
-    }
-
-    coroutine_control* pop() noexcept {
-        if (list_empty(items)) {
-            return 0;
-        }
-        coroutine_control* const body = static_cast<coroutine_control*>(items.next);
-        list_del_init(*body);
-        --count;
-        return body;
-    }
-
-    // 从队首摘下 n 根，按原来的次序接到 to 的队尾。n 不超过 count。
-    void move_front(std::size_t n, run_queue& to) noexcept {
-        for (std::size_t i = 0; i < n; ++i) {
-            to.push(pop());
-        }
-    }
-
-    // 把 from 整串接到队尾，from 变空。
-    void append(run_queue& from) noexcept {
-        list_splice_tail_init(from.items, items);
-        count += from.count;
-        from.count = 0;
-    }
-
-    list_node items;
-    std::size_t count;
-};
-
 // 工作线程总数的上限，含备用的。WAVVIX_MAXPROCS 也不能超过它。
 const unsigned worker_limit = 256;
 
@@ -344,13 +307,6 @@ void make_runnable(runtime_state& state, coroutine_control* body) {
     }
 }
 
-// 和到点的一方抢这次唤醒：各做一次比较交换，先换成的说了算。
-bool claim_wake(park_token& token) {
-    int expected = park_waiting;
-    return token.state.compare_exchange_strong(expected, park_woken, std::memory_order_acq_rel,
-                                               std::memory_order_acquire);
-}
-
 // 普通线程：在它的等待器的锁里置位。等待者看到 delivered 才返回，所以这之前 token 一直在；
 // 放锁以后不再碰 token，而等待器跟着线程走，比这次等待活得久。
 void wake_thread(park_token& token) {
@@ -577,10 +533,13 @@ bool fire_timers(runtime_state& state) {
 
 // ---- 事件引擎 --------------------------------------------------------------------------
 
+// 收到的完成一起送到：叫醒的协程一次排进就绪队列。
 void deliver(io_completion_batch& completed) {
+    wake_batch woken;
     while (io_request* const request = completed.pop()) {
-        scheduler_wake(*request->waiter);
+        scheduler_claim(*request->waiter, woken);
     }
+    scheduler_deliver(woken);
 }
 
 // 收一次完成，记下时刻：监控线程看它决定要不要替工作线程收（poll_overdue）。调用方拿着 poll_mutex。
@@ -1113,38 +1072,33 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
     return token.state.load(std::memory_order_acquire) == park_woken;
 }
 
-bool scheduler_wake(park_token& token) {
-    if (!claim_wake(token)) {
+// 和到点的一方各做一次比较交换，先换成的说了算。owner 先读出来：协程一旦排回队列就可能在别处跑完，
+// 凭据跟着没了。还在挂起路上的协程不进 batch，由它所在的工作线程切出来以后排回（run）。
+bool scheduler_claim(park_token& token, wake_batch& batch) {
+    coroutine_control* const owner = token.owner;
+    int expected = park_waiting;
+    if (!token.state.compare_exchange_strong(expected, park_woken, std::memory_order_acq_rel,
+                                             std::memory_order_acquire)) {
         return false;
     }
-    if (coroutine_control* const owner = token.owner) {
-        make_runnable(running(), owner);
+    if (!owner) {
+        list_add_tail(token, batch.threads);
         return true;
     }
-    wake_thread(token);
+    if (take_parked(owner)) {
+        batch.coroutines.push(owner);
+    }
     return true;
 }
 
-// 叫醒的协程先攒在 ready 里，最后一次排进就绪队列。攒着的时候它们已经切出去了，只有这里碰得到。
-void scheduler_wake_all(list_node& waiters) {
-    run_queue ready;
-    while (!list_empty(waiters)) {
-        park_token& token = *static_cast<park_token*>(waiters.next);
+void scheduler_deliver_batch(wake_batch& batch) {
+    while (!list_empty(batch.threads)) {
+        park_token& token = *static_cast<park_token*>(batch.threads.next);
         list_del_init(token);
-        coroutine_control* const owner = token.owner;
-        if (!claim_wake(token)) {
-            continue;
-        }
-        if (!owner) {
-            wake_thread(token);
-            continue;
-        }
-        if (take_parked(owner)) {
-            ready.push(owner);
-        }
+        wake_thread(token);
     }
-    if (ready.count != 0) {
-        make_ready(running(), ready);
+    if (batch.coroutines.count != 0) {
+        make_ready(running(), batch.coroutines);
     }
 }
 

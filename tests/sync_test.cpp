@@ -4,6 +4,7 @@
 // 工作线程的 runtime_order_test 里（tests/order/sync_order_test.cpp）。
 
 #include <culib/coroutine.h>
+#include <culib/detail/macros.h>
 #include <culib/stopwatch.h>
 #include <culib/sync.h>
 #include <culib/test.h>
@@ -563,3 +564,39 @@ TEST(wait_group, several_waiters_all_return) {
 
     EXPECT(returned.load(), ==, 4);
 }
+
+#if WAVVIX_DETAIL_HAS_EXCEPTIONS
+namespace {
+
+// 拷贝时抛出异常的参数。抛不抛由运行时的值决定：编译器看得出必然抛的话，会把调用方后面的代码判成走不到。
+struct refuses_copy {
+    explicit refuses_copy(bool refuse) : refuse(refuse) {}
+    refuses_copy(const refuses_copy& other) : refuse(other.refuse) {
+        if (refuse) {
+            throw 7;
+        }
+    }
+
+    bool refuse;
+};
+
+}  // namespace
+
+TEST(wait_group, a_coroutine_whose_arguments_fail_to_copy_is_not_counted) {
+    // 参数拷进协程时抛出异常，这根协程就不存在，组里不能多算一根。多算了的话，组析构时还有一根
+    // 「没结束」，打印诊断后终止。
+    int thrown = 0;
+    {
+        wavvix::wait_group group;
+        volatile bool refuse = true;
+        const refuses_copy argument(refuse);
+        try {
+            group.go([](const refuses_copy&) {}, argument);
+        } catch (int value) {
+            thrown = value;
+        }
+    }
+
+    EXPECT(thrown, ==, 7);
+}
+#endif

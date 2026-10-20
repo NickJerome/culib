@@ -4,6 +4,8 @@
 
 #include <culib/detail/list.h>
 
+#include "coroutine_detail.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -57,16 +59,69 @@ struct park_token : list_node {
 // 必须在凭据能被别的线程看到（排进等待队列、交给事件引擎）之前调用。
 void park_prepare(park_token& token) noexcept;
 
+// 就绪队列，先进先出。
+struct run_queue {
+    run_queue() noexcept : count(0) {}
+
+    void push(coroutine_control* body) noexcept {
+        list_add_tail(*body, items);
+        ++count;
+    }
+
+    coroutine_control* pop() noexcept {
+        if (list_empty(items)) {
+            return 0;
+        }
+        coroutine_control* const body = static_cast<coroutine_control*>(items.next);
+        list_del_init(*body);
+        --count;
+        return body;
+    }
+
+    // 从队首摘下 n 根，按原来的次序接到 to 的队尾。n 不超过 count。
+    void move_front(std::size_t n, run_queue& to) noexcept {
+        for (std::size_t i = 0; i < n; ++i) {
+            to.push(pop());
+        }
+    }
+
+    // 把 from 整串接到队尾，from 变空。
+    void append(run_queue& from) noexcept {
+        list_splice_tail_init(from.items, items);
+        count += from.count;
+        from.count = 0;
+    }
+
+    list_node items;
+    std::size_t count;
+};
+
 // 挂起，直到被唤醒或者到点。调用方先调 park_prepare，并保持凭据活到返回。
 // 在协程里只挂起协程，返回时可能已经换了一根工作线程；在其他地方阻塞当前线程。
 // 负 timeout 表示无限等待；返回 true 表示被唤醒，false 表示到点了。等 I/O 时结果看请求本身。
 bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout);
 
-// 任何线程都能调。返回 false 表示等待者已经到点放弃，这次唤醒作废。
-bool scheduler_wake(park_token& token);
+// 一批要叫醒的等待者。唤醒分两步：在等待队列的锁里摘下凭据、抢到这次唤醒（scheduler_claim），
+// 放了锁再一次送到（scheduler_deliver）。记进 batch 的等待者在送到之前不会返回，所以锁里只做内存操作，
+// 排进就绪队列、叫醒线程都在锁外。还在挂起路上的协程不进 batch，抢到以后可能马上接着跑，
+// 所以 scheduler_claim 之后不能再碰那个凭据。
+struct wake_batch {
+    run_queue coroutines;   // 抢到唤醒、已经切出去的协程
+    list_node threads;      // 普通线程等待者的凭据
+};
 
-// 叫醒 waiters 上的所有等待者，同时把它们摘下来。叫醒的协程一次排进就绪队列，只叫一根闲着的线程。
-void scheduler_wake_all(list_node& waiters);
+// 凭据已经从等待队列里摘下。抢到这次唤醒就记进 batch，返回 true；等待者已经到点放弃返回 false。
+bool scheduler_claim(park_token& token, wake_batch& batch);
+
+void scheduler_deliver_batch(wake_batch& batch);
+
+// 送到 batch 里的唤醒：协程一次排进就绪队列，只叫一根闲着的线程；普通线程逐个叫醒。任何线程都能调。
+// 没人可叫时（放开一把没人等的锁）只多两次比较。
+inline void scheduler_deliver(wake_batch& batch) {
+    if (batch.coroutines.count != 0 || !list_empty(batch.threads)) {
+        scheduler_deliver_batch(batch);
+    }
+}
 
 }  // namespace detail
 }  // namespace wavvix

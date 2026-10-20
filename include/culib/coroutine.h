@@ -25,14 +25,15 @@ namespace detail {
 void scheduler_submit(coroutine_control* body);
 [[noreturn]] void coroutine_creation_failed(fiber_failure failure);
 
+// 建好一根装着 call 的协程，还不交给运行时。call 拷进去时抛出的异常照常抛出，什么也不留下。
 template <typename Call>
-void spawn(Call&& call) {
+coroutine_control* make_coroutine(Call&& call) {
     fiber_failure failure = fiber_failure::resource_exhausted;
     fiber body(std::forward<Call>(call), default_stack_size, &failure);
     if (!body.ok()) {
         coroutine_creation_failed(failure);
     }
-    scheduler_submit(body.release());
+    return body.release();
 }
 
 }  // namespace detail
@@ -44,10 +45,12 @@ void spawn(Call&& call) {
 // 内存不够时打印诊断后终止。栈大小固定，见 default_stack_size。
 template <typename F, typename... Args>
 void go(F&& body, Args&&... args) {
-    detail::spawn(detail::bind_coroutine_call(std::forward<F>(body), std::forward<Args>(args)...));
+    detail::scheduler_submit(
+        detail::make_coroutine(detail::bind_coroutine_call(std::forward<F>(body), std::forward<Args>(args)...)));
 }
 
 // 等一组协程：只能用 go() 往组里加，wait() 等组里的协程全部结束，它们写下的东西随后都看得见。
+// go() 把参数拷进协程时抛出的异常照常抛出，这根协程不算进组里。
 // wait() 返回以后可以接着往组里加。还有协程没结束时析构，打印诊断后终止。
 class wait_group {
 public:
@@ -60,9 +63,11 @@ public:
     void go(F&& body, Args&&... args) {
         typedef decltype(detail::bind_coroutine_call(std::forward<F>(body), std::forward<Args>(args)...))
             call_type;
-        add();
-        detail::spawn(tracked<call_type>(
+        // 先建好协程再计数：拷参数时抛出异常，组里就不会多出一根永远不结束的。
+        detail::coroutine_control* const created = detail::make_coroutine(tracked<call_type>(
             this, detail::bind_coroutine_call(std::forward<F>(body), std::forward<Args>(args)...)));
+        add();
+        detail::scheduler_submit(created);
     }
 
     // 协程里只挂起当前协程，协程外阻塞当前线程。
