@@ -149,55 +149,59 @@ TEST(runtime_order, sleeping_coroutine_leaves_the_worker_to_others) {
     EXPECT(elapsed >= ms(25), ==, true);
 }
 
-TEST(runtime_order, wakes_sleepers_in_time_order) {
+namespace {
+
+// 睡 delay，醒来把 letter 记进 order。
+void sleep_then_record(ms delay, const char* letter, std::mutex& lock, std::string& order) {
+    wavvix::sleep_for(delay);
+    std::lock_guard<std::mutex> held(lock);
+    order += letter;
+}
+
+// 三根协程依次起来，分别睡 3、1、2 个 unit，醒来记下 C、A、B，返回记下的次序。busy 大于 0 时
+// 另起一根协程不让出地算那么久，它跑完之前工作线程不会去看定时器。
+//
+// 机器忙的时候，工作线程被系统挂起 10 毫秒以上会被当成卡住、交接一次，后到点的那根可能先在接手的
+// 线程上跑完，两根线程也可能同时记，所以记的时候加锁，调用方试几轮。
+std::string sleepers_order(ms unit, ms busy) {
+    std::mutex lock;
     std::string order;
     in_coroutine([&] {
         wavvix::wait_group children;
-        children.go([&] {
-            wavvix::sleep_for(ms(30));
-            order += "C";
-        });
-        children.go([&] {
-            wavvix::sleep_for(ms(10));
-            order += "A";
-        });
-        children.go([&] {
-            wavvix::sleep_for(ms(20));
-            order += "B";
-        });
+        children.go([&] { sleep_then_record(unit * 3, "C", lock, order); });
+        children.go([&] { sleep_then_record(unit, "A", lock, order); });
+        children.go([&] { sleep_then_record(unit * 2, "B", lock, order); });
+        if (busy.count() > 0) {
+            children.go([busy] {
+                const wavvix::stopwatch watch;
+                while (watch.elapsed() < busy) {
+                }
+            });
+        }
         children.wait();
     });
+    return order;
+}
+
+}  // namespace
+
+TEST(runtime_order, wakes_sleepers_in_time_order) {
+    std::string order;
+    for (int attempt = 0; attempt < 5 && order != "ABC"; ++attempt) {
+        order = sleepers_order(ms(10), ms(0));
+    }
 
     EXPECT(order, ==, "ABC");
 }
 
 TEST(runtime_order, wakes_sleepers_in_time_order_when_they_expire_in_one_round) {
     // 定时器粒度粗的平台上，一次睡眠会 overshoot 到好几个一起到期；它们要按时限排回就绪队列，
-    // 不能按挂起的次序。这里让另一根协程不让出地占住工作线程，直到三个时限都过去，
-    // 所以在定时器精细的 Linux 上也走得到这条路。
+    // 不能按挂起的次序。这里让另一根协程不让出地占住工作线程 8 毫秒，三个时限都在这期间过去，
+    // 所以在定时器精细的 Linux 上也走得到这条路。占住的时间短于判定卡住的 10 毫秒，名额不会交出去。
     std::string order;
-    in_coroutine([&] {
-        wavvix::wait_group children;
-        children.go([&] {
-            wavvix::sleep_for(ms(30));
-            order += "C";
-        });
-        children.go([&] {
-            wavvix::sleep_for(ms(10));
-            order += "A";
-        });
-        children.go([&] {
-            wavvix::sleep_for(ms(20));
-            order += "B";
-        });
-        children.go([] {
-            const wavvix::stopwatch watch;
-            while (watch.elapsed() < ms(45)) {
-                // 故意不让出：这一根跑完之前工作线程不会去看定时器
-            }
-        });
-        children.wait();
-    });
+    for (int attempt = 0; attempt < 5 && order != "ABC"; ++attempt) {
+        order = sleepers_order(ms(1), ms(8));
+    }
 
     EXPECT(order, ==, "ABC");
 }

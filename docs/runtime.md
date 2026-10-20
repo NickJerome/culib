@@ -284,3 +284,9 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 第一次推上去（`4c42e5d`），[那次 CI](https://github.com/NickJerome/culib/actions/runs/39361493236) 23/24：ASan 作业里 `mutex.protects_state_shared_by_several_workers` 报了 stack-use-after-return。直接交接时 `unlock` 先叫醒队首，再读它的 `since` 判断要不要退出饥饿模式；可是一叫醒，那根协程就可能已经在别的线程上拿着锁返回了，它栈上的等待者跟着没了。CI 的 GCC 13 默认查这一类，本机的 GCC 11 默认不查，要设 `ASAN_OPTIONS=detect_stack_use_after_return=1`；设了以后，同步原语的测试在 `4c42e5d` 上 30 遍失败 18 遍。现在叫醒之前先把 `since` 读出来，同样的检查下 30 遍全过，完整的 `culib_test` 和 `runtime_order_test` 各跑 3 遍也没有报告。
 
 [`b49992d` 的 CI](https://github.com/NickJerome/culib/actions/runs/39362114867) 24/24 通过：`culib_test` Linux 388 项、macOS 385 项、Windows 与 MinGW 383 项，无异常构建 381 项，GCC 4.8、ASan + UBSan 和 TSan 都是 388 项；`runtime_order_test` 依次 41、39、36 项，各多了新加的那条，它在各个作业里用了 1.02 到 12 毫秒，大多在 1.2 毫秒以内；误用诊断的条数不变。报告里没有 SKIP，也没有任何诊断。
+
+[`a8e56a8` 的 CI](https://github.com/NickJerome/culib/actions/runs/39362518637) 23/24，那次只改了文档：ASan + UBSan 作业里 `runtime_order.wakes_sleepers_in_time_order` 记下的次序是 ACB，用了 37.65 毫秒（本机约 31 毫秒），这个作业后面的 TSan 没有跑到；其余 23 个作业通过。只有一个名额时得到 ACB 只有一条路：跑 B 的那根工作线程被系统挂起 10 毫秒以上，监控线程把名额交了出去，C 到点后先在接手的线程上记下了。两条按时限排序的测试于是照交接测试的做法试几轮，有一轮按时限的先后就算过；交接以后两根线程可能同时记，记的时候加了锁。
+
+查重试会不会藏住真错误时发现，`wakes_sleepers_in_time_order_when_they_expire_in_one_round` 早就测不到它要测的了：有了监控线程以后，不让出地算 45 毫秒的那根在 12 毫秒左右就被当成卡住、交出名额，三个定时器在接手的线程上一个一个到点。现在三根分别睡 1、2、3 毫秒，占住工作线程的那根只算 8 毫秒，短于判定卡住的 10 毫秒，三个时限都在这期间过去。把调度器临时改成按相反的次序排回到点的协程：改测试之前这条照样通过，改之后 5 轮都是 CBA，失败。
+
+本机验证：Windows MSVC 2022 x64 release 下这两条连跑 10 遍、`runtime_order_test` 36 项全部通过；WSL2 上 GCC 11.4 release、ASan + UBSan、Clang 14 的 TSan 下 `culib_test` 388 项和 `runtime_order_test` 41 项全部通过。
