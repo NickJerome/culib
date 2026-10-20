@@ -254,6 +254,49 @@ TEST(runtime, idle_workers_take_coroutines_queued_on_a_busy_one) {
     EXPECT(threads.size() >= std::size_t(2), ==, true);
 }
 
+TEST(runtime, a_coroutine_woken_by_a_busy_one_is_taken_by_an_idle_worker) {
+    // 叫醒的协程排在叫醒它的那根线程上，队里只有它一根时不叫人。叫醒它的那根一直不让出时，
+    // 监控线程看见那根线程一直在跑、队里排着协程、又有闲着的线程，就叫一根来偷。
+    // 叫醒之前先睡一会儿、再算一会儿，等别的工作线程都睡下：不然正在找活的线程会顺手把它偷走。
+    wavvix::mutex lock;
+    wavvix::condition_variable changed;
+    bool ready = false;
+    std::atomic<bool> waiting(false);
+    std::atomic<bool> ran(false);
+    std::chrono::nanoseconds waited(0);
+    wavvix::wait_group group;
+    group.go([&] {
+        lock.lock();
+        waiting.store(true);
+        while (!ready) {
+            changed.wait(lock);
+        }
+        lock.unlock();
+        ran.store(true);
+    });
+    group.go([&] {
+        while (!waiting.load()) {
+            wavvix::yield();
+        }
+        wavvix::sleep_for(ms(20));
+        const wavvix::stopwatch settle;
+        while (settle.elapsed() < ms(3)) {
+        }
+        lock.lock();
+        ready = true;
+        changed.notify_one();
+        lock.unlock();
+        const wavvix::stopwatch watch;
+        while (!ran.load() && watch.elapsed() < std::chrono::seconds(2)) {
+        }
+        waited = watch.elapsed();
+    });
+    group.wait();
+
+    EXPECT(ran.load(), ==, true);
+    EXPECT(waited < ms(100), ==, true);
+}
+
 TEST(runtime, a_parked_coroutine_continues_on_another_worker) {
     // 协程挂起的时候，它原来那根工作线程被占着：叫醒以后只能由别的工作线程接着跑，栈上的东西都还在。
     // 占位协程从这根协程里起，排在本线程上，这根协程一挂起它就接着在这里跑；偶尔会被闲着的线程

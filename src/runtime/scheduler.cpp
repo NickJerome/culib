@@ -276,15 +276,15 @@ void wake_idle(runtime_state& state) {
     wake_up(state, target);
 }
 
-// 排进本线程的队列。名额交出去了就不排：队列已经跟着名额交走了（hand_off_locked），
-// 再排进来的没人跑。和交接拿同一把锁，所以两边至少有一边看得见对方。
-bool push_local(vcpu& self, coroutine_control* body) {
+// 排进本线程的队列，返回排进去以后队里有几根。名额交出去了就不排、返回 0：队列已经跟着名额交走了
+// （hand_off_locked），再排进来的没人跑。和交接拿同一把锁，所以两边至少有一边看得见对方。
+std::size_t push_local(vcpu& self, coroutine_control* body) {
     std::lock_guard<std::mutex> held(self.mutex);
     if (!self.has_slot.load()) {
-        return false;
+        return 0;
     }
     self.queue.push(body);
-    return true;
+    return self.queue.count;
 }
 
 void push_global(runtime_state& state, coroutine_control* body) {
@@ -298,14 +298,19 @@ void push_global(runtime_state& state, coroutine_control* body) {
     wake_up(state, target);
 }
 
-// 排进就绪队列：有名额的工作线程排进本线程的队列，否则排进全局队列。
+// 叫醒的、让出的协程排回就绪队列：有名额的工作线程排进本线程的队列，否则排进全局队列。
+// 排进本线程的队里只有这一根时不叫醒闲着的线程：叫醒它的这根多半马上挂起或者跑完，接着就跑它，
+// 不用跨核。一直不让出的话，监控线程会叫人来偷（watch_workers_locked）。
 void make_ready(runtime_state& state, coroutine_control* body) {
     vcpu* const self = this_worker();
-    if (self && push_local(*self, body)) {
-        wake_idle(state);
+    const std::size_t queued = self ? push_local(*self, body) : 0;
+    if (queued == 0) {
+        push_global(state, body);
         return;
     }
-    push_global(state, body);
+    if (queued > 1) {
+        wake_idle(state);
+    }
 }
 
 // 把挂起的协程放回就绪队列。它还在挂起的路上（没切出去）的话只留个记号，由它所在的工作线程
@@ -849,7 +854,8 @@ bool timer_due(runtime_state& state) {
 // 机器忙的时候那常有几毫秒；Go 给一根 goroutine 的时间片也是 10 毫秒。
 const std::chrono::milliseconds stall_limit(10);
 
-// 监控线程隔多久看一次。从卡住到交接是 stall_limit 再加至多两个间隔。
+// 监控线程隔多久看一次。从卡住到交接是 stall_limit 再加至多两个间隔；排在一直不让出的那根后面的协程，
+// 一到两个间隔以后有闲着的线程来偷。
 const std::chrono::milliseconds monitor_interval(2);
 
 // 监控线程每次把多少根多出来的空闲栈还给系统。一根一次系统调用，每秒最多还 3.2 万根。
@@ -873,29 +879,42 @@ struct watch_mark {
     park_instant since;
 };
 
-// 卡住了没有：有名额、停在同一根协程里超过 stall_limit。同时更新记号。
-bool stuck(vcpu& worker, watch_mark& mark, park_instant now) {
+// 有名额的这根停在同一根协程里多久了；没在跑协程或者换过一根，从现在重新记，返回 0。
+park_clock::duration running_for(vcpu& worker, watch_mark& mark, park_instant now) {
     const unsigned ticks = worker.ticks.load(std::memory_order_relaxed);
     const bool running = worker.has_slot.load() && worker.current.load(std::memory_order_relaxed) != 0;
     if (!running || ticks != mark.ticks) {
         mark.ticks = ticks;
         mark.since = now;
-        return false;
+        return park_clock::duration(0);
     }
-    return now - mark.since >= stall_limit;
+    return now - mark.since;
 }
 
-// 有工作线程卡住，又没有闲着的工作线程、而还有协程排着或者定时器到点了，就把它的名额交出去。
-// 卡在阻塞调用里和算个不停一样对待：卡住的那根接着跑完手上那根协程，之后去当备用线程（worker_loop）。
-// 调用方拿着 state.mutex。
-void hand_off_stuck_locked(runtime_state& state, watch_mark* marks, park_instant now) {
+bool has_queued(vcpu& worker) {
+    std::lock_guard<std::mutex> held(worker.mutex);
+    return worker.queue.count != 0;
+}
+
+// 看一遍工作线程。停在同一根协程里一个周期以上、队里又排着协程的：有闲着的线程就叫一根来偷
+// （make_ready 排进本线程的只有一根时不叫人）；超过 stall_limit、没有闲着的、还有协程排着或者定时器到点了，
+// 就把名额交出去。卡在阻塞调用里和算个不停一样对待：卡住的那根接着跑完手上那根协程，之后去当备用线程
+// （worker_loop）。调用方拿着 state.mutex。
+void watch_workers_locked(runtime_state& state, watch_mark* marks, park_instant now, wakeup& target) {
     const unsigned count = state.count.load();
     for (unsigned i = 0; i < count; ++i) {
         vcpu& worker = *state.workers[i];
-        if (!stuck(worker, marks[i], now) || state.idle.load() != 0) {
+        const park_clock::duration busy = running_for(worker, marks[i], now);
+        if (busy < monitor_interval) {
             continue;
         }
-        if (!queued_locked(state) && !timer_due(state)) {
+        if (state.idle.load() != 0) {
+            if (has_queued(worker)) {
+                wake_one_locked(state, target);
+            }
+            continue;
+        }
+        if (busy < stall_limit || (!queued_locked(state) && !timer_due(state))) {
             continue;
         }
         hand_off_locked(state, worker);
@@ -929,8 +948,12 @@ void monitor_main(runtime_state* state) noexcept {
         if (state->idle.load() == 0 && poll_overdue(*state)) {
             poll_now(*state);
         }
+        wakeup target;
         held.lock();
-        hand_off_stuck_locked(*state, marks, park_clock::now());
+        watch_workers_locked(*state, marks, park_clock::now(), target);
+        held.unlock();
+        wake_up(*state, target);
+        held.lock();
     }
 }
 
@@ -1007,8 +1030,15 @@ void coroutine_creation_failed(fiber_failure failure) {
     fatal("wavvix: 内存不足，建不起协程");
 }
 
+// 新起的协程是要并行跑的活：协程里起的排在本线程上，马上叫人来偷；协程外起的排进全局队列。
 void scheduler_submit(coroutine_control* body) {
-    make_ready(running(), body);   // 协程里起的排在本线程上，协程外起的排进全局队列
+    runtime_state& state = running();
+    vcpu* const self = this_worker();
+    if (self && push_local(*self, body) != 0) {
+        wake_idle(state);
+        return;
+    }
+    push_global(state, body);
 }
 
 // ---- 挂起与唤醒 --------------------------------------------------------------------
