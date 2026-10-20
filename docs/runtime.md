@@ -111,7 +111,7 @@ Windows 上等在完成端口上的超时按系统定时器的节拍到期，默
 | Windows | 报 `STATUS_STACK_OVERFLOW` 后终止 | 同左 |
 | Linux / macOS | 碰到栈底的保护页，收到 SIGSEGV / SIGBUS | 不报错，悄悄写坏相邻的内存 |
 
-Windows 上栈和线程栈一样只提交用到的部分，最底下留一段不提交，长到那里系统就报栈溢出，不用另设保护页。进程的退出码通常是 `0xC00000FD`；CI 上见过三次 `0xC0000005`，很可能是分到带 AMX 的机器时，异常分发本身又溢出了一次（见[实现说明](implementation-notes.md#windows只提交用到的部分)）。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
+Windows 上栈和线程栈一样只提交用到的部分，最底下留一段不提交，长到那里系统就报栈溢出，不用另设保护页。进程的退出码通常是 `0xC00000FD`；CI 上见过四次 `0xC0000005`，很可能是分到带 AMX 的机器时，异常分发本身又溢出了一次（见[实现说明](implementation-notes.md#windows只提交用到的部分)）。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
 
 Linux / macOS 的 debug 构建在每根栈的最底下设保护页，溢出当场崩溃，调试器里能看到越界那一刻的调用栈。代价是 Linux 默认设置下 debug 构建最多约 3 万根同时在跑的协程。怀疑 release 程序里有栈溢出时（卡死或崩溃发生在无关的协程里），用 debug 构建重现。
 
@@ -333,3 +333,9 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`8eacec7` 的 CI](https://github.com/NickJerome/culib/actions/runs/39395410552) 24/24 通过：`culib_test` Linux 390 项、macOS 387 项、Windows 与 MinGW 385 项、无异常构建 383 项，`runtime_order_test` 41、39、36 项；新加的那条在各个作业里用了 23 到 43 毫秒。两个 MSVC 作业的 `cet` 都真跑了，栈溢出那条都以 `0xC00000FD` 结束，`CONTEXT` 3263 和 1663 字节。报告里没有 SKIP，也没有任何诊断。
 
 2026-10-20 就绪队列、定时器组、协程栈池，以及 `mutex`、`condition_variable`、`wait_group` 里护着状态的锁换成自旋锁，原因和测量见[实现说明](implementation-notes.md#spin_lockh)。本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 385 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建、ASan + UBSan 和 Clang 14 的 TSan 下全部通过（390 项，无异常构建 383 项；`runtime_order_test` 41 项），ASan 和 TSan 没有报告；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。
+
+[`d9c5733` 的 CI](https://github.com/NickJerome/culib/actions/runs/39397112002) 24/24 通过，那次只改了文档：项数和 `8eacec7` 那次相同。唯一的 SKIP 是 MSVC debug 那一格的 `cet`：分到的 runner 不给 `/CETCOMPAT` 的程序开影子栈。栈溢出那条都以 `0xC00000FD` 结束。
+
+[`ce52538` 的 CI](https://github.com/NickJerome/culib/actions/runs/39397847169) 23/24：MSVC release 那一格的 `runtime_faults.stack_overflow` 又以 `0xC0000005` 结束，`CONTEXT` 11567 字节、扩展状态 0x608E7，和 `9bf6b0b` 那次一样分到了带 AMX 的机器，见[实现说明](implementation-notes.md#windows只提交用到的部分)。其余 23 个作业通过，项数和 `8eacec7` 那次相同；报告里没有 SKIP，诊断只有那一条失败。
+
+2026-10-20 全局队列换成单独的一把自旋锁，`notify_all` 这类一次叫醒一串的攒成一批排进就绪队列，原因和测量见[实现说明](implementation-notes.md#闲着的工作线程)。新加的 `condition_variable.notify_all_wakes_coroutines_and_plain_threads_in_one_go` 让 64 根协程（一半用 50 微秒的 `wait_for` 等）和 2 根普通线程反复等同一个条件变量，`notify_all` 50 轮，本机约 5 毫秒；临时让攒好的一批丢掉一根，这条就挂住。本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 386 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建、ASan + UBSan 和 Clang 14 的 TSan 下全部通过（391 项，无异常构建 384 项；`runtime_order_test` 41 项），ASan 和 TSan 没有报告；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。

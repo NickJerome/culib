@@ -63,6 +63,13 @@ struct run_queue {
         }
     }
 
+    // 把 from 整串接到队尾，from 变空。
+    void append(run_queue& from) noexcept {
+        list_splice_tail_init(from.items, items);
+        count += from.count;
+        from.count = 0;
+    }
+
     list_node items;
     std::size_t count;
 };
@@ -108,7 +115,7 @@ struct vcpu : list_node {
 
 struct runtime_state {
     runtime_state()
-        : count(0), slots(0), engine(0), polling(false), poll_notified(false), monitor_sleeping(false), queued(0),
+        : count(0), slots(0), engine(0), queued(0), polling(false), poll_notified(false), monitor_sleeping(false),
           idle(0), searching(0), last_poll(0) {}
 
     vcpu* workers[worker_limit];
@@ -116,8 +123,11 @@ struct runtime_state {
     unsigned slots;                // 名额数，就是 WAVVIX_MAXPROCS
     io_engine* engine;             // 整个进程一个
 
-    std::mutex mutex;              // 护着下面这一段
+    spin_lock global_lock;         // 护着 global，queued 也只在它里面改
     run_queue global;              // 普通线程里起的、叫醒的协程
+    std::atomic<std::size_t> queued;   // global 里有几根，取的一方不加锁先看一眼
+
+    std::mutex mutex;              // 护着下面这一段
     list_node sleepers;            // 有名额、睡在各自条件变量上的工作线程，后睡的先叫
     list_node spares;              // 名额交出去了的备用线程
     bool polling;                  // 有一根闲着的工作线程等在引擎里
@@ -126,7 +136,6 @@ struct runtime_state {
     bool monitor_sleeping;         // 监控线程在等有谁忙起来
     std::condition_variable monitor_woken;
     // 也只在 mutex 里改，往队列里放协程的线程不加锁先看一眼
-    std::atomic<std::size_t> queued;   // global 里有几根
     std::atomic<int> idle;             // 闲着的有名额的工作线程，含等在引擎里的那根
     std::atomic<int> searching;        // 被叫醒来找活、还没找到的
 
@@ -277,36 +286,35 @@ void wake_idle(runtime_state& state) {
     wake_up(state, target);
 }
 
-// 排进本线程的队列，返回排进去以后队里有几根。名额交出去了就不排、返回 0：队列已经跟着名额交走了
+// 整串排进本线程的队列，返回排进去以后队里有几根。名额交出去了就不排、返回 0：队列已经跟着名额交走了
 // （hand_off_locked），再排进来的没人跑。和交接拿同一把锁，所以两边至少有一边看得见对方。
-std::size_t push_local(vcpu& self, coroutine_control* body) {
+std::size_t push_local(vcpu& self, run_queue& ready) {
     std::lock_guard<spin_lock> held(self.lock);
     if (!self.has_slot.load()) {
         return 0;
     }
-    self.queue.push(body);
+    self.queue.append(ready);
     return self.queue.count;
 }
 
-void push_global(runtime_state& state, coroutine_control* body) {
-    wakeup target;
+// 整串排进全局队列，只拿一次锁、只叫一根闲着的线程：它找到活以后会再叫下一根（stop_searching）。
+void push_global(runtime_state& state, run_queue& ready) {
     {
-        std::lock_guard<std::mutex> held(state.mutex);
-        state.global.push(body);
-        state.queued.fetch_add(1);
-        wake_one_locked(state, target);
+        std::lock_guard<spin_lock> held(state.global_lock);
+        state.queued.fetch_add(ready.count);
+        state.global.append(ready);
     }
-    wake_up(state, target);
+    wake_idle(state);
 }
 
 // 叫醒的、让出的协程排回就绪队列：有名额的工作线程排进本线程的队列，否则排进全局队列。
 // 排进本线程的队里只有这一根时不叫醒闲着的线程：叫醒它的这根多半马上挂起或者跑完，接着就跑它，
 // 不用跨核。一直不让出的话，监控线程会叫人来偷（watch_workers_locked）。
-void make_ready(runtime_state& state, coroutine_control* body) {
+void make_ready(runtime_state& state, run_queue& ready) {
     vcpu* const self = this_worker();
-    const std::size_t queued = self ? push_local(*self, body) : 0;
+    const std::size_t queued = self ? push_local(*self, ready) : 0;
     if (queued == 0) {
-        push_global(state, body);
+        push_global(state, ready);
         return;
     }
     if (queued > 1) {
@@ -314,14 +322,42 @@ void make_ready(runtime_state& state, coroutine_control* body) {
     }
 }
 
-// 把挂起的协程放回就绪队列。它还在挂起的路上（没切出去）的话只留个记号，由它所在的工作线程
-// 切出来以后放回（run）。
-void make_runnable(runtime_state& state, coroutine_control* body) {
+void make_ready(runtime_state& state, coroutine_control* body) {
+    run_queue ready;
+    ready.push(body);
+    make_ready(state, ready);
+}
+
+// 挂起的协程已经切出去了就返回 true，由调用方排回就绪队列。还在挂起的路上（没切出去）的话只留个记号，
+// 由它所在的工作线程切出来以后排回（run），返回 false。
+bool take_parked(coroutine_control* body) {
     if (body->park_state.exchange(coroutine_woken, std::memory_order_acq_rel) != coroutine_parked) {
-        return;
+        return false;
     }
     body->park_state.store(coroutine_running, std::memory_order_relaxed);
-    make_ready(state, body);
+    return true;
+}
+
+void make_runnable(runtime_state& state, coroutine_control* body) {
+    if (take_parked(body)) {
+        make_ready(state, body);
+    }
+}
+
+// 和到点的一方抢这次唤醒：各做一次比较交换，先换成的说了算。
+bool claim_wake(park_token& token) {
+    int expected = park_waiting;
+    return token.state.compare_exchange_strong(expected, park_woken, std::memory_order_acq_rel,
+                                               std::memory_order_acquire);
+}
+
+// 普通线程：在它的等待器的锁里置位。等待者看到 delivered 才返回，所以这之前 token 一直在；
+// 放锁以后不再碰 token，而等待器跟着线程走，比这次等待活得久。
+void wake_thread(park_token& token) {
+    thread_parker& parker = *token.parker;
+    std::lock_guard<std::mutex> held(parker.mutex);
+    token.delivered = true;
+    parker.woken.notify_all();
 }
 
 coroutine_control* pop_local(vcpu& self) {
@@ -333,7 +369,7 @@ coroutine_control* take_global(runtime_state& state) {
     if (state.queued.load() == 0) {
         return 0;
     }
-    std::lock_guard<std::mutex> held(state.mutex);
+    std::lock_guard<spin_lock> held(state.global_lock);
     coroutine_control* const body = state.global.pop();
     if (body) {
         state.queued.fetch_sub(1);
@@ -362,17 +398,17 @@ coroutine_control* steal(runtime_state& state, vcpu& self) {
         }
         if (taken.count != 0) {
             std::lock_guard<spin_lock> held(self.lock);
-            taken.move_front(taken.count, self.queue);
+            self.queue.append(taken);
         }
         return body;
     }
     return 0;
 }
 
-// 全局队列和每根工作线程（含备用的）的队列里有没有协程。每把锁都拿一次，见 wake_idle。
-// 调用方拿着 state.mutex。
+// 全局队列和每根工作线程（含备用的）的队列里有没有协程。全局队列看 queued，每根线程的队列各拿一次锁，
+// 见 wake_idle。调用方拿着 state.mutex。
 bool queued_locked(runtime_state& state) {
-    if (state.global.count != 0) {
+    if (state.queued.load() != 0) {
         return true;
     }
     const unsigned count = state.count.load(std::memory_order_acquire);
@@ -821,10 +857,10 @@ void move_queue(vcpu& from, vcpu& to) {
     run_queue moved;
     {
         std::lock_guard<spin_lock> held(from.lock);
-        from.queue.move_front(from.queue.count, moved);
+        moved.append(from.queue);
     }
     std::lock_guard<spin_lock> held(to.lock);
-    moved.move_front(moved.count, to.queue);
+    to.queue.append(moved);
 }
 
 // 把卡住的那根的名额交给一根备用线程，没有备用的就新起一根。都不行就先不交：卡住的那根总会回来，
@@ -1034,12 +1070,14 @@ void coroutine_creation_failed(fiber_failure failure) {
 // 新起的协程是要并行跑的活：协程里起的排在本线程上，马上叫人来偷；协程外起的排进全局队列。
 void scheduler_submit(coroutine_control* body) {
     runtime_state& state = running();
+    run_queue ready;
+    ready.push(body);
     vcpu* const self = this_worker();
-    if (self && push_local(*self, body) != 0) {
+    if (self && push_local(*self, ready) != 0) {
         wake_idle(state);
         return;
     }
-    push_global(state, body);
+    push_global(state, ready);
 }
 
 // ---- 挂起与唤醒 --------------------------------------------------------------------
@@ -1075,23 +1113,38 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
 }
 
 bool scheduler_wake(park_token& token) {
-    int expected = park_waiting;
-    if (!token.state.compare_exchange_strong(expected, park_woken, std::memory_order_acq_rel,
-                                             std::memory_order_acquire)) {
+    if (!claim_wake(token)) {
         return false;
     }
-
     if (coroutine_control* const owner = token.owner) {
         make_runnable(running(), owner);
         return true;
     }
-    // 普通线程：在它的等待器的锁里置位。等待者看到 delivered 才返回，所以这之前 token 一直在；
-    // 放锁以后不再碰 token，而等待器跟着线程走，比这次等待活得久。
-    thread_parker& parker = *token.parker;
-    std::lock_guard<std::mutex> held(parker.mutex);
-    token.delivered = true;
-    parker.woken.notify_all();
+    wake_thread(token);
     return true;
+}
+
+// 叫醒的协程先攒在 ready 里，最后一次排进就绪队列。攒着的时候它们已经切出去了，只有这里碰得到。
+void scheduler_wake_all(list_node& waiters) {
+    run_queue ready;
+    while (!list_empty(waiters)) {
+        park_token& token = *static_cast<park_token*>(waiters.next);
+        list_del_init(token);
+        coroutine_control* const owner = token.owner;
+        if (!claim_wake(token)) {
+            continue;
+        }
+        if (!owner) {
+            wake_thread(token);
+            continue;
+        }
+        if (take_parked(owner)) {
+            ready.push(owner);
+        }
+    }
+    if (ready.count != 0) {
+        make_ready(running(), ready);
+    }
 }
 
 // ---- I/O --------------------------------------------------------------------------

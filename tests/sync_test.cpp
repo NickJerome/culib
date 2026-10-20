@@ -298,6 +298,60 @@ TEST(condition_variable, a_plain_thread_waits_until_a_coroutine_notifies) {
     EXPECT(value, ==, 7);
 }
 
+TEST(condition_variable, notify_all_wakes_coroutines_and_plain_threads_in_one_go) {
+    // notify_all 把叫醒的协程攒成一批排进就绪队列，普通线程逐个叫醒，等到点放弃了的跳过。
+    // 一半协程用很短的 wait_for 等，常常在通知之前或者正赶上通知时到点。
+    mutex lock;
+    condition_variable changed;
+    int generation = 0;
+    int arrived = 0;
+    const int coroutines = 64;
+    const int threads = 2;
+    const int rounds = 50;
+
+    auto waiter = [&](bool timed) {
+        for (int round = 0; round < rounds; ++round) {
+            std::lock_guard<mutex> held(lock);
+            ++arrived;
+            while (generation == round) {
+                if (timed) {
+                    changed.wait_for(lock, std::chrono::microseconds(50));
+                } else {
+                    changed.wait(lock);
+                }
+            }
+        }
+    };
+    wavvix::wait_group group;
+    for (int i = 0; i < coroutines; ++i) {
+        group.go(waiter, i % 2 == 0);
+    }
+    std::vector<std::thread> plain;
+    for (int i = 0; i < threads; ++i) {
+        plain.emplace_back(waiter, false);
+    }
+
+    for (int round = 0; round < rounds; ++round) {
+        for (;;) {
+            {
+                std::lock_guard<mutex> held(lock);
+                if (arrived == (round + 1) * (coroutines + threads)) {
+                    generation = round + 1;
+                    changed.notify_all();
+                    break;
+                }
+            }
+            std::this_thread::yield();
+        }
+    }
+    group.wait();
+    for (std::size_t i = 0; i < plain.size(); ++i) {
+        plain[i].join();
+    }
+
+    EXPECT(arrived, ==, rounds * (coroutines + threads));
+}
+
 TEST(condition_variable, wait_for_on_a_plain_thread_times_out_holding_the_lock) {
     mutex lock;
     condition_variable never;

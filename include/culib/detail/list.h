@@ -56,5 +56,20 @@ inline void list_splice_init(list_node& list, list_node& head) noexcept {
     list.prev = &list;
 }
 
+// 把 list 的节点整串接到 head 的末尾，list 变成空表。
+inline void list_splice_tail_init(list_node& list, list_node& head) noexcept {
+    if (list_empty(list)) {
+        return;
+    }
+    list_node* const first = list.next;
+    list_node* const last = list.prev;
+    first->prev = head.prev;
+    last->next = &head;
+    head.prev->next = first;
+    head.prev = last;
+    list.next = &list;
+    list.prev = &list;
+}
+
 }  // namespace detail
 }  // namespace wavvix

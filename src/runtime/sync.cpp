@@ -89,9 +89,7 @@ bool wake_one(list_node& waiters) {
 }
 
 void wake_all(list_node& waiters) {
-    while (park_token* const token = dequeue(waiters)) {
-        detail::scheduler_wake(*token);
-    }
+    detail::scheduler_wake_all(waiters);
 }
 
 // 排队，放开 held，被唤醒后再拿回 held。

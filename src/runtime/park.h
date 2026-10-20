@@ -65,5 +65,8 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout);
 // 任何线程都能调。返回 false 表示等待者已经到点放弃，这次唤醒作废。
 bool scheduler_wake(park_token& token);
 
+// 叫醒 waiters 上的所有等待者，同时把它们摘下来。叫醒的协程一次排进就绪队列，只叫一根闲着的线程。
+void scheduler_wake_all(list_node& waiters);
+
 }  // namespace detail
 }  // namespace wavvix
