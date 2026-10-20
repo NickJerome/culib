@@ -27,6 +27,7 @@
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -114,9 +115,6 @@ namespace {
 enum { coroutine_running, coroutine_parked, coroutine_woken };
 
 thread_local vcpu* current_vcpu = 0;
-
-// 普通线程的等待器。线程退出时随线程析构：那时它不可能还在等。
-thread_local thread_parker this_thread_parker;
 
 // 本线程是哪根工作线程，不是工作线程为 0。协程在挂起点可能换线程，而编译器可以把线程局部
 // 变量的地址留在寄存器里跨过那次切换（GCC bug 26461），所以只在这个不内联的函数里读它。
@@ -307,13 +305,38 @@ void make_runnable(runtime_state& state, coroutine_control* body) {
     }
 }
 
-// 普通线程：在它的等待器的锁里置位。等待者看到 delivered 才返回，所以这之前 token 一直在；
-// 放锁以后不再碰 token，而等待器跟着线程走，比这次等待活得久。
+// 普通线程睡在等待格上：一把锁加一个条件变量，按凭据的地址分到其中一格，同一格的线程一起被叫醒、
+// 各自看自己的 delivered。等待格从不释放：唤醒者放锁时等待者可能已经走了。不用 thread_local：
+// MinGW 上它的析构函数在存储释放以后才跑（GCC bug 80816）。
+struct parking_lot {
+    std::mutex mutex;
+    std::condition_variable woken;
+};
+
+const unsigned lot_bits = 6;   // 64 格
+
+parking_lot* make_lots() {
+    parking_lot* const lots = new (std::nothrow) parking_lot[std::size_t(1) << lot_bits];
+    if (!lots) {
+        fatal("wavvix: 内存不足，普通线程等不了");
+    }
+    return lots;
+}
+
+// 各线程的栈对齐方式相同，同一处等待的凭据地址低位也相同：乘一个奇数常数，取乘积的高位。
+parking_lot& lot_of(const park_token& token) {
+    static parking_lot* const lots = make_lots();
+    const std::uint64_t at = reinterpret_cast<std::uintptr_t>(&token);
+    return lots[(at * 0x9E3779B97F4A7C15ull) >> (64 - lot_bits)];
+}
+
+// 普通线程：在它的等待格的锁里置位。等待者看到 delivered 才返回，所以这之前 token 一直在；
+// 放锁以后不再碰 token。
 void wake_thread(park_token& token) {
-    thread_parker& parker = *token.parker;
-    std::lock_guard<std::mutex> held(parker.mutex);
+    parking_lot& lot = lot_of(token);
+    std::lock_guard<std::mutex> held(lot.mutex);
     token.delivered = true;
-    parker.woken.notify_all();
+    lot.woken.notify_all();
 }
 
 coroutine_control* pop_local(vcpu& self) {
@@ -991,14 +1014,14 @@ runtime_state& running() {
     return *state;
 }
 
-// 普通线程上的挂起：等唤醒者把 delivered 置上。返回 false 表示到点放弃了。
+// 普通线程上的挂起：在等待格上等唤醒者把 delivered 置上。返回 false 表示到点放弃了。
 bool park_thread(park_token& token, std::chrono::nanoseconds timeout) {
-    thread_parker& parker = *token.parker;
-    std::unique_lock<std::mutex> held(parker.mutex);
+    parking_lot& lot = lot_of(token);
+    std::unique_lock<std::mutex> held(lot.mutex);
     if (timeout.count() >= 0) {
         const park_instant deadline = deadline_after(timeout);
         while (!token.delivered) {
-            if (parker.woken.wait_until(held, deadline) == std::cv_status::timeout) {
+            if (lot.woken.wait_until(held, deadline) == std::cv_status::timeout) {
                 break;
             }
         }
@@ -1011,7 +1034,7 @@ bool park_thread(park_token& token, std::chrono::nanoseconds timeout) {
         }
     }
     while (!token.delivered) {
-        parker.woken.wait(held);
+        lot.woken.wait(held);
     }
     return true;
 }
@@ -1045,11 +1068,9 @@ void scheduler_submit(coroutine_control* body) {
 void park_prepare(park_token& token) noexcept {
     if (in_coroutine()) {
         token.owner = this_worker()->current.load(std::memory_order_relaxed);
-        token.parker = 0;
         return;
     }
     token.owner = 0;
-    token.parker = &this_thread_parker;
 }
 
 bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {

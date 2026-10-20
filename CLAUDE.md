@@ -125,6 +125,7 @@
 - **平台代码隔离**：平台相关实现按文件名后缀区分，即 `_win`（Windows）、`_posix`（Linux + macOS）、`_linux`、`_macos`，由 `xmake.lua` 按平台选择参与编译的文件。库里的 Windows 源文件一律经 `src/platform/win32.h` 包含 `<windows.h>`；编译器之间的差异（不内联、格式检查、是否开着 sanitizer）只在 `include/culib/detail/macros.h` 里判断一次。
 - **C++11 合规**：MSVC 没有 C++11 模式（最低即 C++14），因此以 GCC / Clang 在 `-std=c++11` 下的编译结果作为合规标准。
 - **公共类型的定义不能随语言标准变化**：culib 自己按 C++11 编译，使用方可以用更高标准。不要在高标准下别名到标准库对应物（如 `using string_view = std::string_view`），也不要只在高标准下给类增加成员；前者让公共函数签名不匹配，后者违反 ODR。跨标准转换使用两边定义相同的受约束构造模板。理由与实例见路线图 4.1。
+- **`thread_local` 只放平凡析构的类型**（指针、整数、POD 数组）。MinGW-w64 的 `thread_local` 走 emutls，析构函数在存储释放以后才跑（GCC bug 80816），线程退出时就是一次释放后使用。普通线程的等待器因此放在从不释放的等待格里，见[实现说明](docs/implementation-notes.md#普通线程上的等待)。
 - **头文件**：使用 `#pragma once`；头文件中不写 `using namespace`。
 - **公共头文件存成带 BOM 的 UTF-8**（`include/` 下的全部 `.h`）。头文件里有中文注释，而使用方在非 UTF-8 代码页（如中文 Windows 的 936）下不加 `/utf-8` 编译时，MSVC 会对每个头文件报 C4819，开了 `/WX` 就是编译失败。**BOM 让文件自己说明编码，不要求使用方加任何标志**——culib 自己的 `set_encodings("utf-8")` 只管 culib 的编译单元，管不到使用方的。`src/` / `tests/` / `examples/` 不需要 BOM，它们只由 culib 自己的构建编译。CI 的 `headers` job 会拦。
 - **公共头文件里的字符串字面量只用 ASCII。** BOM 只管源文件怎么读，管不到字面量：MSVC 把字面量转成执行字符集，使用方不加 `/utf-8` 时就是系统代码页，代码页里没有的字符报 C4566，`/WX` 下编译失败。所以要给使用方看的中文诊断放进 `.cpp`，头文件只传一个枚举，例如 `sync.h` 的 `detail::channel_error`。注释不受影响。
