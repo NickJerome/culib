@@ -175,6 +175,7 @@ result<void> socket::connect(const endpoint& peer, std::chrono::nanoseconds time
         close();
         return connected.error();
     }
+    detail::disable_nagle(native_);
     phase_ = phase::connected;
     return result<void>();
 }
@@ -222,6 +223,7 @@ result<socket> socket::accept(std::chrono::nanoseconds timeout) {
     if (adopted.is_err()) {
         return adopted.error();   // client 析构时关掉它
     }
+    detail::disable_nagle(client.native_);
     return result<socket>(std::move(client));
 }
 

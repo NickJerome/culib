@@ -5,6 +5,7 @@
 
 #include <culib/coroutine.h>
 #include <culib/net.h>
+#include <culib/stopwatch.h>
 #include <culib/test.h>
 
 #include <atomic>
@@ -59,6 +60,26 @@ TEST(net, rejects_hostname_and_embedded_nul_in_numeric_parser) {
     if (nul.is_err()) {
         EXPECT(nul.error().kind(), ==, error_kind::invalid_argument);
     }
+}
+
+TEST(net, takes_only_dotted_decimal_ipv4) {
+    // 这些在 glibc 上都会被 getaddrinfo 接受（127.1 补零，010 按八进制是 8），各平台不一样。
+    // 只由数字和点组成的一律按四段十进制解析，和 Go 的 ParseIP 一样。
+    const char* const refused[] = {"127.1",  "010.0.0.1", "256.0.0.1", "1.2.3.4.5",
+                                   "1..2.3", "1.2.3.",    "0127.0.0.1"};
+    for (std::size_t i = 0; i < sizeof refused / sizeof refused[0]; ++i) {
+        const wavvix::result<endpoint> parsed = endpoint::parse(refused[i], 80);
+        EXPECT(parsed.is_err(), ==, true);
+        if (parsed.is_err()) {
+            EXPECT(parsed.error().kind(), ==, error_kind::invalid_argument);
+        }
+        EXPECT(wavvix::net::resolve(refused[i], 80).is_err(), ==, true);
+    }
+
+    const wavvix::result<endpoint> zero = endpoint::parse("0.0.0.0", 80);
+    EXPECT(zero.is_ok(), ==, true);
+    const wavvix::result<endpoint> top = endpoint::parse("255.255.255.255", 80);
+    EXPECT(top.is_ok(), ==, true);
 }
 
 TEST(net, resolves_localhost_without_assuming_address_order) {
@@ -149,6 +170,58 @@ TEST(net, tcp_loopback_exchanges_data_and_reports_eof) {
     EXPECT(request, ==, "ping");
     EXPECT(reply, ==, "pong");
     EXPECT(server_saw_eof, ==, true);
+}
+
+TEST(net, small_writes_go_out_without_waiting_for_an_ack) {
+    // 一条消息分两次写（先写头、再写体）是常见写法。开着 Nagle 时第二次写要等第一段被确认，而对端的确认
+    // 又会延迟（Linux 约 40 毫秒，Windows 约 200 毫秒），一来一回就卡住。两端都关掉 Nagle 才不卡。
+    socket listener(protocol::tcp);
+    listener.bind(endpoint::parse("127.0.0.1", 0).value()).value();
+    listener.listen().value();
+    const endpoint local = listener.local_endpoint().value();
+
+    static const int rounds = 20;
+    wavvix::wait_group group;
+    bool served = false;
+    std::chrono::nanoseconds took(0);
+    group.go([&] {
+        wavvix::result<socket> accepted = listener.accept(ms(1000));
+        if (accepted.is_err()) {
+            return;
+        }
+        for (int i = 0; i < rounds; ++i) {
+            char two[2];
+            if (accepted.value().read_exactly(two, sizeof two, ms(2000)).is_err()) {
+                return;
+            }
+            if (accepted.value().write("a", 1, ms(2000)).is_err() ||
+                accepted.value().write("b", 1, ms(2000)).is_err()) {
+                return;
+            }
+        }
+        served = true;
+    });
+    group.go([&] {
+        socket connected(protocol::tcp);
+        if (connected.connect(local, ms(1000)).is_err()) {
+            return;
+        }
+        const wavvix::stopwatch watch;
+        for (int i = 0; i < rounds; ++i) {
+            if (connected.write("x", 1, ms(2000)).is_err() || connected.write("y", 1, ms(2000)).is_err()) {
+                return;
+            }
+            char two[2];
+            if (connected.read_exactly(two, sizeof two, ms(2000)).is_err()) {
+                return;
+            }
+        }
+        took = watch.elapsed();
+    });
+    group.wait();
+
+    EXPECT(served, ==, true);
+    EXPECT(took < ms(300), ==, true);
 }
 
 // 服务重启后要能马上在原端口监听：服务端先关的连接会在这个端口上留下 TIME_WAIT。

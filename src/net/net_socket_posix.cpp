@@ -7,6 +7,7 @@
 #include <string>
 
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -54,6 +55,11 @@ result<std::uintptr_t> open_socket(protocol type, address_family family) {
 
 void close_socket(std::uintptr_t native) noexcept {
     ::close(static_cast<int>(native));
+}
+
+void disable_nagle(std::uintptr_t native) noexcept {
+    const int enabled = 1;
+    (void)::setsockopt(static_cast<int>(native), IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof enabled);
 }
 
 result<void> bind_socket(std::uintptr_t native, const endpoint& local) {

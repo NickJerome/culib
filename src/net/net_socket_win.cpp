@@ -79,6 +79,12 @@ void close_socket(std::uintptr_t native) noexcept {
     ::closesocket(static_cast<SOCKET>(native));
 }
 
+void disable_nagle(std::uintptr_t native) noexcept {
+    const BOOL enabled = TRUE;
+    (void)::setsockopt(static_cast<SOCKET>(native), IPPROTO_TCP, TCP_NODELAY,
+                       reinterpret_cast<const char*>(&enabled), sizeof enabled);
+}
+
 result<void> bind_socket(std::uintptr_t native, const endpoint& local) {
     socket_address address;
     encode_address(local, address);

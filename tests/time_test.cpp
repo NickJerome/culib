@@ -102,9 +102,11 @@ TEST(time, writes_into_the_callers_buffer) {
     // 不写 '\0'，所以要用返回的长度
     EXPECT(written, ==, 24u);
 
-    // 容量不足时返回 0 且不写入
+    // 刚好放得下就写；差一个字节就返回 0 且不写入
+    char exact[24];
+    EXPECT(format_time(point, precision::millis, exact, sizeof exact), ==, 24u);
     std::memset(buffer, 'x', sizeof buffer);
-    EXPECT(format_time(point, precision::millis, buffer, 8), ==, 0u);
+    EXPECT(format_time(point, precision::millis, buffer, 23), ==, 0u);
     EXPECT(buffer[0], ==, 'x');
 }
 

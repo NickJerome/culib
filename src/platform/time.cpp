@@ -102,13 +102,11 @@ std::size_t write_year(int year, char* out) noexcept {
 // 需要的最大字节数：年份最多 11 位（含符号）+ "-MM-DDTHH:MM:SS" 15 + ".mmm" 4 + "+HH:MM" 6
 const std::size_t needed_capacity = 36;
 
+// 先写进自己的缓冲区，放得下再拷给调用方：长度要写完才知道。
 std::size_t write_parts(const date_time& parts, precision digits, char* buffer,
                         std::size_t capacity) noexcept {
-    if (capacity < needed_capacity) {
-        return 0;
-    }
-
-    char* p = buffer + write_year(parts.year, buffer);
+    char text[needed_capacity];
+    char* p = text + write_year(parts.year, text);
     *p++ = '-';
     write_pad2(p, parts.month);
     p += 2;
@@ -143,7 +141,12 @@ std::size_t write_parts(const date_time& parts, precision digits, char* buffer,
         write_pad2(p, magnitude % 60);
         p += 2;
     }
-    return static_cast<std::size_t>(p - buffer);
+    const std::size_t length = static_cast<std::size_t>(p - text);
+    if (length > capacity) {
+        return 0;
+    }
+    std::memcpy(buffer, text, length);
+    return length;
 }
 
 }  // namespace

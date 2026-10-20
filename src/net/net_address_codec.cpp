@@ -56,9 +56,47 @@ int winsock_startup_error() {
 
 namespace {
 
+bool digits_and_dots(string_view host) {
+    for (std::size_t i = 0; i < host.size(); ++i) {
+        if (host[i] != '.' && (host[i] < '0' || host[i] > '9')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 点分十进制的 IPv4：四段，每段 0 到 255，不带前导零。调用方保证只有数字和点。
+bool dotted_quad(string_view host) {
+    unsigned parts = 0;
+    std::size_t at = 0;
+    for (;;) {
+        std::size_t end = at;
+        unsigned value = 0;
+        while (end < host.size() && host[end] != '.' && end - at < 4) {
+            value = value * 10 + static_cast<unsigned>(host[end] - '0');
+            ++end;
+        }
+        const std::size_t length = end - at;
+        if (length == 0 || length > 3 || (length > 1 && host[at] == '0') || value > 255) {
+            return false;
+        }
+        ++parts;
+        if (end == host.size()) {
+            return parts == 4;
+        }
+        at = end + 1;
+    }
+}
+
 result<std::vector<endpoint>> lookup(string_view host, std::uint16_t port, bool numeric) {
     if (host.empty() || host.find('\0') != string_view::npos) {
         return make_error(error_kind::invalid_argument, "host must be nonempty and contain no NUL");
+    }
+    // 只由数字和点组成的不交给系统：glibc 照 inet_aton 接受 127.1、把 010 当八进制，各平台不一样。
+    if (digits_and_dots(host) && !dotted_quad(host)) {
+        return make_error(error_kind::invalid_argument,
+                          host.to_string() + " is not a dotted-decimal IPv4 address "
+                                             "(four parts from 0 to 255, no leading zeros)");
     }
     result<std::vector<endpoint>> addresses = detail::lookup_native(host, port, numeric);
     if (addresses.is_ok() && addresses.value().empty()) {

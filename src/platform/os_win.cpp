@@ -30,16 +30,20 @@ error from_last_error(string_view what, DWORD code) {
                                 to_string(static_cast<unsigned long long>(code)));
 }
 
-// 关机 / 关窗口 / 注销 / Ctrl-C / Ctrl-Break 五种都当「该停了」。
-// 系统用独立线程调用；关闭、注销、关机仍受 Windows 的强制退出规则限制。
+// 关机 / 关窗口 / 注销 / Ctrl-C / Ctrl-Break 五种都当「该停了」。系统用独立线程调用。
+// 关窗口、注销、关机时这个函数一返回，系统就结束进程，收尾代码跑不到。所以置位以后在这里一直等，
+// 由程序自己收尾退出；系统等满时限（关窗口约 5 秒）会强制结束。Go 也这样做。
 BOOL WINAPI console_handler(DWORD event) {
     switch (event) {
         case CTRL_C_EVENT:
         case CTRL_BREAK_EVENT:
+            request_stop();
+            return TRUE;
         case CTRL_CLOSE_EVENT:
         case CTRL_LOGOFF_EVENT:
         case CTRL_SHUTDOWN_EVENT:
             request_stop();
+            ::Sleep(INFINITE);
             return TRUE;
         default:
             return FALSE;
