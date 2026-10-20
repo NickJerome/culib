@@ -313,10 +313,31 @@ result<void> remove_link_or_file(string_view path) {
         return make_error(error_kind::already_exists,
                           path.to_string() + " 是目录，请走删空目录的接口");
     }
+    if (::DeleteFileW(wide.value().c_str())) {
+        return result<void>();
+    }
+    // 只读文件删不掉（git 仓库的对象文件就是只读的）：去掉只读位再删一次，Go 的 os.Remove 也这样做。
+    const DWORD code = ::GetLastError();
+    if (code != ERROR_ACCESS_DENIED || !(attributes & FILE_ATTRIBUTE_READONLY) ||
+        !::SetFileAttributesW(wide.value().c_str(), attributes & ~FILE_ATTRIBUTE_READONLY)) {
+        return from_last_error("删除", path, code);
+    }
     if (!::DeleteFileW(wide.value().c_str())) {
         return from_last_error("删除", path, ::GetLastError());
     }
     return result<void>();
+}
+
+result<std::string> make_absolute(string_view target) {
+    const result<std::wstring> wide = utf8_to_wide(target);
+    if (wide.is_err()) {
+        return std::move(wide).error();
+    }
+    const result<std::wstring> resolved = full_path(wide.value(), target);
+    if (resolved.is_err()) {
+        return std::move(resolved).error();
+    }
+    return wide_to_utf8(resolved.value().data(), resolved.value().size());
 }
 
 }  // namespace detail
@@ -570,9 +591,9 @@ result<void> rename_native(string_view from, string_view to) {
     if (wide_to.is_err()) {
         return std::move(wide_to).error();
     }
-    // REPLACE_EXISTING：和 POSIX 的 rename 一样顶掉已有的目标。COPY_ALLOWED：跨卷时退化成复制再删。
-    if (!::MoveFileExW(wide_from.value().c_str(), wide_to.value().c_str(),
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+    // REPLACE_EXISTING：和 POSIX 的 rename 一样顶掉已有的目标。跨卷时和 POSIX 一样失败
+    // （ERROR_NOT_SAME_DEVICE），不悄悄复制一份再删：那不是原子的，大文件还要很久。
+    if (!::MoveFileExW(wide_from.value().c_str(), wide_to.value().c_str(), MOVEFILE_REPLACE_EXISTING)) {
         return from_last_error("重命名", from, ::GetLastError());
     }
     return result<void>();

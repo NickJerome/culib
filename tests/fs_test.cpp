@@ -10,10 +10,12 @@
 #include "scratch_name.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -325,6 +327,26 @@ TEST(fs, queries_existence_and_kind) {
     EXPECT(when.is_ok(), ==, true);
     // 2020 年之后，确认不是纪元或垃圾。单位写在类型里，不会拿秒当毫秒
     EXPECT(when.value_or(wavvix::timestamp()).unix_seconds() > 1600000000, ==, true);
+}
+
+TEST(fs, keeps_milliseconds_in_the_modification_time) {
+    // 修改时间原来在 POSIX 上截成整秒。等到一秒的中间再写，截成整秒的话毫秒部分是 0。
+    const scratch area("mtime_millis");
+    if (!EXPECT(area.ok(), ==, true)) {
+        return;
+    }
+    while (wavvix::timestamp::now().unix_millis() % 1000 < 300 ||
+           wavvix::timestamp::now().unix_millis() % 1000 > 700) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const fs::path file = area.at("fresh.txt");
+    if (!EXPECT(write_all(file, "x").is_ok(), ==, true)) {
+        return;
+    }
+    const result<wavvix::timestamp> modified = fs::last_write_time(file);
+    if (EXPECT(modified.is_ok(), ==, true)) {
+        EXPECT(modified.value().unix_millis() % 1000 != 0, ==, true);
+    }
 }
 
 TEST(fs, distinguishes_why_it_failed) {
@@ -855,6 +877,57 @@ TEST(fs, reads_windows_file_time_before_1970) {
     }
 }
 
+TEST(fs, resolves_drive_relative_windows_paths) {
+    // "\foo" 是当前盘的根下的 foo，"C:foo" 是 C 盘当前目录下的 foo。原来都直接接在当前目录后面。
+    const result<fs::path> here = fs::current_path();
+    if (!EXPECT(here.is_ok(), ==, true)) {
+        return;
+    }
+    const std::string cwd = here.value().string();
+    if (!EXPECT(cwd.size() >= 3 && cwd[1] == ':', ==, true)) {
+        return;   // 当前目录在 UNC 路径上时这条不适用
+    }
+    const std::string drive = cwd.substr(0, 2);
+
+    const result<fs::path> rooted = fs::absolute("\\culib_rooted");
+    if (EXPECT(rooted.is_ok(), ==, true)) {
+        EXPECT(rooted.value().string(), ==, drive + "\\culib_rooted");
+    }
+    const result<fs::path> relative = fs::absolute(drive + "culib_relative");
+    if (EXPECT(relative.is_ok(), ==, true)) {
+        EXPECT(relative.value().string(), ==, (here.value() / "culib_relative").string());
+    }
+}
+
+TEST(fs, removes_read_only_files) {
+    // git 仓库的对象文件是只读的；DeleteFileW 删不掉只读文件，含 .git 的目录树原来删不了。
+    const scratch area("read_only_remove");
+    if (!EXPECT(area.ok(), ==, true)) {
+        return;
+    }
+    const fs::path tree = area.at("tree");
+    if (!EXPECT(fs::create_directory(tree).is_ok(), ==, true)) {
+        return;
+    }
+    const fs::path single = area.at("single.txt");
+    const fs::path inside = tree / "inside.txt";
+    if (!EXPECT(write_all(single, "x").is_ok() && write_all(inside, "y").is_ok(), ==, true)) {
+        return;
+    }
+    const std::wstring single_wide = wavvix::utf8_to_wide(single.string()).value();
+    const std::wstring inside_wide = wavvix::utf8_to_wide(inside.string()).value();
+    const bool marked = ::SetFileAttributesW(single_wide.c_str(), FILE_ATTRIBUTE_READONLY) &&
+                        ::SetFileAttributesW(inside_wide.c_str(), FILE_ATTRIBUTE_READONLY);
+    if (!EXPECT(marked, ==, true)) {
+        return;
+    }
+
+    EXPECT(fs::remove(single).is_ok(), ==, true);
+    EXPECT(is_false(fs::exists(single)), ==, true);
+    EXPECT(fs::remove_all(tree).is_ok(), ==, true);
+    EXPECT(is_false(fs::exists(tree)), ==, true);
+}
+
 TEST(fs, remove_all_does_not_follow_a_directory_junction) {
     const scratch area("junction_remove");
     if (!EXPECT(area.ok(), ==, true)) {
@@ -1104,6 +1177,32 @@ TEST(fs, copy_preserves_posix_permissions) {
     }
     if (EXPECT(::stat(target.string().c_str(), &info), ==, 0)) {
         EXPECT(info.st_mode & 0777, ==, 0640);
+    }
+}
+
+TEST(fs, treats_a_link_to_a_directory_as_an_existing_directory) {
+    // macOS 的 /tmp 就是这样的链接。create_directory 原来不跟随链接判断，报「已存在但不是目录」，
+    // create_directories 却跟随，同一个路径两个函数说法不一样。
+    const scratch area("link_to_directory");
+    if (!EXPECT(area.ok(), ==, true)) {
+        return;
+    }
+    const fs::path target = area.at("target");
+    if (!EXPECT(fs::create_directory(target).is_ok(), ==, true)) {
+        return;
+    }
+    const fs::path link = area.at("link");
+    if (!EXPECT(::symlink("target", link.string().c_str()), ==, 0)) {
+        return;
+    }
+
+    const result<bool> one = fs::create_directory(link);
+    if (EXPECT(one.is_ok(), ==, true)) {
+        EXPECT(one.value(), ==, false);
+    }
+    const result<bool> tree = fs::create_directories(link);
+    if (EXPECT(tree.is_ok(), ==, true)) {
+        EXPECT(tree.value(), ==, false);
     }
 }
 

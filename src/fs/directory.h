@@ -30,6 +30,10 @@ enum class follow_links { no, yes };
 // 「不存在」返回 ok(missing)；错误只留给「问不成」的情况（权限不足之类）。
 result<entry_kind> query(string_view path, follow_links follow);
 
+// 相对路径变成绝对路径，不碰磁盘上的东西。POSIX 接在当前目录后面；Windows 交给 GetFullPathNameW，
+// 它认识 "\foo"（当前盘的根）和 "D:foo"（D 盘的当前目录）。
+result<std::string> make_absolute(string_view path);
+
 // 建一级目录。已存在（不管是什么）报 already_exists，由调用方判断类型再决定。
 result<void> make_directory(string_view path);
 

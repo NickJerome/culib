@@ -84,10 +84,10 @@ result<bool> create_one(const std::string& target) {
     if (made.error().kind() != error_kind::already_exists) {
         return std::move(made).error();
     }
-    // already_exists 是平台原语「那里有东西」的信号，是目录才算幂等成功。
-    // 两轮是给并发删除留的余地：查询说没了、再建一次；还不行就如实报。
+    // already_exists 是平台原语「那里有东西」的信号，是目录（或者指向目录的链接，比如 macOS 的 /tmp）
+    // 才算幂等成功。两轮是给并发删除留的余地：查询说没了、再建一次；还不行就如实报。
     for (int attempt = 0; attempt != 2; ++attempt) {
-        result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
+        result<detail::entry_kind> kind = detail::query(target, detail::follow_links::yes);
         if (kind.is_err()) {
             return std::move(kind).error();
         }
@@ -302,11 +302,11 @@ result<path> absolute(const path& target) {
     if (target.is_absolute()) {
         return target.lexically_normal();   // 纯字符串，一个系统调用都不发
     }
-    result<path> base = current_path();
-    if (base.is_err()) {
-        return std::move(base).error();
+    result<std::string> resolved = detail::make_absolute(target.string());
+    if (resolved.is_err()) {
+        return std::move(resolved).error();
     }
-    return (base.value() / target).lexically_normal();
+    return path(std::move(resolved).value()).lexically_normal();
 }
 
 // --- 查询 -------------------------------------------------------------------------

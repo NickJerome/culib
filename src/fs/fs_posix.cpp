@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -395,7 +396,19 @@ result<wavvix::timestamp> last_write_time_native(string_view target) {
     if (::stat(native.get(), &info) != 0) {
         return from_errno("取修改时间", target, errno);
     }
-    return timestamp::from_unix_seconds(static_cast<std::int64_t>(info.st_mtime));
+    // POSIX 2008 的名字是 st_mtim，macOS 叫 st_mtimespec。
+#if defined(__APPLE__)
+    const struct timespec& modified = info.st_mtimespec;
+#else
+    const struct timespec& modified = info.st_mtim;
+#endif
+    // 时刻按毫秒存：秒数再大就放不下。这是文件系统里的数据，不该让进程终止。
+    const std::int64_t seconds = static_cast<std::int64_t>(modified.tv_sec);
+    const std::int64_t limit = (std::numeric_limits<std::int64_t>::max)() / 1000 - 1;
+    if (seconds > limit || seconds < -limit) {
+        return make_error(error_kind::out_of_range, "修改时间超出范围：" + target.to_string());
+    }
+    return timestamp::from_unix_millis(seconds * 1000 + static_cast<std::int64_t>(modified.tv_nsec / 1000000));
 }
 
 int open_retrying(const char* path, int flags) {
@@ -552,6 +565,18 @@ result<void> set_current_directory_native(string_view directory) {
 }
 
 }  // namespace
+
+namespace detail {
+
+result<std::string> make_absolute(string_view target) {
+    result<path> base = current_directory_native();
+    if (base.is_err()) {
+        return std::move(base).error();
+    }
+    return (base.value() / path(target.to_string())).string();
+}
+
+}  // namespace detail
 
 result<std::uint64_t> file_size(const path& target) {
     return file_size_native(target.string());
