@@ -752,6 +752,38 @@ TEST(fs, lists_directories_with_the_iterator) {
     EXPECT(path_ok, ==, true);
 }
 
+TEST(fs, entries_answer_their_type_from_the_listing) {
+    // 遍历拿到的条目记着那一刻的类型：东西删掉以后再问，回答的还是遍历时的类型，不再查磁盘。
+    const scratch area("entry_kind");
+    if (!EXPECT(area.ok(), ==, true)) {
+        return;
+    }
+    if (!EXPECT(fs::create_directory(area.at("sub")).is_ok() && write_all(area.at("file"), "x").is_ok(),
+                ==, true)) {
+        return;
+    }
+
+    std::vector<fs::directory_entry> entries;
+    for (const result<fs::directory_entry>& item : fs::directory_iterator(area.root())) {
+        if (!EXPECT(item.is_ok(), ==, true)) {
+            return;
+        }
+        entries.push_back(item.value());
+    }
+    if (!EXPECT(entries.size(), ==, 2u)) {
+        return;
+    }
+    EXPECT(fs::remove_all(area.at("sub")).is_ok() && fs::remove(area.at("file")).is_ok(), ==, true);
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const bool is_sub = entries[i].path().filename().string() == "sub";
+        EXPECT(is_true(entries[i].is_directory()), ==, is_sub);
+        EXPECT(is_true(entries[i].is_regular_file()), ==, !is_sub);
+    }
+
+    // 自己用路径建的条目每次都查：东西没了就是 false
+    EXPECT(is_false(fs::directory_entry(area.at("sub")).is_directory()), ==, true);
+}
+
 TEST(fs, iteration_reports_open_failure_as_the_first_element) {
     const scratch area("list_errors");
     if (!EXPECT(area.ok(), ==, true)) {
@@ -1178,6 +1210,33 @@ TEST(fs, copy_preserves_posix_permissions) {
     if (EXPECT(::stat(target.string().c_str(), &info), ==, 0)) {
         EXPECT(info.st_mode & 0777, ==, 0640);
     }
+}
+
+TEST(fs, entries_follow_a_link_to_a_directory) {
+    // 枚举给的类型是「链接」，要跟进到目标再回答：指向目录的链接 is_directory 是 true。
+    const scratch area("entry_link");
+    if (!EXPECT(area.ok(), ==, true)) {
+        return;
+    }
+    if (!EXPECT(fs::create_directory(area.at("target")).is_ok(), ==, true)) {
+        return;
+    }
+    if (!EXPECT(::symlink("target", area.at("link").string().c_str()), ==, 0)) {
+        return;
+    }
+    bool seen = false;
+    for (const result<fs::directory_entry>& item : fs::directory_iterator(area.root())) {
+        if (!EXPECT(item.is_ok(), ==, true)) {
+            return;
+        }
+        if (item.value().path().filename().string() != "link") {
+            continue;
+        }
+        seen = true;
+        EXPECT(is_true(item.value().is_directory()), ==, true);
+        EXPECT(is_false(item.value().is_regular_file()), ==, true);
+    }
+    EXPECT(seen, ==, true);
 }
 
 TEST(fs, treats_a_link_to_a_directory_as_an_existing_directory) {

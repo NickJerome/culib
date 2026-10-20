@@ -255,22 +255,19 @@ result<void> remove_link_or_file(string_view path) {
         return invalid_path();
     }
 
-    // 先 lstat 分清楚：真实目录必须报 already_exists（Linux 上 unlink 对目录的
-    // errno 随权限不同在 EISDIR / EPERM 之间摇摆，不能只靠映射）。lstat 看得见
-    // 悬空链接自己，unlink 删的也正是链接本身，目标原样不动。
+    // 先删，删掉了就是一次系统调用。unlink 删的是链接本身，目标原样不动。
+    if (::unlink(native.get()) == 0) {
+        return result<void>();
+    }
+    // 对目录 unlink，Linux 报 EISDIR，macOS 和某些权限下报 EPERM：这两种再 lstat 一次分清楚，
+    // 真实目录报 already_exists。
+    const int failure = errno;
     struct stat info;
-    if (::lstat(native.get(), &info) == 0 && S_ISDIR(info.st_mode)) {
+    if ((failure == EISDIR || failure == EPERM) && ::lstat(native.get(), &info) == 0 && S_ISDIR(info.st_mode)) {
         return make_error(error_kind::already_exists,
                           path.to_string() + " 是目录，空目录请走 remove_empty_directory");
     }
-    if (::unlink(native.get()) != 0) {
-        if (errno == EISDIR) {   // lstat 和 unlink 之间被换成了目录
-            return make_error(error_kind::already_exists,
-                              path.to_string() + " 是目录，空目录请走 remove_empty_directory");
-        }
-        return from_errno("删除", path, errno);
-    }
-    return result<void>();
+    return from_errno("删除", path, failure);
 }
 
 // --- 原生目录句柄 ------------------------------------------------------------------

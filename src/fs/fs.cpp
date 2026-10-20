@@ -205,39 +205,30 @@ result<void> list_children(const std::string& target, child_list& children) {
     }
 }
 
-result<void> remove_tree(const std::string& target, std::uint64_t& count);
+result<void> remove_directory(const std::string& target, std::uint64_t& count);
 
-// 枚举给不出类型（POSIX 的 DT_UNKNOWN）时先查一次，再决定要不要下潜。链接绝不跟进。
-result<void> remove_child(const std::string& child, detail::entry_kind hint, std::uint64_t& count) {
-    if (hint == detail::entry_kind::unknown) {
-        const result<detail::entry_kind> kind = detail::query(child, detail::follow_links::no);
-        if (kind.is_err()) {
-            return std::move(kind).error();
+// 按类型删一项：目录下潜，别的（文件、链接（含指向目录的）、管道设备）删条目自己。链接绝不跟进。
+// 枚举给不出类型（POSIX 的 DT_UNKNOWN）时先查一次。
+result<void> remove_entry(const std::string& target, detail::entry_kind kind, std::uint64_t& count) {
+    if (kind == detail::entry_kind::unknown) {
+        const result<detail::entry_kind> found = detail::query(target, detail::follow_links::no);
+        if (found.is_err()) {
+            return std::move(found).error();
         }
-        if (kind.value() == detail::entry_kind::missing) {
-            return result<void>();   // 并发里已经没了
-        }
-        hint = kind.value();
+        kind = found.value();
     }
-    if (hint == detail::entry_kind::directory) {
-        return remove_tree(child, count);
+    if (kind == detail::entry_kind::missing) {
+        return result<void>();   // 并发里已经没了
     }
-    return remove_leaf(child, count);
+    if (kind == detail::entry_kind::directory) {
+        return remove_directory(target, count);
+    }
+    return remove_leaf(target, count);
 }
 
+// 删一个目录和它下面的一切。子项的类型用枚举顺带给的，是目录才下潜，不再逐个查。
 // 稳定目录树中的链接只删链接本身。路径在操作期间若被并发替换，不能保证不进入替换后的目标。
-result<void> remove_tree(const std::string& target, std::uint64_t& count) {
-    const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
-    if (kind.is_err()) {
-        return std::move(kind).error();
-    }
-    if (kind.value() == detail::entry_kind::missing) {
-        return result<void>();
-    }
-    if (kind.value() != detail::entry_kind::directory) {
-        return remove_leaf(target, count);   // 文件、链接（含指向目录的）、管道设备：删条目自己
-    }
-
+result<void> remove_directory(const std::string& target, std::uint64_t& count) {
     child_list children;
     const result<void> listed = list_children(target, children);
     if (listed.is_err()) {
@@ -245,7 +236,7 @@ result<void> remove_tree(const std::string& target, std::uint64_t& count) {
     }
     for (std::size_t i = 0; i != children.size(); ++i) {
         const result<void> status =
-            remove_child(join_native(target, children[i].first), children[i].second, count);
+            remove_entry(join_native(target, children[i].first), children[i].second, count);
         if (status.is_err()) {
             return status;
         }
@@ -260,28 +251,23 @@ result<void> remove_tree(const std::string& target, std::uint64_t& count) {
     return result<void>();
 }
 
+// 根的类型不知道，先查一次（不跟进链接）。
 result<std::uint64_t> remove_counting(const std::string& target) {
     std::uint64_t count = 0;
-    const result<void> status = remove_tree(target, count);
+    const result<void> status = remove_entry(target, detail::entry_kind::unknown, count);
     if (status.is_err()) {
         return std::move(status).error();
     }
     return count;
 }
 
+// 先当文件或链接删，常见的情况一次系统调用；报「是目录」（already_exists）再走 rmdir 语义，
+// 非空照样报 already_exists。链接删的是链接本身，绝不跟进。Go 的 os.Remove 也是先删再看。
 result<bool> remove_one(const std::string& target) {
-    const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::no);
-    if (kind.is_err()) {
-        return std::move(kind).error();
+    result<void> removed = detail::remove_link_or_file(target);
+    if (removed.is_err() && removed.error().kind() == error_kind::already_exists) {
+        removed = detail::remove_empty_directory(target);
     }
-    if (kind.value() == detail::entry_kind::missing) {
-        return false;
-    }
-    // 目录走 rmdir 语义（非空报 already_exists 的安全阀），其余删条目自己——
-    // follow::no 的 query 已把链接归 link，绝不会被当成目录跟进删。
-    const result<void> removed = kind.value() == detail::entry_kind::directory
-                                     ? detail::remove_empty_directory(target)
-                                     : detail::remove_link_or_file(target);
     if (removed.is_err()) {
         if (removed.error().kind() == error_kind::not_found) {
             return false;   // 并发里刚被别人删掉
@@ -367,22 +353,44 @@ result<std::uint64_t> remove_all(const path& root) {
 // --- 遍历 -------------------------------------------------------------------------
 
 // 成员函数 path() 遮蔽了类型名 path，这里必须写全限定名。
-directory_entry::directory_entry(const wavvix::fs::path& target) : path_(target) {}
+directory_entry::directory_entry() : kind_(detail::entry_kind::unknown) {}
+
+directory_entry::directory_entry(const wavvix::fs::path& target)
+    : path_(target), kind_(detail::entry_kind::unknown) {}
+
+directory_entry::directory_entry(const wavvix::fs::path& target, detail::entry_kind kind)
+    : path_(target), kind_(kind) {}
 
 const wavvix::fs::path& directory_entry::path() const noexcept { return path_; }
 
-result<bool> directory_entry::is_regular_file() const {
-    if (has_nul(path_.string())) {
-        return nul_error(path_.string());
+namespace {
+
+// 遍历时记下的类型够回答就不查。链接要跟进到目标看，给不出类型的要查，都走 query_flag。
+result<bool> entry_is(detail::entry_kind kind, kind_test test, const std::string& target) {
+    switch (kind) {
+        case detail::entry_kind::regular_file:
+            return test == kind_test::regular_file;
+        case detail::entry_kind::directory:
+            return test == kind_test::directory;
+        case detail::entry_kind::other:
+            return false;
+        default:
+            break;
     }
-    return query_flag(path_.string(), kind_test::regular_file);
+    if (has_nul(target)) {
+        return nul_error(target);
+    }
+    return query_flag(target, test);
+}
+
+}  // namespace
+
+result<bool> directory_entry::is_regular_file() const {
+    return entry_is(kind_, kind_test::regular_file, path_.string());
 }
 
 result<bool> directory_entry::is_directory() const {
-    if (has_nul(path_.string())) {
-        return nul_error(path_.string());
-    }
-    return query_flag(path_.string(), kind_test::directory);
+    return entry_is(kind_, kind_test::directory, path_.string());
 }
 
 namespace detail {
@@ -448,7 +456,7 @@ void read_next_locked(detail::directory_state& state) {
         // 名字只活到下一次 next()：当场拼成完整路径拷进条目。
         std::string full = join_native(state.base, name);
         state.current.reset(
-            new result<directory_entry>(directory_entry(path(std::move(full)))));
+            new result<directory_entry>(directory_entry(path(std::move(full)), hint)));
         return;
     }
 }

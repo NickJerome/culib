@@ -8,12 +8,14 @@
 #include <culib/result.h>
 #include <culib/string_view.h>
 
+#include <cstdint>
+
 namespace wavvix { namespace fs { namespace detail {
 
-// 目录项的类型分类。
+// 目录项的类型分类。公共头文件里有它的声明（directory_entry 存着它），底层类型要和那里一致。
 // unknown 只作为 directory_handle::next 的提示出现（POSIX 的 d_type 可能是 DT_UNKNOWN），
 // query 不会返回它。missing 是「那里没有东西」这个答案，不是错误。
-enum class entry_kind {
+enum class entry_kind : std::uint8_t {
     unknown,
     missing,
     regular_file,

@@ -291,20 +291,23 @@ result<void> remove_link_or_file(string_view path) {
     if (wide.is_err()) {
         return std::move(wide).error();
     }
+    // 先删，删掉了就是一次系统调用。DeleteFileW 删的是文件符号链接本身；对目录（包括 junction）只会
+    // 失败，不会碰到目标。
+    if (::DeleteFileW(wide.value().c_str())) {
+        return result<void>();
+    }
+    const DWORD code = ::GetLastError();
+    if (code != ERROR_ACCESS_DENIED) {
+        return from_last_error("删除", path, code);
+    }
+    // 拒绝的原因有三种，看属性分开：
     const DWORD attributes = ::GetFileAttributesW(wide.value().c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES) {
-        return from_last_error("删除", path, ::GetLastError());
+        return from_last_error("删除", path, code);
     }
-    // 属性里同时挂着 DIRECTORY 的目录型 reparse point（junction、目录符号链接）
-    // 只能走 RemoveDirectoryW：删的是链接自己，目标原样不动。
-    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-        if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
-            if (!::RemoveDirectoryW(wide.value().c_str())) {
-                return from_last_error("删除", path, ::GetLastError());
-            }
-            return result<void>();
-        }
-        if (!::DeleteFileW(wide.value().c_str())) {
+    // 目录型 reparse point（junction、目录符号链接）只能走 RemoveDirectoryW，删的是链接自己。
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (!::RemoveDirectoryW(wide.value().c_str())) {
             return from_last_error("删除", path, ::GetLastError());
         }
         return result<void>();
@@ -313,12 +316,8 @@ result<void> remove_link_or_file(string_view path) {
         return make_error(error_kind::already_exists,
                           path.to_string() + " 是目录，请走删空目录的接口");
     }
-    if (::DeleteFileW(wide.value().c_str())) {
-        return result<void>();
-    }
-    // 只读文件删不掉（git 仓库的对象文件就是只读的）：去掉只读位再删一次，Go 的 os.Remove 也这样做。
-    const DWORD code = ::GetLastError();
-    if (code != ERROR_ACCESS_DENIED || !(attributes & FILE_ATTRIBUTE_READONLY) ||
+    // 只读文件（git 仓库的对象文件就是只读的）：去掉只读位再删一次，Go 的 os.Remove 也这样做。
+    if (!(attributes & FILE_ATTRIBUTE_READONLY) ||
         !::SetFileAttributesW(wide.value().c_str(), attributes & ~FILE_ATTRIBUTE_READONLY)) {
         return from_last_error("删除", path, code);
     }

@@ -16,7 +16,8 @@ namespace wavvix {
 namespace fs {
 
 namespace detail {
-struct directory_state;   // 遍历的共享状态，定义在 src/fs，公共头文件不见平台类型
+struct directory_state;                 // 遍历的共享状态，定义在 src/fs，公共头文件不见平台类型
+enum class entry_kind : std::uint8_t;   // 目录项的类型，取值在 src/fs
 }  // namespace detail
 
 // --- 路径：纯字符串操作，不碰磁盘 -------------------------------------------------
@@ -108,11 +109,14 @@ result<void> rename(const path& from, const path& to);
 
 // --- 遍历 -------------------------------------------------------------------------
 
-// 目录里的一项。path() 是拼好的全路径；类型判断按需查询，建条目不多做一次 stat。
+// 目录里的一项。path() 是拼好的全路径。遍历时记下枚举顺带给的类型（取自遍历的那一刻），
+// is_regular_file / is_directory 碰到普通文件和目录直接回答；链接、给不出类型的才去查一次，跟随链接。
+// 自己用路径建的条目每次都查。
 class directory_entry {
 public:
-    directory_entry() = default;
+    directory_entry();
     explicit directory_entry(const path& target);
+    directory_entry(const path& target, detail::entry_kind kind);   // directory_iterator 用
 
     const wavvix::fs::path& path() const noexcept;
     result<bool> is_regular_file() const;   // 跟随符号链接；不存在是 ok(false)
@@ -120,6 +124,7 @@ public:
 
 private:
     wavvix::fs::path path_;
+    detail::entry_kind kind_;
 };
 
 // range-for 直接遍历目录；元素是 result<directory_entry>，遍历时能区分
