@@ -111,7 +111,7 @@ Windows 上等在完成端口上的超时按系统定时器的节拍到期，默
 | Windows | 报 `STATUS_STACK_OVERFLOW` 后终止 | 同左 |
 | Linux / macOS | 碰到栈底的保护页，收到 SIGSEGV / SIGBUS | 不报错，悄悄写坏相邻的内存 |
 
-Windows 上栈和线程栈一样只提交用到的部分，最底下留一段不提交，长到那里系统就报栈溢出，不用另设保护页。进程的退出码通常是 `0xC00000FD`，CI 上见过一次 `0xC0000005`，原因还没确定。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
+Windows 上栈和线程栈一样只提交用到的部分，最底下留一段不提交，长到那里系统就报栈溢出，不用另设保护页。进程的退出码通常是 `0xC00000FD`；CI 上见过三次 `0xC0000005`，很可能是分到带 AMX 的机器时，异常分发本身又溢出了一次（见[实现说明](implementation-notes.md#windows只提交用到的部分)）。Linux / macOS 的 release 构建不设保护页：保护页每根栈要多占映射，Linux 默认的上限会把并发协程卡在约 3 万根，而容器里改不了这个上限。写坏内存的表现是别的协程卡住、崩溃或数据被改。原因和测量见[实现说明](implementation-notes.md#协程栈)。
 
 Linux / macOS 的 debug 构建在每根栈的最底下设保护页，溢出当场崩溃，调试器里能看到越界那一刻的调用栈。代价是 Linux 默认设置下 debug 构建最多约 3 万根同时在跑的协程。怀疑 release 程序里有栈溢出时（卡死或崩溃发生在无关的协程里），用 debug 构建重现。
 
@@ -294,3 +294,9 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 2026-10-20 定时器改成每根工作线程一组，原因和测量见[实现说明](implementation-notes.md#定时器)。登记在卡住的线程上的定时器由别的线程叫醒，`a_timer_fires_while_the_only_worker_is_stuck` 守着这条路：把 `fire_timers()` 临时改成只看本线程这一组，这条测试一直等下去。
 
 本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 383 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍（排除会耗尽本机临时端口的 `io_engine.carries_many_concurrent_readers`）、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建全部通过（388 项，无异常构建 381 项；41 项），ASan + UBSan 和 Clang 14 的 TSan 下两个程序全部通过、没有诊断；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。
+
+[`9bf6b0b` 的 CI](https://github.com/NickJerome/culib/actions/runs/39375520160) 23/24：MSVC release 那一格的 `runtime_faults.stack_overflow` 又以 `0xC0000005` 结束，这次印出了 `CONTEXT` 的大小，见[实现说明](implementation-notes.md#windows只提交用到的部分)；其余通过，两条按时限排序的测试在各个作业里都过了。`culib_test` Linux 388 项、macOS 385 项、Windows 与 MinGW 383 项、无异常构建 381 项，`runtime_order_test` 依次 41、39、36 项。报告里没有 SKIP，诊断只有那一条失败。
+
+[`ea20b7c` 的 CI](https://github.com/NickJerome/culib/actions/runs/39377777881) 23/24：ASan + UBSan 作业里 `mutex_order.a_waiter_that_keeps_losing_gets_the_lock_after_about_a_millisecond` 看到的插队不到 11 次，用了 4.10 毫秒（平时 1 毫秒出头）。这条不用定时器，和这次改动无关。它原来要求插队多于 10 次，可工作线程被系统挂起 1 毫秒以上时，排着的那根第一次醒来就等满了 1 毫秒，插队的那根第二次放开锁就交接了，最少只有 2 次；而只会直接交接的锁是 1 次。所以改成要求多于 1 次：把 `unlock` 临时改成每次都直接交接，这条仍然失败。其余 23 个作业通过，项数和上一次相同；报告里没有 SKIP，诊断只有那一条失败。
+
+本机验证：Windows MSVC 2022 x64 release 下 `runtime_order_test` 连跑 20 遍全部通过，这条用了 1.04 毫秒；WSL2 上 GCC 11.4 release、ASan + UBSan 下两个程序全部通过。

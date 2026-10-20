@@ -107,7 +107,9 @@ TEST(mutex_order, a_waiter_that_keeps_losing_gets_the_lock_after_about_a_millise
         children.wait();
     });
 
-    EXPECT(barges > 10, ==, true);        // 确实被插过队
+    // 只会直接交接的锁，插队的那根只拿到 1 次：排着的那根用完交还给它。工作线程被系统挂起 1 毫秒以上时，
+    // 排着的那根第一次醒来就等满了 1 毫秒，插队的那根第二次放开就交接了，所以只要求多于 1 次。
+    EXPECT(barges > 1, ==, true);         // 确实被插过队
     EXPECT(waited < ms(100), ==, true);   // 等满 1 毫秒就轮到它，这里留足余量
 }
 
