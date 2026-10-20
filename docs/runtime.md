@@ -142,18 +142,18 @@ Linux / macOS 的 debug 构建在每根栈的最底下设保护页，溢出当�
 
 ### 性能
 
-2026-10-20 用同一组程序同场轮流跑三轮，取中位数（WSL2，i7-12700，都绑在 8 个核上；culib 是 `99e365e`，GCC 11 `-O2 -DNDEBUG`；Go 1.24.5；程序是 scratchpad 里的 `vs_threads.cpp` 和照着它写的 Go 版，不在仓库里）。几核指 `WAVVIX_MAXPROCS` / `GOMAXPROCS`：
+2026-10-20 用同一组程序同场轮流跑五轮，取中位数（WSL2，i7-12700，都绑在 8 个核上；culib 是 `8eacec7`，GCC 11 `-O2 -DNDEBUG`；Go 1.24.5；程序是 scratchpad 里的 `vs_threads.cpp` 和照着它写的 Go 版，不在仓库里）。几核指 `WAVVIX_MAXPROCS` / `GOMAXPROCS`。每个一根线程的那一列是 `99e365e` 那次量的，和 culib 的版本无关：
 
 | | culib | Go | 每个一根线程 |
 | --- | --- | --- | --- |
-| 在协程里起一个、跑完，1 / 8 核 | 0.20–0.23 / 0.53 µs | 0.74–0.88 / 0.16–0.18 µs | 21.9 µs |
-| 两个用锁和条件变量来回交替，1 / 8 核 | 310 / 936 ns | 298 / 278 ns | 24.8 µs |
-| 1 万个排在一把锁上依次交接，1 / 8 核 | 3.6 / 8.8 ms | 2.4 / 3.2 ms | 162 ms |
-| 普通线程 `notify_all` 放行 1 万个，1 / 8 核 | 6.6 / 16.4 ms | 2.6 / 3.4 ms | 49.7 ms |
+| 在协程里起一个、跑完，1 / 8 核 | 0.21 / 0.57 µs | 0.74 / 0.17 µs | 21.9 µs |
+| 两个用锁和条件变量来回交替，1 / 8 核 | 310 / 340 ns | 303 / 302 ns | 24.8 µs |
+| 1 万个排在一把锁上依次交接，1 / 8 核 | 3.4 / 3.4 ms | 2.5 / 3.5 ms | 162 ms |
+| 普通线程 `notify_all` 放行 1 万个，1 / 8 核 | 5.9 / 10.3 ms | 2.4 / 3.8 ms | 49.7 ms |
 | 每个等着的执行者占的内存 | 4.2 KiB，内核里另有 1.8 KiB | 2.7 KiB | 8.4 KiB，内核里另有 23 KiB |
-| 回显 1 万个连接，读写都带 30 秒超时 | 27.7–29.1 万次/s，服务端每次往返 14.8–15.6 µs CPU，p99 41–44 ms | 24.3–27.4 万次/s，14.8–15.1 µs，p99 45–49 ms | 18.1 万次/s，13.2–13.4 µs，p99 70–71 ms |
+| 回显 1 万个连接，读写都带 30 秒超时 | 23.2–28.7 万次/s，服务端每次往返 14.3–16.0 µs CPU，p99 40–58 ms | 23.8–24.9 万次/s，14.8–15.4 µs，p99 48–54 ms | 18.1 万次/s，13.2–13.4 µs，p99 70–71 ms |
 
-回显不带超时时，culib 每次往返 11.3–12.2 µs、Go 13.7–14.2 µs；1000 个连接时两边吞吐和 CPU 相当。只有一个核时，起协程 culib 快三倍多，来回交替相当，依次交接和放行 Go 快 1.5 到 2.5 倍。多核时这几项 Go 快 3 到 5 倍，差在让出和叫醒：Go 把刚叫醒的 goroutine 放进 `runnext`，当前这根一让出它就接着跑；有闲着的 M 在自旋找活时不再叫醒别的线程；本地队列是无锁的。culib 往就绪队列里放一根协程，多半要叫醒一根闲着的工作线程（一次 futex），本地队列也带锁。这几样还没做。
+`99e365e` 那次量过回显不带超时：culib 每次往返 11.3–12.2 µs、Go 13.7–14.2 µs。1000 个连接时两边吞吐和 CPU 相当。只有一个核时，起协程 culib 快三倍多，来回交替相当，依次交接和放行 Go 快 1.4 到 2.5 倍。多核时来回交替和依次交接和 Go 相当（叫醒的协程排在本线程上时不再叫醒闲着的线程，见[实现说明](implementation-notes.md#闲着的工作线程)），起协程和放行 Go 快 3 倍左右：起的协程每根都要进出几把整个进程共用的锁（栈池、`wait_group`），放行时 `notify_all` 一根一根地把协程排进全局队列，每根都进出一次调度器的锁；Go 的本地队列是无锁的，结束了的 goroutine 连同栈缓存在每个 P 上。这几样还没做。
 
 ## 和 Photon 的对照
 
@@ -327,3 +327,7 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`5f7c089` 的 CI](https://github.com/NickJerome/culib/actions/runs/39388132493) 23/24：ASan + UBSan 作业里新加的那条在「高峰过后有多出来的栈」上失败。5000 根协程原来各睡 50 毫秒，ASan 下起协程慢，先起的睡完结束了，栈被后起的接着用，同时活着的凑不到 1024 根以上。现在全都起来了才用条件变量一起放行；ASan 下这条从 1.5–1.8 秒（先试过每毫秒查一次标志）降到约 0.5 秒，MSVC release 下约 0.19 秒。其余 23 个作业通过：`culib_test` Linux 389 项、macOS 386 项、Windows 与 MinGW 384 项、无异常构建 382 项，`runtime_order_test` 41、39、36 项，新加的那条用了 0.2 秒上下；报告里没有 SKIP，诊断只有那一条失败。本机验证：MSVC release 下这条连跑 5 遍、`culib_test` 384 项通过；WSL2 上 GCC 11.4 release、ASan + UBSan、Clang 14 的 TSan 下除了 DNS 那一条以外全部通过，ASan 下这条连跑 5 遍都在 0.5 秒左右。
 
 [`99e365e` 的 CI](https://github.com/NickJerome/culib/actions/runs/39389278730) 24/24 通过：项数和上一次相同，新加的那条在各个作业里用了 0.16 到 0.93 秒，慢的是 sanitizer 和 debug 作业。报告里没有 SKIP，也没有任何诊断。
+
+2026-10-20 叫醒的协程排进本线程、队里只有它一根时不再叫醒闲着的线程，一直不让出时由监控线程兜底，原因和测量见[实现说明](implementation-notes.md#闲着的工作线程)。新加的 `runtime.a_coroutine_woken_by_a_busy_one_is_taken_by_an_idle_worker` 让一根协程叫醒另一根以后一直不让出，看闲着的线程能不能在 100 毫秒内把被叫醒的那根拿去跑（本机约 26 毫秒，含前面的准备）；去掉监控线程的兜底，这条 2 秒后失败。本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 385 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建、ASan + UBSan 和 Clang 14 的 TSan 下，除了 DNS 不应答而失败的 `net.reports_an_unknown_host_as_not_found` 以外全部通过（390 项里 389 项，无异常构建 383 项里 382 项；`runtime_order_test` 41 项），ASan 和 TSan 没有报告；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。
+
+[`8eacec7` 的 CI](https://github.com/NickJerome/culib/actions/runs/39395410552) 24/24 通过：`culib_test` Linux 390 项、macOS 387 项、Windows 与 MinGW 385 项、无异常构建 383 项，`runtime_order_test` 41、39、36 项；新加的那条在各个作业里用了 23 到 43 毫秒。两个 MSVC 作业的 `cet` 都真跑了，栈溢出那条都以 `0xC00000FD` 结束，`CONTEXT` 3263 和 1663 字节。报告里没有 SKIP，也没有任何诊断。
