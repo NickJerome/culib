@@ -263,3 +263,13 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 本机验证：Windows MSVC 2022 x64 release 的 14 个测试程序全部通过（`culib_test` 372 项、`runtime_order_test` 35 项），`runtime_order_test` 连跑 50 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL 的 GCC release 全部通过（376 项、40 项），Clang 对全部源文件 `-fsyntax-only` 通过，ASan + UBSan 无诊断，TSan 下 `runtime_order_test` 没有报告、`culib_test` 只有前面说过的 4 条 `pthread_cond_clockwait` 误报；GCC 4.8 `-fsyntax-only` 通过。
 
 [`4c4c1bb` 的 CI](https://github.com/NickJerome/culib/actions/runs/39290373374) 24/24 通过：`culib_test` Linux 376 项、macOS 373 项、Windows 与 MinGW 372 项，`runtime_order_test` 依次 40、38、35 项（各多了新加的 2 条），GCC 4.8 和 ASan + UBSan + TSan 与 Linux 相同，无异常构建 369 项和 40 项。报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出；唯一一条诊断是一个源码依赖作业恢复构建缓存时没找到缓存。
+
+2026-10-20 修了一处漏叫醒：协程排在全局队列里，有名额的工作线程闲着，却没有一根去跑它。准备日志改版时，新加的多线程、多协程同时写一个文件的测试跑在前面，`culib_test` 里的 `runtime.an_idle_worker_takes_the_next_queued_coroutine` 偶尔失败：两根协程跑在了同一根线程上，第一根等满 5 秒。把这条测试和它前面的几条搬进单独的程序，每个进程跑一次，MSVC release 下 1000 个进程里有 17 个卡住。给库的副本加了事件记录（不进仓库），卡住时的次序每次都一样：
+
+1. 一根工作线程被叫醒来找活，看了一遍，没有。
+2. 这时 `main` 起的两根协程先后排进全局队列。两次都看见已经有一根在找，没有叫醒谁。
+3. 那根工作线程登记为闲着，不再算找活的。睡下之前它把队列再看一遍，看见了活，拿走一根去跑，但不会再叫醒别人。
+
+另一根协程就留在全局队列里，另外三根工作线程都睡着；监控线程看见有闲着的工作线程，也不交接。现在找活的那根在最后一遍里看见活时，接着算找活的，拿走一根以后照常再叫醒一根。Go 的 `findrunnable` 也这样做：放下 spinning 以后重新看队列，找到活就 `becomeSpinning`。改了以后同一个程序跑 1000 个进程没有卡住。这个次序在原来的代码里就有，只是原来的测试很少碰上：HEAD 的 `culib_test` 连跑 30 遍没有失败。
+
+本机验证：Windows MSVC 2022 x64 release 的 14 个测试程序全部通过，`culib_test` 连跑 20 遍全部通过。没有加确定性的测试：要卡在第 1 步和第 3 步之间排进两根协程，测试里控制不了这个时机；上面那个程序留在 scratchpad 里，用 1000 个进程做对照。

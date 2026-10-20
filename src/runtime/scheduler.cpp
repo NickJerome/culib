@@ -553,34 +553,40 @@ bool register_idle_locked(runtime_state& state, vcpu& self) {
     return false;
 }
 
-// 登记以后发现又有活了，撤销登记。已经被叫醒（摘下名单、记成找活的）就不用撤。调用方拿着 state.mutex。
-void unregister_idle_locked(runtime_state& state, vcpu& self, bool poller) {
+// 登记以后发现又有活了，撤销登记。已经被叫醒（摘下名单、记成找活的）就不用撤。
+// 原来在找活的接着算找活的：它登记闲着之前排进来的协程，排的时候看见有人在找，没有叫醒谁；它拿走
+// 一根以后要由 stop_searching 再叫醒一根，剩下的才有人管。Go 的 findrunnable 也这样做。
+// 调用方拿着 state.mutex。
+void unregister_idle_locked(runtime_state& state, vcpu& self, bool poller, bool was_searching) {
     if (poller) {
         stop_polling_locked(state, self);
-        return;
+    } else if (!self.notified) {
+        list_del_init(self);
+        leave_idle_locked(state);
     }
-    if (self.notified) {
-        return;
+    if (was_searching && !self.searching) {
+        self.searching = true;
+        state.searching.fetch_add(1);
     }
-    list_del_init(self);
-    leave_idle_locked(state);
 }
 
 // 找不到活：登记为闲着，把所有队列再看一遍，还是没有就睡下：等在引擎里，或者睡在自己的
 // 条件变量上，等 wake_one_locked 叫。
 void idle(runtime_state& state, vcpu& self) {
     bool poller = false;
+    bool was_searching = false;
     {
         std::lock_guard<std::mutex> held(state.mutex);
         if (!self.has_slot.load()) {
             return;   // 名额刚被交出去，回去当备用线程
         }
+        was_searching = self.searching;
         poller = register_idle_locked(state, self);
     }
 
     if (has_work(state)) {
         std::lock_guard<std::mutex> held(state.mutex);
-        unregister_idle_locked(state, self, poller);
+        unregister_idle_locked(state, self, poller, was_searching);
         return;
     }
     if (poller) {
