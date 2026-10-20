@@ -16,6 +16,7 @@ namespace detail {
 
 struct coroutine_control;
 struct io_request;
+struct worker_timers;
 
 // 挂起用单调时钟，不能用墙上时钟：后者会被改系统时间带着跳，
 // 「最多等 10 毫秒」就可能变成等一小时或者立刻超时。
@@ -34,7 +35,7 @@ enum park_state { park_waiting, park_woken, park_timed_out };
 // 一次挂起，放在等待者的栈上。基类把它挂进某个同步原语的等待队列，在那个原语的锁里读写。
 struct park_token : list_node {
     park_token() noexcept
-        : owner(0), parker(0), io(0), state(park_waiting), delivered(false), timed(false),
+        : owner(0), parker(0), io(0), state(park_waiting), delivered(false), timers(0), timed(false),
           io_cancelled(false), heap_index(0), order(0) {}
 
     coroutine_control* owner;  // 挂起的协程；普通线程等待者为空
@@ -43,7 +44,8 @@ struct park_token : list_node {
     std::atomic<int> state;    // park_state
     bool delivered;            // 普通线程等待者：唤醒已经送到，在 parker 的锁里读写
 
-    // 定时器，在定时器堆的锁里读写
+    // 定时器，在 timers 的锁里读写
+    worker_timers* timers;     // 登记在哪根工作线程上
     bool timed;                // 在定时器堆里
     bool io_cancelled;         // 到点撤销过这次 I/O
     park_instant deadline;

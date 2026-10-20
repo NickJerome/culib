@@ -80,7 +80,7 @@ Windows 上监控线程用高精度的可等待定时器睡，要 Windows 10 180
 
 `yield()` 在协程里让出，排到就绪队列的末尾；在协程外等同 `std::this_thread::yield()`。`sleep_for(d)` 在协程里只挂起这根协程，在协程外睡当前线程；零或负时长立即返回，要让出一次请用 `yield()`。
 
-定时器整个进程一份。到点的协程按时限的先后排回就绪队列，不按挂起的先后，几个时限在同一刻到期时也一样；排回去以后由几根工作线程同时跑起来，谁先跑完就说不准了。
+定时器每根工作线程一组，协程挂起时登记在它所在的那根上，到点由哪根线程叫醒都行。到点的协程按时限的先后排回就绪队列，不按挂起的先后；几个时限在同一刻到期时也一样，不管登记在哪根线程上。排回去以后由几根工作线程同时跑起来，谁先跑完就说不准了。
 
 Windows 上等在完成端口上的超时按系统定时器的节拍到期，默认约 15.6 毫秒；运行时另设一个高精度定时器把等待按时叫醒（要 Windows 10 1803 以上），所以协程里 `sleep_for(1ms)` 在 Windows 上也是 1 毫秒出头，本机实测中位数 1.4 毫秒。更早的系统上退回按节拍醒。协程外的 `sleep_for` 和普通线程上的限时等待用的是 `std::this_thread::sleep_for` 和条件变量，在 Windows 上仍按节拍醒。
 
@@ -290,3 +290,7 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 查重试会不会藏住真错误时发现，`wakes_sleepers_in_time_order_when_they_expire_in_one_round` 早就测不到它要测的了：有了监控线程以后，不让出地算 45 毫秒的那根在 12 毫秒左右就被当成卡住、交出名额，三个定时器在接手的线程上一个一个到点。现在三根分别睡 1、2、3 毫秒，占住工作线程的那根只算 8 毫秒，短于判定卡住的 10 毫秒，三个时限都在这期间过去。把调度器临时改成按相反的次序排回到点的协程：改测试之前这条照样通过，改之后 5 轮都是 CBA，失败。
 
 本机验证：Windows MSVC 2022 x64 release 下这两条连跑 10 遍、`runtime_order_test` 36 项全部通过；WSL2 上 GCC 11.4 release、ASan + UBSan、Clang 14 的 TSan 下 `culib_test` 388 项和 `runtime_order_test` 41 项全部通过。
+
+2026-10-20 定时器改成每根工作线程一组，原因和测量见[实现说明](implementation-notes.md#定时器)。登记在卡住的线程上的定时器由别的线程叫醒，`a_timer_fires_while_the_only_worker_is_stuck` 守着这条路：把 `fire_timers()` 临时改成只看本线程这一组，这条测试一直等下去。
+
+本机验证：Windows MSVC 2022 x64 release / debug 的 14 个测试程序全部通过（`culib_test` 383 项、`runtime_order_test` 36 项），release 下 `runtime_order_test` 连跑 20 遍（排除会耗尽本机临时端口的 `io_engine.carries_many_concurrent_readers`）、`culib_test` 连跑 5 遍全部通过；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建全部通过（388 项，无异常构建 381 项；41 项），ASan + UBSan 和 Clang 14 的 TSan 下两个程序全部通过、没有诊断；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。

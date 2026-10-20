@@ -2,7 +2,8 @@
 //
 // 协程可以在任何一根工作线程上继续：被叫醒的协程排进叫醒它的那根工作线程的队列
 // （叫醒它的不是工作线程，就排进全局队列），闲着的工作线程去别的队列里拿。
-// 事件引擎和定时器整个进程各一份；闲下来的工作线程里有一根等在引擎里，同时等 I/O 和最早的时限。
+// 事件引擎整个进程一份；定时器每根工作线程一组，登记在挂起时所在的那根上，到点由哪根线程叫醒都行。
+// 闲下来的工作线程里有一根等在引擎里，同时等 I/O 和最早的时限。
 // 同一时刻最多 WAVVIX_MAXPROCS 根工作线程跑协程；一根卡住了（阻塞调用、算个不停），
 // 监控线程把它的名额交给另一根线程。
 //
@@ -68,6 +69,19 @@ struct run_queue {
 // 工作线程总数的上限，含备用的。WAVVIX_MAXPROCS 也不能超过它。
 const unsigned worker_limit = 256;
 
+typedef park_clock::rep park_ticks;
+
+const park_ticks no_deadline = (std::numeric_limits<park_ticks>::max)();
+
+// 在一根工作线程上挂起的协程的定时器。锁只护着这一组，各根线程登记和撤销时不互相等。
+struct worker_timers {
+    worker_timers() : earliest(no_deadline) {}
+
+    std::mutex mutex;
+    timer_heap heap;
+    std::atomic<park_ticks> earliest;   // heap 里最早的时限，没有时为 no_deadline
+};
+
 // 一根工作线程。睡着时挂在 runtime_state::sleepers 上，当备用线程时挂在 spares 上，两者不会同时。
 struct vcpu : list_node {
     vcpu() : current(0), ticks(0), has_slot(false), parking(false), searching(false), notified(false) {}
@@ -87,16 +101,14 @@ struct vcpu : list_node {
     bool searching;                // 被叫醒来找活，还没找到
     bool notified;
     std::condition_variable woken;
+
+    worker_timers timers;
 };
-
-typedef park_clock::rep park_ticks;
-
-const park_ticks no_deadline = (std::numeric_limits<park_ticks>::max)();
 
 struct runtime_state {
     runtime_state()
         : count(0), slots(0), engine(0), polling(false), poll_notified(false), monitor_sleeping(false), queued(0),
-          idle(0), searching(0), last_poll(0), earliest(no_deadline) {}
+          idle(0), searching(0), last_poll(0) {}
 
     vcpu* workers[worker_limit];
     std::atomic<unsigned> count;   // workers 里建好的根数
@@ -119,10 +131,6 @@ struct runtime_state {
 
     std::mutex poll_mutex;         // 同一时刻只有一根线程在 io_engine_wait 里
     std::atomic<park_ticks> last_poll;   // 最近一次收完成的时刻
-
-    std::mutex timer_mutex;        // 护着 timers
-    timer_heap timers;
-    std::atomic<park_ticks> earliest;   // timers 里最早的时限，没有时为 no_deadline
 };
 
 namespace {
@@ -357,10 +365,29 @@ void stop_searching(runtime_state& state, vcpu& self) {
 
 // ---- 定时器 ----------------------------------------------------------------------------
 
-// 调用方拿着 timer_mutex。
-void publish_earliest(runtime_state& state) {
-    const park_token* const next = state.timers.top();
-    state.earliest.store(next ? next->deadline.time_since_epoch().count() : no_deadline);
+// 调用方拿着 timers.mutex。
+void publish_earliest(worker_timers& timers) {
+    const park_token* const next = timers.heap.top();
+    timers.earliest.store(next ? next->deadline.time_since_epoch().count() : no_deadline);
+}
+
+// 所有工作线程上最早的时限，没有定时器时为 no_deadline。
+park_ticks earliest_deadline(runtime_state& state) {
+    park_ticks earliest = no_deadline;
+    const unsigned count = state.count.load(std::memory_order_acquire);
+    for (unsigned i = 0; i < count; ++i) {
+        const park_ticks next = state.workers[i]->timers.earliest.load();
+        if (next < earliest) {
+            earliest = next;
+        }
+    }
+    return earliest;
+}
+
+// 这一组里有没有到点的。没有定时器时只读一个原子量。
+bool has_due(const worker_timers& timers) {
+    const park_ticks next = timers.earliest.load();
+    return next != no_deadline && park_clock::now().time_since_epoch().count() >= next;
 }
 
 // 等在引擎里的那根会睡到 poll_until；新的时限更早，就叫它起来重新算。
@@ -375,15 +402,18 @@ void wake_poller_before(runtime_state& state, park_instant deadline) {
     }
 }
 
+// 登记在本线程的那一组里。
 void add_timer(runtime_state& state, park_token& token, park_instant deadline) {
+    worker_timers& timers = this_worker()->timers;
     token.deadline = deadline;
+    token.timers = &timers;
     bool first = false;
     {
-        std::lock_guard<std::mutex> held(state.timer_mutex);
-        state.timers.push(token);
-        first = state.timers.top() == &token;
+        std::lock_guard<std::mutex> held(timers.mutex);
+        timers.heap.push(token);
+        first = timers.heap.top() == &token;
         if (first) {
-            publish_earliest(state);
+            publish_earliest(timers);
         }
     }
     if (first) {
@@ -392,15 +422,16 @@ void add_timer(runtime_state& state, park_token& token, park_instant deadline) {
 }
 
 // 被叫醒的等待者自己把定时器撤掉；已经到点的，定时器那边撤过了。
-void remove_timer(runtime_state& state, park_token& token) {
-    std::lock_guard<std::mutex> held(state.timer_mutex);
+void remove_timer(park_token& token) {
+    worker_timers& timers = *token.timers;
+    std::lock_guard<std::mutex> held(timers.mutex);
     if (!token.timed) {
         return;
     }
-    const bool first = state.timers.top() == &token;
-    state.timers.remove(token);
+    const bool first = timers.heap.top() == &token;
+    timers.heap.remove(token);
     if (first) {
-        publish_earliest(state);
+        publish_earliest(timers);
     }
 }
 
@@ -423,35 +454,47 @@ bool give_up(park_token& token) {
                                                std::memory_order_acquire);
 }
 
-// 叫醒到点的协程，按时限从早到晚排回就绪队列。凭据在等待者的栈上，等待者要先拿 timer_mutex
-// 撤掉自己的定时器才能返回，所以放弃那一步也在锁里做；锁外只碰协程本身。
-void fire_timers(runtime_state& state) {
-    const park_ticks next = state.earliest.load();
-    if (next == no_deadline) {
-        return;
-    }
-    const park_instant now = park_clock::now();
-    if (now.time_since_epoch().count() < next) {
-        return;
-    }
-
-    run_queue expired;
-    {
-        std::lock_guard<std::mutex> held(state.timer_mutex);
-        while (park_token* const token = state.timers.top()) {
-            if (token->deadline > now) {
-                break;
-            }
-            state.timers.remove(*token);
-            if (give_up(*token)) {
-                expired.push(token->owner);
-            }
+// 已经到点、时限又最早的那一组，没有到点的返回 0。
+worker_timers* earliest_due(runtime_state& state, park_instant now) {
+    worker_timers* due = 0;
+    park_ticks earliest = now.time_since_epoch().count();
+    const unsigned count = state.count.load(std::memory_order_acquire);
+    for (unsigned i = 0; i < count; ++i) {
+        worker_timers& timers = state.workers[i]->timers;
+        const park_ticks next = timers.earliest.load();
+        if (next <= earliest) {
+            earliest = next;
+            due = &timers;
         }
-        publish_earliest(state);
     }
-    while (coroutine_control* const body = expired.pop()) {
-        make_runnable(state, body);
+    return due;
+}
+
+// 取下这一组里最早的定时器，它到点了、放弃也成功了就返回它的协程。凭据在等待者的栈上，等待者要先拿
+// 这一组的锁撤掉自己的定时器才能返回，所以放弃那一步也在锁里做；锁外只碰协程本身。
+coroutine_control* take_due(worker_timers& timers, park_instant now) {
+    std::lock_guard<std::mutex> held(timers.mutex);
+    park_token* const token = timers.heap.top();
+    if (!token || token->deadline > now) {
+        return 0;   // 别的线程先取走了
     }
+    timers.heap.remove(*token);
+    publish_earliest(timers);
+    return give_up(*token) ? token->owner : 0;
+}
+
+// 叫醒所有工作线程上到点的协程，按时限从早到晚排回就绪队列：每次从时限最早的那一组里取一个，
+// 所以跨线程也是这个次序。返回叫醒过没有。
+bool fire_timers(runtime_state& state) {
+    const park_instant now = park_clock::now();
+    bool fired = false;
+    while (worker_timers* const due = earliest_due(state, now)) {
+        if (coroutine_control* const body = take_due(*due, now)) {
+            make_runnable(state, body);
+            fired = true;
+        }
+    }
+    return fired;
 }
 
 // ---- 事件引擎 --------------------------------------------------------------------------
@@ -501,7 +544,7 @@ void stop_polling_locked(runtime_state& state, vcpu& self) {
 // 没有定时器就一直等。
 std::chrono::nanoseconds poll_timeout(runtime_state& state) {
     std::lock_guard<std::mutex> held(state.mutex);
-    const park_ticks next = state.earliest.load();
+    const park_ticks next = earliest_deadline(state);
     if (next == no_deadline) {
         state.poll_until = (park_instant::max)();
     } else {
@@ -573,6 +616,10 @@ void unregister_idle_locked(runtime_state& state, vcpu& self, bool poller, bool 
 // 找不到活：登记为闲着，把所有队列再看一遍，还是没有就睡下：等在引擎里，或者睡在自己的
 // 条件变量上，等 wake_one_locked 叫。
 void idle(runtime_state& state, vcpu& self) {
+    // 先叫醒所有线程上到点的定时器：登记它们的那根线程可能卡住了，也可能睡着了。
+    if (fire_timers(state)) {
+        return;
+    }
     bool poller = false;
     bool was_searching = false;
     {
@@ -602,10 +649,15 @@ void idle(runtime_state& state, vcpu& self) {
 // ---- 工作线程 --------------------------------------------------------------------------
 
 coroutine_control* find_work(runtime_state& state, vcpu& self) {
-    fire_timers(state);
-    // 一直有活时也每 61 次看一眼引擎和全局队列：本地队列不空的话，前者没人收，后者没人取（Go 也用 61）。
+    // 本线程这一组有到点的就去叫醒，别的线程上到点的一起叫，次序才对。
+    if (has_due(self.timers)) {
+        fire_timers(state);
+    }
+    // 一直有活时也每 61 次看一眼引擎、所有线程的定时器和全局队列：本地队列不空的话，引擎没人收，
+    // 登记在卡住的线程上的定时器没人叫，全局队列没人取（Go 也用 61）。
     if ((self.ticks.fetch_add(1, std::memory_order_relaxed) + 1) % 61 == 0) {
         poll_now(state);
+        fire_timers(state);
         if (coroutine_control* const body = take_global(state)) {
             return body;
         }
@@ -730,7 +782,7 @@ void move_queue(vcpu& from, vcpu& to) {
 // 把卡住的那根的名额交给一根备用线程，没有备用的就新起一根。都不行就先不交：卡住的那根总会回来，
 // 监控线程下一轮还会再试。队列跟着名额走：拿到名额的线程一直有活的话不会去偷，留在卡住的那根
 // 那里的协程就一直没人跑。先收回名额再搬队列，之后卡住的那根叫醒的协程排进全局队列（push_local）。
-// 调用方拿着 state.mutex。
+// 定时器不搬：别的线程闲下来或者每调度 61 次时会叫醒到点的。调用方拿着 state.mutex。
 void hand_off_locked(runtime_state& state, vcpu& stuck) {
     vcpu* spare = take_first(state.spares);
     if (!spare) {
@@ -747,7 +799,7 @@ void hand_off_locked(runtime_state& state, vcpu& stuck) {
 
 // 有没有到点还没叫醒的定时器。
 bool timer_due(runtime_state& state) {
-    const park_ticks next = state.earliest.load();
+    const park_ticks next = earliest_deadline(state);
     return next != no_deadline && park_clock::now().time_since_epoch().count() >= next;
 }
 
@@ -939,7 +991,7 @@ bool scheduler_park(park_token& token, std::chrono::nanoseconds timeout) {
     fiber::yield();
     // 可能已经换了一根工作线程，从这里往下只碰凭据。
     if (timed) {
-        remove_timer(state, token);
+        remove_timer(token);
     }
     return token.state.load(std::memory_order_acquire) == park_woken;
 }
