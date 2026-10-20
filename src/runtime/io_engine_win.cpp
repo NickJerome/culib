@@ -244,6 +244,7 @@ DWORD completion_status(io_request& request, OVERLAPPED* overlapped, DWORD& move
 }
 
 void finish(io_request& request, OVERLAPPED* overlapped) {
+    request.finished = true;
     DWORD moved = 0;
     const DWORD failed = completion_status(request, overlapped, moved);
     if (failed == 0) {

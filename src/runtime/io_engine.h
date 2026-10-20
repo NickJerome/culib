@@ -29,7 +29,7 @@ enum io_operation { io_transfer, io_socket_transfer, io_datagram_transfer, io_ac
 struct io_request {
     io_request() noexcept
         : operation(io_transfer), address(0), address_length(0), truncated(false), accepted(io_no_handle),
-          connect_started(false) {}
+          connect_started(false), finished(false) {}
 
     // 调用方填
     io_direction direction;
@@ -46,6 +46,7 @@ struct io_request {
     // 引擎填
     std::ptrdiff_t transferred;    // >= 0 是传了几字节（0 是对端关了）；< 0 是失败
     int failure;                   // transferred < 0 时的 errno 或 Win32 错误码
+    bool finished;                 // 有结果了。epoll / kqueue 交回的请求只是就绪了，这一项是 false
 
     // 引擎内部
     park_token* waiter;            // 原样交回调度器，引擎不读它
@@ -119,17 +120,18 @@ bool io_engine_adopt(io_engine* engine, io_handle handle) noexcept;
 int io_open_socket(int domain, int type, int protocol) noexcept;
 #endif
 
-// 把这次操作挂上去，不挂起协程。epoll / kqueue 先试一次系统调用，做不了就排队等事件；IOCP 提交真正的 I/O。
+// 把这次操作挂上去，不挂起协程。epoll / kqueue 先试一次系统调用，做不了就排队等就绪；IOCP 提交真正的 I/O。
 // 返回 true 表示挂上了，调用方应当挂起；false 表示已经有结果，写在 request 里，不要挂起。
 bool io_engine_arm(io_engine* engine, io_request& request) noexcept;
 
-// 等完成或者到点。完成的操作把结果写进各自的 io_request，并追加到 completed。
-// timeout 为负表示一直等。同一时刻只能有一根线程在这里等。
+// 等完成或者到点，交回的请求追加到 completed。IOCP 交回的已经有结果（finished）；epoll / kqueue 交回的
+// 只是那个方向就绪了，系统调用由等待者回去再 io_engine_arm 一次自己做，这样读写分散在各自的线程上，
+// 不挤在等在这里的那一根上。timeout 为负表示一直等。同一时刻只能有一根线程在这里等。
 void io_engine_wait(io_engine* engine, std::chrono::nanoseconds timeout,
                     io_completion_batch& completed) noexcept;
 
-// 撤销挂上去的操作。true：撤下来了，引擎不会再交回它，结果由调用方填。false：完成会经
-// io_engine_wait 交回来（或者已经交回来了），调用方要等到那时才能释放 request。
+// 撤销挂上去的操作。true：撤下来了，引擎不会再交回它，结果由调用方填。false：它会经 io_engine_wait
+// 交回来（或者已经交回来了），调用方要等到那时才能释放 request。
 bool io_engine_cancel(io_engine* engine, io_request& request) noexcept;
 
 // 还没交回的操作数，也就是等在 I/O 上的等待者数。工作线程一直有活时，调度器靠它决定

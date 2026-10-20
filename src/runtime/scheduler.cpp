@@ -69,8 +69,9 @@ struct vcpu : list_node {
 
     bool parking;                  // 刚切出来的协程是去挂起，不是让出；只有这根线程自己读写
 
-    // 在 runtime_state::mutex 里读写；睡着的时候由叫醒它的线程改
+    // 找到活时自己改（stop_searching），睡着的时候由叫醒它的线程在 runtime_state::mutex 里改
     bool searching;                // 被叫醒来找活，还没找到
+    // 在 runtime_state::mutex 里读写
     bool notified;
     std::condition_variable woken;
 
@@ -103,7 +104,8 @@ struct runtime_state {
     std::atomic<int> idle;             // 闲着的有名额的工作线程，含等在引擎里的那根
     std::atomic<int> searching;        // 被叫醒来找活、还没找到的
 
-    std::mutex poll_mutex;         // 同一时刻只有一根线程在 io_engine_wait 里
+    // 同一时刻只有一根线程在 io_engine_wait 里。等在引擎里的那根一直拿着，别的线程只 try_lock。
+    spin_lock poll_lock;
     std::atomic<park_ticks> last_poll;   // 最近一次收完成的时刻
 };
 
@@ -407,12 +409,15 @@ bool has_work(runtime_state& state) {
 }
 
 // 找活的那根找到了。它要是最后一根，可能还有别的活没人看见，再叫醒一根（有闲着的话）。
+// 还有别的在找、或者没有闲着的，就不用拿锁。
 void stop_searching(runtime_state& state, vcpu& self) {
+    self.searching = false;
+    if (state.searching.fetch_sub(1) != 1 || state.idle.load() == 0) {
+        return;
+    }
     wakeup target;
     {
         std::lock_guard<std::mutex> held(state.mutex);
-        self.searching = false;
-        state.searching.fetch_sub(1);
         wake_one_locked(state, target);
     }
     wake_up(state, target);
@@ -565,13 +570,13 @@ void deliver(io_completion_batch& completed) {
     scheduler_deliver(woken);
 }
 
-// 收一次完成，记下时刻：监控线程看它决定要不要替工作线程收（poll_overdue）。调用方拿着 poll_mutex。
+// 收一次完成，记下时刻：监控线程看它决定要不要替工作线程收（poll_overdue）。调用方拿着 poll_lock。
 void wait_engine(runtime_state& state, std::chrono::nanoseconds timeout, io_completion_batch& completed) {
     io_engine_wait(state.engine, timeout, completed);
     state.last_poll.store(park_clock::now().time_since_epoch().count());
 }
 
-// 一直有活的工作线程隔一阵不等待地收一次完成。有闲着的工作线程等在引擎里时它拿着 poll_mutex，
+// 一直有活的工作线程隔一阵不等待地收一次完成。有闲着的工作线程等在引擎里时它拿着 poll_lock，
 // I/O 归它收，这里直接跳过。
 void poll_now(runtime_state& state) {
     if (io_engine_pending(state.engine) == 0) {
@@ -579,7 +584,7 @@ void poll_now(runtime_state& state) {
     }
     io_completion_batch completed;
     {
-        std::unique_lock<std::mutex> role(state.poll_mutex, std::try_to_lock);
+        std::unique_lock<spin_lock> role(state.poll_lock, std::try_to_lock);
         if (!role.owns_lock()) {
             return;
         }
@@ -588,8 +593,9 @@ void poll_now(runtime_state& state) {
     deliver(completed);
 }
 
-// 不再等在引擎里。被叫醒过的话它就是来找活的。还有睡着的就叫醒一根：它找不到活就会来接着等在
-// 引擎里，不然 I/O 和定时器要等到有谁再闲下来才有人管。调用方拿着 state.mutex。
+// 不再等在引擎里。被叫醒过的话它就是来找活的。不叫别的线程来接着等：它自己去跑叫醒的协程，跑完闲下来
+// 就接着等；跑得久了，由监控线程叫醒一根闲着的来等（watch_engine_locked）。Go 的 findrunnable 也不叫。
+// 调用方拿着 state.mutex。
 void stop_polling_locked(runtime_state& state, vcpu& self, wakeup& out) {
     state.polling = false;
     leave_idle_locked(state, out);
@@ -597,7 +603,6 @@ void stop_polling_locked(runtime_state& state, vcpu& self, wakeup& out) {
         state.poll_notified = false;
         self.searching = true;   // 叫醒它的那一方已经记过数了
     }
-    wake_one_locked(state, out);
 }
 
 // 等在引擎里要等多久，并记下会在哪一刻醒（wake_poller_before 拿它比）。已经被叫过就不等；
@@ -627,9 +632,9 @@ std::chrono::nanoseconds poll_timeout(runtime_state& state) {
 void poll_blocking(runtime_state& state, vcpu& self) {
     io_completion_batch completed;
     {
-        // 不等待地收一次的那根可能正拿着 poll_mutex，只是一瞬间。它可能顺手收走了发给这里的唤醒，
+        // 不等待地收一次的那根可能正拿着 poll_lock，只是一瞬间。它可能顺手收走了发给这里的唤醒，
         // 所以 poll_timeout 要看一眼 poll_notified。
-        std::lock_guard<std::mutex> role(state.poll_mutex);
+        std::lock_guard<spin_lock> role(state.poll_lock);
         wait_engine(state, poll_timeout(state), completed);
     }
     wakeup target;
@@ -942,6 +947,19 @@ void watch_workers_locked(runtime_state& state, watch_mark* marks, park_instant 
     }
 }
 
+// 有闲着的工作线程、却没有一根等在引擎里，而有 I/O 在等或者有定时器：叫醒一根闲着的，它找不到活就去等。
+// 等在引擎里的那根收到完成以后自己去跑叫醒的协程（stop_polling_locked），跑得久了就会这样。
+// 调用方拿着 state.mutex。
+void watch_engine_locked(runtime_state& state, wakeup& target) {
+    if (state.idle.load() == 0 || state.polling) {
+        return;
+    }
+    if (io_engine_pending(state.engine) == 0 && earliest_deadline(state) == no_deadline) {
+        return;
+    }
+    wake_one_locked(state, target);
+}
+
 // 全都闲着时睡到有谁忙起来（leave_idle_locked）。
 void sleep_until_busy(runtime_state& state, std::unique_lock<std::mutex>& held) {
     state.monitor_sleeping = true;
@@ -952,7 +970,8 @@ void sleep_until_busy(runtime_state& state, std::unique_lock<std::mutex>& held) 
 
 // 监控线程。有工作线程忙着、或者还有多出来的空闲栈的时候，每隔 monitor_interval 看一次。
 // 没有闲着的工作线程、又有一阵没人收过完成时，先替它们收一次，叫醒的协程排进全局队列：不收就看不出
-// 卡住的那根后面还有活。定时器不替它们叫：交给拿到名额的线程按时限的先后叫，次序才对。
+// 卡住的那根后面还有活。有闲着的、却没人等在引擎里，就叫醒一根去等。定时器不替它们叫：交给拿到名额的
+// 线程按时限的先后叫，次序才对。
 // 多出来的空闲栈每次还一批：协程结束时不做系统调用，高峰过后内存在这里慢慢还给系统。
 void monitor_main(runtime_state* state) noexcept {
     watch_mark marks[worker_limit];
@@ -970,6 +989,7 @@ void monitor_main(runtime_state* state) noexcept {
         }
         wakeup target;
         held.lock();
+        watch_engine_locked(*state, target);
         watch_workers_locked(*state, marks, park_clock::now(), target);
         held.unlock();
         wake_up(*state, target);
@@ -1129,24 +1149,44 @@ bool scheduler_adopt(io_handle handle) {
     return io_engine_adopt(running().engine, handle);
 }
 
+// 离时限还有多久，过了是 0：负数在 scheduler_park 里表示一直等。
+std::chrono::nanoseconds time_left(park_instant deadline) {
+    const park_instant now = park_clock::now();
+    if (deadline <= now) {
+        return std::chrono::nanoseconds(0);
+    }
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now);
+}
+
+// IOCP 交回时已经有结果；epoll / kqueue 只交回就绪，回去再试一次，做不了接着等，时限照旧。
+// 到点时没撤下来（就绪先到了）的也再试一次：那一刻有数据就拿走，没有的话下一轮立刻按超时结束。
 void scheduler_io(io_request& request, std::chrono::nanoseconds timeout) {
     runtime_state& state = running();
-
-    park_token token;
-    park_prepare(token);
-    token.io = &request;
-    request.waiter = &token;
-    request.next = 0;
-    request.transferred = 0;
-    request.failure = 0;
-    if (!io_engine_arm(state.engine, request)) {
-        return;   // 已经有结果了，不挂起
-    }
-    scheduler_park(token, timeout);
-    // 到点撤销过、又没做成的按超时报：撤销本身的通知（Windows 的 ERROR_OPERATION_ABORTED）
-    // 不是调用方关心的错。撤销前已经做成的照常返回，读到的字节不丢。
-    if (token.io_cancelled && request.transferred < 0) {
-        request.failure = ETIMEDOUT;
+    const bool timed = timeout.count() >= 0;
+    const park_instant deadline = timed ? deadline_after(timeout) : park_instant();
+    request.finished = false;
+    for (;;) {
+        park_token token;
+        park_prepare(token);
+        token.io = &request;
+        request.waiter = &token;
+        request.next = 0;
+        request.transferred = 0;
+        request.failure = 0;
+        if (!io_engine_arm(state.engine, request)) {
+            return;   // 已经有结果了，不挂起
+        }
+        if (!scheduler_park(token, timed ? time_left(deadline) : timeout)) {
+            return;   // 到点撤下来了，give_up 填了 ETIMEDOUT
+        }
+        if (request.finished) {
+            // 到点撤销过、又没做成的按超时报：撤销本身的通知（Windows 的 ERROR_OPERATION_ABORTED）
+            // 不是调用方关心的错。撤销前已经做成的照常返回，读到的字节不丢。
+            if (token.io_cancelled && request.transferred < 0) {
+                request.failure = ETIMEDOUT;
+            }
+            return;
+        }
     }
 }
 

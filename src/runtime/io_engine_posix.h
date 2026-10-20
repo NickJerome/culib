@@ -1,8 +1,11 @@
 #pragma once
 
 // epoll 和 kqueue 共用的部分：fd 下标表、每个 fd 的等待链、做一次系统调用。
+// 就绪时只叫醒等待者，系统调用由等待者在 io_engine_arm 里自己做。
 
 #include "io_engine.h"
+
+#include <culib/detail/spin_lock.h>
 
 #include <atomic>
 #include <cerrno>
@@ -25,8 +28,11 @@ int io_accept_socket(int listener) noexcept;
 // 一个 fd 上的等待链，按 fd 下标存。fd 是小整数，内核总是分配最小的可用值，所以下标表是 O(1)、
 // 稳态下不分配（照 Photon 的 _inflight_events）。内核那边在接管时就登记了读写两个方向。
 struct io_fd_slot {
-    io_request* readers;    // 等读的，先来先服务
+    io_request* readers;    // 等读的，按排队的次序叫醒
     io_request* writers;
+    // 来过几次读、写事件，在锁里加。等待者试之前记下，做不了时在锁里再看一眼（io_enqueue）。
+    std::atomic<unsigned> read_events;
+    std::atomic<unsigned> write_events;
 };
 
 // fd 下标表按块分配，块建好以后不移动也不释放，别的线程拿着格子的地址也不会失效。
@@ -83,17 +89,17 @@ private:
     std::atomic<io_fd_slot*> chunks_[chunk_count];
 };
 
-// 同一个 fd 的等待链由同一把锁护着：登记（试一次、做不了就排队）、事件分发和撤销都在锁里，
-// 所以边沿事件不会落进「试过了、还没排上」的空当。按 fd 取模分成 64 把。
+// 同一个 fd 的等待链和事件计数由同一把锁护着，锁里只有几次指针操作，系统调用都在锁外。
+// 按 fd 取模分成 64 把。
 class io_fd_locks {
 public:
-    std::mutex& of(int fd) noexcept {
+    spin_lock& of(int fd) noexcept {
         return locks_[static_cast<std::size_t>(fd) % count];
     }
 
 private:
     static const std::size_t count = 64;
-    std::mutex locks_[count];
+    spin_lock locks_[count];
 };
 
 // 往断开的连接上写会收到 SIGPIPE。Linux 每次发送带 MSG_NOSIGNAL；macOS 没有这个标志，
@@ -229,35 +235,44 @@ inline io_request*& io_queue(io_fd_slot& slot, io_direction direction) {
     return direction == io_read ? slot.readers : slot.writers;
 }
 
+inline std::atomic<unsigned>& io_events(io_fd_slot& slot, io_direction direction) {
+    return direction == io_read ? slot.read_events : slot.write_events;
+}
+
 // 先试一次，做不了就排到这个 fd 这个方向的队尾。返回 true 表示排上了，调用方应当挂起；
-// false 表示已经有结果，写在 request 里。
+// false 表示已经有结果，写在 request 里。被叫醒的等待者也回到这里再试。
 //
-// 同方向已经有人排队时不试：先来先服务，免得后来的抢走前面那个在等的数据。不试也不会漏：
-// 边沿触发下，队首等的那次事件还会来，到时候一路做到 EAGAIN。
+// 系统调用在锁外做：试之前记下这个方向来过几次事件，做不了再拿锁看一眼。变了说明试的时候来过事件，
+// 那时队里没有这个请求，事件叫不到它，所以再试一次；没变才排上，之后来的事件一定看得见它。
 inline bool io_enqueue(io_fd_table& slots, io_fd_locks& locks, std::atomic<std::size_t>& pending,
                        io_request& request) noexcept {
-    const std::size_t index = static_cast<std::size_t>(request.handle);
-    std::lock_guard<std::mutex> held(locks.of(request.handle));
-    io_fd_slot* const found = slots.find(index);
-    const bool queued = found && io_queue(*found, request.direction) != 0;
-    if (!queued && io_try_now(request)) {
-        return false;
-    }
-    io_fd_slot* const slot = slots.ensure(index);
+    io_fd_slot* const slot = slots.ensure(static_cast<std::size_t>(request.handle));
     if (!slot) {
         request.transferred = -1;
         request.failure = ENOMEM;
+        request.finished = true;
         return false;
     }
-
-    io_request** tail = &io_queue(*slot, request.direction);
-    while (*tail) {
-        tail = &(*tail)->next;
+    std::atomic<unsigned>& events = io_events(*slot, request.direction);
+    for (;;) {
+        const unsigned seen = events.load();
+        if (io_try_now(request)) {
+            request.finished = true;
+            return false;
+        }
+        std::lock_guard<spin_lock> held(locks.of(request.handle));
+        if (events.load() != seen) {
+            continue;
+        }
+        io_request** tail = &io_queue(*slot, request.direction);
+        while (*tail) {
+            tail = &(*tail)->next;
+        }
+        request.next = 0;
+        *tail = &request;
+        pending.fetch_add(1, std::memory_order_relaxed);
+        return true;
     }
-    request.next = 0;
-    *tail = &request;
-    pending.fetch_add(1, std::memory_order_relaxed);
-    return true;
 }
 
 // 把请求从等待链上摘下来。找不到返回 false：它已经完成了。
@@ -275,7 +290,7 @@ inline bool io_unlink(io_request*& head, io_request& request) {
 // 把超时的请求从等待链上摘掉。返回 false 表示摘不到：它已经完成、交回去了。
 inline bool io_dequeue(io_fd_table& slots, io_fd_locks& locks, std::atomic<std::size_t>& pending,
                        io_request& request) noexcept {
-    std::lock_guard<std::mutex> held(locks.of(request.handle));
+    std::lock_guard<spin_lock> held(locks.of(request.handle));
     io_fd_slot* const slot = slots.find(static_cast<std::size_t>(request.handle));
     if (!slot || !io_unlink(io_queue(*slot, request.direction), request)) {
         return false;
@@ -284,35 +299,34 @@ inline bool io_dequeue(io_fd_table& slots, io_fd_locks& locks, std::atomic<std::
     return true;
 }
 
-// 把链头那个请求做掉并交还给调度器。返回 false 表示这一轮做不了：链空了，或者 EAGAIN
-// （别的东西先把数据拿走了）。EAGAIN 时请求留在链上，等下一次边沿事件。
-inline bool io_complete(io_request*& head, io_completion_batch& completed, std::atomic<std::size_t>& pending) {
-    if (!head || !io_try_now(*head)) {
-        return false;
+// 摘下一条等待链上的全部请求，按排队的次序交回。
+inline void io_release_all(io_request*& head, io_completion_batch& ready, std::atomic<std::size_t>& pending) {
+    while (io_request* const request = head) {
+        head = request->next;
+        ready.push(request);
+        pending.fetch_sub(1, std::memory_order_relaxed);
     }
-    io_request* const request = head;
-    head = request->next;
-    completed.push(request);
-    pending.fetch_sub(1, std::memory_order_relaxed);
-    return true;
 }
 
-// 一个 fd 来了读或写的事件。边沿触发下同一个状态不会再报第二次，所以把这个方向排着的请求
-// 一直做到 EAGAIN 或者队列空。错误和对端关闭不单独处理：直接做系统调用，让它把错误码或者 0 字节报出来。
+// 一个 fd 来了读或写的事件：这个方向排着的全部叫醒，各自回 io_enqueue 再试，做不了的重新排队。
+// 边沿触发下同一个状态不会再报第二次，所以不能只叫醒队首：它只拿走一部分数据的话，后面的就再也
+// 等不到事件了。几根协程等同一个 fd 的同一个方向（比如几根一起 accept）时，每次就绪全部醒一遍，
+// 没拿到的回去排队；常见的一个方向只有一个等待者。错误和对端关闭不单独处理：等待者再做系统调用时
+// 会把错误码或者 0 字节报出来。
 inline void io_dispatch(io_fd_table& slots, io_fd_locks& locks, std::atomic<std::size_t>& pending, int fd,
-                        bool readable, bool writable, io_completion_batch& completed) noexcept {
-    std::lock_guard<std::mutex> held(locks.of(fd));
+                        bool readable, bool writable, io_completion_batch& ready) noexcept {
     io_fd_slot* const slot = slots.find(static_cast<std::size_t>(fd));
     if (!slot) {
-        return;
+        return;   // 这个 fd 上还没有人等过：要等的时候会先试
     }
+    std::lock_guard<spin_lock> held(locks.of(fd));
     if (readable) {
-        while (io_complete(slot->readers, completed, pending)) {
-        }
+        slot->read_events.fetch_add(1, std::memory_order_relaxed);
+        io_release_all(slot->readers, ready, pending);
     }
     if (writable) {
-        while (io_complete(slot->writers, completed, pending)) {
-        }
+        slot->write_events.fetch_add(1, std::memory_order_relaxed);
+        io_release_all(slot->writers, ready, pending);
     }
 }
 
