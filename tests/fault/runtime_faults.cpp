@@ -1,4 +1,4 @@
-// 运行时的误用与内存耗尽：每种情形在子进程里跑，检查它终止、并且 stderr 里有那句诊断。
+// 运行时和日志的误用、内存耗尽：每种情形在子进程里跑，检查它终止、并且 stderr 里有那句诊断。
 // 另有一条不终止的：引擎登记 I/O 时分配失败，报 ENOMEM，不挂起协程（只有 POSIX 的引擎在这里分配）。
 //
 // 子进程的 stderr 只在那一条失败时才打印：诊断里的 "wavvix::" 开头会被 CI 报告当成异常输出。
@@ -7,6 +7,7 @@
 #include <culib/coroutine.h>
 #include <culib/detail/fiber.h>
 #include <culib/detail/macros.h>
+#include <culib/log.h>
 #include <culib/os.h>
 #include <culib/sync.h>
 
@@ -17,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <string>
 
@@ -178,6 +180,19 @@ void wait_group_destroyed_while_running() {
     group.go([] { wavvix::sleep_for(std::chrono::seconds(5)); });
 }
 
+void log_sink_is_null() {
+    wavvix::log::make_logger("broken")->add_sink(std::shared_ptr<wavvix::log::sink>());
+}
+
+void log_target_is_null() {
+    const std::shared_ptr<wavvix::log::logger> missing = wavvix::log::get("never registered");
+    LOG_INFO_TO(missing) << "never written";
+}
+
+void log_registers_null() {
+    (void)wavvix::log::register_logger(std::shared_ptr<wavvix::log::logger>()).is_ok();
+}
+
 // 子进程应当怎么结束：打印诊断后 abort，或者被栈的保护机制拦住。
 enum class ending { abort, stack_overflow };
 
@@ -205,6 +220,9 @@ const fault_case cases[] = {
     {"channel_closed_twice", &channel_closed_twice, ending::abort, "重复关闭"},
     {"wait_group_destroyed_while_running", &wait_group_destroyed_while_running, ending::abort,
      "组里还有协程没结束"},
+    {"log_sink_is_null", &log_sink_is_null, ending::abort, "add_sink 的 sink 是空指针"},
+    {"log_target_is_null", &log_target_is_null, ending::abort, "LOG_*_TO 的 logger 是空指针"},
+    {"log_registers_null", &log_registers_null, ending::abort, "register_logger 的 logger 是空指针"},
 };
 
 const std::size_t case_count = sizeof cases / sizeof cases[0];

@@ -46,7 +46,7 @@ culib 从个人实际需求出发，提供像线程一样使用的 C++11 协程�
 | os | 环境变量、程序自身路径、主机名、进程 ID、CPU 数、**信号与优雅退出**（只提供停止标志，不提供在信号里跑的回调）。动态库加载和崩溃调用栈都不做，理由见设计文档 | **已完成** |
 | time | 时刻：`timestamp`（单位写在类型里）、ISO 8601 格式化与解析、UTC 与本地时区；时长与秒表在 `stopwatch.h` | **已完成**（无 strftime 格式串、不自带 tzdata，理由见设计文档） |
 | 运行时与 I/O | 第一次 `go()` 时起运行时，同时跑协程的线程数默认取 CPU 数（`WAVVIX_MAXPROCS` 可覆盖），卡住的工作线程由监控线程把名额交给另一根；跨线程可用、在普通线程上也能等的 mutex / condition_variable / channel / wait_group；三个事件后端（`epoll` / `kqueue` / `IOCP`）与超时 | **可用**。2026-10-18 改成 Go 风格的接口：没有 runtime 对象和协程句柄，`main` 返回时进程直接退出。见[协程运行时](docs/runtime.md)和[网络用法](docs/net.md) |
-| log | 日志：`LOG_INFO << ...`，级别不足时不求值参数；多个输出目标与文件轮转。消息使用固定栈缓冲，文件整行拼接可能分配；文件写入不使用 stdio 缓冲 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-log-design.md) |
+| log | 日志：默认 logger 加具名 logger，`LOG_INFO << ...`、`LOG_INFO_TO(net) << ...`，级别不足时不求值参数；控制台、文件和轮转文件三种 sink，一个 sink 可以挂在几个 logger 上，各有自己的级别；按名字登记。写入同步、不缓冲，从不挂起协程 | **已完成**，见 [日志](docs/log.md) |
 | 配置文件 | ini 子集（`culib/config.h`）：注释、段（变成 `section.key` 扁平键）、键等于值；**「键不存在」用默认值而「值写错了」报错**；`apply_to_flags()` 让配置和命令行共用一套定义、命令行优先 | **已完成**，见 [设计](docs/superpowers/specs/2026-10-05-config-design.md)。那边定掉了预期接口留的三个待定项，并记了两处**示例先抓出来**的问题 |
 | coroutine | 有栈协程，汇编换栈。**库的并发模型就是它**——协程取代线程，跑在运行时的工作线程上 | `go()` 起协程、`wait_group` 等协程；协程在挂起点可能换到别的工作线程上继续（和 Go 一样），栈在第一次运行时才向 `mem` 要。换栈汇编覆盖 x86_64 和 arm64 |
 | mem | 自带通用分配器 `wavvix::mem`：依赖 `culib_new_override` 就让全局 `new/delete` 和标准容器改用它，代码不用改；Linux 还可以覆盖 `malloc/free`；另有 C 语义的显式接口。协程栈也向它要 | 64 位 Linux、macOS、Windows。本机验证过 Linux（GCC、Clang、ASan + UBSan）和 Windows（MSVC）；[`09f952d` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38219833032) 27/27 通过，含 macOS arm64 / x86_64 和 GCC 4.8。平台边界与覆盖方式见[分配器用法](docs/mem.md) |

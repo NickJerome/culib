@@ -376,48 +376,49 @@ lexical_cast<int>("12abc")、lexical_cast<int>(" 12")、lexical_cast<int>("") �
 
 ## [`log.h`](../include/culib/log.h)
 
-完整背景见 [设计文档](superpowers/specs/2026-10-05-log-design.md)。
+设计、测量和与 spdlog 的对照见 [日志](log.md)。
 
-日志。
+    LOG_INFO << "listening on port " << port;                // 默认 logger
+    LOG_WARNING_TO(net) << "peer " << peer << " is slow";    // 具名 logger
 
-    LOG_INFO << "listening on port " << port;
-    LOG_ERROR << "open " << path << " failed: " << why;
+级别不够时整条语句的参数都不求值：`LOG_DEBUG << expensive()` 在 info 级别下不会调用 `expensive()`。这是用宏而不是函数的理由。
 
-级别不够时**整条语句的参数都不求值**——`LOG_DEBUG << expensive()` 在 info 级别下
-不会调用 `expensive()`。这是用宏而不是函数的唯一理由。
+### logger 和 sink
+
+不带 `_TO` 的宏写到 `default_logger()`：名字为空、级别 info，一开始挂着一个往 stderr 写的 `console_sink()`，什么都不配就能用。要改就直接对它调 `set_level`、`clear_sinks`、`add_sink`，没有替换它的接口。
+
+具名 logger 用 `make_logger(name)` 造，sink 自己加：
+
+    result<std::shared_ptr<log::sink> > file = log::rotating_file_sink("app.log", 10 << 20, 3);
+    if (file.is_err()) {
+        return file.error();
+    }
+    const std::shared_ptr<log::logger> net = log::make_logger("net");
+    net->set_level(log::level::debug);
+    net->add_sink(file.value());
+    if (log::register_logger(net).is_err()) {   // 登记以后别处用 log::get("net") 取
+        ...
+    }
+
+一个 sink 可以挂在几个 logger 上，它们的行写进同一个文件也不会交错。sink 有自己的级别，默认 trace：比如控制台只要 warning 以上，文件全都要。
 
 ### 宏展开成什么
 
 展开成一个最多跑一次的 `for`：
 
-    for (bool once = enabled(level::info); once; once = false) line(...).stream()
+    for (line_target t = enabled(target, level::info); t.get(); t.finish()) line(*t.get(), ...).stream()
 
-所以它是**一条语句**，`if (x) LOG_INFO << "y"; else ...` 里的 else 绑定是对的，
-也不会出现「某条分支上漏了收尾」。写出来像流，控制流就是「也许执行一次」，
-没有藏 return 之类的东西（开发约定对新增宏的判据）。
+所以它是一条语句，`if (x) LOG_INFO << "y"; else ...` 里的 else 绑定是对的，`target` 也只求值一次。`target` 是 `std::shared_ptr` 时，宏拿着一份直到这一行写完，所以 `LOG_INFO_TO(log::get("net"))` 写到一半别处 drop 了也不要紧。
 
-和别处一样，短名字可以关掉：包含本头文件之前定义 `WAVVIX_NO_LOG_SHORT_NAMES`，
-改用 `WAVVIX_LOG_INFO` 这些带前缀的。
-
-### 输出去哪
-
-**一行都不配就有一个到 stderr 的输出**（第一次写日志时才建，所以 main 之前不跑
-任何代码）。不想要就 `clear_sinks()`。想加文件就 `add_file_sink(path)`。
-可以同时有多个。
-
-控制台那一路的颜色交给 `term` 判断：重定向到文件、管道给别的程序、或者设了
-`NO_COLOR` 时自动变回纯文字，所以日志文件和 CI 日志里不会多出转义序列。
+和别处一样，短名字可以关掉：包含本头文件之前定义 `WAVVIX_NO_LOG_SHORT_NAMES`，改用 `WAVVIX_LOG_INFO`、`WAVVIX_LOG_INFO_TO` 这些带前缀的。
 
 ### 几条要知道的
 
-  - **一行日志不分配内存**：消息写进调用方栈上的一块固定缓冲（见 `line_capacity`），
-    超长就截断。日志丢几个字比让业务路径去分配内存好。
-  - **写出去就不会丢**：文件那一路没有用户态缓冲，每行一次系统调用。进程崩掉时
-    已经写出的行都在。
-  - **`fatal` 不会 abort**，它只是最高的一级。一句日志顺手把进程杀掉是「意外」，
-    要优雅退出用 `culib/os.h` 的停止标志。
-  - **sink 是进程全局的**，写入用一把 `std::mutex` 护着，写入是阻塞的系统调用、不挂起，
-    所以锁不会跨着挂起点被拿着，catch 块里写日志也没事。等慢盘时卡住的工作线程由监控线程交接。
+  - 消息写进调用方栈上的一块固定缓冲（`line_capacity`，1 KB），超长截断。整行在 `<<` 链结束时拼一次，所有 sink 共用。
+  - 写出去的行不会丢：文件那一路没有用户态缓冲，每行一次系统调用，所以也没有 flush。
+  - `fatal` 不会 abort，它只是最高的一级。要优雅退出用 `culib/os.h` 的停止标志。
+  - 写日志从不挂起协程：等锁和慢写占着所在的线程，在协程里占得久了由监控线程交接名额。所以在 catch 块里、拿着 `std::mutex` 时都能写。代价是日志目标卡死时（stderr 的管道没人读、网络盘卡住），每根等着写日志的协程占住一根线程，见 [日志](log.md#协程)。
+  - 写失败不终止进程，每个 sink 每秒最多往 stderr 报一次，以 `wavvix::log: ` 开头。
 
 ## [`net.h`](../include/culib/net.h)
 

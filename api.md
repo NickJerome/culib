@@ -71,7 +71,7 @@ target("app")
 | `mem.h` | `alloc`、`free` 等七个函数 | `wavvix::mem` |
 | `time.h` | `timestamp`、`date_time`、时间解析和格式化 | `wavvix` |
 | `stopwatch.h` | `stopwatch`、`format_duration` | `wavvix` |
-| `log.h` | 日志配置、`level`、`LOG_*` | `wavvix::log` 与宏 |
+| `log.h` | logger、sink、登记表、`level`、`LOG_*` / `LOG_*_TO` | `wavvix::log` 与宏 |
 | `term.h` | `style`、`styled<T>`、`fg`、`bg` | `wavvix::term` |
 | `os.h` | 环境变量、进程信息、停止请求 | `wavvix::os` |
 | `test.h` | `run_all`、`TEST`、`EXPECT` | `wavvix::test` 与宏 |
@@ -1248,50 +1248,82 @@ int main() {
 <a id="log"></a>
 ## 日志：`<culib/log.h>`
 
-命名空间：`wavvix::log`。
+命名空间：`wavvix::log`。设计、测量和与 spdlog 的对照见 [日志](docs/log.md)。
 
 ```cpp
-enum class level { trace, debug, info, warning, error, fatal };
-void set_level(level value) noexcept;
-level current_level() noexcept;
+enum class level { trace, debug, info, warning, error, fatal, off };
 const std::size_t line_capacity = 1024;
-void add_console_sink();
-result<void> add_file_sink(string_view path, std::uint64_t max_bytes = 0, int keep_files = 3);
-void clear_sinks();
+
+class sink {                                    // 只由下面三个工厂函数造
+public:
+    void set_level(level minimum) noexcept;     // 默认 trace
+    level current_level() const noexcept;
+    bool should_log(level severity) const noexcept;
+};
+std::shared_ptr<sink> console_sink();
+result<std::shared_ptr<sink>> file_sink(const fs::path& path);
+result<std::shared_ptr<sink>> rotating_file_sink(const fs::path& path, std::uint64_t max_bytes,
+                                                 unsigned keep_files);
+
+class logger {                                  // 由 make_logger 造，或者是 default_logger()
+public:
+    const std::string& name() const noexcept;
+    void set_level(level minimum) noexcept;     // 默认 info
+    level current_level() const noexcept;
+    bool should_log(level severity) const noexcept;
+    void add_sink(std::shared_ptr<sink> target);
+    void clear_sinks();
+};
+std::shared_ptr<logger> make_logger(std::string name);
+logger& default_logger();
+
+result<void> register_logger(std::shared_ptr<logger> target);
+std::shared_ptr<logger> get(string_view name);
+void drop(string_view name);
 ```
 
-默认级别 `info`，更低级别消息完全跳过，其 `<<` 表达式不求值。宏在一条语句结束时提交整行，自动附上时间、级别和源码位置；消息部分最多 1024 字节，超出截断。
+| 正式宏 | 默认短名 | 写到哪里 |
+| --- | --- | --- |
+| `WAVVIX_LOG_TRACE` … `WAVVIX_LOG_FATAL` | `LOG_TRACE` … `LOG_FATAL` | `default_logger()` |
+| `WAVVIX_LOG_TRACE_TO(target)` … `WAVVIX_LOG_FATAL_TO(target)` | `LOG_TRACE_TO` … `LOG_FATAL_TO` | `target`，`logger&` 或 `std::shared_ptr<logger>` |
+| `WAVVIX_LOG_AT(level_value)` | 无 | `default_logger()`，按传入的级别 |
+| `WAVVIX_LOG_TO_AT(target, level_value)` | 无 | `target`，按传入的级别 |
 
-| 正式宏 | 默认短名 |
-| --- | --- |
-| `WAVVIX_LOG_TRACE` | `LOG_TRACE` |
-| `WAVVIX_LOG_DEBUG` | `LOG_DEBUG` |
-| `WAVVIX_LOG_INFO` | `LOG_INFO` |
-| `WAVVIX_LOG_WARNING` | `LOG_WARNING` |
-| `WAVVIX_LOG_ERROR` | `LOG_ERROR` |
-| `WAVVIX_LOG_FATAL` | `LOG_FATAL` |
-| `WAVVIX_LOG_AT(level_value)` | 无；按传入级别输出 |
+宏在一条语句结束时提交整行：`时间戳 级别 [名字] 文件:行  消息`。时间是 UTC，精确到毫秒；logger 的名字为空时不印方括号；消息部分最多 1024 字节，超出截断。一行先过 logger 的级别，不够时 `<<` 表达式不求值；再过每个 sink 自己的级别。`level::off` 只用来关掉 logger 或 sink。`fatal` 只是最高的一级，不会终止程序。包含前定义 `WAVVIX_NO_LOG_SHORT_NAMES` 可禁用短名。
 
-包含前定义 `WAVVIX_NO_LOG_SHORT_NAMES` 可禁用短名。`fatal` 当前只是日志级别，**不会自动终止程序**。
+默认 logger 名字为空、级别 info，一开始挂着一个 `console_sink()`。它永不析构，也没有替换它的接口，要改就直接对它调 `set_level`、`clear_sinks`、`add_sink`。`make_logger` 造的 logger 没有 sink、级别 info，不登记也能用。`register_logger` 按名字登记，重名返回 `already_exists`；`get` 没登记过返回空指针；`drop` 只去掉登记，拿到手的 logger 照常能用。`add_sink` 和 `register_logger` 传空指针、`LOG_*_TO` 的目标是空指针，都打印诊断后终止。
 
-尚未配置输出目标时，首次日志自动创建 stderr 输出；显式配置文件目标后不要依赖自动补控制台，想同时输出应显式添加两种目标。`clear_sinks` 清空后保持无输出。文件使用追加写；`max_bytes=0` 不轮转，非零时按大小轮转为 `path.1`、`path.2` 等，保留数量由 `keep_files` 指定。写入由内部互斥量串行化，支持多线程，但磁盘写入是同步的。
+控制台 sink 写 stderr，只给级别名上色；stderr 不是终端或者设了 `NO_COLOR` 时不上色。文件 sink 往末尾追加，一行一次系统调用，不缓冲，所以没有 flush。轮转的 sink 写完一行以后文件超过 `max_bytes`，就把 `path` 改名为 `path.1`，旧的依次后移，只留 `keep_files` 份；文件原有的内容也算在内。`max_bytes` 或 `keep_files` 为 0 返回 `invalid_argument`。写入和轮转失败不终止进程，每个 sink 每秒最多往 stderr 报一次。
+
+多个线程、多个协程可以同时写同一个 logger 或 sink，行不会交错；写的同时加减 sink 也安全。写入是同步的，从不挂起协程：等锁和慢写都占着所在的线程，所以在 catch 块里、拿着 `std::mutex` 时都能写。
 
 示例：
 
 ```cpp
 #include <culib/log.h>
 #include <iostream>
+#include <memory>
 
 int main() {
-    wavvix::log::set_level(wavvix::log::level::info);
     int evaluated = 0;
     LOG_DEBUG << "hidden " << ++evaluated;
     LOG_INFO << "server ready";
+
+    const std::shared_ptr<wavvix::log::logger> net = wavvix::log::make_logger("net");
+    net->add_sink(wavvix::log::console_sink());
+    LOG_WARNING_TO(net) << "peer is slow";
     std::cout << "evaluated=" << evaluated << '\n';
 }
 ```
 
-stdout 输出 `evaluated=0`，stderr 输出带时间与源码位置的 `server ready` 日志。文件与轮转示例见 [examples/log.cpp](examples/log.cpp)。
+stdout 输出 `evaluated=0`。stderr 输出两行，下面是存成 `main.cpp` 在 Linux 上编译运行的实际输出：
+
+```
+2026-10-20T02:13:14.753Z INFO  main.cpp:8  server ready
+2026-10-20T02:13:14.753Z WARN  [net] main.cpp:12  peer is slow
+```
+
+文件、轮转、登记表和协程里写日志的用法见 [examples/log.cpp](examples/log.cpp)。
 
 <a id="term"></a>
 ## 终端颜色：`<culib/term.h>`
@@ -1477,5 +1509,7 @@ int main() {
 上条记录之后，本文网络几节按统一 `net::socket` 重写。TCP、UDP 两个完整程序已重新以 Linux GCC C++11 和 Windows MSVC `/W4 /WX /execution-charset:.1252` 编译运行，分别输出 `tcp ok`、`udp ok`；Windows 消费程序未加 `/utf-8`。这次仅重跑这两段，不把上一条或旧 CI 当作新接口的验证。完整本地矩阵见[统一 socket 设计](docs/superpowers/specs/2026-10-13-unified-socket-design.md#实现验证)。
 
 2026-10-18 协程一节改成 `go` / `wait_group`，同步和网络两节的示例随之改写。这 5 个程序在 Windows x64 MSVC 2022 上以警告即错误编译、逐个运行，输出与正文一致；这一次没有在 Linux 上复核（本机 WSL 不可用），本文示例也不在 CI 里编译。同一天协程改成可以换线程以后，这 5 个程序在 Windows 上重新编译运行，输出不变；删掉 `call_blocking` 以后，协程一节第一个示例改成直接调用阻塞函数，5 个程序在 Windows 上再编译运行一遍，输出不变。
+
+2026-10-20 日志一节按 logger / sink 的接口重写。示例存成 `main.cpp` 在 Linux GCC 11.4（`-std=c++11`，全部警告即错误）下编译运行，输出就是正文所列的两行；Windows 上没有单独编译这一段，那边编译运行的是 [examples/log.cpp](examples/log.cpp)（MSVC 2022 与 MinGW-w64）。本文示例不在 CI 里编译。
 
 2026-10-14：`fs` 按定稿的标准接口整体重写（`path` 值类型、`result` 三态查询、`directory_iterator`、`file` 句柄与 `fs::ofstream`，见 [fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md)）。fs 一节全部提取重验：本文 23 个独立 C++ 程序从当前文档提取，在 Linux x86_64 GCC 11.4（`-std=c++11`，全部警告即错误）与 Windows x64 MSVC 2022（全部警告即错误）下编译并运行，30 次调用的退出码与输出均与正文一致；fs 示例实测输出即上文 fs 一节「实测输出」所列五行。2026-10-13 及更早的两段验证记录针对的是旧 fs 接口，不能替代本段新接口的重验。本段的文档示例验证与远程 CI 是两项独立检查：[提交 `e7b6b8e` 的三平台 CI](https://github.com/NickJerome/culib/actions/runs/38567733275) 24/24 job 通过；完整日志核对、测试项数和未覆盖边界见[fs 标准接口设计](docs/superpowers/specs/2026-10-14-fs-standard-interface-design.md) 第 5 节。
