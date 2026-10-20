@@ -45,11 +45,13 @@ enum class channel_error {
 
 }  // namespace detail
 
-// 互斥量。等待者先来先得，unlock 把锁直接交给队首。
+// 互斥量。平时 unlock 放开锁并叫醒排在最前面的等待者，醒来的和刚来的一起抢，抢不到的回到队首；
+// 有等待者等了 1 毫秒以上就改成直接把锁交给队首，刚来的排到队尾，所以排着的不会一直被插队。
+// Go 的 sync.Mutex 也是这两种模式。
 // 满足 Lockable，可以配 std::lock_guard 和 std::unique_lock 用。
 class mutex {
 public:
-    mutex() noexcept : held_(false) {}
+    mutex() noexcept : held_(false), starving_(false) {}
     ~mutex();
 
     void lock();
@@ -61,8 +63,13 @@ public:
     void unlock();
 
 private:
-    std::mutex state_;            // 保护 held_ 和 waiters_
+    bool claim_locked() noexcept;
+    bool wait_for_lock(std::chrono::nanoseconds timeout);
+    bool hand_over_locked();
+
+    std::mutex state_;            // 保护 held_、starving_ 和 waiters_
     bool held_;
+    bool starving_;               // unlock 直接把锁交给队首
     detail::list_node waiters_;
 };
 

@@ -1,4 +1,4 @@
-// 只有一根工作线程时同步原语的次序：临界区不交错、交棒按先来后到、超时与交棒同时发生。
+// 只有一根工作线程时同步原语的次序：临界区不交错、排队的按先来后到拿锁、插队有上限、超时与放锁同时发生。
 //
 // 这些测试按真实用法写：临界区里会让出，否则用不着协程锁。协程都由一根协程起出来，
 // 要等它挂起才开始跑，所以起步次序是确定的（见 runtime_order_test.cpp 开头）。
@@ -51,8 +51,8 @@ TEST(mutex_order, serializes_critical_sections_that_yield) {
     EXPECT(trace, ==, "aabb");   // 不是 "abab"
 }
 
-TEST(mutex_order, hands_the_lock_over_in_arrival_order) {
-    // 公平性：unlock 把锁交给队首，而不是放开让大家抢，所以排队的不会被插队的饿死。
+TEST(mutex_order, queued_waiters_get_the_lock_in_arrival_order) {
+    // unlock 叫醒的是队首；这里没有刚来的跟它抢，所以排着的三根按到达的次序拿到锁。
     mutex lock;
     std::string order;
     in_coroutine([&] {
@@ -75,6 +75,40 @@ TEST(mutex_order, hands_the_lock_over_in_arrival_order) {
     });
 
     EXPECT(order, ==, "ABC");
+}
+
+TEST(mutex_order, a_waiter_that_keeps_losing_gets_the_lock_after_about_a_millisecond) {
+    // 插队的那根拿着锁让出，放开以后马上又拿：排着的那根每次醒来都晚一步。它从排队算起等了 1 毫秒以上，
+    // unlock 就改成直接把锁交给它。插队的最多跑 1 秒，交接坏了的话这条测试也停得下来。
+    mutex lock;
+    bool got = false;
+    int barges = 0;
+    std::chrono::steady_clock::duration waited(0);
+    in_coroutine([&] {
+        wavvix::wait_group children;
+        children.go([&] {
+            const std::chrono::steady_clock::time_point give_up = std::chrono::steady_clock::now() + ms(1000);
+            lock.lock();
+            while (!got && std::chrono::steady_clock::now() < give_up) {
+                wavvix::yield();
+                lock.unlock();
+                lock.lock();
+                ++barges;
+            }
+            lock.unlock();
+        });
+        children.go([&] {
+            const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+            lock.lock();
+            waited = std::chrono::steady_clock::now() - asked;
+            got = true;
+            lock.unlock();
+        });
+        children.wait();
+    });
+
+    EXPECT(barges > 10, ==, true);        // 确实被插过队
+    EXPECT(waited < ms(100), ==, true);   // 等满 1 毫秒就轮到它，这里留足余量
 }
 
 TEST(mutex_order, try_lock_for_gives_up_when_the_time_is_up) {

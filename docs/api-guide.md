@@ -650,7 +650,12 @@ starts_with / ends_with / contains / find 在 string_view 上，不在这里重�
 `wavvix::mutex` 在协程里拿不到时挂起协程，工作线程去跑别的；在普通线程里拿不到时阻塞那根线程，
 所以协程和 `main`、普通线程之间共享的锁也用它。`std::mutex` 拿不到时卡住整根工作线程；拿着它也不能
 挂起——醒来时协程可能已经换了线程，换了线程再解锁是未定义行为。所以临界区里会挂起（I/O、睡眠、等锁）
-就只能用 `wavvix::mutex`，`std::mutex` 只适合很短、绝不挂起的临界区。
+就只能用 `wavvix::mutex`。
+
+反过来，临界区只有几十纳秒、中间不挂起也不做阻塞调用的，在协程里直接用 `std::mutex` 更快：拿不到时
+它先在用户态空转一会儿，锁多半就放开了；`wavvix::mutex` 拿不到就挂起协程，再被叫醒、排队、调度，
+每次争用多一两微秒。4 根工作线程抢一把这样的锁，`std::mutex` 每秒五百多万次，`wavvix::mutex` 三百多万次，
+数字见[实现说明](implementation-notes.md#两种模式)。
 
 ### 要 semaphore 时用 channel
 

@@ -696,7 +696,7 @@ public:
 };
 ```
 
-`mutex` 非递归，`unlock` 把锁直接交给排在最前面的等待者，所以不会饿死。它满足标准库的 Lockable：作用域锁直接用 `std::lock_guard<wavvix::mutex>`，要延后加锁、带时限加锁就用 `std::unique_lock`。`lock`、`try_lock_for`、`wait`、`wait_for` 会等待；`try_lock`、`unlock`、`notify_one`、`notify_all` 不等待。`try_lock_for` 的零或负时长只尝试一次，返回 `false` 表示没拿到。
+`mutex` 非递归。平时 `unlock` 放开锁并叫醒排在最前面的等待者，醒来的和刚来的一起抢，抢不到的回到队首；有等待者等了 1 毫秒以上，`unlock` 就改成直接把锁交给队首，所以排着的不会一直被插队。它满足标准库的 Lockable：作用域锁直接用 `std::lock_guard<wavvix::mutex>`，要延后加锁、带时限加锁就用 `std::unique_lock`。`lock`、`try_lock_for`、`wait`、`wait_for` 会等待；`try_lock`、`unlock`、`notify_one`、`notify_all` 不等待。`try_lock_for` 的零或负时长只尝试一次，返回 `false` 表示没拿到。
 
 条件变量等待前须持有传入的锁；等待期间释放，返回前重新持有。`wait_for` 超时返回 `false`，零或负时长立即返回 `false` 且仍持有锁。用 `while` 重查条件；重新拿锁可能继续等待，超时时长不是严格的函数返回上限。
 

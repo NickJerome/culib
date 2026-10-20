@@ -135,6 +135,7 @@ Linux / macOS 的 debug 构建在每根栈的最底下设保护页，溢出当�
 | 换线程 | 随时，goroutine 没有线程身份 | 只在挂起点；`thread_local`、`errno`、线程号、拿着的 `std::mutex` 都不能跨过挂起点 |
 | 阻塞的系统调用 | P 留在原线程上；sysmon 看到调用跨过一个周期（最短 20 微秒）就把 P 交给别的线程，没活可做时最多拖到 10 毫秒 | 监控线程每 2 毫秒看一次，一根工作线程停在同一根协程里超过 10 毫秒、又有活可做，才把名额交出去 |
 | 一直算 | 跑满 10 毫秒就异步抢占 | 不抢占；超过 10 毫秒被当成卡住、交出名额，线程跟着多 |
+| 互斥锁 | `sync.Mutex`：平时放开让醒来的和刚来的一起抢，拿不到先自旋几轮；有等待者等了 1 毫秒以上就直接交给队首 | `wavvix::mutex`：两种模式一样，不自旋 |
 | panic / 异常 | `recover` | 逃出协程就 `std::terminate()`；catch 块里不能挂起 |
 | `main` 返回 | 进程退出，不等 goroutine | 一样 |
 | 栈 | 从 2 KiB 起按需增长，最大 1 GB | 固定 1008 KiB，用到的页才占内存 |
@@ -275,3 +276,7 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 本机验证：Windows MSVC 2022 x64 release 的 14 个测试程序全部通过，`culib_test` 连跑 20 遍全部通过。没有加确定性的测试：要卡在第 1 步和第 3 步之间排进两根协程，测试里控制不了这个时机；上面那个程序留在 scratchpad 里，用 1000 个进程做对照。
 
 [`73e0c9d` 的 CI](https://github.com/NickJerome/culib/actions/runs/39355587682) 24/24 通过：`culib_test` Linux 376 项、macOS 373 项、Windows 与 MinGW 372 项，`runtime_order_test` 依次 40、38、35 项，GCC 4.8 和 ASan + UBSan + TSan 与 Linux 相同，无异常构建 369 项和 40 项。报告里没有 SKIP，也没有 fatal、断言或 sanitizer 输出；14 个作业各有一条恢复构建缓存时没找到缓存的提示。
+
+2026-10-20 `wavvix::mutex` 改成和 Go 一样的两种模式，原因和测量见[实现说明](implementation-notes.md#两种模式)。原来那条按到达次序交接的次序测试改名为 `queued_waiters_get_the_lock_in_arrival_order`，照旧通过。新加的 `a_waiter_that_keeps_losing_gets_the_lock_after_about_a_millisecond` 让一根协程拿着锁让出、放开以后马上又拿，排着的那根在 1 毫秒多一点以后拿到锁，MSVC release 下这条用了 1.55 毫秒。反向验证：换回只直接交接的实现，这条因为没有插队而失败；把饥饿模式的门槛改成 1 小时，排着的那根一直等到插队的那根 1 秒后放弃才拿到，也失败。
+
+本机验证：Windows MSVC 2022 x64 release 的 14 个测试程序全部通过（`culib_test` 383 项、`runtime_order_test` 36 项），`runtime_order_test` 连跑 30 遍全部通过（排除了会耗尽本机临时端口的 `io_engine.carries_many_concurrent_readers`）；MSYS2 MinGW-w64 跑 `tests/mingw_windows.sh` 全部通过（383 项、36 项）；WSL2 上 GCC 11.4 release / debug、Clang 14 release、GCC 无异常构建全部通过（388 项，无异常构建 381 项；41 项），ASan + UBSan 和 Clang 14 的 TSan 下两个程序全部通过、没有诊断；gcc:4.8.5 镜像里 `-fsyntax-only` 通过。
