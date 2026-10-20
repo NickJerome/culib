@@ -1,13 +1,3 @@
-target("mem_benchmark")
-    set_kind("binary")
-    set_default(false)
-    set_group("benchmarks")
-    if not is_plat("windows") then set_languages("c++11") end
-    set_warnings("allextra", "pedantic", "error")
-    add_files("../../benchmarks/mem_alloc.cpp")
-    add_deps("culib")
-target_end()
-
 target("culib_new_override")
     set_kind("object")
     set_default(false)

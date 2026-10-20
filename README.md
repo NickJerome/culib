@@ -256,7 +256,7 @@ culib/
 │   ├── runtime/                # 协程、调度器、I/O 引擎及换栈汇编
 │   └── testing/                # 测试框架
 ├── tests/                      # culib 单元与平台集成测试
-├── benchmarks/                 # 分配器等性能测量程序
+├── benchmarks/                 # 和 Go 的记分板、分配器的测量程序
 ├── examples/                   # 每个 .cpp 对应一个可运行示例
 ├── docs/                       # 使用文档、设计记录和实现计划
 ├── CLAUDE.md                   # 开发约定

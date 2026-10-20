@@ -93,7 +93,7 @@
   - **输入必须每轮都变。** 第一版量格式化时时间戳是循环不变量，编译器可以把整个计算提到循环外面，量出来的是个假数。
   - **只报同一次运行里的倍数，不报绝对值。** 同一个二进制在这台机器上两遍跑能差一倍（`strftime` 那一格实测 130 / 253 / 262 ns 乱跳），而倍数是稳的。所以示例里的对比要和参照物**同场跑**，让读者看到的倍数不受机器噪声影响；文档里写绝对值就得说明是哪一次、什么编译标志，否则就是假精度。
 
-  不单独建基准测试框架。实践中生效的机制是设计文档里的汇编对比——例如 result 的验证节记录了 `result<int, 枚举>` 为 8 字节、调用点与手写 `struct { int; bool; }` 生成逐条相同的指令。这比维护一套基准测试轻，也更适合「零开销」这类需要看指令而不是看耗时的主张。真遇到需要测耗时的场景（如线程池、日志吞吐）再建 `benchmarks/`。
+  不建基准测试框架。耗时放在 `benchmarks/` 的记分板里和 Go 比：同一组用例在两边各写一份普通程序，`compare.sh` 同场轮流跑、取中位数（见 [benchmarks/README.md](benchmarks/README.md)）。「零开销」这类要看指令而不是看耗时的主张，仍用设计文档里的汇编对比——例如 result 的验证节记录了 `result<int, 枚举>` 为 8 字节、调用点与手写 `struct { int; bool; }` 生成逐条相同的指令。
 
 ## 易用性
 
@@ -188,7 +188,7 @@
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 21 个） |
 | CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |
-| 性能主张有依据 | 设计文档「实现验证」节里的汇编对比 | 人工，无自动检查 |
+| 性能主张有依据 | 设计文档「实现验证」节里的汇编对比；和 Go 比的耗时用 `benchmarks/` 的记分板 | 人工跑。CI 只编译记分板（标准矩阵的 build benchmarks 一步），不跑 |
 | 头文件可独立包含 | CI 的 `headers` job，遍历 `include/**.h` 各 `-fsyntax-only` 编一次 | Linux GCC `-std=c++11` 全警告（同上） |
 | 公共头文件带 UTF-8 BOM | CI 的 `headers` job，检查前三个字节 | 全部 `include/**.h`（同上）。**负向验证过：去掉一个 BOM 门禁确实变红** |
 | 公共头文件的字符串字面量只用 ASCII | CI 的 `consumed-as-dependency` job：Windows 上的使用方不加 `/utf-8`，MSVC 按 runner 的代码页 1252 编译，`/WX` | 经 `culib.h` 包含到的全部头文件。**实际拦下过一次**：`6047a49` 里 `sync.h` 的 channel 诊断是中文字面量，两个 Windows 任务报 C4566 |

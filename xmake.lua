@@ -92,4 +92,5 @@ if is_main_project then
     includes("tests")
     includes("examples")
     includes("tests/mem")
+    includes("benchmarks")
 end

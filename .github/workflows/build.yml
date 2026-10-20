@@ -196,7 +196,7 @@ jobs:
           xmake-version: ${{ env.XMAKE_VERSION }}
           actions-cache-folder: '.xmake-tool-cache'
           build-cache: ${{ runner.os != 'Windows' }}
-          build-cache-key: v1-${{ matrix.target.os }}-${{ matrix.target.toolchain }}-${{ steps.compiler-cache.outputs.id }}-${{ matrix.mode }}-xmake-${{ env.XMAKE_VERSION }}-${{ hashFiles('xmake.lua', 'tests/xmake.lua', 'examples/xmake.lua', 'src/mem/xmake.lua', 'tests/mem/xmake.lua') }}
+          build-cache-key: v1-${{ matrix.target.os }}-${{ matrix.target.toolchain }}-${{ steps.compiler-cache.outputs.id }}-${{ matrix.mode }}-xmake-${{ env.XMAKE_VERSION }}-${{ hashFiles('xmake.lua', 'tests/xmake.lua', 'examples/xmake.lua', 'src/mem/xmake.lua', 'tests/mem/xmake.lua', 'benchmarks/xmake.lua') }}
 
       - name: configure
         run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
@@ -218,6 +218,11 @@ jobs:
       - name: build examples
         shell: bash
         run: bash .github/report-failure.sh xmake build -y -g examples
+
+      # 记分板和分配器的测量程序只编译、不跑：接口改了它们也得跟着改。
+      - name: build benchmarks
+        shell: bash
+        run: bash .github/report-failure.sh xmake build -y -g benchmarks
 
       - name: run examples
         shell: bash
