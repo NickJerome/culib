@@ -2,6 +2,7 @@
 // 换栈的汇编在 src/runtime/asm/ 下；栈向 src/mem/stack.cpp 要；通知 sanitizer 的部分在 sanitizer_fiber.h。
 
 #include <culib/detail/fiber.h>
+#include <culib/mem.h>
 
 #include "base/fatal.h"
 #include "coroutine_detail.h"
@@ -97,9 +98,10 @@ coroutine_control* coroutine_create(std::size_t stack_size, std::size_t body_siz
         return 0;
     }
 
-    // 走全局 nothrow new：覆盖了 new 的程序（含 culib_new_override）里控制块也归同一个分配器。
-    char* const block = static_cast<char*>(
-        ::operator new(sizeof(coroutine_control) + body_align + body_size, std::nothrow));
+    // 走 culib 的分配器：协程常在一根线程上起、在另一根上结束，它释放别的线程的块是一次 CAS，
+    // libc 的 malloc 要拿 arena 的锁。
+    char* const block =
+        static_cast<char*>(mem::alloc(sizeof(coroutine_control) + body_align + body_size));
     if (!block) {
         outcome = fiber_failure::resource_exhausted;
         return 0;
@@ -139,7 +141,7 @@ void coroutine_destroy(coroutine_control* control) noexcept {
     }
     tsan_fiber_destroy(*control);
     control->~coroutine_control();
-    ::operator delete(control);
+    mem::free(control);
 }
 
 bool coroutine_resume(coroutine_control* control) noexcept {

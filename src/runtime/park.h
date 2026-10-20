@@ -106,6 +106,10 @@ bool scheduler_claim(park_token& token, wake_batch& batch);
 
 void scheduler_deliver_batch(wake_batch& batch);
 
+// 叫醒一根闲着的工作线程来找活，不在工作线程上调时什么都不做。叫醒的协程排在叫醒者所在线程的队列里，
+// 只有一根时不叫人（叫醒者多半马上挂起）；叫醒者看得出自己还会一直跑下去时，用它让别的线程来偷。
+void scheduler_nudge();
+
 // 送到 batch 里的唤醒：协程一次排进就绪队列，只叫一根闲着的线程；普通线程逐个叫醒。任何线程都能调。
 // 没人可叫时（放开一把没人等的锁）只多两次比较。
 inline void scheduler_deliver(wake_batch& batch) {

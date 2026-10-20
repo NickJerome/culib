@@ -1132,6 +1132,12 @@ bool scheduler_claim(park_token& token, wake_batch& batch) {
     return true;
 }
 
+void scheduler_nudge() {
+    if (this_worker()) {
+        wake_idle(running());
+    }
+}
+
 void scheduler_deliver_batch(wake_batch& batch) {
     while (!list_empty(batch.threads)) {
         park_token& token = *static_cast<park_token*>(batch.threads.next);

@@ -108,6 +108,8 @@ void too_many_workers() {
     workers_from_the_environment("100000");
 }
 
+// nothrow 的 new 全部失败时第一次 go()：起运行时就要不到内存。协程的控制块走 culib 自己的分配器，
+// 它在这里不失败；分配器要不到内存时的诊断（「建不起协程」）没有在这里查：要让它失败得限制进程的地址空间。
 void out_of_memory() {
     allocation_fails.store(true);
     wavvix::go([] {});
@@ -207,7 +209,7 @@ const fault_case cases[] = {
     {"zero_workers", &zero_workers, ending::abort, "WAVVIX_MAXPROCS 必须是"},
     {"workers_not_a_number", &workers_not_a_number, ending::abort, "WAVVIX_MAXPROCS 必须是"},
     {"too_many_workers", &too_many_workers, ending::abort, "WAVVIX_MAXPROCS 必须是"},
-    {"out_of_memory", &out_of_memory, ending::abort, "内存不足，建不起协程"},
+    {"out_of_memory", &out_of_memory, ending::abort, "内存不足，起不来运行时"},
     {"stack_unavailable", &stack_unavailable, ending::abort, "栈内存不够，跑不起协程"},
 #if WAVVIX_TEST_GUARDED_STACK
     {"stack_overflow", &stack_overflow, ending::stack_overflow, ""},

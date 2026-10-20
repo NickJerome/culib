@@ -80,12 +80,14 @@ park_token* dequeue(list_node& waiters) {
 }
 
 // 摘下队首，跳过已经到点放弃的，抢到的记进 woken。调用方拿着等待队列的锁，放了锁再送到。
-void claim_first(list_node& waiters, wake_batch& woken) {
+// 叫到了一个返回 true。
+bool claim_first(list_node& waiters, wake_batch& woken) {
     while (park_token* const token = dequeue(waiters)) {
         if (detail::scheduler_claim(*token, woken)) {
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 // 等待者整串摘下，抢到的都记进 woken。
@@ -96,7 +98,7 @@ void claim_all(list_node& waiters, wake_batch& woken) {
 }
 
 // 排队，放开 held，被唤醒后再拿回 held。
-void wait_on(list_node& waiters, std::unique_lock<std::mutex>& held) {
+void wait_on(list_node& waiters, std::unique_lock<detail::spin_lock>& held) {
     park_token token;
     enqueue(waiters, token);
     held.unlock();
@@ -139,7 +141,10 @@ bool mutex::try_lock_for(std::chrono::nanoseconds timeout) {
     return wait_for_lock(timeout);
 }
 
-// 平时放开锁再叫醒队首，让它和刚来的一起抢。直接交接的时候 held_ 保持为真，只是锁换了主人。
+// 平时放开锁再叫醒队首，让它和刚来的一起抢；叫醒的那个还没来抢，就不再叫别人：持锁的一放开马上又拿，
+// 每次都叫的话，醒来的多半抢不到，白白挂起一次。叫醒的那个排在本线程的队列里，要等这根协程挂起才轮得到；
+// 它还没来、这根又来放锁，说明这根不会很快挂起，就叫一根闲着的线程把它偷走（scheduler_nudge），
+// 不然它要等监控线程的下一次检查，饥饿模式也就晚了。直接交接的时候 held_ 保持为真，只是锁换了主人。
 void mutex::unlock() {
     state_.lock();
     if (detail::list_empty(waiters_)) {
@@ -148,12 +153,20 @@ void mutex::unlock() {
         return;
     }
     wake_batch woken;
+    bool nudge = false;
     if (!starving_ || !hand_over_locked(woken)) {
         held_ = false;
-        claim_first(waiters_, woken);
+        if (!waking_) {
+            waking_ = claim_first(waiters_, woken);
+        } else if (!nudged_) {
+            nudged_ = nudge = true;
+        }
     }
     state_.unlock();
     detail::scheduler_deliver(woken);
+    if (nudge) {
+        detail::scheduler_nudge();
+    }
 }
 
 // 锁空着、又轮得到自己就拿下：直接交接的时候有人排着，刚来的不抢。调用方拿着 state_。
@@ -175,6 +188,9 @@ bool mutex::wait_for_lock(std::chrono::nanoseconds timeout) {
         std::chrono::nanoseconds left(0);
         {
             std::lock_guard<detail::spin_lock> state(state_);
+            if (again) {
+                waking_ = nudged_ = false;   // 叫醒的就是这一个，它回来抢了
+            }
             if (claim_locked()) {
                 return true;
             }
@@ -284,31 +300,33 @@ channel_waiters::~channel_waiters() {
     die_if_waiting(senders_, "wavvix::channel 销毁时还有协程在等它");
 }
 
-void channel_waiters::wait_for_item(std::unique_lock<std::mutex>& held) {
+void channel_waiters::wait_for_item(std::unique_lock<spin_lock>& held) {
     wait_on(receivers_, held);
 }
 
-void channel_waiters::wait_for_room(std::unique_lock<std::mutex>& held) {
+void channel_waiters::wait_for_room(std::unique_lock<spin_lock>& held) {
     wait_on(senders_, held);
 }
 
-// channel 的锁是 std::mutex，拿着它送到也不要紧。
-void channel_waiters::wake_receiver() {
+void channel_waiters::wake_receiver(std::unique_lock<spin_lock>& held) {
     wake_batch woken;
     claim_first(receivers_, woken);
+    held.unlock();
     scheduler_deliver(woken);
 }
 
-void channel_waiters::wake_sender() {
+void channel_waiters::wake_sender(std::unique_lock<spin_lock>& held) {
     wake_batch woken;
     claim_first(senders_, woken);
+    held.unlock();
     scheduler_deliver(woken);
 }
 
-void channel_waiters::wake_everyone() {
+void channel_waiters::wake_everyone(std::unique_lock<spin_lock>& held) {
     wake_batch woken;
     claim_all(receivers_, woken);
     claim_all(senders_, woken);
+    held.unlock();
     scheduler_deliver(woken);
 }
 
