@@ -300,3 +300,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`ea20b7c` 的 CI](https://github.com/NickJerome/culib/actions/runs/39377777881) 23/24：ASan + UBSan 作业里 `mutex_order.a_waiter_that_keeps_losing_gets_the_lock_after_about_a_millisecond` 看到的插队不到 11 次，用了 4.10 毫秒（平时 1 毫秒出头）。这条不用定时器，和这次改动无关。它原来要求插队多于 10 次，可工作线程被系统挂起 1 毫秒以上时，排着的那根第一次醒来就等满了 1 毫秒，插队的那根第二次放开锁就交接了，最少只有 2 次；而只会直接交接的锁是 1 次。所以改成要求多于 1 次：把 `unlock` 临时改成每次都直接交接，这条仍然失败。其余 23 个作业通过，项数和上一次相同；报告里没有 SKIP，诊断只有那一条失败。
 
 本机验证：Windows MSVC 2022 x64 release 下 `runtime_order_test` 连跑 20 遍全部通过，这条用了 1.04 毫秒；WSL2 上 GCC 11.4 release、ASan + UBSan 下两个程序全部通过。
+
+[`a0466ec` 的 CI](https://github.com/NickJerome/culib/actions/runs/39379236801) 24/24 通过：`culib_test` Linux 388 项、macOS 385 项、Windows 与 MinGW 383 项、无异常构建 381 项，GCC 4.8、ASan + UBSan 和 TSan 都是 388 项；`runtime_order_test` 依次 41、39、36 项。唯一的 SKIP 是 MSVC release 那一格的 `cet`：这次分到的 runner 不给 `/CETCOMPAT` 的程序开影子栈，见[实现说明](implementation-notes.md#cet-影子栈)。栈溢出那条在两个 MSVC 作业里都以 `0xC00000FD` 结束，`CONTEXT` 在 release 那一格是 3247 字节，在 debug 那一格是 1663 字节。报告里没有别的诊断。
