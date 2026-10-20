@@ -710,6 +710,40 @@ channel 不交棒：放进元素或腾出位置时叫醒一个等待者，它醒
 
 平台资源操作（建套接字、绑定、accept、connect、端点查询、Windows overlapped 调用与 AcceptEx / ConnectEx 上下文、UDP ICMP 抑制、POSIX 非阻塞与 close-on-exec）集中在 `net_socket_posix.cpp` / `net_socket_win.cpp`，经私有的 `net_socket_detail.h` 相接；公共 `net.h` 不包含平台头文件；内部地址编解码使用平台的 sockaddr。旧的 `net_tcp*` / `net_udp*` 实现随合并删除，不留并行旧路径。合并后的实现已在 CI 的三平台矩阵上通过（例如 `754ad6f` 的运行 39264413596）。
 
+## [`fs.cpp`](../src/fs/fs.cpp)
+
+### create_directories 从目标往上找
+
+和 Go 的 `MkdirAll` 一样：先查目标本身，已经是目录就结束；缺的话先保证父目录在，再建自己。原来从根往下每一级查一次，路径已经存在（最常见的「确保目录在」）时也要查满每一级。`/tmp/x/a/b/c/d/e` 用 strace 数的（2026-10-20，WSL2）：
+
+| | 原来 | 现在 |
+| --- | --- | --- |
+| 整条路径已经存在 | 7 次 stat | 1 次 stat |
+| 最深一级下面补一级 | 8 次 stat、1 次 mkdir | 2 次 stat、1 次 mkdir |
+| 从 `/tmp` 下面全新建 | 7 次 stat、6 次 mkdir | 同左 |
+
+网络盘上一次 stat 是一次往返（0.2–1 ms），所以常见情况省下的是每一级一次往返。Windows 根文法里整段不可创建的根前缀（`C:\`、`\\?\C:\`、`\\server\share`）和半截根（`C:`、`\\`）照旧不查也不建。
+
+### remove_all 不防并发替换
+
+`remove_all` 按路径递归：先列出一层、再逐项删。目录在列出和下潜之间被别的进程换成指向别处的链接，就会删到链接指向的地方（Rust 的 CVE-2022-21658 是同一类问题）。Go 在 Unix 上用 `openat` / `unlinkat` 相对目录描述符删，不受影响；Windows 上和这里一样按路径删。
+
+没有改：要做到这一点，POSIX 和 Windows 各要一套相对句柄的删除（Windows 得用 ntdll 的 `NtCreateFile` 带 `RootDirectory` 打开子项），后端契约从「删一项」变成「删一棵树」，两个平台文件各多一份递归。现在只在 [API 文档](../api.md) 里写明：不要用它清理不可信进程能同时修改的树。重开的条件：出现以高权限清理低权限用户可写目录的调用方（比如以 root 运行、清理用户上传目录的服务）。
+
+## [`fs_posix.cpp`](../src/fs/fs_posix.cpp)
+
+### copy_file 先让内核拷
+
+Linux 上先用 `copy_file_range`：数据不经过用户态，NFS 4.2 和 SMB 上是服务器端复制，btrfs、XFS 上可能直接共享数据块。规则照 Go 的 `io.Copy`：
+
+- 只在 5.3 起的内核上用。更早的版本毛病多，Go 的 issue 42400 里 CIFS 上复制出了 0 字节的文件。
+- 报 ENOSYS、EPERM（容器的 seccomp）、EXDEV（跨文件系统）、EINVAL、EOPNOTSUPP（NFS）、EIO（CIFS）时，从两个描述符当前的位置改用读写拷完。
+- 第一次调用就报 0 字节，也改用读写：5.3–5.18 的内核跨文件系统复制 /proc 这类报大小为 0 的文件时，报「成功」却什么都没拷。5.19 起同样的复制报 EXDEV。本机（6.18）和 CI 的内核走的都是 EXDEV 那条，所以 `fs.copies_a_file_that_reports_size_zero` 查的是结果对，0 字节这条退路在这些机器上走不到。
+
+64 MiB 的文件在页缓存里复制（2026-10-20，WSL2 ext4，同场 9 轮的中位数）：比只用读写快 1.22 倍，和 Go 持平（0.99）。一次 `copy_file_range` 就拷完了 64 MiB。
+
+macOS 仍然只用读写：`fcopyfile` 不会克隆，`clonefile` 要按路径做、不能和现有的「先打开、查类型、再建目标」的流程合在一起。Windows 用的 `CopyFileW` 本来就是系统的复制路径（SMB 上服务器端复制）。
+
 ## [`fs_win.cpp`](../src/fs/fs_win.cpp)
 
 ### 复制前怎么判断是不是同一个文件

@@ -40,6 +40,9 @@ unsigned cpu_count() noexcept;
 
 // 装上信号处理。要显式调用：改进程级的信号处置是调用方的决定，库不在背后替它做，
 // 也不在 main 之前执行任何代码。重复调用是安全的。
+// POSIX 上处理的是 SIGINT 和 SIGTERM，不带 SA_RESTART：收到时，卡在阻塞系统调用（比如读终端）上的
+// 线程以 EINTR 返回，好回头查 stop_requested()；自己做系统调用的代码要处理 EINTR。culib 自己的
+// 调用遇到 EINTR 都会重做。
 // Windows 的关闭窗口、注销和关机事件：置位以后系统还等一段时间（关窗口约 5 秒）才强制结束进程，
 // 收尾要在这之内做完、自己退出。
 result<void> install_stop_handler();

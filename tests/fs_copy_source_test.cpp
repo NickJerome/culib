@@ -143,6 +143,22 @@ TEST(fs, copy_overwrite_rejects_a_fifo_target_without_waiting_for_a_reader) {
     EXPECT(read_text(source), ==, "keep");
 }
 
+#if defined(__linux__)
+// /proc 下的文件报的大小是 0，内容读的时候才生成。内核复制（copy_file_range）在这里要么报错，要么
+// 「成功」复制 0 字节；两种都得退回读写，复制出来的不能是空文件。
+TEST(fs, copies_a_file_that_reports_size_zero) {
+    const scratch area("copy_proc");
+    if (!EXPECT(area.ok(), ==, true)) {
+        return;
+    }
+    const fs::path target = area.at("status.txt");
+    if (!EXPECT(fs::copy_file("/proc/self/status", target).is_ok(), ==, true)) {
+        return;
+    }
+    EXPECT(read_text(target).substr(0, 5), ==, "Name:");
+}
+#endif
+
 TEST(fs, copy_directory_source_does_not_truncate_the_overwrite_target) {
     const scratch area("copy_dir_overwrite");
     if (!EXPECT(area.ok(), ==, true)) {

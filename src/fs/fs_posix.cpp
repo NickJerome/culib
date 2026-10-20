@@ -22,6 +22,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#if defined(__linux__)
+#  include <sys/syscall.h>
+#  include <sys/utsname.h>
+#endif
+
 namespace wavvix {
 namespace fs {
 namespace {
@@ -442,13 +447,82 @@ result<void> prepare_target(int fd, string_view to, const struct stat& source) {
     if (!S_ISREG(info.st_mode)) {
         return make_error(error_kind::unsupported, to.to_string() + " 不是普通文件，copy_file 只覆盖普通文件");
     }
-    if (::ftruncate(fd, 0) != 0) {
+    int status;
+    do {
+        status = ::ftruncate(fd, 0);   // 网络盘上会阻塞，可能被信号打断
+    } while (status != 0 && errno == EINTR);
+    if (status != 0) {
         return from_errno("截断", to, errno);
     }
     return result<void>();
 }
 
+#if defined(__linux__) && defined(SYS_copy_file_range)
+
+// 5.3 以前的 copy_file_range 毛病很多（Go 的 issue 42400：CIFS 上复制出 0 字节的文件），Go 也只在 5.3 起用。
+bool kernel_copy_is_reliable() {
+    struct utsname name;
+    if (::uname(&name) != 0) {
+        return false;
+    }
+    char* end = 0;
+    const long major = std::strtol(name.release, &end, 10);
+    const long minor = *end == '.' ? std::strtol(end + 1, 0, 10) : 0;
+    return major > 5 || (major == 5 && minor >= 3);
+}
+
+// 让内核直接拷，不经过用户态：NFS 4.2 和 SMB 上是服务器端复制，btrfs、XFS 上可能直接共享数据块。
+// 拷完返回 true；返回 false 时两个描述符的位置停在拷到的地方，调用方用读写接着拷。这些情况交回去：
+// 没有这个调用（ENOSYS，容器里也可能是 EPERM）、跨文件系统（EXDEV）、文件系统不支持（EINVAL、
+// NFS 的 EOPNOTSUPP、CIFS 的 EIO），以及第一次就报 0 字节——5.19 以前 /proc 这类文件这样「成功」，
+// 其实什么都没拷，读写读得出真实内容。和 Go 的 io.Copy 一样。
+result<bool> copy_in_kernel(std::intptr_t source, string_view from, std::intptr_t target, string_view to) {
+    static const bool reliable = kernel_copy_is_reliable();
+    if (!reliable) {
+        return false;
+    }
+    const std::size_t most = 0x7ffff000;   // 内核单次读写的上限
+    bool copied = false;
+    for (;;) {
+        // 偏移给空：用两个描述符自己的位置，每次往后挪
+        const long moved = ::syscall(SYS_copy_file_range, static_cast<long>(source), static_cast<void*>(0),
+                                     static_cast<long>(target), static_cast<void*>(0), most, 0L);
+        if (moved > 0) {
+            copied = true;
+            continue;
+        }
+        if (moved == 0) {
+            return copied;
+        }
+        const int code = errno;
+        if (code == EINTR) {
+            continue;
+        }
+        if (code == ENOSYS || code == EPERM || code == EXDEV || code == EINVAL || code == EOPNOTSUPP ||
+            code == EIO) {
+            return false;
+        }
+        return from_errno_pair("复制", from, to, code);
+    }
+}
+
+#else
+
+result<bool> copy_in_kernel(std::intptr_t, string_view, std::intptr_t, string_view) {
+    return false;
+}
+
+#endif
+
+// 先让内核拷，拷不了的部分再用读写。
 result<void> copy_contents(std::intptr_t source, string_view from, std::intptr_t target, string_view to) {
+    const result<bool> done = copy_in_kernel(source, from, target, to);
+    if (done.is_err()) {
+        return std::move(done).error();
+    }
+    if (done.value()) {
+        return result<void>();
+    }
     char chunk[65536];
     for (;;) {
         result<std::size_t> got = detail::read_some(source, chunk, sizeof chunk, from);

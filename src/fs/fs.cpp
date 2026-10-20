@@ -108,65 +108,67 @@ result<bool> create_one(const std::string& target) {
     return make_error(error_kind::already_exists, target + " 已存在但不是目录");
 }
 
-// 确保一级前缀是目录：是就过，缺就建（建了置 created），被别的什么挡着就报
-// already_exists——安全阀，不许删掉挡路的东西让位。
-// 前缀用 follow::yes 查：中间一级是指向目录的符号链接时照走（比如 macOS 的 /tmp）。
-result<void> ensure_prefix(const std::string& part, bool& created) {
-    for (int attempt = 0; attempt != 2; ++attempt) {
-        result<detail::entry_kind> kind = detail::query(part, detail::follow_links::yes);
-        if (kind.is_err()) {
-            return std::move(kind).error();
-        }
-        if (kind.value() == detail::entry_kind::directory) {
-            return result<void>();
-        }
-        if (kind.value() != detail::entry_kind::missing) {
-            return make_error(error_kind::already_exists, part + " 已存在但不是目录");
-        }
-        result<void> made = detail::make_directory(part);
-        if (made.is_ok()) {
-            created = true;
-            return result<void>();
-        }
-        if (made.error().kind() != error_kind::already_exists) {
+// 去掉末尾的分隔符、最后一段和它前面的分隔符；只有一段时为空串。
+std::string parent_of(const std::string& target) {
+    std::size_t end = target.size();
+    while (end != 0 && detail::is_separator(target[end - 1])) {
+        --end;
+    }
+    while (end != 0 && !detail::is_separator(target[end - 1])) {
+        --end;
+    }
+    while (end != 0 && detail::is_separator(target[end - 1])) {
+        --end;
+    }
+    return target.substr(0, end);
+}
+
+// Windows 根文法里整段不可创建的根前缀（"C:\"、"\\?\C:\"、"\\server\share"，root 是它的长度）和半截根
+// （"C:"、"\\"）不是能建的目录，不查也不建。POSIX 上 root 恒为 0。
+bool is_root(const std::string& part, std::size_t root) {
+    return part.size() <= root || detail::root_name_length(part) == part.size();
+}
+
+// 和 Go 的 MkdirAll 一样从目标往上找：目标已经是目录时只查这一次，缺的话先保证父目录在、再建自己。
+// HDD 和网络盘上每一级多查一次都不便宜。查询跟进链接：中间一级是指向目录的符号链接时照走（比如
+// macOS 的 /tmp）。被别的什么挡着就报 already_exists，不删掉挡路的东西让位。
+result<bool> ensure_directory(const std::string& target, std::size_t root) {
+    const result<detail::entry_kind> kind = detail::query(target, detail::follow_links::yes);
+    if (kind.is_err()) {
+        return std::move(kind).error();
+    }
+    if (kind.value() == detail::entry_kind::directory) {
+        return false;
+    }
+    if (kind.value() != detail::entry_kind::missing) {
+        return make_error(error_kind::already_exists, target + " 已存在但不是目录");
+    }
+
+    bool created = false;
+    const std::string parent = parent_of(target);
+    if (!is_root(parent, root)) {
+        const result<bool> made = ensure_directory(parent, root);
+        if (made.is_err()) {
             return std::move(made).error();
         }
-        // 并发里别人刚建了什么：回到开头重新归类。
+        created = made.value();
     }
-    return make_error(error_kind::already_exists, part + " 已存在但不是目录");
+    const result<bool> made = create_one(target);   // 并发里别人刚建好也算数
+    if (made.is_err()) {
+        return std::move(made).error();
+    }
+    return created || made.value();
 }
 
 result<bool> create_tree(const std::string& target) {
     if (target.empty()) {
         return make_error(error_kind::invalid_argument, "目录路径是空的");
     }
-    // Windows 根文法里整段不可创建的根前缀（"C:\"、"\\?\C:\"、"\\server\share"）
-    // 一次磁盘都不许碰；partial 在每个边界上的长度就是 target 的对应前缀长度，
-    // 直接比。非 Windows 恒为 0，这条规则整体不生效。
     const std::size_t root = detail::root_prefix_length(target);
-    bool created = false;
-    std::string partial;
-    partial.reserve(target.size());
-    for (std::size_t i = 0; i <= target.size(); ++i) {
-        if (i != target.size() && !detail::is_separator(target[i])) {
-            partial.push_back(target[i]);
-            continue;
-        }
-        // 根前缀内的段（"C:"、"\\?"、"\\server" 这类半截根）不是能创建的目录，
-        // 整段跳过；词法根名（"C:" / "\\\\"）的旧判定留着兜底不成形的路径。
-        const bool root_only = partial.size() <= root ||
-            (!partial.empty() && detail::root_name_length(partial) == partial.size());
-        if (!partial.empty() && !root_only) {
-            const result<void> status = ensure_prefix(partial, created);
-            if (status.is_err()) {
-                return std::move(status).error();
-            }
-        }
-        if (i < target.size()) {
-            partial.push_back(detail::kNativeSeparator);
-        }
+    if (is_root(target, root)) {
+        return false;
     }
-    return created;
+    return ensure_directory(target, root);
 }
 
 // --- 删除 -------------------------------------------------------------------------
