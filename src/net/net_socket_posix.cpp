@@ -40,15 +40,6 @@ result<std::uintptr_t> open_socket(protocol type, address_family family) {
         }
     }
 
-    // 服务重启后要能马上在原端口监听：上一次服务端先关的连接还在 TIME_WAIT，不设这个 bind 会失败。
-    // Windows 上 SO_REUSEADDR 允许别的套接字抢占端口，含义不同，所以只在 POSIX 给 TCP 设；UDP 不需要。
-    if (type == protocol::tcp) {
-        const int reuse = 1;
-        if (::setsockopt(native, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse) < 0) {
-            return socket_error("SO_REUSEADDR", errno);
-        }
-    }
-
     keep = true;
     return static_cast<std::uintptr_t>(native);
 }
@@ -62,7 +53,16 @@ void disable_nagle(std::uintptr_t native) noexcept {
     (void)::setsockopt(static_cast<int>(native), IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof enabled);
 }
 
-result<void> bind_socket(std::uintptr_t native, const endpoint& local) {
+result<void> bind_socket(std::uintptr_t native, protocol type, const endpoint& local) {
+    // 服务重启后要能马上在原端口监听：上一次服务端先关的连接还在 TIME_WAIT，不设这个 bind 会失败。
+    // 只在绑定 TCP 时设：主动连接的套接字由系统挑端口，用不着它（Go 也只给监听的设）；UDP 设了会让别的
+    // 套接字绑上同一个端口。Windows 上 SO_REUSEADDR 允许别的套接字抢占端口，含义不同，那边不设。
+    if (type == protocol::tcp) {
+        const int reuse = 1;
+        if (::setsockopt(static_cast<int>(native), SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse) < 0) {
+            return socket_error("SO_REUSEADDR", errno);
+        }
+    }
     socket_address address;
     encode_address(local, address);
     if (::bind(static_cast<int>(native), reinterpret_cast<const sockaddr*>(&address.storage),

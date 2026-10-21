@@ -85,7 +85,7 @@ void disable_nagle(std::uintptr_t native) noexcept {
                        reinterpret_cast<const char*>(&enabled), sizeof enabled);
 }
 
-result<void> bind_socket(std::uintptr_t native, const endpoint& local) {
+result<void> bind_socket(std::uintptr_t native, protocol, const endpoint& local) {
     socket_address address;
     encode_address(local, address);
     if (::bind(static_cast<SOCKET>(native), reinterpret_cast<const sockaddr*>(&address.storage),

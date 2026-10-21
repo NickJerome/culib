@@ -48,23 +48,26 @@ registry& table() {
     return *instance;
 }
 
+// 忘掉上一次解析的结果：开始解析、解析失败、又登记了新选项时都这样。
+void forget_parse(registry& self) {
+    self.parsed = false;
+    self.positional.clear();
+    self.help_requested = false;
+    self.version_requested = false;
+    for (std::size_t i = 0; i < self.entries.size(); ++i) {
+        self.entries[i].on_command_line = false;
+    }
+}
+
+// 一次解析：没走到成功那一步就什么都不留下。
 struct parse_attempt {
     explicit parse_attempt(registry& value) : state(value) {
-        state.parsed = false;
-        state.positional.clear();
-        state.help_requested = false;
-        state.version_requested = false;
+        forget_parse(state);
     }
 
     ~parse_attempt() {
-        if (state.parsed) {
-            return;
-        }
-        state.positional.clear();
-        state.help_requested = false;
-        state.version_requested = false;
-        for (std::size_t i = 0; i < state.entries.size(); ++i) {
-            state.entries[i].on_command_line = false;
+        if (!state.parsed) {
+            forget_parse(state);
         }
     }
 
@@ -173,7 +176,6 @@ void append_usage_line(std::string& out, const std::string& head, std::size_t wi
 
 result<void> apply_defaults(registry& self) {
     for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        self.entries[i].on_command_line = false;
         const result<void> applied = assign(self.entries[i], self.entries[i].default_text);
         if (applied.is_err()) {
             return applied;   // 默认值自己都转换不了，是编程错误
@@ -353,14 +355,7 @@ void register_flag(kind which, void* storage, const char* help,
     added.default_text = std::move(default_text);
     added.on_command_line = false;
     self.entries.push_back(std::move(added));
-    // A new option was not part of the previous parse.
-    self.parsed = false;
-    self.positional.clear();
-    self.help_requested = false;
-    self.version_requested = false;
-    for (std::size_t i = 0; i < self.entries.size(); ++i) {
-        self.entries[i].on_command_line = false;
-    }
+    forget_parse(self);   // 新选项不在上一次解析里
 }
 
 void unregister_flag(const void* storage) noexcept {

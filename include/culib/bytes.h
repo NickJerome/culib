@@ -69,7 +69,13 @@ public:
     // ---- 直接读写底下那块内存，省一次拷贝 ----
     // 要至少 length 字节的可写空间，返回它的起点。真写进去多少，用 commit 认账，最多认 length 字节；
     // 再次 prepare、reserve、consume 或 clear 以后要重新取。
-    unsigned char* prepare(std::size_t length);
+    unsigned char* prepare(std::size_t length) {
+        if (length != 0 && capacity_ - write_at_ >= length) {   // 容量够：不出这个函数
+            prepared_ = length;
+            return store_.get() + write_at_;
+        }
+        return prepare_slow(length);
+    }
     void commit(std::size_t length) {
         if (length > prepared_) {
             detail::bytes_overcommit();
@@ -247,6 +253,7 @@ private:
     // 读游标跑太靠前时，把剩下的挪回开头。prepare 里按需调用。
     void compact();
     void grow(std::size_t capacity);
+    unsigned char* prepare_slow(std::size_t length);
     void write_slow(const void* from, std::size_t length);
 
     std::unique_ptr<unsigned char[]> store_;

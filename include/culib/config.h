@@ -30,8 +30,10 @@ public:
     std::size_t size() const noexcept { return entries_.size(); }
     bool empty() const noexcept { return entries_.empty(); }
 
+    // 没有这个键就用 fallback。字符串没有解析不了的情况，所以不返回 result。
+    std::string get_string(string_view key, string_view fallback = string_view()) const;
+
     // ---- 带类型的读法。没有这个键就用 fallback；有但解析不了就报错。 ----
-    result<std::string> get_string(string_view key, string_view fallback = string_view()) const;
     result<long long> get_int64(string_view key, long long fallback = 0) const;
     result<double> get_double(string_view key, double fallback = 0.0) const;
     result<bool> get_bool(string_view key, bool fallback = false) const;

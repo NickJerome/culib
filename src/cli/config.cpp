@@ -191,12 +191,12 @@ std::vector<string_view> config::keys() const {
     return all;
 }
 
-result<std::string> config::get_string(string_view key, string_view fallback) const {
+std::string config::get_string(string_view key, string_view fallback) const {
     const std::string* const found = find(key);
     if (!found) {
-        return result<std::string>(fallback.to_string());
+        return fallback.to_string();
     }
-    return result<std::string>(*found);
+    return *found;
 }
 
 namespace {

@@ -19,7 +19,7 @@ result<std::uintptr_t> open_socket(protocol type, address_family family);
 void close_socket(std::uintptr_t native) noexcept;
 // 关掉 Nagle。尽力而为：设不上只是小包写得慢一点。
 void disable_nagle(std::uintptr_t native) noexcept;
-result<void> bind_socket(std::uintptr_t native, const endpoint& local);
+result<void> bind_socket(std::uintptr_t native, protocol type, const endpoint& local);
 result<void> listen_socket(std::uintptr_t native, int backlog);
 result<endpoint> socket_endpoint(std::uintptr_t native, bool peer);
 result<void> connect_socket(std::uintptr_t native, const endpoint& peer, bool bound,

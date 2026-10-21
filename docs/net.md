@@ -71,7 +71,7 @@ UDP：`send_to` 一次发送一个完整报文，成功返回 `result<void>`；`
 
 POSIX 套接字是非阻塞且 close-on-exec。Linux 发送抑制 `SIGPIPE`，macOS 设置 `SO_NOSIGPIPE`。
 
-POSIX 上的 TCP 套接字创建时统一设 `SO_REUSEADDR`：服务重启后可以马上在原端口监听，不用等上一次服务端先关的连接结束 TIME_WAIT（约 60 秒）；Go 和 libuv 在 Unix 上也这样做。Windows 上这个选项允许别的套接字抢占同一端口，含义不同，所以不设。
+POSIX 上显式绑定 TCP 套接字时设 `SO_REUSEADDR`：服务重启后可以马上在原端口监听，不用等上一次服务端先关的连接结束 TIME_WAIT（约 60 秒）。没有绑定、直接主动连接的套接字由系统挑端口，不设，省一次系统调用。libuv 在 `uv_tcp_bind` 里设，Go 只给监听的设。UDP 不设：设了会让别的套接字绑上同一个端口。Windows 上这个选项允许别的套接字抢占同一端口，含义不同，所以不设。
 
 统一 `socket` 不提供：连接式 UDP、TLS、HTTP、用户态缓冲、自动重连、原生句柄访问，也没有旧类型的兼容别名。
 

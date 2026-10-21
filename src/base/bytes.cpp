@@ -79,14 +79,11 @@ void buffer::write_slow(const void* from, std::size_t length) {
     commit(length);
 }
 
-unsigned char* buffer::prepare(std::size_t length) {
+// 容量不够（或者 length 为 0）时 prepare 走到这里。
+unsigned char* buffer::prepare_slow(std::size_t length) {
     prepared_ = 0;
     if (length == 0) {
         return store_ ? store_.get() + write_at_ : 0;
-    }
-    if (capacity_ - write_at_ >= length) {
-        prepared_ = length;
-        return store_.get() + write_at_;
     }
 
     // 先想办法不分配：把已经读掉的那段地方腾出来。一个「读一点、写一点」的连接上，

@@ -105,7 +105,7 @@ result<void> socket::bind(const endpoint& local) {
         close();
         return adopted.error();
     }
-    result<void> bound = detail::bind_socket(native_, local);
+    result<void> bound = detail::bind_socket(native_, type_, local);
     if (bound.is_err()) {
         close();
         return bound.error();

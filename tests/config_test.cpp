@@ -200,8 +200,8 @@ TEST(config, converts_the_types_it_promises) {
     EXPECT(one.get_double("ratio", 0.0).value(), ==, 2.5);
     EXPECT(one.get_bool("on", false).value(), ==, true);
     EXPECT(one.get_bool("off", true).value(), ==, false);
-    EXPECT(one.get_string("text", "").value(), ==, "hello");
-    EXPECT(one.get_string("absent", "fallback").value(), ==, "fallback");
+    EXPECT(one.get_string("text", ""), ==, "hello");
+    EXPECT(one.get_string("absent", "fallback"), ==, "fallback");
 }
 
 TEST(config, handles_a_last_line_without_a_newline) {

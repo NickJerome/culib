@@ -543,7 +543,7 @@ bool has(string_view key) const noexcept;
 std::vector<string_view> keys() const;
 std::size_t size() const noexcept;
 bool empty() const noexcept;
-result<std::string> get_string(string_view key, string_view fallback = string_view()) const;
+std::string get_string(string_view key, string_view fallback = string_view()) const;
 result<long long> get_int64(string_view key, long long fallback = 0) const;
 result<double> get_double(string_view key, double fallback = 0.0) const;
 result<bool> get_bool(string_view key, bool fallback = false) const;
@@ -552,7 +552,7 @@ result<void> apply_to_flags() const;
 
 `load` 从文件读取，`parse` 从文本读取。支持 `key=value`、`[section]`、整行 `#` / `;` 注释和双引号值；段内键映射成 `section.key`。未加引号的值中，前有空白的 `#` / `;` 开始行尾注释；双引号保留内部空白，不提供转义语法。没有数组、变量插值或嵌套对象。
 
-重复键后值覆盖前值，`keys()` 保持键首次出现的顺序。`get()` / `keys()` 的视图指向配置自身存储。带类型读取仅在键不存在时用默认值；键存在但格式不合法会返回错误。
+重复键后值覆盖前值，`keys()` 保持键首次出现的顺序。`get()` / `keys()` 的视图指向配置自身存储。`get_string` 不会失败，键不存在时返回默认值。带类型读取（`get_int64` / `get_double` / `get_bool`）仅在键不存在时用默认值；键存在但格式不合法会返回错误。
 
 `apply_to_flags()` 须在成功解析命令行之后调用：同名 flag 接收配置值，命令行显式给过的项优先，未定义的 flag 名跳过。因此配置不能补救已经因缺少 `required` 项而失败的命令行解析；由配置提供默认值的 flag 应定义普通默认值。逐项应用遇错返回，不提供整体回滚。
 
