@@ -12,7 +12,6 @@
 #include "stack.h"
 #include "stack_detail.h"
 
-#include <limits>
 #include <mutex>
 #include <new>
 
@@ -192,42 +191,13 @@ void put_idle(stack_pool& p, stack_slot* slot) {
     push(p.idle, slot);
 }
 
-// 比一格大的栈单独保留，用完直接还。只有自己指定了栈大小的 fiber 会走到这里。
-stack_memory allocate_alone(std::size_t usable) {
-    stack_memory out = {0, 0, 0, 0, 0};
-    const std::size_t page = pages::page_size();
-    const std::size_t guard = guard_size();
-    if (usable > (std::numeric_limits<std::size_t>::max)() - guard - page) {
-        return out;
-    }
-
-    const std::size_t total = round_up(usable, page) + guard;
-    char* const base = static_cast<char*>(pages::reserve(total, 64 * 1024));
-    if (!base) {
-        return out;
-    }
-
-    char* const committed = prepare_stack(base, total, guard);
-    if (!committed) {
-        pages::release(base, total);
-        return out;
-    }
-
-    out.base = base;
-    out.total = total;
-    out.guard = guard;
-    out.committed = committed;
-    return out;
-}
-
 }  // namespace
 
 stack_memory allocate_stack(std::size_t usable) noexcept {
-    if (usable > pooled_stack_size) {
-        return allocate_alone(usable);
-    }
-
     stack_memory out = {0, 0, 0, 0, 0};
+    if (usable > pooled_stack_size) {
+        return out;   // go() 只用默认大小；只有内部的 fiber 能要更大的，不给
+    }
     stack_pool* const p = pool();
     if (!p) {
         return out;
@@ -280,11 +250,6 @@ void release_stack(const stack_memory& memory) noexcept {
     __asan_unpoison_memory_region(memory.base + memory.guard, memory.total - memory.guard);
 #endif
     stack_slot* const slot = memory.slot;
-    if (!slot) {
-        pages::release(memory.base, memory.total);
-        return;
-    }
-
     stack_pool& p = *pool();
     slot->committed = memory.committed;
     if (slot->committed) {

@@ -14,13 +14,13 @@ struct stack_memory {
     std::size_t total;
     std::size_t guard;
     char* committed;
-    stack_slot* slot;   // 来自栈池的那一格；单独保留的为空
+    stack_slot* slot;   // 来自栈池的那一格
 };
 
-// 栈池里一格的可用大小，也就是 default_stack_size。不超过它的请求都从栈池里拿一格，更大的单独保留。
+// 栈池里一格的可用大小，也就是 default_stack_size。不超过它的请求都从栈池里拿一格，更大的不给。
 const std::size_t pooled_stack_size = 1008 * 1024;
 
-// 至少 usable 字节可用的栈；失败时 base 为空。任何线程都可以释放。
+// 至少 usable 字节可用的栈；内存不够或者 usable 比一格大时 base 为空。任何线程都可以释放。
 stack_memory allocate_stack(std::size_t usable) noexcept;
 // 协程结束前、还在这根栈上时调用：记下栈长到了哪里，下一根协程接着用。只有 Windows 有事做。
 void note_stack_growth(stack_memory& memory) noexcept;

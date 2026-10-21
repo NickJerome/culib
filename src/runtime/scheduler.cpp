@@ -725,8 +725,11 @@ coroutine_control* find_work(runtime_state& state, vcpu& self) {
         fire_timers(state);
     }
     // 一直有活时也每 61 次看一眼引擎、所有线程的定时器和全局队列：本地队列不空的话，引擎没人收，
-    // 登记在卡住的线程上的定时器没人叫，全局队列没人取（Go 也用 61）。
-    if ((self.ticks.fetch_add(1, std::memory_order_relaxed) + 1) % 61 == 0) {
+    // 登记在卡住的线程上的定时器没人叫，全局队列没人取（Go 也用 61）。ticks 只有本线程写、监控线程
+    // 只读，所以读一次写一次就够，不用带锁的加法。
+    const unsigned tick = self.ticks.load(std::memory_order_relaxed) + 1;
+    self.ticks.store(tick, std::memory_order_relaxed);
+    if (tick % 61 == 0) {
         poll_now(state);
         fire_timers(state);
         if (coroutine_control* const body = take_global(state)) {
