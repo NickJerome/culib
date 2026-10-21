@@ -10,3 +10,6 @@ compile_commands.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Python 跑测试时留下的缓存
+__pycache__/
