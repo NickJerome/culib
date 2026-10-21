@@ -4,6 +4,8 @@
 #include <culib/os.h>
 #include <culib/strings.h>
 
+#include "os_detail.h"
+
 #include <string>
 #include <thread>
 #include <vector>
@@ -50,27 +52,11 @@ BOOL WINAPI console_handler(DWORD event) {
     }
 }
 
-result<void> check_name(string_view name) {
-    if (name.empty()) {
-        return make_error(error_kind::invalid_argument, "环境变量名不能为空");
-    }
-    if (name.find('\0') != string_view::npos) {
-        return make_error(error_kind::invalid_argument, "环境变量名不能含 NUL");
-    }
-    if (name.find('=') != string_view::npos) {
-        return make_error(error_kind::invalid_argument,
-                          "环境变量名不能含 '='：" + name.to_string());
-    }
-    return result<void>();
-}
-
 }  // namespace
 
 // --- 环境变量 -----------------------------------------------------------------
 
-optional<std::string> getenv(string_view name) {
-    if (name.empty() || name.find('\0') != string_view::npos ||
-        name.find('=') != string_view::npos) return nullopt;
+optional<std::string> detail::read_environment(string_view name) {
     const result<std::wstring> wide_name = utf8_to_wide(name);
     if (wide_name.is_err()) {
         return nullopt;
@@ -101,14 +87,7 @@ optional<std::string> getenv(string_view name) {
     return text.value();
 }
 
-result<void> setenv(string_view name, string_view value) {
-    const result<void> valid = check_name(name);
-    if (valid.is_err()) {
-        return valid;
-    }
-    if (value.find('\0') != string_view::npos) {
-        return make_error(error_kind::invalid_argument, "环境变量值不能含 NUL");
-    }
+result<void> detail::write_environment(string_view name, string_view value) {
     const result<std::wstring> wide_name = utf8_to_wide(name);
     if (wide_name.is_err()) {
         return std::move(wide_name).error();
@@ -123,11 +102,7 @@ result<void> setenv(string_view name, string_view value) {
     return result<void>();
 }
 
-result<void> unsetenv(string_view name) {
-    const result<void> valid = check_name(name);
-    if (valid.is_err()) {
-        return valid;
-    }
+result<void> detail::erase_environment(string_view name) {
     const result<std::wstring> wide_name = utf8_to_wide(name);
     if (wide_name.is_err()) {
         return std::move(wide_name).error();

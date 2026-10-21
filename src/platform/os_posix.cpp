@@ -2,6 +2,8 @@
 
 #include <culib/os.h>
 
+#include "os_detail.h"
+
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
@@ -43,28 +45,11 @@ error from_errno(string_view what, int code) {
 // Only the lock-free flag store is safe here; no I/O, allocation or locks.
 extern "C" void raise_stop_flag(int) { request_stop(); }
 
-// C API 会在 NUL 处截断；必须先验证完整的 string_view。
-result<void> check_name(string_view name) {
-    if (name.empty()) {
-        return make_error(error_kind::invalid_argument, "环境变量名不能为空");
-    }
-    if (name.find('\0') != string_view::npos) {
-        return make_error(error_kind::invalid_argument, "环境变量名不能含 NUL");
-    }
-    if (name.find('=') != string_view::npos) {
-        return make_error(error_kind::invalid_argument,
-                          "环境变量名不能含 '='：" + name.to_string());
-    }
-    return result<void>();
-}
-
 }  // namespace
 
 // --- 环境变量 -----------------------------------------------------------------
 
-optional<std::string> getenv(string_view name) {
-    if (name.empty() || name.find('\0') != string_view::npos ||
-        name.find('=') != string_view::npos) return nullopt;
+optional<std::string> detail::read_environment(string_view name) {
     const std::string key = name.to_string();
     const char* value = std::getenv(key.c_str());
     if (!value) {
@@ -73,14 +58,7 @@ optional<std::string> getenv(string_view name) {
     return std::string(value);      // 空字符串是合法的值，和「没设置」不同
 }
 
-result<void> setenv(string_view name, string_view value) {
-    const result<void> valid = check_name(name);
-    if (valid.is_err()) {
-        return valid;
-    }
-    if (value.find('\0') != string_view::npos) {
-        return make_error(error_kind::invalid_argument, "环境变量值不能含 NUL");
-    }
+result<void> detail::write_environment(string_view name, string_view value) {
     const std::string key = name.to_string();
     const std::string text = value.to_string();
     if (::setenv(key.c_str(), text.c_str(), 1) != 0) {
@@ -89,11 +67,7 @@ result<void> setenv(string_view name, string_view value) {
     return result<void>();
 }
 
-result<void> unsetenv(string_view name) {
-    const result<void> valid = check_name(name);
-    if (valid.is_err()) {
-        return valid;
-    }
+result<void> detail::erase_environment(string_view name) {
     const std::string key = name.to_string();
     // 本来就没设置时 unsetenv 返回 0，所以这是幂等的
     if (::unsetenv(key.c_str()) != 0) {
