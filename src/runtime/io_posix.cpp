@@ -1,4 +1,4 @@
-// 事件引擎里 Linux 和 macOS 共用的部分：每个方向一个等待格，一根系统线程等事件。
+// 事件引擎里 Linux 和 macOS 共用的部分：每个方向一个等待格，系统线程等事件。
 //
 // 等待格是一个原子变量：0 空闲，1 来过一次就绪、还没人消费，其余是等着的协程（或者打了标记的普通线程）。
 // 等待者在系统调用说 EAGAIN 以后把自己放进去再挂起；系统线程看到这个方向就绪，就把格子换成 1，
@@ -8,6 +8,7 @@
 
 #include "base/fatal.h"
 #include "scheduler.h"
+#include "system_thread.h"
 
 #include <atomic>
 #include <cstdint>
@@ -73,10 +74,11 @@ void free_retired(engine_state& engine) {
     }
 }
 
-void poller_main(engine_state* engine) {
+// 系统线程：等事件，每次等之前让监控看一眼工作线程，它说最多等多久就等多久。
+void system_main(engine_state* engine) {
     for (;;) {
         free_retired(*engine);
-        poller_wait(engine->poller, &ready);
+        poller_wait(engine->poller, scheduler_monitor(), &ready);
     }
 }
 
@@ -86,7 +88,7 @@ engine_state* start_engine() {
     if (engine->poller < 0) {
         fatal("cu: cannot create the I/O poller");
     }
-    std::thread(poller_main, engine).detach();
+    std::thread(system_main, engine).detach();
     return engine;
 }
 
@@ -97,6 +99,14 @@ engine_state& engine() noexcept {
 }
 
 }  // namespace
+
+void system_thread_start() noexcept {
+    engine();
+}
+
+void system_thread_wake() noexcept {
+    poller_wake(engine().poller);
+}
 
 io_record* io_watch(int fd) noexcept {
     io_record* const record = new io_record();

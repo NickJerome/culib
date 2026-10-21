@@ -1,7 +1,7 @@
 #pragma once
 
-// 事件引擎的 Linux / macOS 部分：每个句柄登记一次，读写两个方向都等边沿；一根系统线程等事件，
-// 就绪时叫醒等着的协程或普通线程。第一次登记句柄时起这根线程。
+// 事件引擎的 Linux / macOS 部分：每个句柄登记一次，读写两个方向都等边沿；系统线程等事件，
+// 就绪时叫醒等着的协程或普通线程。第一次登记句柄或者运行时起来时起系统线程。
 
 namespace cu {
 namespace detail {
@@ -20,13 +20,16 @@ void io_close(int fd, io_record* record) noexcept;
 // 就绪可能是虚的，醒来以后要重试系统调用。
 void io_wait(io_record* record, io_direction direction) noexcept;
 
-// 后端（io_linux.cpp / io_macos.cpp）：建等待器、登记、撤下、等一批事件。
+// 后端（io_linux.cpp / io_macos.cpp）：建等待器、登记、撤下、等一批事件、叫醒等着的线程。
 
+// 连同 poller_wake 要用的东西一起建。失败返回 -1。
 int poller_create() noexcept;
 bool poller_add(int poller, int fd, io_record* record) noexcept;
 void poller_remove(int poller, int fd) noexcept;
-// 等到有事件（或者被信号打断），每个就绪的方向调一次 ready。
-void poller_wait(int poller, void (*ready)(io_record* record, io_direction direction)) noexcept;
+// 等到有事件、被 poller_wake 叫醒、被信号打断，或者过了 timeout 毫秒（-1 表示不限），每个就绪的方向调一次 ready。
+void poller_wait(int poller, int timeout, void (*ready)(io_record* record, io_direction direction)) noexcept;
+// 叫醒在 poller_wait 里等着的线程。任何线程都能调。
+void poller_wake(int poller) noexcept;
 
 }  // namespace detail
 }  // namespace cu

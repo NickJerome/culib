@@ -1,4 +1,4 @@
-// 栈的手边缓存：协程结束后栈留在这里，下一根协程直接用，不做系统调用。
+// 栈的缓存：协程结束后栈留在这里，下一根协程直接用，不做系统调用。
 
 #include "stack.h"
 
@@ -45,10 +45,6 @@ stack_memory allocate_stack() noexcept {
 }
 
 void release_stack(const stack_memory& stack) noexcept {
-#if CU_DETAIL_ASAN
-    // 上一根协程的帧在 ASan 那里还标着，下一根协程用之前清掉
-    __asan_unpoison_memory_region(stack.base + stack_guard, stack_usable);
-#endif
     stack_cache& kept = cache();
     {
         std::lock_guard<std::mutex> held(kept.lock);
@@ -58,6 +54,14 @@ void release_stack(const stack_memory& stack) noexcept {
         }
     }
     unmap_stack(stack);
+}
+
+void clean_stack(const stack_memory& stack) noexcept {
+#if CU_DETAIL_ASAN
+    __asan_unpoison_memory_region(stack.base + stack_guard, stack_usable);
+#else
+    (void)stack;
+#endif
 }
 
 void note_stack_growth(stack_memory& stack) noexcept {
