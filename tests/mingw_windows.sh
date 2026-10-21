@@ -20,6 +20,10 @@ while IFS= read -r source; do
     library_objects+=("$object")
 done < <(find src -type f -name '*.cpp' | sort)
 
+context_object="$output/context.S.o"
+"$compiler" -c src/runtime/asm/context_x86_64_pe.S -o "$context_object"
+library_objects+=("$context_object")
+
 test_objects=()
 for source in tests/*.cpp; do
     object="$output/${source//\//_}.o"
@@ -29,3 +33,7 @@ done
 
 "$compiler" -static -o "$output/culib_test.exe" "${library_objects[@]}" "${test_objects[@]}" -lws2_32
 "$output/culib_test.exe"
+
+"$compiler" "${flags[@]}" -static -o "$output/coroutine_faults_test.exe" \
+    tests/fault/coroutine_faults.cpp "${library_objects[@]}" -lws2_32
+"$output/coroutine_faults_test.exe"

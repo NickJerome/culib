@@ -15,3 +15,18 @@ target("culib_test")
     add_deps("culib")
     add_tests("default")
 target_end()
+
+-- 协程的误用和栈溢出都是终止进程，每种情形在子进程里跑。
+target("coroutine_faults_test")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests")
+    if not is_plat("windows") then
+        set_languages("c++11")
+    end
+    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
+    add_files("fault/coroutine_faults.cpp")
+    add_deps("culib")
+    add_tests("default", {run_timeout = 120000})
+target_end()

@@ -18,7 +18,11 @@ while IFS= read -r source; do
     esac
     g++ "${flags[@]}" -c "$source" -o "$build_dir/${source//\//_}.o"
 done < <(find src -type f -name '*.cpp' | sort)
+g++ -c src/runtime/asm/context_x86_64_sysv.S -o "$build_dir/context.o"
 ar rcs "$build_dir/libculib.a" "$build_dir"/*.o
 
 g++ "${flags[@]}" tests/*.cpp "$build_dir/libculib.a" -o "$build_dir/culib_test"
 "$build_dir/culib_test"
+
+g++ "${flags[@]}" tests/fault/coroutine_faults.cpp "$build_dir/libculib.a" -o "$build_dir/coroutine_faults_test"
+"$build_dir/coroutine_faults_test"

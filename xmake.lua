@@ -41,9 +41,23 @@ target("culib")
     if is_plat("linux") then
         add_syslinks("pthread", {public = true})
     end
-    -- 每个函数、数据单独成段，使用方链接时可以剔除用不到的代码
+    -- 换栈的汇编：每个（ABI，架构，汇编器）一个文件，只支持 64 位。没匹配上的目标一个都不加，
+    -- 由 src/runtime/coroutine.cpp 里的 #error 在编译期拦住。
+    if is_arch("x86_64", "x64") then
+        if is_plat("windows") then
+            add_files("src/runtime/asm/context_x86_64_pe.asm")   -- MSVC 不支持内联汇编，走 ml64
+        elseif is_plat("mingw") then
+            add_files("src/runtime/asm/context_x86_64_pe.S")
+        else
+            add_files("src/runtime/asm/context_x86_64_sysv.S")   -- Linux 和 macOS 同一套 ABI
+        end
+    elseif is_arch("arm64", "arm64-v8a") then
+        add_files("src/runtime/asm/context_arm64_aapcs.S")
+    end
+    -- 每个函数、数据单独成段，使用方链接时可以剔除用不到的代码。
+    -- /GT：协程会换线程，MSVC 默认会把线程局部变量的地址留在寄存器里跨过函数调用，这个开关让它每次重新取。
     if is_plat("windows") then
-        add_cxflags("/Gy")
+        add_cxflags("/Gy", "/GT")
     else
         add_cxflags("-ffunction-sections", "-fdata-sections")
     end
