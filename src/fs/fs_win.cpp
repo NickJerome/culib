@@ -163,30 +163,19 @@ detail::entry_kind kind_from_attributes(DWORD attributes) {
     return detail::entry_kind::regular_file;
 }
 
-// 只读地打开路径拿信息句柄：FILE_READ_ATTRIBUTES 够问时间、大小和类型，
-// FILE_READ_DATA 让 GetFileSizeEx 在链接目标上也有依据；
-// BACKUP_SEMANTICS 不要求特权，只放开「句柄可以是目录」和跟进链接后的目标形态。
+// 只读地打开路径拿信息句柄：FILE_READ_ATTRIBUTES 就够 GetFileInformationByHandle 问出类型、大小、
+// 时间和文件身份，不要读内容的权限；BACKUP_SEMANTICS 不要求特权，只放开「句柄可以是目录」和跟进
+// 链接后的目标形态。
 // 共享位开到最大：这是查询用的临时句柄，不该碍着别人。
 result<HANDLE> open_for_query(const std::wstring& wide, string_view path) {
     const HANDLE handle = ::CreateFileW(
-        wide.c_str(), FILE_READ_ATTRIBUTES | FILE_READ_DATA,
+        wide.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS, 0);
     if (handle == INVALID_HANDLE_VALUE) {
         return from_last_error("查询", path, ::GetLastError());
     }
     return handle;
-}
-
-// 句柄指向的东西是不是目录。跟进链接之后属性要从句柄问，不能拿路径问。
-result<bool> handle_is_directory(HANDLE handle) {
-    BY_HANDLE_FILE_INFORMATION info;
-    if (!::GetFileInformationByHandle(handle, &info)) {
-        return make_error(error_kind::io,
-                          "读取句柄信息失败：Windows 错误 " +
-                              to_string(static_cast<unsigned long long>(::GetLastError())));
-    }
-    return (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 // follow::yes 撞上 reparse point：打开句柄让内核跟完整条链接链，从句柄问形态。
@@ -384,14 +373,6 @@ unsigned long close_file(std::intptr_t& handle) noexcept {
     return ::CloseHandle(file) ? 0 : ::GetLastError();
 }
 
-std::uint64_t file_size_hint(std::intptr_t handle) noexcept {
-    LARGE_INTEGER size;
-    if (!::GetFileSizeEx(reinterpret_cast<HANDLE>(handle), &size) || size.QuadPart <= 0) {
-        return 0;   // 管道之类问不出大小，0 = 「空或不知道」
-    }
-    return static_cast<std::uint64_t>(size.QuadPart);
-}
-
 result<std::size_t> read_some(std::intptr_t handle, char* data, std::size_t size,
                               string_view path) {
     const DWORD chunk = static_cast<DWORD>(size > 0x40000000u ? 0x40000000u : size);
@@ -423,45 +404,40 @@ result<std::size_t> write_some(std::intptr_t handle, const char* data, std::size
 
 namespace {
 
-// 链接上的 file_size / last_write_time：查询要跟随符号链接，属性查询跟不了，
-// 开一个只读信息的句柄，让内核跟进链接链，从句柄问大小和时间。
-// 句柄指向目录时报 unsupported（和直接对目录调 file_size 一致）。
-result<std::uint64_t> size_through_link(string_view path, const std::wstring& wide) {
+// 链接上的 file_size / last_write_time：查询要跟随符号链接，属性查询跟不了，开一个只读信息的句柄，
+// 让内核跟进链接链，从句柄一次问出属性、大小和时间。
+result<BY_HANDLE_FILE_INFORMATION> info_through_link(string_view path, const std::wstring& wide) {
     const result<HANDLE> opened = open_for_query(wide, path);
     if (opened.is_err()) {
         return std::move(opened).error();
     }
     const HANDLE handle = opened.value();
     WAVVIX_DEFER { ::CloseHandle(handle); };
-    const result<bool> directory = handle_is_directory(handle);
-    if (directory.is_err()) {
-        return std::move(directory).error();
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!::GetFileInformationByHandle(handle, &info)) {
+        return from_last_error("读取句柄信息", path, ::GetLastError());
     }
-    if (directory.value()) {
-        return make_error(error_kind::unsupported,
-                          path.to_string() + " 是目录，没有文件大小");
+    return info;
+}
+
+// 链接指向目录时报 unsupported（和直接对目录调 file_size 一致）。
+result<std::uint64_t> size_through_link(string_view path, const std::wstring& wide) {
+    const result<BY_HANDLE_FILE_INFORMATION> info = info_through_link(path, wide);
+    if (info.is_err()) {
+        return std::move(info).error();
     }
-    LARGE_INTEGER size;
-    if (!::GetFileSizeEx(handle, &size)) {
-        return from_last_error("取大小", path, ::GetLastError());
+    if (info.value().dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        return make_error(error_kind::unsupported, path.to_string() + " 是目录，没有文件大小");
     }
-    return static_cast<std::uint64_t>(size.QuadPart);
+    return static_cast<std::uint64_t>(info.value().nFileSizeHigh) << 32 | info.value().nFileSizeLow;
 }
 
 result<wavvix::timestamp> time_through_link(string_view path, const std::wstring& wide) {
-    const result<HANDLE> opened = open_for_query(wide, path);
-    if (opened.is_err()) {
-        return std::move(opened).error();
+    const result<BY_HANDLE_FILE_INFORMATION> info = info_through_link(path, wide);
+    if (info.is_err()) {
+        return std::move(info).error();
     }
-    const HANDLE handle = opened.value();
-    WAVVIX_DEFER { ::CloseHandle(handle); };
-    FILETIME creation;
-    FILETIME last_access;
-    FILETIME last_write;
-    if (!::GetFileTime(handle, &creation, &last_access, &last_write)) {
-        return from_last_error("取修改时间", path, ::GetLastError());
-    }
-    return timestamp_of(last_write);
+    return timestamp_of(info.value().ftLastWriteTime);
 }
 
 // 源和目标是不是同一个文件（含 junction、硬链接绕过去的别名）：比卷号和 FileIndex。任何一边不存在

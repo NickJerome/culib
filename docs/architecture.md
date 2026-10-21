@@ -42,7 +42,7 @@
 - `runtime/park.h`、`scheduler_io.h`：分别向同步原语和网络提供需要的接口。I/O 引擎无需知道 park_token 布局。
 - `cli/config.cpp`：纯文本解析和配置查询；`config_file.cpp` 组合文件读取并补路径上下文；`config_flags.cpp` 组合命令行优先策略。没有新增公共包装接口。
 - `fs/path.cpp`：路径运算只依赖字符串；`fs.cpp` 组合平台文件操作。flag 为提取程序名调用 filename 时不再连带需要磁盘 I/O 实现。
-- `fs/file.h`：私有的打开、关闭、大小提示与单次读写操作。写满循环（`file::write`）、`copy_file` 与 `fs::ofstream` 的写出共用这一份底层原语，不再各写一份；临时句柄由 `defer` 清理，平台层不维护上层缓冲或写入计数。
+- `fs/file.h`：私有的打开、关闭与单次读写操作。写满循环（`file::write`）、`copy_file` 与 `fs::ofstream` 的写出共用这一份底层原语，不再各写一份；临时句柄由 `defer` 清理，平台层不维护上层缓冲或写入计数。
 - `src/net/net_socket.cpp`：统一 `socket` 的公共组合（惰性创建、协议与阶段校验、完整传输循环、报文收发）；建套接字、绑定、accept、connect 等平台操作在 `net_socket_posix.cpp` / `net_socket_win.cpp`，经私有的 `net_socket_detail.h` 相接。旧的 `net_tcp*` / `net_udp*` 分角色文件随合并删除，不留兼容层。
 - `src/net/net_address_codec.cpp`：地址编解码，以及 `endpoint::parse`、`resolve`、`endpoint::to_string` 的公共部分（参数检查、拼端口）。平台文件只剩两个函数：调 `getaddrinfo` / `GetAddrInfoW` 解析，调 `inet_ntop` / `InetNtopA` 转文本；两边共用的 hints 和结果解码是 `net_address_detail.h` 里的模板。
 

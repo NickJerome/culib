@@ -246,4 +246,55 @@ TEST(fs_win_edge, copy_overwrite_refuses_a_hardlink_alias_of_the_source) {
     EXPECT(read_text(alias), ==, "payload");
 }
 
+// ---------------------------------------------------------------------------
+// 链接上的大小和修改时间：跟进到目标，从句柄问
+// ---------------------------------------------------------------------------
+
+TEST(fs_win_edge, size_and_time_follow_links_to_the_target) {
+    const scratch area("link_info");
+    if (!EXPECT(area.ok(), ==, true)) {
+        return;
+    }
+    const fs::path directory = area.at("dir");
+    const fs::path junction = area.at("junction");
+    if (!EXPECT(fs::create_directory(directory).is_ok(), ==, true)) {
+        return;
+    }
+    if (!EXPECT(fs::create_directory(junction).is_ok(), ==, true)) {
+        return;
+    }
+    if (!EXPECT(create_directory_junction(junction, directory), ==, true)) {
+        return;
+    }
+    // 指向目录的链接和目录本身一样：没有文件大小，修改时间是目标的
+    EXPECT(fs::file_size(junction).error().kind(), ==, error_kind::unsupported);
+    const result<wavvix::timestamp> through_junction = fs::last_write_time(junction);
+    const result<wavvix::timestamp> of_directory = fs::last_write_time(directory);
+    if (EXPECT(through_junction.is_ok() && of_directory.is_ok(), ==, true)) {
+        EXPECT(through_junction.value() == of_directory.value(), ==, true);
+    }
+
+    // 文件的符号链接要权限或者开发者模式，建不了就只查上面那半
+    const fs::path file = area.at("data.txt");
+    const fs::path link = area.at("link.txt");
+    if (!EXPECT(write_text(file, "12345").is_ok(), ==, true)) {
+        return;
+    }
+    const result<std::wstring> wide_file = wavvix::utf8_to_wide(file.string());
+    const result<std::wstring> wide_link = wavvix::utf8_to_wide(link.string());
+    if (!EXPECT(wide_file.is_ok() && wide_link.is_ok(), ==, true)) {
+        return;
+    }
+    if (!::CreateSymbolicLinkW(wide_link.value().c_str(), wide_file.value().c_str(),
+                               SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        return;
+    }
+    EXPECT(fs::file_size(link).value_or(0), ==, 5ull);
+    const result<wavvix::timestamp> through_link = fs::last_write_time(link);
+    const result<wavvix::timestamp> of_file = fs::last_write_time(file);
+    if (EXPECT(through_link.is_ok() && of_file.is_ok(), ==, true)) {
+        EXPECT(through_link.value() == of_file.value(), ==, true);
+    }
+}
+
 #endif  // _WIN32

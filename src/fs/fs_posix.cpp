@@ -158,15 +158,6 @@ unsigned long close_file(std::intptr_t& handle) noexcept {
     return ::close(fd) == 0 ? 0 : static_cast<unsigned long>(errno);
 }
 
-std::uint64_t file_size_hint(std::intptr_t handle) noexcept {
-    struct stat info;
-    if (::fstat(static_cast<int>(handle), &info) != 0 ||
-        !S_ISREG(info.st_mode) || info.st_size <= 0) {
-        return 0;
-    }
-    return static_cast<std::uint64_t>(info.st_size);
-}
-
 result<std::size_t> read_some(std::intptr_t handle, char* data, std::size_t size,
                              string_view path) {
     const std::size_t chunk = size > 0x40000000u ? 0x40000000u : size;
