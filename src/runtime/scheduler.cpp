@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <thread>
 
 namespace cu {
@@ -144,6 +145,17 @@ coroutine_block* take_next(runtime_state& state, worker_state& self) {
     }
 }
 
+// 正在处理的异常记在线程上，不在协程上：在 catch 块里挂起，同一根线程上的别的协程进出 catch 块会把它改掉，
+// 回来以后 throw; 重抛的是别人的异常（MSVC 上接着就崩溃）。所以挂起之前查一次，查到就终止。
+void check_not_in_catch_block() noexcept {
+#if CU_DETAIL_HAS_EXCEPTIONS
+    if (std::current_exception()) {
+        fatal("cu::coroutine: suspended inside a catch block; the exception being handled is kept per thread, "
+              "so wait after the catch block ends");
+    }
+#endif
+}
+
 // 切回调度器，被叫醒后从这里接着跑。
 void switch_out(coroutine_block* self, switch_reason reason) noexcept {
     asan_leave(self, reason == reason_finish);
@@ -233,6 +245,7 @@ void scheduler_submit(coroutine_block* block) noexcept {
 }
 
 void scheduler_park() noexcept {
+    check_not_in_catch_block();
     coroutine_block* const self = current_block();
     int expected = phase_running;
     if (!self->phase.compare_exchange_strong(expected, phase_parking)) {
@@ -270,6 +283,7 @@ void scheduler_yield() noexcept {
         std::this_thread::yield();
         return;
     }
+    check_not_in_catch_block();
     switch_out(self, reason_yield);
 }
 

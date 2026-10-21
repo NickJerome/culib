@@ -99,11 +99,12 @@ Linux、Windows、macOS 同等对待。
 - 另有 `joinable()`、`get_id()`、`swap()`；`id` 可以比较、做 `std::hash` 的键、用 `<<` 输出。
 - `cu::this_coroutine` 有 `get_id()`、`yield()`、`sleep_for()`、`sleep_until()`。不在协程里调用时，`get_id()` 返回空 id，其余三个等同于 `std::this_thread` 的同名函数。
 
-和 `std::thread` 不一样的只有三处：
+和 `std::thread` 不一样的只有四处：
 
 - `std::thread` 抛 `system_error` 的几种误用（对不能 join 的对象调 `join()` 或 `detach()`、协程 join 它自己、内存不够起不了协程），这里打印诊断后终止，因为公共头文件不抛异常。
 - 析构或移动赋值时还能 join，`std::thread` 直接调 `std::terminate`，这里先打印一句诊断再终止。两边退出码都是 134。
 - 没有 `native_handle()` 和 `hardware_concurrency()`：协程没有系统句柄，核数照样用 `std::thread::hardware_concurrency()` 查。
+- 线程可以在 catch 块里等，协程不能：在 catch 块里挂起时打印诊断后终止。正在处理的异常记在线程上，同一根线程上的协程共用一份。2026-10-21 实测，两根协程在 catch 块里交错挂起，回来以后 `throw;`：GCC 上 A 重抛出 B 的异常、B 重抛出 A 的，程序照常退出；MSVC 上 A 重抛出 B 的异常，接着进程崩溃。挂起前查一次 `std::current_exception()`，GCC 上 2.4 ns，MSVC 上 16 ns。异常展开途中（析构函数里）挂起同样不对，但不查：GCC 4.8 上接住 `rethrow_exception` 抛出的异常以后，`std::uncaught_exception()` 一直为真（libstdc++ PR 62258），会把正常的挂起当成误用。
 
 2026-10-21 在原型上验证过（Linux，GCC 11.4 `-std=c++11` 和 `-std=c++17`，1 根和 8 根工作线程）：函数加参数、成员函数指针、`std::ref`、在普通线程和协程里 join、`detach()`、放进 `vector`、`swap`、`id` 的比较、哈希和输出；四种误用（join 和 detach 不能 join 的对象、协程 join 自己、给还能 join 的对象赋值）、漏出异常、跑完了没 join，都是上面写的结果。原型没有定时器，`sleep_for()` 和 `sleep_until()` 没验证。
 
@@ -152,7 +153,7 @@ Linux、Windows、macOS 同等对待。
 
 顺序是先打通一条最细的路，再一层层加厚：
 
-1. 在三个平台上跑通「一根工作线程 + TCP + 只会返回一个文件的 serve」。Windows 的换栈和 IOCP 在这一步就要有。
+1. 在三个平台上跑通「一根工作线程 + TCP + 只会返回一个文件的 serve」。Windows 的换栈和 IOCP 在这一步就要有。2026-10-21 完成，`e9aaba2..c75388e`。
 2. 之后每一步只加一样东西，比如多线程和偷任务、超时、真正的文件服务、日志、优雅退出。加什么由 serve 的需要来定；每一步都在三个平台的 CI 上跑通。
 
 ## 6. 约定和流程

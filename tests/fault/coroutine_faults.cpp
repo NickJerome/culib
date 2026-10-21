@@ -84,6 +84,17 @@ void escaped_exception() {
     cu::coroutine thrower([] { throw 42; });
     thrower.join();
 }
+
+void suspended_in_catch() {
+    cu::coroutine handler([] {
+        try {
+            throw 42;
+        } catch (int) {
+            cu::this_coroutine::yield();
+        }
+    });
+    handler.join();
+}
 #endif
 
 void stack_overflow() {
@@ -109,6 +120,7 @@ const fault_case cases[] = {
     {"joined_itself", joined_itself, ending::abort, "cu::coroutine: a coroutine joined itself"},
 #if CU_DETAIL_HAS_EXCEPTIONS
     {"escaped_exception", escaped_exception, ending::abort, ""},
+    {"suspended_in_catch", suspended_in_catch, ending::abort, "cu::coroutine: suspended inside a catch block"},
 #endif
     {"stack_overflow", stack_overflow, ending::stack_overflow, ""},
 };
