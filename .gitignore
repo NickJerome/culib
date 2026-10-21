@@ -1,0 +1,12 @@
+# xmake
+.xmake/
+build/
+vsxmake*/
+compile_commands.json
+
+# clangd
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db

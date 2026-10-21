@@ -1,0 +1,13 @@
+culib - Rights notice
+
+All rights reserved for the original portions of this project.
+
+This project is currently for the author's own use. No license is granted
+to use, copy, modify, or distribute the original portions of this project
+without prior written permission from the respective copyright holders,
+except as permitted by applicable law.
+
+Third-party portions retain their original copyright notices and licenses.
+In particular, the assembly derived from Boost.Context in src/runtime/asm/
+is covered by the Boost Software License 1.0 in licenses/BOOST-1.0.txt.
+This notice does not alter the rights granted by those third-party licenses.
