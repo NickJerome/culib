@@ -116,7 +116,7 @@
 
 ## 跨平台与代码组织
 
-- **简单的底层能力先独立，功能与优化在上面组合。** 每个模块拥有自己的状态，只依赖下层的小接口；不能靠一个总头文件共享所有内部结构。分桶、缓存、工作池等优化不能反向进入底层资源操作。这个原则适用于全库，不限于 mem；当前边界与重构范围见 [实现分层](docs/architecture.md)。只搬文件、不减少模块间依赖，不算简化。
+- **简单的底层能力先独立，功能与优化在上面组合。** 每个模块拥有自己的状态，只依赖下层的小接口；不能靠一个总头文件共享所有内部结构。分桶、缓存、工作池等优化不能反向进入底层资源操作。这个原则适用于全库，不限于 mem；当前边界见 [系统架构](docs/architecture.md) 的分层一节。只搬文件、不减少模块间依赖，不算简化。
 
 - **只支持 64 位**（2026-10-13 定）：换栈汇编只有 x86_64 和 arm64，分配器的地址布局也只按 64 位设计；32 位目标在编译期报错。要支持时得补汇编、分配器和 CI，到时再说。
 - **最低支持 Windows 10**（2026-10-07 定，见路线图第 6 节）。`xmake.lua` 给 culib 定义 `_WIN32_WINNT=0x0A00`，各文件不再自己定。Win10 某个更新才有的 API（如 1803 的 AF_UNIX）要在模块的设计文档里写明需要哪一版。
@@ -184,7 +184,7 @@
 | --- | --- | --- |
 | 单元测试通过 | `xmake test`，用自带的测试框架（吃自己的狗粮） | CI 六个目标 × debug/release（同上） |
 | 零警告 | `set_warnings(..., "error")` | GCC / Clang / **MSVC（已纳入）** |
-| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/39478393600)（`01fa93c`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、运行时的 TSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
+| 三平台行为一致 | `.github/workflows/build.yml`，标准三平台矩阵 | [最新矩阵](https://github.com/NickJerome/culib/actions/runs/39523522721)（`1316887`）**24/24 绿**：Linux x86_64 GCC/Clang、Linux arm64 GCC、macOS arm64/x86_64 Clang、Windows MSVC x64 × debug/release，加 GCC 4.8、MinGW x64、无异常构建、ASan + UBSan、运行时的 TSan、公共头文件及源码依赖检查。2026-10-13 起不再有 32 位（MSVC x86、MinGW i686）。VS2015 尚未覆盖 |
 | 示例可编译 | `examples/xmake.lua`，CI 里 `xmake build -g examples` | 标准矩阵与 MinGW 都编译全部示例（`examples/` 下每个 `.cpp` 一个，现在 21 个） |
 | CI 输出可检查 | `.github/report-failure.sh` 发布成功和失败命令的测试摘要、跳过项与诊断；`.github/ci_report.py` 查询运行和实际输出 | 完整日志需要认证，公开摘要不需要。报告明确区分覆盖范围；CI 为绿色时也检查 fatal、断言和 sanitizer 输出。使用方法与限制见 [CI 检查](docs/ci.md) |
 | 能被当作源码依赖引入 | CI 的 `consumed-as-dependency` job，以 C++11/C++17 使用协程、分配器和常用工具 | Linux GCC、macOS Clang、Windows MSVC |

@@ -142,27 +142,39 @@ Linux / macOS 的 debug 构建在每根栈的最底下设保护页，溢出当�
 
 ### 性能
 
-2026-10-20 用同一组程序同场轮流跑五轮，取中位数（WSL2，i7-12700，都绑在 8 个核上；culib 是 `5a94362`，GCC 11 `-O2 -DNDEBUG`；Go 1.24.5；程序是 scratchpad 里的 `vs_threads.cpp` 和照着它写的 Go 版，不在仓库里）。几核指 `WAVVIX_MAXPROCS` / `GOMAXPROCS`。内存那一行和每个一根线程的那一列是 `99e365e` 那次量的，后者和 culib 的版本无关：
+`benchmarks/` 的记分板在 culib 和 Go 两边各写一份同样的程序，同场轮流跑 5 轮取中位数（WSL2，i7-12700，绑在 0–7 号核上；culib `1316887`，GCC 11.4 `-O2 -DNDEBUG`；Go 1.24.5）。下表是和运行时有关的几项，倍数是 Go 的耗时除以 culib 的，大于 1 表示 culib 快；8 / 4 / 1 是 `WAVVIX_MAXPROCS` / `GOMAXPROCS`。全部项目和量法见[系统架构](architecture.md#13-性能和-go-的记分板)。
 
-| | culib | Go | 每个一根线程 |
-| --- | --- | --- | --- |
-| 在协程里起一个、跑完，1 / 8 核 | 0.15 / 0.39 µs；链上 `culib_new_override` 0.11 / 0.21 µs | 0.70 / 0.16 µs | 21.9 µs |
-| 两个用锁和条件变量来回交替，1 / 8 核 | 223 / 227 ns | 310 / 299 ns | 24.8 µs |
-| 1 万个排在一把锁上依次交接，1 / 8 核 | 3.1 / 2.7 ms | 2.6 / 3.0 ms | 162 ms |
-| 普通线程 `notify_all` 放行 1 万个，1 / 8 核 | 4.9 / 8.3 ms | 2.5 / 3.5 ms（main goroutine 里 `Broadcast`） | 49.7 ms |
-| 每个等着的执行者占的内存 | 4.2 KiB，内核里另有 1.8 KiB | 2.7 KiB | 8.4 KiB，内核里另有 23 KiB |
-| 回显 1 万个连接，读写都带 30 秒超时 | 26.3–33.7 万次/s，服务端每次往返 11.7–13.7 µs CPU，p99 35–59 ms | 23.7–30.7 万次/s，12.8–15.1 µs，p99 49–54 ms | 18.1 万次/s，13.2–13.4 µs，p99 70–71 ms |
+| 项目 | 8 根时 culib / Go | 倍数 8 / 4 / 1 |
+| --- | --- | --- |
+| 协程里起 20 万根空协程，每根 | 154 / 170 ns | 1.10 / 0.85 / 5.02 |
+| 一根协程让出，每次 | 38.6 / 124 ns | 3.22 / 3.28 / 1.98 |
+| 两根协程用锁和条件变量轮流，每个来回 | 183 / 278 ns | 1.52 / 1.56 / 1.63 |
+| 两根协程经 channel 轮流，每个来回 | 160 / 255 ns | 1.60 / 1.55 / 1.73 |
+| 1 万根排在一把锁上，到全部拿过一次 | 2.49 / 2.87 ms | 1.15 / 1.08 / 0.87 |
+| 1 万根等在条件变量上，`notify_all` 到全部结束 | 6.05 / 2.71 ms | 0.45 / 0.50 / 0.46 |
+| 1 万根挂起时每根多占的常驻内存 | 4.24 / 2.66 KiB | 0.63 / 0.62 / 0.63 |
+| 拿放一把没人抢的锁 | 11.4 / 10.8 ns | 0.94 / 0.94 / 0.94 |
+| 8 根协程抢一把锁，每次 | 13.5 / 31.5 ns | 2.33 / 2.29 / 1.06 |
+| channel 一发一收 / 4 发 4 收，每个 | 15.7 / 32.4、37.5 / 48.0 ns | 2.06 / 2.10 / 1.86、1.28 / 1.45 / 1.75 |
+| 1 万根各睡 10 ms，到全部醒来 | 16.3 / 23.7 ms | 1.45 / 1.35 / 0.83 |
+| 64 个 TCP 连接同时往返 64 字节，每个来回 | 2446 / 1420 ns | 0.58 / 0.76 / 1.17 |
+| 依次建 1000 个 TCP 连接，每个 | 55.5 / 72.0 µs | 1.30 / 1.30 / 1.35 |
+| UDP 来回 64 字节，每个来回 | 4964 / 5059 ns | 1.02 / 1.01 / 1.04 |
 
-来回交替和多核的依次交接 culib 快，回显略好：叫醒的协程排在本线程上时不叫醒闲着的线程，就绪队列、定时器组、栈池和同步原语里的短临界区用自旋锁（见[实现说明](implementation-notes.md#spin_lockh)）。只有一个核时，起协程 culib 快四倍多，依次交接 Go 快两成。
+慢的几项：
 
-Go 快的有三处。多核起协程：控制块默认经 libc 的 `malloc`，在一根线程上分配、在另一根上释放，要抢 `malloc` 的锁；链上 culib 的分配器以后还差三成。放行：醒来的 1 万根协程都要拿回同一把锁。8 核时锁很快改成直接交接（2 万次拿锁里 8 千多次），拿不到的都排队挂起，perf 的采样六成落在这把锁内部的自旋锁上。Go 在直接交接时由 `Unlock` 把 P 让给接手的 goroutine；试过只把接手的协程排到本线程队列的最前面，没有变快。内存：每根协程的栈占 1 MiB 地址空间，页表另占约 2 KiB；Go 的栈起步 2 KiB，不够时整段搬到更大的地方。
+- 放行 1 万根：醒来的协程都要拿回同一把锁。8 根工作线程时锁很快进了饥饿模式，2 万次拿锁里 8 千多次是直接交接，拿不到的都排队挂起，perf 的采样六成落在这把锁内部的自旋锁上。Go 在直接交接时由 `Unlock` 把 P 让给接手的 goroutine；试过只把接手的协程排到本线程队列的最前面，没有变快。
+- 内存：每根协程的栈占一个 1 MiB 的格子，页表另占约 2 KiB；Go 的栈从 2 KiB 起，不够时整段搬到更大的地方。
+- 多核的 TCP 回显：Go 找不到活的线程先自旋一阵，完成常在这几微秒里就到；culib 闲着的线程直接睡下，再被叫醒。照做的原型和结果见[实现说明](implementation-notes.md#闲着的工作线程)。
+
+和每个任务一根线程比（`99e365e` 那次量的，和 culib 的版本无关）：起一根线程跑完要 21.9 µs，两根线程用锁和条件变量来回交替 24.8 µs，1 万根线程排在一把锁上依次交接 162 ms，每根等着的线程常驻 8.4 KiB、内核里另占 23 KiB；1 万个连接各一根线程回显，18.1 万次/s，服务端每次往返 13.2–13.4 µs CPU。
 
 ## 和 Photon 的对照
 
 PhotonLibOS 用 `photon::thread_create` 起协程、`thread_join` 等它，`photon_std::thread` 是 `std::thread` 风格的持有型句柄。culib 改成了 Go 的形状：没有句柄，`go()` 起了就不管，要等就用 `wait_group`。另外：
 
 - Photon 的协程默认不迁移，迁移要显式调 `thread_migrate` 或在 vCPU 和协程上都打开工作窃取；culib 照 Go 的做法，协程在挂起点随时可能换线程，闲着的工作线程从别的队列里拿活。
-- Photon 的 WorkPool 用无锁环分发任务，环有容量上限；culib 的全局队列和每根工作线程的队列都是互斥锁加侵入式链表，没有上限。实测环只在「起得密、每根活很短」时快（空协程 241 对 399 ns，1 µs 的活 489 对 615 ns），10 µs 以上的活和 TCP 长短连接持平，见[实现说明](implementation-notes.md#试过的全局队列和栈)。
+- Photon 的 WorkPool 用无锁环分发任务，环有容量上限；culib 的全局队列和每根工作线程的队列都是自旋锁加侵入式链表，没有上限。实测环只在「起得密、每根活很短」时快（空协程 241 对 399 ns，1 µs 的活 489 对 615 ns），10 µs 以上的活和 TCP 长短连接持平，见[实现说明](implementation-notes.md#试过的全局队列和栈)。
 
 ## 只支持 64 位
 
@@ -365,3 +377,5 @@ TSan 只看得到那一次运行里实际发生的竞争。另外它把一根协
 [`8a1199d` 的 CI](https://github.com/NickJerome/culib/actions/runs/39469914069) 23/24：MSVC release 那一格的 `runtime_faults.stack_overflow` 又以 `0xC0000005` 结束，`CONTEXT` 11567 字节、扩展状态 0x608E7，是第 5 次分到带 AMX 的机器；原因和修法见[实现说明](implementation-notes.md#windows溢出时留给异常分发的栈)。其余 23 个作业通过：`culib_test` Linux 401 项、macOS 398 项、Windows 与 MinGW 396 项、无异常构建 393 项，`runtime_order_test` 41、39、36 项。[`1d1e841` 的 CI](https://github.com/NickJerome/culib/actions/runs/39472620727) 24/24 通过，项数相同；唯一的 SKIP 是 MSVC debug 那一格的 `cet`（分到的机器不给影子栈），诊断只有源码依赖检查的一个作业报「没有找到缓存」。[`a328d6b` 的 CI](https://github.com/NickJerome/culib/actions/runs/39475190897) 24/24 通过，项数相同，没有 SKIP，也没有诊断。
 
 [`01fa93c` 的 CI](https://github.com/NickJerome/culib/actions/runs/39478393600) 24/24 通过：工作线程要系统溢出时多留 32 KiB 栈以后，两个 Windows 作业的 `runtime_faults.stack_overflow` 都以 `0xC00000FD` 结束（`CONTEXT` 3247 和 3263 字节，这次都不是带 AMX 的机器），异常处理多用的 12 KiB 栈够用；不设这个保证时，这一条在任何机器上都失败。项数和 `a328d6b` 那次相同；唯一的 SKIP 是 MSVC debug 那一格的 `cet`，没有诊断。
+
+[`fef891c` 的 CI](https://github.com/NickJerome/culib/actions/runs/39480895150) 24/24 通过：`culib_test` Linux 402 项、macOS 398 项、Windows 与 MinGW 396 项、无异常构建 394 项，`runtime_order_test` 41、39、36 项。MSVC debug 那一格分到了带 AMX 的机器（`CONTEXT` 11567 字节，扩展状态 0x608E7），`runtime_faults.stack_overflow` 以 `0xC00000FD` 通过：这是 `01fa93c` 留出 32 KiB 溢出余量以后第一次在 AMX 机器上跑这条，异常处理多用的 12 KiB 栈也够用。没有 SKIP，诊断只有构建缓存没命中。[`624c39e`](https://github.com/NickJerome/culib/actions/runs/39521797692)、[`aa0c47d`](https://github.com/NickJerome/culib/actions/runs/39522240883)、[`000b0bb`](https://github.com/NickJerome/culib/actions/runs/39522841898) 的 CI 都是 24/24，项数相同；唯一的 SKIP 是 `624c39e` 那次 MSVC debug 的 `cet`，诊断只有改了头文件以后构建缓存没命中。[`1316887` 的 CI](https://github.com/NickJerome/culib/actions/runs/39523522721) 24/24 通过：Windows 与 MinGW 的 `culib_test` 多了一项（397 项，`fs_win_edge.size_and_time_follow_links_to_the_target`），其余项数相同；没有 SKIP，也没有诊断。

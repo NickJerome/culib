@@ -2,7 +2,7 @@
 
 `wavvix::mem` 是 culib 自带的通用分配器，源码在 `src/mem/allocator/`，随 `culib` 静态库一起编译。目标是在不多占内存的前提下替换 `malloc` 和全局 `new/delete`，让 `std::vector`、`std::string` 这类容器的分配更快。结构、并发约定、取舍和测量见[实现说明](mem-internals.md)。
 
-协程栈也向 `wavvix::mem` 要：协程第一次运行时，`stack.cpp` 用 `mem::aligned_alloc` 按页对齐、按整页取整地分配，协程结束时还回去，不另设缓存。release 构建不设保护页；debug 构建用共用的 `pages` 接口把最低一页设成不可访问，还回去之前恢复成可读写（原因见[实现说明](implementation-notes.md#协程栈)）。所以即使不覆盖全局 `new/delete`，协程栈也走本分配器。
+协程的控制块（连同 `go()` 保存的可调用对象和参数）向 `wavvix::mem` 要：协程常在一根工作线程上起、在另一根上结束，本分配器释放别的线程的块是一次 CAS。所以即使不覆盖全局 `new/delete`，协程也走本分配器。栈不走分配器：协程栈有自己的池（`src/mem/stack.cpp`），和分配器并列，都只建在 `mem/pages` 上，原因见[实现说明](implementation-notes.md#为什么不向分配器要)。
 
 ## 用法：覆盖全局 `new/delete`（推荐）
 
