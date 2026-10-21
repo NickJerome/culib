@@ -126,6 +126,12 @@ Linux、Windows、macOS 同等对待。
 - 会等的调用（accept、connect、read、write）在协程里挂起协程，在普通线程上阻塞这根线程。
 - 默认行为照 Go，不留选项：Linux 和 macOS 设 `SO_REUSEADDR`，Windows 不设（设了别的程序能抢走端口）；关掉 Nagle；子进程不继承；写断开的连接不触发 SIGPIPE；监听队列用系统上限；accept 时对端已经断开的，库在内部接着等，句柄用完返回 resource_exhausted，由调用方等一会儿再试。
 - `cu::fs::read_file(path)` 把整个文件读进内存，照 Go 的 `os.ReadFile`：按文件大小多分配一个字节，读到它就知道到头了。
+- `connect` 的 host 空着、写 `0.0.0.0` 或 `[::]` 时连本机，和 Go 一样。Linux 和 macOS 自己这么做，Windows 不认，库里统一换成环回地址；所以 `connect(server.local_address().to_string())` 在三个平台上都能用。
+- 一次读写最多 1 GiB，和 Go 一样：macOS 一次超过 `INT_MAX` 字节报 `EINVAL`，Windows 的长度是 32 位的。调用方看不出区别，`read` 只是读到的少一些，`write` 自己分几次写。
+- `read_file` 读目录时三个平台都报 unsupported，消息是 `open <path>: is a directory`（Windows 打开目录报的是拒绝访问）。
+- `read_file` 读的时候阻塞所在的工作线程。第一步只有一根工作线程，一次慢读会让所有协程一起等；是交给别的线程读，还是像 Go 那样阻塞时把工作线程让出去，到多工作线程那一步再定。
+- Windows 上 Winsock 起不来、拿不到 AcceptEx 和 ConnectEx 时打印诊断后终止，和建不了完成端口一样：支持的系统上不会发生。
+- Windows 上连一个没人监听的本机端口，要约 2 秒才报错（系统收到 RST 以后还会重发 SYN），Linux 和 macOS 立刻报。这是系统的行为，库不改。
 - 超时、从别的协程关掉正在等的句柄（优雅退出要用）、域名解析和 UDP，各放到后面的一步。超时用 Go 的截止时刻还是上一版的每次调用传时长，到那一步再定。
 
 依据：读过 Go 1.24.5（net、internal/poll、os）、Rust 标准库（std::net、fs）和 PhotonLibOS（net）的源码。2026-10-21 在 Linux 原型上（epoll，一根工作线程）跑过第一步的 serve：curl 和 1000 个请求（50 个同时）全部 200；端口被占、文件不存在、权限不够、写域名、连不上，消息和种类都对；`":8082"` 用 IPv4 和 IPv6 都能连上。
@@ -191,3 +197,4 @@ Linux、Windows、macOS 同等对待。
 | 地址的 IP 和端口分开传（上一版） | 配置和命令行里地址本来就写成 `:8080`，分开传要调用方自己拆 | — |
 | `"0.0.0.0:8080"` 也同时收 IPv6（Go 的做法） | 写什么就收什么更好懂 | — |
 | `":8080"` 只收 IPv4 | 实现最省事，但一个监听接不到 IPv6 的连接；同时收两种只多几行 | — |
+| `connect(":8080")` 报 missing host（原型的做法） | 调用方连自己监听的 `local_address()`（`"[::]:port"`）时得自己换成环回地址；Go 连本机，Linux 和 macOS 也这么做 | — |

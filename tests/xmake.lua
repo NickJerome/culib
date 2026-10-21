@@ -13,7 +13,8 @@ target("culib_test")
     -- 测试框架自己的测试要用它的内部头文件
     add_includedirs("../src", "../src/testing")
     add_deps("culib")
-    add_tests("default")
+    -- 网络测试出错时可能卡在等连接上，限住时间
+    add_tests("default", {run_timeout = 600000})
 target_end()
 
 -- 协程的误用和栈溢出都是终止进程，每种情形在子进程里跑。

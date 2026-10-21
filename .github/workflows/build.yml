@@ -215,6 +215,9 @@ jobs:
               add_deps("culib")
           LUA
           cat > consumer/src/main.cpp <<'CPP'
+          #include <cu/coroutine.h>
+          #include <cu/fs.h>
+          #include <cu/net.h>
           #include <cu/result.h>
           #include <cu/string_view.h>
 
@@ -260,6 +263,20 @@ jobs:
                   return 1;
               }
               std::printf("port %d view %zu\n", port.value(), ours.size());
+
+              // 协程、网络和文件：使用方只写 add_deps("culib")，Windows 的 ws2_32、Linux 的 pthread 由 culib 带过来
+              int answer = 0;
+              cu::coroutine worker([&answer] { answer = 42; });
+              worker.join();
+              const cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+              if (listening.is_err()) {
+                  std::fprintf(stderr, "%s\n", listening.error().to_string().c_str());
+                  return 1;
+              }
+              std::printf("listening on %s\n", listening.value().local_address().to_string().c_str());
+              if (answer != 42 || cu::fs::read_file("no-such-file").is_ok()) {
+                  return 1;
+              }
               return doubled_port(-1).is_err() ? 0 : 1;
           }
           CPP

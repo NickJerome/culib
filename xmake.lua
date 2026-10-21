@@ -38,7 +38,9 @@ target("culib")
     if is_plat("windows", "mingw") then
         add_defines("_WIN32_WINNT=0x0A00", "WINVER=0x0A00")
     end
-    if is_plat("linux") then
+    if is_plat("windows", "mingw") then
+        add_syslinks("ws2_32", {public = true})
+    elseif is_plat("linux") then
         add_syslinks("pthread", {public = true})
     end
     -- 换栈的汇编：每个（ABI，架构，汇编器）一个文件，只支持 64 位。没匹配上的目标一个都不加，
