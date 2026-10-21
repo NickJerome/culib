@@ -1,0 +1,277 @@
+name: build
+
+# 三个平台行为一致、零警告，这两条约定靠这个 workflow 执行。命令输出由 report-failure.sh
+# 提取并发布，用 .github/ci_report.py 查。
+
+on:
+  push:
+    branches: [master, main, v2]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  XMAKE_VERSION: '3.1.1'
+
+jobs:
+  mingw-x86_64:
+    name: MinGW x86_64 C++11
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc python
+      - name: build and run tests
+        shell: msys2 {0}
+        run: CXX=g++ bash .github/report-failure.sh bash tests/mingw_windows.sh
+
+  legacy-gcc:
+    name: GCC 4.8 C++11
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # 官方 gcc:4.8.5 镜像：Debian 7、glibc 2.13。gcc:4.8 这个标签是 schema 1 的清单，新版 Docker 拉不了，按摘要固定。
+      - name: build and run tests with GCC 4.8
+        shell: bash
+        run: bash .github/report-failure.sh docker run --rm -v "$PWD:/workspace" -w /workspace gcc:4.8.5@sha256:a515c9a2b8bf7d0f91470f7315be90862e249e6f4caa9f0d71898d3f2be8c280 bash tests/legacy_gcc48.sh
+
+  headers:
+    name: public headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: test CI output reporting
+        run: bash .github/report-failure.sh python3 -m unittest discover -s tests -p ci_report_test.py
+
+      # 使用方在非 UTF-8 代码页下不加 /utf-8 编译时，MSVC 对没有 BOM 的头文件报 C4819。
+      - name: every public header starts with a UTF-8 BOM
+        run: |
+          missing=$(find include -name '*.h' -print0 \
+            | xargs -0 -I{} sh -c 'head -c3 "{}" | od -An -tx1 | tr -d " \n" | grep -q efbbbf || echo "{}"')
+          if [ -n "$missing" ]; then
+            echo "missing UTF-8 BOM:"; echo "$missing"
+            exit 1
+          fi
+          echo "all $(find include -name '*.h' | wc -l) headers start with a BOM"
+
+      - name: every public header compiles on its own
+        run: |
+          status=0
+          for header in $(find include -name '*.h' | sed 's|^include/||' | sort); do
+            printf '#include <%s>\nint main() { return 0; }\n' "$header" > /tmp/standalone.cpp
+            if g++ -std=c++11 -Wall -Wextra -Wpedantic -Werror -Iinclude -fsyntax-only /tmp/standalone.cpp; then
+              echo "  ok    $header"
+            else
+              echo "  FAIL  $header"; status=1
+            fi
+          done
+          exit $status
+
+  no-exceptions-rtti:
+    name: Linux ${{ matrix.toolchain }} C++11 without exceptions or RTTI
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
+        with:
+          xmake-version: ${{ env.XMAKE_VERSION }}
+          actions-cache-folder: '.xmake-tool-cache'
+      - name: configure without exceptions or RTTI
+        run: xmake f -m release --toolchain=${{ matrix.toolchain }} --cxxflags="-fno-exceptions -fno-rtti" --ccache=n -y
+      - name: build library
+        shell: bash
+        run: bash .github/report-failure.sh xmake -y
+      - name: run tests
+        shell: bash
+        run: bash .github/report-failure.sh xmake test -v
+
+  sanitizers:
+    name: Linux GCC ASan + UBSan + TSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
+        with:
+          xmake-version: ${{ env.XMAKE_VERSION }}
+          actions-cache-folder: '.xmake-tool-cache'
+      - name: configure with ASan and UBSan
+        run: xmake f -m debug --toolchain=gcc --cxxflags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" --ldflags="-fsanitize=address,undefined" --ccache=n -y
+      - name: build tests
+        shell: bash
+        run: bash .github/report-failure.sh xmake build -y culib_test
+      - name: run tests under ASan and UBSan
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          CULIB_CI_STRICT: '1'
+        run: bash .github/report-failure.sh xmake test -v culib_test/default
+      # setarch -R 关掉地址随机化：runner 的内核随机位数多，映射可能落到 TSan 留给影子内存的地址上。
+      - name: run tests under ThreadSanitizer
+        shell: bash
+        timeout-minutes: 30
+        env:
+          TSAN_OPTIONS: halt_on_error=0:second_deadlock_stack=1
+          CULIB_CI_STRICT: '1'
+        run: |
+          xmake f -m debug --toolchain=gcc --cxxflags="-fsanitize=thread -fno-omit-frame-pointer" --ldflags="-fsanitize=thread" --ccache=n -y
+          bash .github/report-failure.sh xmake build -y culib_test
+          bash .github/report-failure.sh setarch "$(uname -m)" -R build/linux/x86_64/debug/culib_test
+
+  build:
+    name: ${{ matrix.target.name }} / ${{ matrix.mode }}
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      # 一个平台失败不打断其他平台，一次就能看到全部结果
+      fail-fast: false
+      matrix:
+        mode: [debug, release]
+        target:
+          - { name: linux-gcc, os: ubuntu-latest, toolchain: gcc }
+          - { name: linux-clang, os: ubuntu-latest, toolchain: clang }
+          - { name: linux-gcc-arm64, os: ubuntu-24.04-arm, toolchain: gcc }
+          - { name: macos-clang, os: macos-latest, toolchain: clang }
+          - { name: macos-clang-x86_64, os: macos-15-intel, toolchain: clang }
+          - { name: windows-msvc, os: windows-latest, toolchain: msvc }
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: identify compiler cache
+        id: compiler-cache
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ${{ matrix.target.toolchain }} --version | python3 -c 'import hashlib, os, sys; value = os.environ.get("ImageVersion", "") + sys.stdin.read(); print("id=" + hashlib.sha256(value.encode()).hexdigest())' >> "$GITHUB_OUTPUT"
+
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
+        with:
+          xmake-version: ${{ env.XMAKE_VERSION }}
+          actions-cache-folder: '.xmake-tool-cache'
+          build-cache: ${{ runner.os != 'Windows' }}
+          build-cache-key: v2-${{ matrix.target.os }}-${{ matrix.target.toolchain }}-${{ steps.compiler-cache.outputs.id }}-${{ matrix.mode }}-xmake-${{ env.XMAKE_VERSION }}-${{ hashFiles('xmake.lua', 'tests/xmake.lua') }}
+
+      - name: configure
+        run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
+
+      - name: build library
+        shell: bash
+        run: bash .github/report-failure.sh xmake -y
+
+      - name: run tests
+        shell: bash
+        run: bash .github/report-failure.sh xmake test -v
+
+  # culib 被别的工程当源码依赖引入：is_main_project 为假的那条路（警告不当错误、不构建测试），
+  # C++11 和 C++17 的使用方都要能编。Windows 上的使用方不加 /utf-8，MSVC 按 runner 的代码页 1252 编译，
+  # 公共头文件里要是有非 ASCII 的字符串字面量，会报 C4566。
+  consumed-as-dependency:
+    name: consumed as dependency / ${{ matrix.platform.name }} / ${{ matrix.standard }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { name: Linux, os: ubuntu-latest, toolchain: gcc }
+          - { name: macOS, os: macos-latest, toolchain: clang }
+          - { name: Windows, os: windows-latest, toolchain: msvc }
+        standard: [c++11, c++17]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: culib
+
+      - uses: xmake-io/github-action-setup-xmake@v1.2.5
+        with:
+          xmake-version: ${{ env.XMAKE_VERSION }}
+          actions-cache-folder: '.xmake-tool-cache'
+
+      - name: create a consumer project
+        shell: bash
+        run: |
+          mkdir -p consumer/src consumer/third_party/culib
+          git -C culib archive HEAD | tar -x -C consumer/third_party/culib
+          cat > consumer/xmake.lua <<'LUA'
+          add_rules("mode.debug", "mode.release")
+          -- MSVC 没有 C++11 模式，不能传 -std:c++11
+          if not is_plat("windows") or "${{ matrix.standard }}" ~= "c++11" then
+              set_languages("${{ matrix.standard }}")
+          end
+
+          includes("third_party/culib")
+
+          target("consumer")
+              set_kind("binary")
+              set_warnings("allextra", "pedantic", "error")
+              if is_plat("windows") and "${{ matrix.standard }}" == "c++17" then
+                  add_cxflags("/Zc:__cplusplus")
+              end
+              add_files("src/*.cpp")
+              add_deps("culib")
+          LUA
+          cat > consumer/src/main.cpp <<'CPP'
+          #include <cu/result.h>
+          #include <cu/string_view.h>
+
+          #include <cstdio>
+          #include <utility>
+          #if __cplusplus >= 201703L
+          #include <string_view>
+          #include <type_traits>
+          #endif
+
+          static cu::result<int> checked_port(int port) {
+              if (port < 1 || port > 65535) {
+                  return cu::make_error(cu::error_kind::out_of_range, "bad port");
+              }
+              return port;
+          }
+
+          static cu::result<int> doubled_port(int port) {
+              cu::result<int> checked = checked_port(port);
+              if (checked.is_err()) {
+                  return std::move(checked).error();
+              }
+              return checked.value() * 2;
+          }
+
+          int main() {
+              // 两种标准用同一套 culib 接口；C++17 另外查和标准 string_view 的互转
+          #if __cplusplus >= 201703L
+              std::string_view standard = "from std::string_view";
+              cu::string_view ours = standard;
+              static_assert(!std::is_same<cu::string_view, std::string_view>::value,
+                            "cu::string_view must stay a distinct type from std::string_view");
+              cu::string_view empty = std::string_view();
+              if (!empty.data() || empty.begin() != empty.end()) {
+                  return 1;
+              }
+          #else
+              cu::string_view ours = "from C++11";
+          #endif
+              const cu::result<int> port = doubled_port(8080);
+              if (port.is_err()) {
+                  std::fprintf(stderr, "%s\n", port.error().to_string().c_str());
+                  return 1;
+              }
+              std::printf("port %d view %zu\n", port.value(), ours.size());
+              return doubled_port(-1).is_err() ? 0 : 1;
+          }
+          CPP
+
+      - name: configure the consumer
+        working-directory: consumer
+        run: xmake f -m release --toolchain=${{ matrix.platform.toolchain }} -y
+
+      - name: build the consumer
+        working-directory: consumer
+        run: xmake -y
+
+      - name: run the consumer
+        working-directory: consumer
+        run: xmake run consumer
