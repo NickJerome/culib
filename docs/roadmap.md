@@ -107,6 +107,15 @@ Linux、Windows、macOS 同等对待。
 
 2026-10-21 在原型上验证过（Linux，GCC 11.4 `-std=c++11` 和 `-std=c++17`，1 根和 8 根工作线程）：函数加参数、成员函数指针、`std::ref`、在普通线程和协程里 join、`detach()`、放进 `vector`、`swap`、`id` 的比较、哈希和输出；四种误用（join 和 detach 不能 join 的对象、协程 join 自己、给还能 join 的对象赋值）、漏出异常、跑完了没 join，都是上面写的结果。原型没有定时器，`sleep_for()` 和 `sleep_until()` 没验证。
 
+### 4.3 错误
+
+- 可能失败的函数返回 `cu::result<T, E>`，`E` 默认是 `cu::error`。库自己的函数一律报 `cu::error`；开发者给自己的代码定义自己的错误类型，在调库的地方换一次。
+- `cu::error` 是一个种类加一句消息。种类是库对自己的失败的分类，固定 10 种：unknown、invalid_argument、out_of_range、resource_exhausted、not_found、already_exists、permission_denied、timeout、unsupported、io。系统错误码按一张固定的表换成种类，比如端口被占是 already_exists、句柄用完是 resource_exhausted，表里没有的算 io。
+- 造 `cu::error` 只有 `make_error(kind, message)` 一种写法，构造函数是私有的：`error` 也是常用的变量名和 `result` 的成员函数名，`error(...)` 会被它们遮住。
+- 消息和诊断都用英文。消息的格式照 Go：`操作 对象: 系统原话`，比如 `open /srv/index.html: No such file or directory`。
+- 失败时调 `value()`、成功时调 `error()`，打印诊断后终止，release 也查。开发者自己的错误类型，库不知道怎么打印，诊断里只有一句 `cu::result::value() called on an error`。
+- `cu::string_view` 和测试框架（`TEST`、`EXPECT`、`--filter`、`--list`）照搬上一版，只改名字。`defer` 和 `fatal` 只在库内部用。
+
 ## 5. 模块和顺序
 
 下层不依赖上层。
@@ -161,3 +170,6 @@ Linux、Windows、macOS 同等对待。
 | 自底向上，一层层做完 | serve 到最后才出现，中间没有使用方 | — |
 | `cu::coroutine` 析构时自动等它跑完（`std::jthread` 的做法） | 作者要求行为和 `std::thread` 一致：会用 `std::thread` 的人不用重新学，漏了 join 当场报出来 | — |
 | `cu::coroutine` 析构时自动放手（Go 的 `go` 语句的做法） | 同上；而且协程可能比它引用的局部变量活得久 | — |
+| 错误种类固定 10 种，开发者不能定义自己的 | 开发者只能把自己的情况硬塞进最接近的种类 | — |
+| 种类开放：开发者定义新的种类，比较时比地址（Go 的做法） | C++11 里种类写在头文件里，每个 .cpp 各有一份，判断悄悄失效、编译不报错（原型验证过）；要写对每个种类得写两处；比地址没法用 `switch` | 最低标准到 C++17（有 `inline` 变量）时 |
+| 错误消息用中文 | 作者选了英文：放进日志不混语言，形状和 Go 一样 | — |
