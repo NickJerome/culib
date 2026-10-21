@@ -1,4 +1,5 @@
-// Win32 和 Winsock 的错误码换成种类，表里没有的算 io。说明取系统的，跟着系统语言。
+// Win32 和 Winsock 的错误码换成种类，表里没有的算 io。说明取系统的英文版，和库自己的消息一个语言，
+// Go 也这么做；系统没装英文时用系统语言。
 
 #include "system_error.h"
 
@@ -56,17 +57,30 @@ error_kind system_error_kind(int code) noexcept {
     }
 }
 
-std::string system_error_text(int code) {
+namespace {
+
+// 系统对 code 的说明，language 是要的语言；没有这个语言的说明时返回空串。
+std::string format_message(int code, WORD language) {
     LPWSTR text = 0;
     const DWORD length = ::FormatMessageW(
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 0,
-        static_cast<DWORD>(code), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), reinterpret_cast<LPWSTR>(&text), 0, 0);
+        static_cast<DWORD>(code), language, reinterpret_cast<LPWSTR>(&text), 0, 0);
     std::string message = length != 0 && text ? to_utf8(text, length) : std::string();
     if (text) {
         ::LocalFree(text);
     }
     while (!message.empty() && (message[message.size() - 1] == '\n' || message[message.size() - 1] == '\r')) {
         message.erase(message.size() - 1);
+    }
+    return message;
+}
+
+}  // namespace
+
+std::string system_error_text(int code) {
+    std::string message = format_message(code, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US));
+    if (message.empty()) {
+        message = format_message(code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT));
     }
     if (message.empty()) {
         message = "Windows error " + std::to_string(code);

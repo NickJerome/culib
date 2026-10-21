@@ -66,5 +66,5 @@ target("culib")
 target_end()
 
 if is_main_project then
-    includes("tests")
+    includes("tests", "apps")
 end

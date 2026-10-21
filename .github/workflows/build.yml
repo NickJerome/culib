@@ -154,18 +154,22 @@ jobs:
           xmake-version: ${{ env.XMAKE_VERSION }}
           actions-cache-folder: '.xmake-tool-cache'
           build-cache: ${{ runner.os != 'Windows' }}
-          build-cache-key: v2-${{ matrix.target.os }}-${{ matrix.target.toolchain }}-${{ steps.compiler-cache.outputs.id }}-${{ matrix.mode }}-xmake-${{ env.XMAKE_VERSION }}-${{ hashFiles('xmake.lua', 'tests/xmake.lua') }}
+          build-cache-key: v2-${{ matrix.target.os }}-${{ matrix.target.toolchain }}-${{ steps.compiler-cache.outputs.id }}-${{ matrix.mode }}-xmake-${{ env.XMAKE_VERSION }}-${{ hashFiles('xmake.lua', 'tests/xmake.lua', 'apps/xmake.lua') }}
 
       - name: configure
         run: xmake f -m ${{ matrix.mode }} --toolchain=${{ matrix.target.toolchain }} -y
 
-      - name: build library
+      - name: build library and apps
         shell: bash
         run: bash .github/report-failure.sh xmake -y
 
       - name: run tests
         shell: bash
         run: bash .github/report-failure.sh xmake test -v
+
+      - name: start serve, fetch a file, stop it
+        shell: bash
+        run: bash .github/report-failure.sh bash apps/serve/smoke_test.sh
 
   # culib 被别的工程当源码依赖引入：is_main_project 为假的那条路（警告不当错误、不构建测试），
   # C++11 和 C++17 的使用方都要能编。Windows 上的使用方不加 /utf-8，MSVC 按 runner 的代码页 1252 编译，

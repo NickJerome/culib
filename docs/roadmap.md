@@ -112,7 +112,7 @@ Linux、Windows、macOS 同等对待。
 - 可能失败的函数返回 `cu::result<T, E>`，`E` 默认是 `cu::error`。库自己的函数一律报 `cu::error`；开发者给自己的代码定义自己的错误类型，在调库的地方换一次。
 - `cu::error` 是一个种类加一句消息。种类是库对自己的失败的分类，固定 10 种：unknown、invalid_argument、out_of_range、resource_exhausted、not_found、already_exists、permission_denied、timeout、unsupported、io。系统错误码按一张固定的表换成种类，比如端口被占是 already_exists、句柄用完是 resource_exhausted，表里没有的算 io。
 - 造 `cu::error` 只有 `make_error(kind, message)` 一种写法，构造函数是私有的：`error` 也是常用的变量名和 `result` 的成员函数名，`error(...)` 会被它们遮住。
-- 消息和诊断都用英文。消息的格式照 Go：`操作 对象: 系统原话`，比如 `open /srv/index.html: No such file or directory`。
+- 消息和诊断都用英文。消息的格式照 Go：`操作 对象: 系统原话`，比如 `open /srv/index.html: No such file or directory`。Windows 上的系统原话和 Go 一样先取英文版，系统没装英文时才用系统语言；中文 Windows 上不这么做的话，一句消息里前半句英文、后半句中文。
 - 失败时调 `value()`、成功时调 `error()`，打印诊断后终止，release 也查。开发者自己的错误类型，库不知道怎么打印，诊断里只有一句 `cu::result::value() called on an error`。
 - `cu::string_view` 和测试框架（`TEST`、`EXPECT`、`--filter`、`--list`）照搬上一版，只改名字。`defer` 和 `fatal` 只在库内部用。
 
