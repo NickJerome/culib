@@ -74,11 +74,11 @@ void free_retired(engine_state& engine) {
     }
 }
 
-// 系统线程：等事件，每次等之前让监控看一眼工作线程，它说最多等多久就等多久。
+// 系统线程：等事件，每次等之前叫醒到点的定时器、让监控看一眼工作线程，它们说最多等多久就等多久。
 void system_main(engine_state* engine) {
     for (;;) {
         free_retired(*engine);
-        poller_wait(engine->poller, scheduler_monitor(), &ready);
+        poller_wait(engine->poller, system_thread_turn(), &ready);
     }
 }
 

@@ -3,6 +3,8 @@
 // 事件引擎的 Linux / macOS 部分：每个句柄登记一次，读写两个方向都等边沿；系统线程等事件，
 // 就绪时叫醒等着的协程或普通线程。第一次登记句柄或者运行时起来时起系统线程。
 
+#include <cstdint>
+
 namespace cu {
 namespace detail {
 
@@ -26,8 +28,9 @@ void io_wait(io_record* record, io_direction direction) noexcept;
 int poller_create() noexcept;
 bool poller_add(int poller, int fd, io_record* record) noexcept;
 void poller_remove(int poller, int fd) noexcept;
-// 等到有事件、被 poller_wake 叫醒、被信号打断，或者过了 timeout 毫秒（-1 表示不限），每个就绪的方向调一次 ready。
-void poller_wait(int poller, int timeout, void (*ready)(io_record* record, io_direction direction)) noexcept;
+// 等到有事件、被 poller_wake 叫醒、被信号打断，或者过了 timeout 纳秒（-1 表示不限），每个就绪的方向调一次 ready。
+// 后端的精度不够时往后取整，不早醒。
+void poller_wait(int poller, std::int64_t timeout, void (*ready)(io_record* record, io_direction direction)) noexcept;
 // 叫醒在 poller_wait 里等着的线程。任何线程都能调。
 void poller_wake(int poller) noexcept;
 

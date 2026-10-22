@@ -3,6 +3,8 @@
 
 #include "io_posix.h"
 
+#include <cstdint>
+
 #include <fcntl.h>
 #include <sys/event.h>
 #include <sys/time.h>
@@ -43,13 +45,13 @@ bool poller_add(int poller, int fd, io_record* record) noexcept {
 // close 会摘掉登记，不用另做。
 void poller_remove(int, int) noexcept {}
 
-void poller_wait(int poller, int timeout, void (*ready)(io_record* record, io_direction direction)) noexcept {
+void poller_wait(int poller, std::int64_t timeout, void (*ready)(io_record* record, io_direction direction)) noexcept {
     struct kevent events[128];
     struct timespec limit = {0, 0};
     const struct timespec* until = 0;
     if (timeout >= 0) {
-        limit.tv_sec = timeout / 1000;
-        limit.tv_nsec = static_cast<long>(timeout % 1000) * 1000000L;
+        limit.tv_sec = static_cast<time_t>(timeout / 1000000000);
+        limit.tv_nsec = static_cast<long>(timeout % 1000000000);
         until = &limit;
     }
     const int count = ::kevent(poller, 0, 0, events, 128, until);

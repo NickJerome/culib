@@ -4,8 +4,8 @@
 // 协程进叫醒者这根线程的格子，格子里原来那根挤进本地队列；本地队列满了，一半挪进全局队列。系统线程和
 // 普通线程叫醒的进全局队列。格子让「叫醒对方马上就等」的一对协程留在同一根线程上来回，不排队、不被偷。
 //
-// 取活的顺序：每 61 次先看一眼全局队列；格子（连着从格子里跑了 3 根就让一次）；本地队列；全局队列；从别的
-// 线程的本地队列偷一半；都没有就睡。
+// 取活的顺序：每 61 次先看一眼全局队列；格子（连着从格子里跑了 3 根就让一次）；本地队列；全局队列（取一批）；
+// 从别的线程的本地队列偷一半；都没有就睡。
 //
 // 叫醒：往本地队列或全局队列里放时，没有线程在找活才叫醒一根，找到活的那根再叫下一根。放活的一方是
 // 「放进去、屏障、看有没有闲着的」，要睡的一方是「登记闲着、屏障、把所有队列再看一遍」，两边至少有一边
@@ -23,9 +23,9 @@
 #include "shadow_stack.h"
 #include "stack.h"
 #include "system_thread.h"
+#include "timer.h"
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -48,11 +48,9 @@ const unsigned global_every = 61;    // 每取这么多次活先看一眼全局�
 const int slot_streak = 3;           // 连着从格子里跑这么多根就让一次
 const unsigned spare_stacks = 16;    // 每根工作线程手边最多留几根栈
 
-typedef std::chrono::steady_clock monitor_clock;
-
-// 监控隔多久看一次。一根线程停在同一根协程里 stall_ticks 次（10 ms）以上，就算卡住了：Go 给一根 goroutine
-// 的时间片也是 10 ms。
-const std::chrono::milliseconds monitor_interval(1);
+// 监控隔多久看一次（纳秒）。一根线程停在同一根协程里 stall_ticks 次（10 ms）以上，就算卡住了：Go 给一根
+// goroutine 的时间片也是 10 ms。
+const timer_time monitor_interval = 1000000;
 const unsigned stall_ticks = 10;
 
 struct worker_state {
@@ -97,7 +95,7 @@ struct worker_state {
 struct runtime_state {
     runtime_state()
         : global_head(0), global_tail(0), global_count(0), created(0), base(1), live(0), idle_list(0), idle_count(0),
-          searching(0), surplus(0), monitor_sleeping(true), unattended(false) {}
+          searching(0), surplus(0), monitor_sleeping(true), next_tick(0), unattended(false) {}
 
     // 全局队列：global_lock 护着链表。global_count 也只在锁里改，取的一方不拿锁先看一眼
     spin_lock global_lock;
@@ -119,7 +117,7 @@ struct runtime_state {
 
     // 监控。monitor_sleeping 为真时系统线程一直等，有线程忙起来要叫醒它；其余只有系统线程用
     std::atomic<bool> monitor_sleeping;
-    monitor_clock::time_point next_tick;
+    timer_time next_tick;
     bool unattended;     // 上一次看到有活没人干
 };
 
@@ -127,6 +125,17 @@ struct runtime_state {
 std::atomic<runtime_state*> started(nullptr);
 
 thread_local worker_state* this_worker = 0;
+
+// 系统线程叫醒的协程先攒在这里，处理完这一轮的 I/O 事件和定时器再一起排进全局队列：只拿一次锁，只看一次要不要
+// 叫醒工作线程。只有系统线程用。
+struct ready_list {
+    coroutine_block* head;
+    coroutine_block* tail;
+    std::size_t count;
+};
+
+ready_list system_batch = {0, 0, 0};
+thread_local ready_list* this_batch = 0;   // 系统线程上指向 system_batch，别的线程上为空
 
 // 协程会换线程：线程局部变量只在不内联的函数里读，编译器不会把它的地址留到换栈以后。
 CU_DETAIL_NOINLINE worker_state* current_worker() noexcept {
@@ -170,6 +179,51 @@ coroutine_block* pop_global(runtime_state& state) noexcept {
 }
 
 void wake_if_needed(runtime_state& state) noexcept;
+
+// 从全局队列取一批：每根活着的线程分一份，再多拿一根，最多 128 根，Go 的 globrunqget 也这么取。第一根返回，
+// 其余放进自己的本地队列（这时它是空的），别的线程可以从那里偷。一根一根取的话，一大批协程同时就绪时
+// 每根都要抢一次全局锁。
+coroutine_block* take_global(runtime_state& state, worker_state& self) noexcept {
+    if (state.global_count.load(std::memory_order_relaxed) == 0) {
+        return 0;
+    }
+    coroutine_block* first = 0;
+    {
+        std::lock_guard<spin_lock> held(state.global_lock);
+        const std::size_t count = state.global_count.load(std::memory_order_relaxed);
+        if (count == 0) {
+            return 0;
+        }
+        std::size_t want = count / state.live.load(std::memory_order_relaxed) + 1;
+        if (want > local_capacity / 2) {
+            want = local_capacity / 2;
+        }
+        if (want > count) {
+            want = count;
+        }
+        first = state.global_head;
+        coroutine_block* last = first;
+        for (std::size_t i = 1; i < want; ++i) {
+            last = last->next;
+        }
+        state.global_head = last->next;
+        if (!state.global_head) {
+            state.global_tail = 0;
+        }
+        last->next = 0;
+        state.global_count.store(count - want, std::memory_order_relaxed);
+    }
+    if (first->next) {
+        std::lock_guard<spin_lock> held(self.queue_lock);
+        unsigned tail = self.tail.load(std::memory_order_relaxed);
+        for (coroutine_block* block = first->next; block; block = block->next) {
+            self.queue[tail % local_capacity] = block;
+            ++tail;
+        }
+        self.tail.store(tail, std::memory_order_relaxed);
+    }
+    return first;
+}
 
 // 放进本地队列末尾。满了的话，前一半连同这一根挪进全局队列，再看要不要叫醒一根线程。
 void push_local(runtime_state& state, worker_state& self, coroutine_block* block) noexcept {
@@ -445,11 +499,22 @@ runtime_state& runtime() noexcept {
     return *state;
 }
 
-// 排进就绪：在工作线程上进它的格子，格子里原来那根进本地队列；在别的线程上进全局队列。
+// 排进就绪：在工作线程上进它的格子，格子里原来那根进本地队列；在系统线程上先攒成一批；在别的线程上进全局队列。
 void make_ready(coroutine_block* block) noexcept {
     runtime_state& state = runtime();
     worker_state* const self = current_worker();
     if (!self) {
+        if (ready_list* const batch = this_batch) {
+            block->next = 0;
+            if (batch->tail) {
+                batch->tail->next = block;
+            } else {
+                batch->head = block;
+            }
+            batch->tail = block;
+            ++batch->count;
+            return;
+        }
         push_global(state, block);
         wake_if_needed(state);
         return;
@@ -481,7 +546,7 @@ coroutine_block* find_work(runtime_state& state, worker_state& self) noexcept {
     if (coroutine_block* const block = pop_local(self)) {
         return block;
     }
-    if (coroutine_block* const block = pop_global(state)) {
+    if (coroutine_block* const block = take_global(state, self)) {
         return block;
     }
     return steal(state, self);
@@ -628,6 +693,16 @@ void add_worker(runtime_state& state) noexcept {
     state.live.fetch_sub(1);
 }
 
+// 协程睡到某一刻：定时器到点时系统线程叫醒它。只有定时器会叫醒它，所以定时器放在它的栈上就行。
+struct sleeper {
+    timer_node node;   // 放在最前面：fire 拿到的指针就是 sleeper 的
+    coroutine_block* block;
+};
+
+void wake_sleeper(timer_node* node) noexcept {
+    scheduler_unpark(reinterpret_cast<sleeper*>(node)->block);
+}
+
 // 看一遍工作线程：
 // - 一根线程这一个间隔里一根协程都没跑完，就把它格子里的协程挪进全局队列，别的线程能接着跑；
 // - 有线程在同一根协程里待了 10 ms 以上、还有活排着、又没有闲着的线程，就补一根；卡住的线程恢复以后，
@@ -666,6 +741,43 @@ void watch(runtime_state& state) noexcept {
         wake_one(state);
     }
     state.unattended = unattended;
+}
+
+// 系统线程攒下的一批排进全局队列。
+void flush_batch(runtime_state& state) noexcept {
+    if (system_batch.count == 0) {
+        return;
+    }
+    push_global_list(state, system_batch.head, system_batch.tail, system_batch.count);
+    system_batch.head = 0;
+    system_batch.tail = 0;
+    system_batch.count = 0;
+    wake_if_needed(state);
+}
+
+// 监控：有工作线程忙时，到了时候就看一遍（watch）。返回下一次要看的时刻；工作线程都闲着时返回 timer_never，
+// 一直等到有线程忙起来（wake_monitor）。登记睡下以后再看一遍，和 wake_monitor 至少有一边看得见另一边。
+timer_time monitor(runtime_state& state, timer_time now) noexcept {
+    if (state.monitor_sleeping.load()) {
+        if (!busy(state)) {
+            return timer_never;
+        }
+        state.monitor_sleeping.store(false);
+    }
+    if (now < state.next_tick) {
+        return state.next_tick;
+    }
+    state.next_tick = now + monitor_interval;
+    watch(state);
+    if (busy(state)) {
+        return state.next_tick;
+    }
+    state.monitor_sleeping.store(true);
+    if (busy(state)) {
+        state.monitor_sleeping.store(false);
+        return state.next_tick;
+    }
+    return timer_never;
 }
 
 }  // namespace
@@ -722,34 +834,31 @@ void scheduler_yield() noexcept {
     switch_out(self, reason_yield);
 }
 
-int scheduler_monitor() noexcept {
+void scheduler_sleep_until(timer_time when) noexcept {
+    sleeper self;
+    self.block = current_block();
+    self.node.when = when;
+    self.node.fire = &wake_sleeper;
+    timer_add(self.node);
+    scheduler_park();
+}
+
+std::int64_t system_thread_turn() noexcept {
+    this_batch = &system_batch;
+    const timer_time now = timer_now();
+    timer_time next = timers_run(now);
     runtime_state* const state = started.load(std::memory_order_acquire);
-    if (!state) {
+    if (state) {
+        flush_batch(*state);   // 上一轮的 I/O 事件和这一轮的定时器叫醒的
+        const timer_time tick = monitor(*state, now);
+        if (tick < next) {
+            next = tick;
+        }
+    }
+    if (next == timer_never) {
         return -1;
     }
-    if (state->monitor_sleeping.load()) {
-        // 上次看到都闲着，一直在等；被 I/O 事件叫醒的，看一眼有没有线程忙起来
-        if (!busy(*state)) {
-            return -1;
-        }
-        state->monitor_sleeping.store(false);
-    }
-    const monitor_clock::time_point now = monitor_clock::now();
-    if (now < state->next_tick) {
-        return 1;
-    }
-    state->next_tick = now + monitor_interval;
-    watch(*state);
-    if (busy(*state)) {
-        return 1;
-    }
-    // 都闲着：一直等到有线程忙起来（wake_monitor）。登记以后再看一遍，和 wake_monitor 至少有一边看得见另一边
-    state->monitor_sleeping.store(true);
-    if (busy(*state)) {
-        state->monitor_sleeping.store(false);
-        return 1;
-    }
-    return -1;
+    return next > now ? next - now : 0;
 }
 
 }  // namespace detail

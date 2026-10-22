@@ -4,6 +4,7 @@
 #include "io_posix.h"
 
 #include <cerrno>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 
@@ -17,6 +18,15 @@ namespace detail {
 namespace {
 
 int wake_fd = -1;   // poller_create 建好以后不再变
+
+// epoll_wait 的超时以毫秒计，不足一毫秒进成一毫秒。
+int timeout_milliseconds(std::int64_t timeout) noexcept {
+    if (timeout < 0) {
+        return -1;
+    }
+    const std::int64_t milliseconds = timeout / 1000000 + (timeout % 1000000 != 0 ? 1 : 0);
+    return milliseconds < INT_MAX ? static_cast<int>(milliseconds) : INT_MAX;
+}
 
 }  // namespace
 
@@ -55,9 +65,9 @@ void poller_remove(int poller, int fd) noexcept {
     ::epoll_ctl(poller, EPOLL_CTL_DEL, fd, &ignored);
 }
 
-void poller_wait(int poller, int timeout, void (*ready)(io_record* record, io_direction direction)) noexcept {
+void poller_wait(int poller, std::int64_t timeout, void (*ready)(io_record* record, io_direction direction)) noexcept {
     epoll_event events[128];
-    const int count = ::epoll_wait(poller, events, 128, timeout);
+    const int count = ::epoll_wait(poller, events, 128, timeout_milliseconds(timeout));
     for (int i = 0; i < count; ++i) {
         io_record* const record = static_cast<io_record*>(events[i].data.ptr);
         if (!record) {

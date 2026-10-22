@@ -5,6 +5,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -172,6 +173,70 @@ TEST(coroutine, yield_lets_the_others_run) {
 TEST(coroutine, yield_outside_a_coroutine_returns) {
     cu::this_coroutine::yield();
     EXPECT(cu::this_coroutine::get_id(), ==, cu::coroutine::id());
+}
+
+TEST(coroutine, sleep_for_waits_at_least_that_long) {
+    std::chrono::steady_clock::duration slept;
+    cu::coroutine sleeper([&slept] {
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        cu::this_coroutine::sleep_for(std::chrono::milliseconds(50));
+        slept = std::chrono::steady_clock::now() - start;
+    });
+    sleeper.join();
+    EXPECT(slept >= std::chrono::milliseconds(50), ==, true);
+    EXPECT(slept < std::chrono::seconds(5), ==, true);
+}
+
+TEST(coroutine, sleep_until_a_past_time_returns_at_once) {
+    std::chrono::steady_clock::duration slept;
+    cu::coroutine sleeper([&slept] {
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        cu::this_coroutine::sleep_until(start - std::chrono::seconds(1));
+        cu::this_coroutine::sleep_for(std::chrono::milliseconds(-5));
+        slept = std::chrono::steady_clock::now() - start;
+    });
+    sleeper.join();
+    EXPECT(slept < std::chrono::seconds(1), ==, true);
+}
+
+TEST(coroutine, sleeping_lets_the_others_run) {
+    std::atomic<bool> ran(false);
+    bool ran_while_sleeping = false;
+    cu::coroutine sleeper([&ran, &ran_while_sleeping] {
+        cu::coroutine other([&ran] { ran.store(true); });   // 排在同一根线程的格子里
+        cu::this_coroutine::sleep_for(std::chrono::milliseconds(100));
+        ran_while_sleeping = ran.load();
+        other.join();
+    });
+    sleeper.join();
+    EXPECT(ran_while_sleeping, ==, true);
+}
+
+TEST(coroutine, sleepers_wake_in_time_order) {
+    std::mutex lock;
+    std::string order;
+    std::vector<cu::coroutine> group;
+    const char names[] = {'C', 'A', 'B'};
+    const int waits[] = {300, 100, 200};
+    for (int i = 0; i < 3; ++i) {
+        const char name = names[i];
+        const int wait = waits[i];
+        group.emplace_back([&lock, &order, name, wait] {
+            cu::this_coroutine::sleep_for(std::chrono::milliseconds(wait));
+            std::lock_guard<std::mutex> held(lock);
+            order += name;
+        });
+    }
+    for (std::size_t i = 0; i < group.size(); ++i) {
+        group[i].join();
+    }
+    EXPECT(order, ==, "ABC");
+}
+
+TEST(coroutine, sleep_for_outside_a_coroutine_sleeps_the_thread) {
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    cu::this_coroutine::sleep_for(std::chrono::milliseconds(20));
+    EXPECT(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(20), ==, true);
 }
 
 TEST(coroutine, ten_thousand_coroutines_all_run) {

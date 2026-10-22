@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include "coroutine_block.h"
+#include "timer.h"
 
 namespace cu {
 namespace detail {
@@ -26,9 +27,8 @@ void scheduler_unpark(coroutine_block* block) noexcept;
 // 让出：排到队尾。只能在协程里调。
 void scheduler_yield() noexcept;
 
-// 系统线程每次等 I/O 之前调：到了时候就看一遍工作线程。返回这次最多等多久（毫秒）；-1 表示工作线程都闲着，
-// 一直等到有事件或者被 system_thread_wake() 叫醒。运行时还没起来时返回 -1。
-int scheduler_monitor() noexcept;
+// 挂起当前协程，睡到 when（timer_now() 的时刻）。只能在协程里调。
+void scheduler_sleep_until(timer_time when) noexcept;
 
 // 普通线程上的一次等待，放在等待者的栈上。
 struct thread_waiter {

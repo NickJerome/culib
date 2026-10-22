@@ -126,3 +126,26 @@ TEST(scheduler, plain_threads_and_coroutines_wake_each_other) {
     }
     EXPECT(finished.load(), ==, threads * each);
 }
+
+TEST(scheduler, a_thousand_sleepers_all_wake_on_time) {
+    static const int sleepers = 1000;
+    std::atomic<int> woken(0);
+    std::atomic<int> early(0);
+    const clock_type::time_point start = clock_type::now();
+    std::vector<cu::coroutine> group;
+    for (int i = 0; i < sleepers; ++i) {
+        group.emplace_back([&woken, &early, start] {
+            cu::this_coroutine::sleep_until(start + std::chrono::milliseconds(50));
+            if (clock_type::now() < start + std::chrono::milliseconds(50)) {
+                early.fetch_add(1);
+            }
+            woken.fetch_add(1);
+        });
+    }
+    for (std::size_t i = 0; i < group.size(); ++i) {
+        group[i].join();
+    }
+    EXPECT(woken.load(), ==, sleepers);
+    EXPECT(early.load(), ==, 0);
+    EXPECT(clock_type::now() - start < std::chrono::seconds(5), ==, true);
+}

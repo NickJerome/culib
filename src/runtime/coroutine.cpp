@@ -9,7 +9,9 @@
 #include "scheduler.h"
 
 #include <atomic>
+#include <chrono>
 #include <new>
+#include <thread>
 
 // 换栈的汇编只有 x86_64 和 arm64 两种。
 #if !defined(__x86_64__) && !defined(_M_X64) && !defined(__aarch64__) && !defined(_M_ARM64)
@@ -117,6 +119,14 @@ std::uint64_t current_coroutine_number() noexcept {
 
 void current_coroutine_yield() noexcept {
     scheduler_yield();
+}
+
+void current_coroutine_sleep_for(std::int64_t nanoseconds) noexcept {
+    if (!current_block()) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(nanoseconds));
+        return;
+    }
+    scheduler_sleep_until(timer_after(timer_now(), nanoseconds));
 }
 
 void coroutine_misused(coroutine_misuse what) noexcept {

@@ -11,6 +11,7 @@
 
 #include <cu/detail/macros.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -43,6 +44,23 @@ void coroutine_detach(coroutine_block* block) noexcept;
 std::uint64_t coroutine_number(const coroutine_block* block) noexcept;
 std::uint64_t current_coroutine_number() noexcept;
 void current_coroutine_yield() noexcept;
+// 睡 nanoseconds 纳秒（为正）：在协程里挂起协程，不在协程里阻塞线程。
+void current_coroutine_sleep_for(std::int64_t nanoseconds) noexcept;
+
+// 睡多久折成纳秒：不足一纳秒的零头进上去，太长的截成能表示的最长。
+template <typename Rep, typename Period>
+std::int64_t sleep_nanoseconds(const std::chrono::duration<Rep, Period>& duration) {
+    typedef std::chrono::duration<Rep, Period> given;
+    const std::chrono::nanoseconds longest = std::chrono::nanoseconds::max();
+    if (duration >= std::chrono::duration_cast<given>(longest)) {
+        return longest.count();
+    }
+    std::chrono::nanoseconds converted = std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
+    if (converted < duration) {
+        ++converted;
+    }
+    return converted.count();
+}
 [[noreturn]] void coroutine_misused(coroutine_misuse what) noexcept;
 
 // INVOKE（C++11 [func.require]）：成员函数指针配对象或指针，其余当普通可调用对象调用。
@@ -258,6 +276,22 @@ inline coroutine::id get_id() noexcept {
 // 让出：排到就绪队列的末尾；不在协程里等于 std::this_thread::yield()。
 inline void yield() noexcept {
     detail::current_coroutine_yield();
+}
+
+// 睡 duration 这么久，不为正时立刻返回。在协程里挂起当前协程，线程去跑别的协程，到点后由系统线程叫醒；
+// 不在协程里等于 std::this_thread::sleep_for()。和线程一样只保证不早醒：Linux 上按毫秒向上取整。
+template <typename Rep, typename Period>
+void sleep_for(const std::chrono::duration<Rep, Period>& duration) {
+    if (duration <= duration.zero()) {
+        return;
+    }
+    detail::current_coroutine_sleep_for(detail::sleep_nanoseconds(duration));
+}
+
+// 睡到 when。when 按它自己的时钟算：先折成离现在还有多久，再像 sleep_for 那样睡，之后时钟被调了也不改。
+template <typename Clock, typename Duration>
+void sleep_until(const std::chrono::time_point<Clock, Duration>& when) {
+    sleep_for(when - Clock::now());
 }
 
 }  // namespace this_coroutine

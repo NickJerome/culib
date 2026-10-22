@@ -108,7 +108,7 @@ Linux、Windows、macOS 同等对待。
 - 没有 `native_handle()` 和 `hardware_concurrency()`：协程没有系统句柄，核数照样用 `std::thread::hardware_concurrency()` 查。
 - 线程可以在 catch 块里等，协程不能：在 catch 块里挂起时打印诊断后终止。正在处理的异常记在线程上，同一根线程上的协程共用一份。2026-10-21 实测，两根协程在 catch 块里交错挂起，回来以后 `throw;`：GCC 上 A 重抛出 B 的异常、B 重抛出 A 的，程序照常退出；MSVC 上 A 重抛出 B 的异常，接着进程崩溃。挂起前查一次 `std::current_exception()`，GCC 上 2.4 ns，MSVC 上 16 ns。异常展开途中（析构函数里）挂起同样不对，但不查：GCC 4.8 上接住 `rethrow_exception` 抛出的异常以后，`std::uncaught_exception()` 一直为真（libstdc++ PR 62258），会把正常的挂起当成误用。
 
-2026-10-21 在原型上验证过（Linux，GCC 11.4 `-std=c++11` 和 `-std=c++17`，1 根和 8 根工作线程）：函数加参数、成员函数指针、`std::ref`、在普通线程和协程里 join、`detach()`、放进 `vector`、`swap`、`id` 的比较、哈希和输出；四种误用（join 和 detach 不能 join 的对象、协程 join 自己、给还能 join 的对象赋值）、漏出异常、跑完了没 join，都是上面写的结果。原型没有定时器，`sleep_for()` 和 `sleep_until()` 没验证。
+2026-10-21 在原型上验证过（Linux，GCC 11.4 `-std=c++11` 和 `-std=c++17`，1 根和 8 根工作线程）：函数加参数、成员函数指针、`std::ref`、在普通线程和协程里 join、`detach()`、放进 `vector`、`swap`、`id` 的比较、哈希和输出；四种误用（join 和 detach 不能 join 的对象、协程 join 自己、给还能 join 的对象赋值）、漏出异常、跑完了没 join，都是上面写的结果。原型没有定时器，`sleep_for()` 和 `sleep_until()` 当时没验证，超时那一步实现时补了测试（见[运行时文档](runtime.md)）。
 
 ### 4.3 错误
 
@@ -151,12 +151,12 @@ Linux、Windows、macOS 同等对待。
 | 运行时 | 换栈、栈池、调度器、定时器、I/O 引擎、mutex / condition_variable、`cu::coroutine` | 用 |
 | I/O | net（TCP）、fs（打开、读、查询、路径） | 用 |
 | 上层 | log、flag | 用 |
-| 以后再说 | term、config、bytes、UDP、channel、自己的 malloc、目录遍历 | 等第二个参考程序，或者真有需要时 |
+| 以后再说 | term、config、bytes、UDP、channel、目录遍历 | 等第二个参考程序，或者真有需要时 |
 
 顺序是先打通一条最细的路，再一层层加厚：
 
 1. 在三个平台上跑通「一根工作线程 + TCP + 只会返回一个文件的 serve」。Windows 的换栈和 IOCP 在这一步就要有。2026-10-21 完成，`e9aaba2..c75388e`。
-2. 之后每一步只加一样东西，比如多线程和偷任务、超时、真正的文件服务、日志、优雅退出。加什么由 serve 的需要来定；每一步都在三个平台的 CI 上跑通。多线程和偷任务 2026-10-21 完成，`b8bc921..1a1c166`。
+2. 之后每一步只加一样东西，比如多线程和偷任务、超时、真正的文件服务、日志、优雅退出。加什么由 serve 的需要来定；每一步都在三个平台的 CI 上跑通。多线程和偷任务 2026-10-21 完成，`b8bc921..1a1c166`。接着是超时，再接着是自己的分配器（作者 2026-10-21 定：要做高性能、低占用的内存和协程库）。
 
 ## 6. 约定和流程
 
