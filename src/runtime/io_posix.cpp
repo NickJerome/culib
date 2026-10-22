@@ -13,7 +13,6 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
-#include <thread>
 
 #include <unistd.h>
 
@@ -74,21 +73,14 @@ void free_retired(engine_state& engine) {
     }
 }
 
-// 系统线程：等事件，每次等之前叫醒到点的定时器、让监控看一眼工作线程，它们说最多等多久就等多久。
-void system_main(engine_state* engine) {
-    for (;;) {
-        free_retired(*engine);
-        poller_wait(engine->poller, system_thread_turn(), &ready);
-    }
-}
-
+// 建好等待器以后起系统线程：登记了句柄就要有人等它的事件，即使还没有协程（普通线程上的读写也靠它叫醒）。
 engine_state* start_engine() {
     engine_state* const engine = new engine_state();
     engine->poller = poller_create();
     if (engine->poller < 0) {
         fatal("cu: cannot create the I/O poller");
     }
-    std::thread(system_main, engine).detach();
+    system_thread_start();
     return engine;
 }
 
@@ -100,11 +92,13 @@ engine_state& engine() noexcept {
 
 }  // namespace
 
-void system_thread_start() noexcept {
-    engine();
+void io_poll(std::int64_t timeout) noexcept {
+    engine_state& state = engine();
+    free_retired(state);
+    poller_wait(state.poller, timeout, &ready);
 }
 
-void system_thread_wake() noexcept {
+void io_wake() noexcept {
     poller_wake(engine().poller);
 }
 

@@ -14,8 +14,6 @@
 #include "system_thread.h"
 #include "timer.h"
 
-#include <thread>
-
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -120,32 +118,8 @@ void completed(io_operation& operation) noexcept {
     }
 }
 
-// 系统线程：取完成包，每次等之前叫醒到点的定时器、让监控看一眼工作线程，它们说最多等多久就等多久。
-// 没有 OVERLAPPED 的包是定时器到点或者 system_thread_wake 投进来的，只为把这里叫醒。
-void system_main(engine_state* engine) {
-    OVERLAPPED_ENTRY entries[64];
-    for (;;) {
-        const std::int64_t timeout = system_thread_turn();
-        if (timeout > 0) {
-            arm_timer(*engine, timeout, timer_after(timer_now(), timeout));
-        }
-        // 毫秒超时只是兜底：定时器的包没投进来时，按系统节拍醒
-        const DWORD wait = timeout_milliseconds(timeout);
-        ULONG count = 0;
-        if (!::GetQueuedCompletionStatusEx(engine->port, entries, 64, &count, wait, FALSE)) {
-            continue;
-        }
-        for (ULONG i = 0; i < count; ++i) {
-            if (entries[i].lpOverlapped) {
-                completed(*reinterpret_cast<io_operation*>(entries[i].lpOverlapped));
-            } else if (entries[i].lpCompletionKey == timer_key) {
-                engine->armed = false;
-            }
-        }
-    }
-}
-
 // 端口的最后一个参数是允许几根线程同时处理完成包：取过完成包的线程在叫醒协程，设上限的话会被扣着，所以不设。
+// 建好以后起系统线程：关联了句柄就要有人取它的完成包，即使还没有协程（普通线程上的读写也靠它叫醒）。
 engine_state* start_engine() {
     engine_state* const engine = new engine_state();
     engine->port = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, MAXDWORD);
@@ -153,7 +127,7 @@ engine_state* start_engine() {
         fatal("cu: cannot create the I/O completion port");
     }
     open_timer(*engine);
-    std::thread(system_main, engine).detach();
+    system_thread_start();
     return engine;
 }
 
@@ -165,11 +139,29 @@ engine_state& engine() noexcept {
 
 }  // namespace
 
-void system_thread_start() noexcept {
-    engine();
+// 没有 OVERLAPPED 的包是定时器到点或者 io_wake 投进来的，只为把系统线程叫醒。
+void io_poll(std::int64_t timeout) noexcept {
+    engine_state& state = engine();
+    if (timeout > 0) {
+        arm_timer(state, timeout, timer_after(timer_now(), timeout));
+    }
+
+    // 毫秒超时只是兜底：定时器的包没投进来时，按系统节拍醒
+    OVERLAPPED_ENTRY entries[64];
+    ULONG count = 0;
+    if (!::GetQueuedCompletionStatusEx(state.port, entries, 64, &count, timeout_milliseconds(timeout), FALSE)) {
+        return;
+    }
+    for (ULONG i = 0; i < count; ++i) {
+        if (entries[i].lpOverlapped) {
+            completed(*reinterpret_cast<io_operation*>(entries[i].lpOverlapped));
+        } else if (entries[i].lpCompletionKey == timer_key) {
+            state.armed = false;
+        }
+    }
 }
 
-void system_thread_wake() noexcept {
+void io_wake() noexcept {
     ::PostQueuedCompletionStatus(engine().port, 0, 0, 0);
 }
 

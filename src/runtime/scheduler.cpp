@@ -7,12 +7,12 @@
 //   park.h            挂起和叫醒的握手
 //   context_switch.h  切进、切出一根协程
 //   runtime.h         把全局队列、线程池和监控装在一起
+//   system_thread.h   系统线程：定时器、监控、等 I/O
 
 #include "scheduler.h"
 
 #include "base/fatal.h"
 #include "context_switch.h"
-#include "coroutine_list.h"
 #include "park.h"
 #include "runtime.h"
 #include "system_thread.h"
@@ -27,33 +27,18 @@ namespace detail {
 
 namespace {
 
-// 系统线程叫醒的协程先攒在这里，处理完这一轮的 I/O 事件和定时器再一起排进全局队列：只拿一次锁，只看一次要不要
-// 叫醒工作线程。只有系统线程用。
-coroutine_list system_batch;
-thread_local coroutine_list* this_batch = 0;   // 系统线程上指向 system_batch，别的线程上为空
-
 // 排进就绪：在工作线程上进它的格子；在系统线程上先攒着；在普通线程上进全局队列。
 void make_ready(coroutine_block* block) noexcept {
     if (worker* const self = worker::on_this_thread()) {
         self->ready(block);
         return;
     }
-    if (coroutine_list* const batch = this_batch) {
-        batch->push_back(block);
+    if (system_thread_ready(block)) {
         return;
     }
 
     runtime& rt = the_runtime();
     rt.global.push(block);
-    rt.pool.wake_if_needed();
-}
-
-// 系统线程攒下的一批排进全局队列。
-void flush_batch(runtime& rt) noexcept {
-    if (system_batch.empty()) {
-        return;
-    }
-    rt.global.push_all(system_batch);
     rt.pool.wake_if_needed();
 }
 
@@ -120,25 +105,6 @@ void scheduler_sleep_until(timer_time when) noexcept {
     self.node.fire = &wake_sleeper;
     timer_add(self.node);
     scheduler_park();
-}
-
-std::int64_t system_thread_turn() noexcept {
-    this_batch = &system_batch;
-    const timer_time now = timer_now();
-    timer_time next = timers_run(now);
-    runtime* const rt = runtime_if_started();
-    if (rt) {
-        flush_batch(*rt);   // 上一轮的 I/O 事件和这一轮的定时器叫醒的
-        const timer_time tick = rt->watch.turn(now);
-        if (tick < next) {
-            next = tick;
-        }
-    }
-
-    if (next == timer_never) {
-        return -1;
-    }
-    return next > now ? next - now : 0;
 }
 
 }  // namespace detail
