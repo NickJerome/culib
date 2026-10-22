@@ -36,6 +36,20 @@ CU_DETAIL_NOINLINE worker* worker::on_this_thread() noexcept {
     return this_worker;
 }
 
+// 跑一根协程，直到它切回来。内联进 main_loop：换栈前后不能多出函数层，见 context_switch.h。
+CU_DETAIL_ALWAYS_INLINE void worker::run(coroutine_block* block) noexcept {
+    if (!block->stack.base) {
+        give_stack(block);
+    }
+
+    current_ = block;
+    progress_.store(progress_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    const switch_reason reason = resume(block);
+    current_ = 0;
+
+    after_switch(block, reason);
+}
+
 void worker::main_loop() noexcept {
     this_worker = this;
     keep_room_for_overflow();
@@ -149,20 +163,6 @@ coroutine_block* worker::steal() noexcept {
         return first;
     }
     return 0;
-}
-
-// 跑一根协程，直到它切回来。
-void worker::run(coroutine_block* block) noexcept {
-    if (!block->stack.base) {
-        give_stack(block);
-    }
-
-    current_ = block;
-    progress_.store(progress_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
-    const switch_reason reason = resume(block);
-    current_ = 0;
-
-    after_switch(block, reason);
 }
 
 // 协程第一次跑之前：拿一根栈，在上面摆好第一帧。

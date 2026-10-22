@@ -51,6 +51,16 @@
 #define CU_DETAIL_NOINLINE_COLD
 #endif
 
+// 一定内联。换栈的那几个函数用它：切到另一根栈以后，CPU 预测的返回地址都是原来那根栈的，每往回返回一层就
+// 猜错一次，所以换栈前后不能多出函数层。
+#if defined(__GNUC__) || defined(__clang__)
+#define CU_DETAIL_ALWAYS_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#define CU_DETAIL_ALWAYS_INLINE __forceinline
+#else
+#define CU_DETAIL_ALWAYS_INLINE inline
+#endif
+
 // printf 风格的参数检查。GCC 写 gnu_printf：MinGW 上 printf 指 msvcrt 的格式，不认 %zu；
 // clang 不认 gnu_printf。
 #if defined(__clang__)

@@ -1,13 +1,9 @@
-// 切进、切出一根协程。
+// 协程的第一帧。切进切出见 context_switch.h。
 
 #include "context_switch.h"
 
 #include "base/fatal.h"
-#include "context.h"
-#include "sanitizer_fiber.h"
 #include "stack.h"
-
-#include <cstdint>
 
 namespace cu {
 namespace detail {
@@ -34,27 +30,6 @@ void trampoline(context_transfer from) {
 void prepare_first_frame(coroutine_block* block) noexcept {
     block->context =
         cu_make_context(block->stack.base + stack_total, stack_usable, &trampoline, block->stack.committed);
-}
-
-switch_reason resume(coroutine_block* block) noexcept {
-    asan_enter(block);
-    tsan_note_resumer(*block);
-    CU_DETAIL_TSAN_SWITCH_TO(block->tsan_fiber);
-    const context_transfer back = cu_jump_context(block->context, block);
-    asan_back_in_scheduler();
-
-    block->context = back.context;
-    return static_cast<switch_reason>(reinterpret_cast<std::intptr_t>(back.data));
-}
-
-void suspend(coroutine_block* self, switch_reason reason) noexcept {
-    asan_leave(self, reason == reason_finish);
-    CU_DETAIL_TSAN_SWITCH_TO(self->tsan_resumer);
-    const context_transfer back =
-        cu_jump_context(self->resumer, reinterpret_cast<void*>(static_cast<std::intptr_t>(reason)));
-    asan_arrived(self);
-
-    self->resumer = back.context;
 }
 
 }  // namespace detail
