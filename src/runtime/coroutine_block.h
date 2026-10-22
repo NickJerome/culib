@@ -34,7 +34,7 @@ struct coroutine_block {
 #endif
     }
 
-    // 调度：就绪队列的链，切走时的上下文，切回调度器用的上下文
+    // 调度：排队时串成一串用的链（见 coroutine_list.h），切走时的上下文，切回调度器用的上下文
     coroutine_block* next;
     void* context;
     void* resumer;
@@ -46,7 +46,7 @@ struct coroutine_block {
     void* body;
     std::uint64_t number;
 
-    // 挂起和叫醒的握手，见 scheduler.cpp
+    // 挂起和叫醒的握手，见 park.h
     std::atomic<int> phase;
 
     // 两个引用：cu::coroutine 对象一个（join 或 detach 时放掉），协程自己一个（跑完时放掉）

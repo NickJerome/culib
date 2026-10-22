@@ -1,8 +1,8 @@
 // 运行时：几根工作线程跑协程，系统线程上的监控看着它们。
 //
-// 队列：每根工作线程一个「下一根」格子和一个本地队列（256 格，自旋锁护着），另有一个全局队列。协程叫醒的
-// 协程进叫醒者这根线程的格子，格子里原来那根挤进本地队列；本地队列满了，一半挪进全局队列。系统线程和
-// 普通线程叫醒的进全局队列。格子让「叫醒对方马上就等」的一对协程留在同一根线程上来回，不排队、不被偷。
+// 队列：每根工作线程一个「下一根」格子和一个本地队列，另有一个全局队列，两种队列都是 run_queue（一串协程加
+// 一把自旋锁）。协程叫醒的协程进叫醒者这根线程的格子，格子里原来那根挤进本地队列；系统线程和普通线程叫醒的
+// 进全局队列。格子让「叫醒对方马上就等」的一对协程留在同一根线程上来回，不排队、不被偷。
 //
 // 取活的顺序：每 61 次先看一眼全局队列；格子（连着从格子里跑了 3 根就让一次）；本地队列；全局队列（取一批）；
 // 从别的线程的本地队列偷一半；都没有就睡。
@@ -16,9 +16,11 @@
 #include "scheduler.h"
 
 #include "base/fatal.h"
-#include "base/spin_lock.h"
 #include "context.h"
+#include "coroutine_list.h"
+#include "park.h"
 #include "platform/cpu_count.h"
+#include "run_queue.h"
 #include "sanitizer_fiber.h"
 #include "shadow_stack.h"
 #include "stack.h"
@@ -39,14 +41,10 @@ namespace {
 
 enum switch_reason { reason_yield = 1, reason_park, reason_finish };
 
-// 挂起和叫醒的握手：叫醒可能在挂起之前、挂起途中（还没切出去）或者挂起以后到达。
-enum park_phase { phase_running, phase_woken_early, phase_parking, phase_parked, phase_woken_while_parking };
-
-const unsigned local_capacity = 256;
-const unsigned most_workers = 256;   // 补线程以后的总数上限
-const unsigned global_every = 61;    // 每取这么多次活先看一眼全局队列，Go 也用 61
-const int slot_streak = 3;           // 连着从格子里跑这么多根就让一次
-const unsigned spare_stacks = 16;    // 每根工作线程手边最多留几根栈
+const unsigned most_workers = 256;     // 补线程以后的总数上限
+const unsigned global_every = 61;      // 每取这么多次活先看一眼全局队列，Go 也用 61
+const int slot_streak = 3;             // 连着从格子里跑这么多根就让一次
+const std::size_t batch_most = 128;    // 偷一半、从全局队列取一批，一次最多拿这么多根
 
 // 监控隔多久看一次（纳秒）。一根线程停在同一根协程里 stall_ticks 次（10 ms）以上，就算卡住了：Go 给一根
 // goroutine 的时间片也是 10 ms。
@@ -55,26 +53,21 @@ const unsigned stall_ticks = 10;
 
 struct worker_state {
     worker_state()
-        : current(0), ticks(0), streak(0), searching(false), spare_count(0), slot(0), head(0), tail(0), switches(0),
-          alive(false), idle(false), notified(false), next_idle(0), seen_switches(0), stalled_ticks(0) {}
+        : current(0), ticks(0), streak(0), searching(false), slot(0), switches(0), alive(false), idle(false),
+          notified(false), next_idle(0), seen_switches(0), stalled_ticks(0) {}
 
     // 只有这根线程自己读写
     coroutine_block* current;   // 正在跑的
     unsigned ticks;             // 取过几次活
     int streak;                 // 连着从格子里跑了几根
     bool searching;             // 被叫醒来找活，还没找到
-    // 手边的栈：跑完的协程把栈还到这里，下一根先从这里拿，不去抢全局栈缓存的锁
-    stack_memory spares[spare_stacks];
-    unsigned spare_count;
+    stack_spares stacks;        // 手边的栈
 
     // 下一根：自己放、自己取；监控把卡住的线程格子里的那根挪走
     std::atomic<coroutine_block*> slot;
 
-    // 本地队列：自己放，自己和偷的线程取，都在 queue_lock 里。head 和 tail 也是原子的，不拿锁就能看一眼空不空
-    spin_lock queue_lock;
-    std::atomic<unsigned> head;
-    std::atomic<unsigned> tail;
-    coroutine_block* queue[local_capacity];
+    // 本地队列：自己放，自己和偷的线程取
+    run_queue queue;
 
     // 跑过几根协程：只有这根线程写，监控读，看它卡没卡住
     std::atomic<unsigned> switches;
@@ -94,14 +87,10 @@ struct worker_state {
 
 struct runtime_state {
     runtime_state()
-        : global_head(0), global_tail(0), global_count(0), created(0), base(1), live(0), idle_list(0), idle_count(0),
-          searching(0), surplus(0), monitor_sleeping(true), next_tick(0), unattended(false) {}
+        : created(0), base(1), live(0), idle_list(0), idle_count(0), searching(0), surplus(0), monitor_sleeping(true),
+          next_tick(0), unattended(false) {}
 
-    // 全局队列：global_lock 护着链表。global_count 也只在锁里改，取的一方不拿锁先看一眼
-    spin_lock global_lock;
-    coroutine_block* global_head;
-    coroutine_block* global_tail;
-    std::atomic<std::size_t> global_count;
+    run_queue global;   // 普通线程和系统线程叫醒的
 
     worker_state* workers[most_workers];   // 建过的状态，从不释放
     std::atomic<unsigned> created;         // workers 里建过几个
@@ -128,191 +117,74 @@ thread_local worker_state* this_worker = 0;
 
 // 系统线程叫醒的协程先攒在这里，处理完这一轮的 I/O 事件和定时器再一起排进全局队列：只拿一次锁，只看一次要不要
 // 叫醒工作线程。只有系统线程用。
-struct ready_list {
-    coroutine_block* head;
-    coroutine_block* tail;
-    std::size_t count;
-};
-
-ready_list system_batch = {0, 0, 0};
-thread_local ready_list* this_batch = 0;   // 系统线程上指向 system_batch，别的线程上为空
+coroutine_list system_batch;
+thread_local coroutine_list* this_batch = 0;   // 系统线程上指向 system_batch，别的线程上为空
 
 // 协程会换线程：线程局部变量只在不内联的函数里读，编译器不会把它的地址留到换栈以后。
 CU_DETAIL_NOINLINE worker_state* current_worker() noexcept {
     return this_worker;
 }
 
-// ---- 全局队列和本地队列 ------------------------------------------------------------------
+// ---- 取活 -----------------------------------------------------------------------------
 
-// first 到 last（用 next 连好的 count 根）接到全局队列末尾。
-void push_global_list(runtime_state& state, coroutine_block* first, coroutine_block* last, std::size_t count) noexcept {
-    last->next = 0;
-    std::lock_guard<spin_lock> held(state.global_lock);
-    if (state.global_tail) {
-        state.global_tail->next = first;
-    } else {
-        state.global_head = first;
-    }
-    state.global_tail = last;
-    state.global_count.store(state.global_count.load(std::memory_order_relaxed) + count, std::memory_order_relaxed);
+// 偷的时候拿走一半，向上取整，最多 batch_most 根。
+std::size_t half_of(std::size_t queued) noexcept {
+    const std::size_t half = queued - queued / 2;
+    return half < batch_most ? half : batch_most;
 }
 
-void push_global(runtime_state& state, coroutine_block* block) noexcept {
-    push_global_list(state, block, block, 1);
-}
-
-coroutine_block* pop_global(runtime_state& state) noexcept {
-    if (state.global_count.load(std::memory_order_relaxed) == 0) {
-        return 0;
-    }
-    std::lock_guard<spin_lock> held(state.global_lock);
-    coroutine_block* const block = state.global_head;
-    if (!block) {
-        return 0;
-    }
-    state.global_head = block->next;
-    if (!state.global_head) {
-        state.global_tail = 0;
-    }
-    state.global_count.store(state.global_count.load(std::memory_order_relaxed) - 1, std::memory_order_relaxed);
-    return block;
-}
-
-void wake_if_needed(runtime_state& state) noexcept;
-
-// 从全局队列取一批：每根活着的线程分一份，再多拿一根，最多 128 根，Go 的 globrunqget 也这么取。第一根返回，
-// 其余放进自己的本地队列（这时它是空的），别的线程可以从那里偷。一根一根取的话，一大批协程同时就绪时
-// 每根都要抢一次全局锁。
+// 从全局队列取一批：每根活着的线程分一份，再多拿一根，最多 batch_most 根，Go 的 globrunqget 也这么取。第一根
+// 返回，其余放进自己的本地队列，别的线程可以从那里偷。一根一根取的话，一大批协程同时就绪时每根都要抢一次全局锁。
 coroutine_block* take_global(runtime_state& state, worker_state& self) noexcept {
-    if (state.global_count.load(std::memory_order_relaxed) == 0) {
+    const std::size_t queued = state.global.looks_size();
+    if (queued == 0) {
         return 0;
     }
-    coroutine_block* first = 0;
-    {
-        std::lock_guard<spin_lock> held(state.global_lock);
-        const std::size_t count = state.global_count.load(std::memory_order_relaxed);
-        if (count == 0) {
-            return 0;
-        }
-        std::size_t want = count / state.live.load(std::memory_order_relaxed) + 1;
-        if (want > local_capacity / 2) {
-            want = local_capacity / 2;
-        }
-        if (want > count) {
-            want = count;
-        }
-        first = state.global_head;
-        coroutine_block* last = first;
-        for (std::size_t i = 1; i < want; ++i) {
-            last = last->next;
-        }
-        state.global_head = last->next;
-        if (!state.global_head) {
-            state.global_tail = 0;
-        }
-        last->next = 0;
-        state.global_count.store(count - want, std::memory_order_relaxed);
+
+    std::size_t most = queued / state.live.load(std::memory_order_relaxed) + 1;
+    if (most > batch_most) {
+        most = batch_most;
     }
-    if (first->next) {
-        std::lock_guard<spin_lock> held(self.queue_lock);
-        unsigned tail = self.tail.load(std::memory_order_relaxed);
-        for (coroutine_block* block = first->next; block; block = block->next) {
-            self.queue[tail % local_capacity] = block;
-            ++tail;
-        }
-        self.tail.store(tail, std::memory_order_relaxed);
+    coroutine_list taken = state.global.take_front(most);
+    coroutine_block* const first = taken.pop_front();
+    if (!taken.empty()) {
+        self.queue.push_all(taken);
     }
     return first;
 }
 
-// 放进本地队列末尾。满了的话，前一半连同这一根挪进全局队列，再看要不要叫醒一根线程。
-void push_local(runtime_state& state, worker_state& self, coroutine_block* block) noexcept {
-    const unsigned half = local_capacity / 2;
-    coroutine_block* moved[local_capacity / 2];
-    {
-        std::lock_guard<spin_lock> held(self.queue_lock);
-        const unsigned head = self.head.load(std::memory_order_relaxed);
-        const unsigned tail = self.tail.load(std::memory_order_relaxed);
-        if (tail - head < local_capacity) {
-            self.queue[tail % local_capacity] = block;
-            self.tail.store(tail + 1, std::memory_order_relaxed);
-            return;
-        }
-        for (unsigned i = 0; i < half; ++i) {
-            moved[i] = self.queue[(head + i) % local_capacity];
-        }
-        self.head.store(head + half, std::memory_order_relaxed);
-    }
-    for (unsigned i = 0; i + 1 < half; ++i) {
-        moved[i]->next = moved[i + 1];
-    }
-    moved[half - 1]->next = block;
-    push_global_list(state, moved[0], block, half + 1);
-    wake_if_needed(state);
-}
-
-coroutine_block* pop_local(worker_state& self) noexcept {
-    // 只有自己往里放，所以不拿锁看到的空是真的空
-    if (self.head.load(std::memory_order_relaxed) == self.tail.load(std::memory_order_relaxed)) {
-        return 0;
-    }
-    std::lock_guard<spin_lock> held(self.queue_lock);
-    const unsigned head = self.head.load(std::memory_order_relaxed);
-    if (head == self.tail.load(std::memory_order_relaxed)) {
-        return 0;
-    }
-    self.head.store(head + 1, std::memory_order_relaxed);
-    return self.queue[head % local_capacity];
-}
-
-// 从别的线程的本地队列拿走一半，第一根返回，其余放进自己的本地队列（这时它是空的）。锁上对方拿走、放开，
-// 再锁上自己放进去：任何时候都不同时拿两把队列锁。从哪根开始看随取活的次数轮转，免得都去抢同一根。
+// 从别的线程的本地队列拿走一半：第一根返回，其余放进自己的本地队列。拿的时候只锁对方，放的时候只锁自己，
+// 任何时候都不同时拿两把队列锁。从哪根开始看随取活的次数轮转，免得都去抢同一根。
 coroutine_block* steal(runtime_state& state, worker_state& self) noexcept {
     const unsigned count = state.created.load(std::memory_order_acquire);
-    const unsigned start = self.ticks % count;
     for (unsigned i = 0; i < count; ++i) {
-        worker_state& victim = *state.workers[(start + i) % count];
-        if (&victim == &self ||
-            victim.head.load(std::memory_order_relaxed) == victim.tail.load(std::memory_order_relaxed)) {
+        worker_state& victim = *state.workers[(self.ticks + i) % count];
+        const std::size_t queued = victim.queue.looks_size();
+        if (&victim == &self || queued == 0) {
             continue;
         }
-        coroutine_block* taken[local_capacity / 2];
-        unsigned n = 0;
-        {
-            std::lock_guard<spin_lock> held(victim.queue_lock);
-            const unsigned head = victim.head.load(std::memory_order_relaxed);
-            const unsigned size = victim.tail.load(std::memory_order_relaxed) - head;
-            n = size - size / 2;
-            for (unsigned k = 0; k < n; ++k) {
-                taken[k] = victim.queue[(head + k) % local_capacity];
-            }
-            victim.head.store(head + n, std::memory_order_relaxed);
-        }
-        if (n == 0) {
+
+        coroutine_list taken = victim.queue.take_front(half_of(queued));
+        coroutine_block* const first = taken.pop_front();
+        if (!first) {
             continue;
         }
-        if (n > 1) {
-            std::lock_guard<spin_lock> held(self.queue_lock);
-            const unsigned tail = self.tail.load(std::memory_order_relaxed);
-            for (unsigned k = 1; k < n; ++k) {
-                self.queue[(tail + k - 1) % local_capacity] = taken[k];
-            }
-            self.tail.store(tail + n - 1, std::memory_order_relaxed);
+        if (!taken.empty()) {
+            self.queue.push_all(taken);
         }
-        return taken[0];
+        return first;
     }
     return 0;
 }
 
 // 全局队列和各线程的本地队列里有没有协程。格子不看：格子里的由它的线程自己跑，那根线程卡住了由监控挪走。
 bool work_queued(runtime_state& state) noexcept {
-    if (state.global_count.load(std::memory_order_relaxed) != 0) {
+    if (state.global.looks_size() != 0) {
         return true;
     }
     const unsigned count = state.created.load(std::memory_order_acquire);
     for (unsigned i = 0; i < count; ++i) {
-        const worker_state& other = *state.workers[i];
-        if (other.head.load(std::memory_order_relaxed) != other.tail.load(std::memory_order_relaxed)) {
+        if (state.workers[i]->queue.looks_size() != 0) {
             return true;
         }
     }
@@ -413,10 +285,7 @@ bool rest(runtime_state& state, worker_state& self) noexcept {
         if (work_queued(state)) {
             wake_one(state);
         }
-        for (unsigned i = 0; i < self.spare_count; ++i) {
-            release_stack(self.spares[i]);
-        }
-        self.spare_count = 0;
+        self.stacks.release_all();
         self.alive.store(false);   // 最后一步：之后不再碰这个状态
         return false;
     }
@@ -504,24 +373,17 @@ void make_ready(coroutine_block* block) noexcept {
     runtime_state& state = runtime();
     worker_state* const self = current_worker();
     if (!self) {
-        if (ready_list* const batch = this_batch) {
-            block->next = 0;
-            if (batch->tail) {
-                batch->tail->next = block;
-            } else {
-                batch->head = block;
-            }
-            batch->tail = block;
-            ++batch->count;
+        if (coroutine_list* const batch = this_batch) {
+            batch->push_back(block);
             return;
         }
-        push_global(state, block);
+        state.global.push(block);
         wake_if_needed(state);
         return;
     }
     coroutine_block* const older = self->slot.exchange(block, std::memory_order_acq_rel);
     if (older) {
-        push_local(state, *self, older);
+        self->queue.push(older);
         wake_if_needed(state);
     }
 }
@@ -530,7 +392,7 @@ void make_ready(coroutine_block* block) noexcept {
 coroutine_block* find_work(runtime_state& state, worker_state& self) noexcept {
     ++self.ticks;
     if (self.ticks % global_every == 0) {
-        if (coroutine_block* const block = pop_global(state)) {
+        if (coroutine_block* const block = state.global.pop()) {
             return block;
         }
     }
@@ -540,10 +402,10 @@ coroutine_block* find_work(runtime_state& state, worker_state& self) noexcept {
             return block;
         }
     } else if (coroutine_block* const block = self.slot.exchange(0, std::memory_order_acq_rel)) {
-        push_local(state, self, block);   // 让位：格子里的排到本地队列末尾，先跑排着的
+        self.queue.push(block);   // 让位：格子里的排到本地队列末尾，先跑排着的
     }
     self.streak = 0;
-    if (coroutine_block* const block = pop_local(self)) {
+    if (coroutine_block* const block = self.queue.pop()) {
         return block;
     }
     if (coroutine_block* const block = take_global(state, self)) {
@@ -588,9 +450,9 @@ void trampoline(context_transfer from) {
     fatal("cu::coroutine: a finished coroutine was resumed");
 }
 
-// 起协程时拿栈：先看手边，没有再去全局的栈缓存。
+// 协程第一次跑之前：拿一根栈，在上面摆好第一帧。
 void prepare_stack(worker_state& self, coroutine_block* block) noexcept {
-    block->stack = self.spare_count > 0 ? self.spares[--self.spare_count] : allocate_stack();
+    block->stack = self.stacks.take();
     if (!block->stack.base) {
         fatal("cu::coroutine: out of memory for a coroutine stack; check ulimit -v, the container's memory "
               "limit, vm.max_map_count (two maps per coroutine) or the Windows commit limit");
@@ -600,31 +462,24 @@ void prepare_stack(worker_state& self, coroutine_block* block) noexcept {
 }
 
 // 协程切回来以后：让出的排到本地队列末尾，挂起的看是不是半路就被叫醒了，跑完的还栈。
-void after_switch(runtime_state& state, worker_state& self, coroutine_block* block, switch_reason reason) noexcept {
+void after_switch(worker_state& self, coroutine_block* block, switch_reason reason) noexcept {
     if (reason == reason_yield) {
-        push_local(state, self, block);   // 不叫醒别的线程：这根线程接着就会取
+        self.queue.push(block);   // 不叫醒别的线程：这根线程接着就会取
         return;
     }
     if (reason == reason_park) {
-        int expected = phase_parking;
-        if (!block->phase.compare_exchange_strong(expected, phase_parked)) {
-            block->phase.store(phase_running);   // 挂起途中被叫醒了：接着跑
-            make_ready(block);
+        if (!park_end(block)) {
+            make_ready(block);   // 切走途中被叫醒了：接着跑
         }
         return;
     }
-    clean_stack(block->stack);
-    if (self.spare_count < spare_stacks) {
-        self.spares[self.spare_count++] = block->stack;
-    } else {
-        release_stack(block->stack);
-    }
+    self.stacks.give(block->stack);
     block->stack.base = 0;
     tsan_fiber_destroy(*block);
     release_block(block);
 }
 
-void run(runtime_state& state, worker_state& self, coroutine_block* block) noexcept {
+void run(worker_state& self, coroutine_block* block) noexcept {
     if (!block->stack.base) {
         prepare_stack(self, block);
     }
@@ -637,7 +492,7 @@ void run(runtime_state& state, worker_state& self, coroutine_block* block) noexc
     asan_back_in_scheduler();
     self.current = 0;
     block->context = back.context;
-    after_switch(state, self, block, static_cast<switch_reason>(reinterpret_cast<std::intptr_t>(back.data)));
+    after_switch(self, block, static_cast<switch_reason>(reinterpret_cast<std::intptr_t>(back.data)));
 }
 
 void worker_main(runtime_state* state, worker_state* self) noexcept {
@@ -654,7 +509,7 @@ void worker_main(runtime_state* state, worker_state* self) noexcept {
         if (self->searching) {
             stop_searching(*state, *self);
         }
-        run(*state, *self, block);
+        run(*self, block);
     }
 }
 
@@ -721,7 +576,7 @@ void watch(runtime_state& state) noexcept {
         }
         ++worker.stalled_ticks;
         if (coroutine_block* const block = worker.slot.exchange(0, std::memory_order_acq_rel)) {
-            push_global(state, block);
+            state.global.push(block);
             wake_if_needed(state);
         }
         if (worker.stalled_ticks >= stall_ticks) {
@@ -745,13 +600,10 @@ void watch(runtime_state& state) noexcept {
 
 // 系统线程攒下的一批排进全局队列。
 void flush_batch(runtime_state& state) noexcept {
-    if (system_batch.count == 0) {
+    if (system_batch.empty()) {
         return;
     }
-    push_global_list(state, system_batch.head, system_batch.tail, system_batch.count);
-    system_batch.head = 0;
-    system_batch.tail = 0;
-    system_batch.count = 0;
+    state.global.push_all(system_batch);
     wake_if_needed(state);
 }
 
@@ -794,33 +646,14 @@ void scheduler_submit(coroutine_block* block) noexcept {
 void scheduler_park() noexcept {
     check_not_in_catch_block();
     coroutine_block* const self = current_block();
-    int expected = phase_running;
-    if (!self->phase.compare_exchange_strong(expected, phase_parking)) {
-        self->phase.store(phase_running);   // 挂起之前就被叫醒了
-        return;
+    if (park_begin(self)) {
+        switch_out(self, reason_park);
     }
-    switch_out(self, reason_park);
 }
 
 void scheduler_unpark(coroutine_block* block) noexcept {
-    int phase = block->phase.load();
-    for (;;) {
-        if (phase == phase_parked) {
-            if (block->phase.compare_exchange_weak(phase, phase_running)) {
-                make_ready(block);
-                return;
-            }
-        } else if (phase == phase_parking) {
-            if (block->phase.compare_exchange_weak(phase, phase_woken_while_parking)) {
-                return;
-            }
-        } else if (phase == phase_running) {
-            if (block->phase.compare_exchange_weak(phase, phase_woken_early)) {
-                return;
-            }
-        } else {
-            return;   // 已经叫醒过了
-        }
+    if (unpark(block)) {
+        make_ready(block);
     }
 }
 

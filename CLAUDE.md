@@ -96,7 +96,7 @@
 | 公共头文件能单独包含、带 BOM | CI 的 headers 任务 |
 | 公共头文件的字面量只用 ASCII | CI 里 Windows 上的使用方不加 `/utf-8` 编译 |
 
-CI 的结果要看过那次运行才写，写上是哪个提交；看测试汇总、SKIP 原因和诊断，不能只看任务是否通过。最新矩阵：[`3d37cbd` 的 CI](https://github.com/NickJerome/culib/actions/runs/39641406424) 24/24 通过。
+CI 的结果要看过那次运行才写，写上是哪个提交；看测试汇总、SKIP 原因和诊断，不能只看任务是否通过。最新矩阵：[`dd66dba` 的 CI](https://github.com/NickJerome/culib/actions/runs/39702803187) 24/24 通过。
 
 ## 已知的坑
 
