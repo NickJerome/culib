@@ -4,6 +4,7 @@
 
 #include "base/fatal.h"
 #include "park.h"
+#include "platform/thread_stack.h"
 #include "runtime.h"
 #include "sanitizer_fiber.h"
 
