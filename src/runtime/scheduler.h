@@ -2,6 +2,7 @@
 
 // 运行时对外的入口，给 coroutine.cpp 和事件引擎用：协程的就绪、挂起、叫醒、让出和睡。各块怎么分见 scheduler.cpp 开头。
 
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 
@@ -39,6 +40,19 @@ struct thread_waiter {
         while (!done) {
             woken.wait(held);
         }
+    }
+
+    // 等到被叫醒，最多等到 deadline（timer_now() 的时刻）。返回是否被叫醒了。
+    bool wait_until(timer_time deadline) {
+        const std::chrono::steady_clock::time_point until(
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::nanoseconds(deadline)));
+        std::unique_lock<std::mutex> held(lock);
+        while (!done) {
+            if (woken.wait_until(held, until) == std::cv_status::timeout) {
+                return done;
+            }
+        }
+        return true;
     }
 
     // 拿着锁通知：等待者看到 done 以后要先拿回这把锁才能返回、销毁这个对象。

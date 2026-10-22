@@ -3,11 +3,12 @@
 // 就绪队列：一串协程加一把自旋锁，先进先出，任何线程都能放、能取。每根工作线程一个（本地队列），全进程还有
 // 一个（全局队列）。looks_size 不拿锁，只是看一眼，读到的可能已经过时。
 
+#include <cu/detail/spin_lock.h>
+
 #include <atomic>
 #include <cstddef>
 #include <mutex>
 
-#include "base/spin_lock.h"
 #include "coroutine_list.h"
 
 namespace cu {

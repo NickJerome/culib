@@ -4,12 +4,12 @@
 // 跑完就还。控制块活到 cu::coroutine 对象 join 或 detach、协程也跑完为止。
 
 #include <cu/detail/macros.h>
+#include <cu/detail/spin_lock.h>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 
-#include "base/spin_lock.h"
 #include "stack.h"
 
 namespace cu {

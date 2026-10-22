@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 
@@ -7,10 +7,10 @@ namespace detail {
 
 // 只护着很短一段的锁。拿锁、放锁各是一次原子操作，不进内核；抢不到先原地转，转一阵还拿不到就让出线程，
 // 不睡下。所以拿着它不能挂起协程、不能跑使用方的代码，也不能做会等很久的事（睡眠、等 I/O、等别的线程）。
-// 满足 Lockable。只在库内部用。
+// 满足 Lockable。只在库内部用；放在公共头文件里，是因为 cu::mutex 这类对象里要放一把。
 class spin_lock {
 public:
-    spin_lock() noexcept : locked_(false) {}
+    constexpr spin_lock() noexcept : locked_(false) {}
     spin_lock(const spin_lock&) = delete;
     spin_lock& operator=(const spin_lock&) = delete;
 

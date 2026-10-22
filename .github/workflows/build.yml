@@ -226,13 +226,18 @@ jobs:
           #include <cu/net.h>
           #include <cu/result.h>
           #include <cu/string_view.h>
+          #include <cu/sync.h>
 
           #include <cstdio>
+          #include <mutex>
           #include <utility>
           #if __cplusplus >= 201703L
           #include <string_view>
           #include <type_traits>
           #endif
+
+          // 静态的锁不需要在 main 之前跑构造函数
+          static cu::mutex answer_lock;
 
           static cu::result<int> checked_port(int port) {
               if (port < 1 || port > 65535) {
@@ -272,7 +277,16 @@ jobs:
 
               // 协程、网络和文件：使用方只写 add_deps("culib")，Windows 的 ws2_32、Linux 的 pthread 由 culib 带过来
               int answer = 0;
-              cu::coroutine worker([&answer] { answer = 42; });
+              cu::condition_variable answered;
+              cu::coroutine worker([&answer, &answered] {
+                  std::lock_guard<cu::mutex> held(answer_lock);
+                  answer = 42;
+                  answered.notify_one();
+              });
+              {
+                  std::unique_lock<cu::mutex> held(answer_lock);
+                  answered.wait(held, [&answer] { return answer != 0; });
+              }
               worker.join();
               const cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
               if (listening.is_err()) {

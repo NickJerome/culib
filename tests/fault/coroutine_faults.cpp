@@ -1,13 +1,15 @@
-// 协程的误用和栈溢出：每种情形在子进程里跑，检查它终止、并且 stderr 里有那句诊断（栈溢出查的是保护页拦住了）。
+// 协程和同步原语的误用、栈溢出：每种情形在子进程里跑，检查它终止、并且 stderr 里有那句诊断（栈溢出查的是保护页拦住了）。
 // 子进程的 stderr 只在那一条失败时才打印：诊断里的 "cu::" 开头会被 CI 报告当成异常输出。
 // 单独看某一条：coroutine_faults_test <情形名>。
 
 #include <cu/coroutine.h>
 #include <cu/detail/macros.h>
+#include <cu/sync.h>
 
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -102,6 +104,18 @@ void stack_overflow() {
     diver.join();
 }
 
+void unlocked_unlock() {
+    cu::mutex lock;
+    lock.unlock();
+}
+
+void wait_without_lock() {
+    cu::mutex lock;
+    cu::condition_variable never;
+    std::unique_lock<cu::mutex> unheld(lock, std::defer_lock);
+    never.wait(unheld);
+}
+
 enum class ending { abort, stack_overflow };
 
 struct fault_case {
@@ -123,6 +137,9 @@ const fault_case cases[] = {
     {"suspended_in_catch", suspended_in_catch, ending::abort, "cu::coroutine: suspended inside a catch block"},
 #endif
     {"stack_overflow", stack_overflow, ending::stack_overflow, ""},
+    {"unlocked_unlock", unlocked_unlock, ending::abort, "cu::mutex: unlock() of a mutex that is not locked"},
+    {"wait_without_lock", wait_without_lock, ending::abort,
+     "cu::condition_variable: wait() with a std::unique_lock that does not hold the mutex"},
 };
 const std::size_t case_count = sizeof cases / sizeof cases[0];
 

@@ -10,6 +10,7 @@
 // 协程的栈固定 1 MiB（可用 1008 KiB），用到哪页才占哪页内存；用超了碰到保护页，进程崩溃。
 
 #include <cu/detail/macros.h>
+#include <cu/detail/nanoseconds.h>
 
 #include <chrono>
 #include <cstddef>
@@ -47,20 +48,6 @@ void current_coroutine_yield() noexcept;
 // 睡 nanoseconds 纳秒（为正）：在协程里挂起协程，不在协程里阻塞线程。
 void current_coroutine_sleep_for(std::int64_t nanoseconds) noexcept;
 
-// 睡多久折成纳秒：不足一纳秒的零头进上去，太长的截成能表示的最长。
-template <typename Rep, typename Period>
-std::int64_t sleep_nanoseconds(const std::chrono::duration<Rep, Period>& duration) {
-    typedef std::chrono::duration<Rep, Period> given;
-    const std::chrono::nanoseconds longest = std::chrono::nanoseconds::max();
-    if (duration >= std::chrono::duration_cast<given>(longest)) {
-        return longest.count();
-    }
-    std::chrono::nanoseconds converted = std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
-    if (converted < duration) {
-        ++converted;
-    }
-    return converted.count();
-}
 [[noreturn]] void coroutine_misused(coroutine_misuse what) noexcept;
 
 // INVOKE（C++11 [func.require]）：成员函数指针配对象或指针，其余当普通可调用对象调用。
@@ -285,7 +272,7 @@ void sleep_for(const std::chrono::duration<Rep, Period>& duration) {
     if (duration <= duration.zero()) {
         return;
     }
-    detail::current_coroutine_sleep_for(detail::sleep_nanoseconds(duration));
+    detail::current_coroutine_sleep_for(detail::ceil_nanoseconds(duration));
 }
 
 // 睡到 when。when 按它自己的时钟算：先折成离现在还有多久，再像 sleep_for 那样睡，之后时钟被调了也不改。

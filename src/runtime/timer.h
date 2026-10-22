@@ -21,15 +21,20 @@ timer_time timer_now() noexcept;
 timer_time timer_after(timer_time now, std::int64_t duration) noexcept;
 
 struct timer_node {
-    timer_node() noexcept : when(timer_never), index(0), fire(0) {}
+    timer_node() noexcept : when(timer_never), index(0), heap(0), fire(0) {}
 
     timer_time when;
     std::size_t index;                  // 在堆里的位置加 1；不在堆里为 0
+    unsigned heap;                      // 放进了哪一份堆
     void (*fire)(timer_node* node);     // 到点时在系统线程上调，这时堆的锁已经放开
 };
 
 // 放进堆里，到 node.when 时调 node.fire。它成了最早的那个，就叫醒系统线程重新算要等多久。
+// 调用方保证 node 这时不在堆里。
 void timer_add(timer_node& node) noexcept;
+
+// 从堆里拿掉。已经到点被取下（fire 可能正在系统线程上跑）或者本来就不在堆里，返回 false。
+bool timer_remove(timer_node& node) noexcept;
 
 // 系统线程用：取下所有到 now 为止到点的定时器，按时刻先后调它们的 fire。返回下一个的时刻，没有时为 timer_never。
 timer_time timers_run(timer_time now) noexcept;

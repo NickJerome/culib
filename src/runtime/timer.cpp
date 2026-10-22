@@ -6,8 +6,9 @@
 
 #include "timer.h"
 
+#include <cu/detail/spin_lock.h>
+
 #include "base/fatal.h"
-#include "base/spin_lock.h"
 #include "system_thread.h"
 
 #include <atomic>
@@ -41,12 +42,12 @@ timer_heap* heaps() noexcept {
 std::atomic<unsigned> next_heap(0);
 thread_local unsigned this_heap = 0;   // 这根线程用的那一份加 1；还没分到时为 0
 
-// 这根线程放定时器的那一份：第一次用时轮流分一份，之后不变。
-timer_heap& heap_of_this_thread() noexcept {
+// 这根线程放定时器的那一份（序号加 1）：第一次用时轮流分一份，之后不变。
+unsigned heap_of_this_thread() noexcept {
     if (this_heap == 0) {
         this_heap = next_heap.fetch_add(1, std::memory_order_relaxed) % heap_count + 1;
     }
-    return heaps()[this_heap - 1];
+    return this_heap;
 }
 
 void place(std::vector<heap_entry>& entries, std::size_t at, const heap_entry& entry) noexcept {
@@ -91,16 +92,26 @@ void sift_down(std::vector<heap_entry>& entries, std::size_t at) noexcept {
     place(entries, at, entry);
 }
 
+// 取下 at 那一格的定时器，最后一格补到这里再上浮或下沉。调用方拿着锁。
+void erase_locked(std::vector<heap_entry>& entries, std::size_t at) noexcept {
+    entries[at].node->index = 0;
+    const heap_entry last = entries.back();
+    entries.pop_back();
+    if (at == entries.size()) {
+        return;
+    }
+    place(entries, at, last);
+    if (at > 0 && entries[(at - 1) / 4].when > last.when) {
+        sift_up(entries, at);
+    } else {
+        sift_down(entries, at);
+    }
+}
+
 // 取下堆顶。调用方拿着锁，堆不空。
 timer_node* pop_locked(std::vector<heap_entry>& entries) noexcept {
     timer_node* const top = entries[0].node;
-    top->index = 0;
-    const heap_entry last = entries.back();
-    entries.pop_back();
-    if (!entries.empty()) {
-        entries[0] = last;
-        sift_down(entries, 0);
-    }
+    erase_locked(entries, 0);
     return top;
 }
 
@@ -145,7 +156,8 @@ timer_time timer_after(timer_time now, std::int64_t duration) noexcept {
 }
 
 void timer_add(timer_node& node) noexcept {
-    timer_heap& timers = heap_of_this_thread();
+    node.heap = heap_of_this_thread();
+    timer_heap& timers = heaps()[node.heap - 1];
     const heap_entry entry = {node.when, &node};
     bool earliest = false;
     {
@@ -167,6 +179,19 @@ void timer_add(timer_node& node) noexcept {
     if (earliest) {
         system_thread_wake();
     }
+}
+
+bool timer_remove(timer_node& node) noexcept {
+    if (node.heap == 0) {
+        return false;
+    }
+    timer_heap& timers = heaps()[node.heap - 1];
+    std::lock_guard<spin_lock> held(timers.lock);
+    if (node.index == 0) {
+        return false;
+    }
+    erase_locked(timers.entries, node.index - 1);
+    return true;
 }
 
 timer_time timers_run(timer_time now) noexcept {

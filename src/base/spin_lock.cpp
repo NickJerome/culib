@@ -1,6 +1,6 @@
 // spin_lock 抢不到时的那一段。
 
-#include "spin_lock.h"
+#include <cu/detail/spin_lock.h>
 
 #include <thread>
 
