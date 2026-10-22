@@ -1,5 +1,5 @@
 // cu::coroutine 背后的函数：建控制块、交给运行时、join、detach，以及误用时的诊断。
-// 换栈和调度在 scheduler.cpp。
+// 调度和换栈在别的文件里，见 scheduler.cpp 开头。
 
 #include <cu/coroutine.h>
 

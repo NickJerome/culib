@@ -1,7 +1,7 @@
 #pragma once
 
 // 协程换栈时通知 AddressSanitizer 和 ThreadSanitizer。没开对应的 sanitizer 时，这里的函数都是空的。
-// 只给 scheduler.cpp 和 coroutine.cpp 用。
+// 只给 context_switch.cpp、worker.cpp 和 coroutine.cpp 用。
 
 #include <cu/detail/macros.h>
 

@@ -1,6 +1,6 @@
 #pragma once
 
-// 运行时的内部接口：协程的就绪、挂起、叫醒和让出，以及系统线程上的监控。
+// 运行时对外的入口，给 coroutine.cpp 和事件引擎用：协程的就绪、挂起、叫醒、让出和睡。各块怎么分见 scheduler.cpp 开头。
 
 #include <condition_variable>
 #include <mutex>
