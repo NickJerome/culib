@@ -9,5 +9,5 @@ target("serve")
     set_warnings("allextra", "pedantic", "error")
     set_encodings("utf-8")
     add_files("serve/*.cpp")
-    add_deps("culib")
+    add_deps("culib_new_override", "culib")   -- new / delete 走 culib 的分配器
 target_end()

@@ -13,7 +13,7 @@ flags=(-std=c++11 -Wall -Wextra -Wpedantic -Werror
 library_objects=()
 while IFS= read -r source; do
     case "$source" in
-        *_posix.cpp|*_linux.cpp|*_macos.cpp) continue ;;
+        *_posix.cpp|*_linux.cpp|*_macos.cpp|src/override/*) continue ;;
     esac
     object="$output/${source//\//_}.o"
     "$compiler" "${flags[@]}" -c "$source" -o "$object"
@@ -37,3 +37,7 @@ done
 "$compiler" "${flags[@]}" -static -o "$output/coroutine_faults_test.exe" \
     tests/fault/coroutine_faults.cpp "${library_objects[@]}" -lws2_32
 "$output/coroutine_faults_test.exe"
+
+"$compiler" "${flags[@]}" -static -o "$output/new_override_test.exe" \
+    tests/override/*.cpp tests/main.cpp src/override/new.cpp "${library_objects[@]}" -lws2_32
+"$output/new_override_test.exe"

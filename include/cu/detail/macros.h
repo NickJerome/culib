@@ -32,6 +32,14 @@
 // 生成唯一的标识符，例如 CU_DETAIL_UNIQUE_NAME(cu_defer_)
 #define CU_DETAIL_UNIQUE_NAME(prefix) CU_DETAIL_CONCAT(prefix, CU_DETAIL_UNIQUE_ID)
 
+// GCC 4.8 带的标准库没有 std::get_new_handler（4.9 才有）。看编译器的版本：这个头文件不包含标准库的头文件，
+// 标准库自己的版本宏这时还没有定义。
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 4 && __GNUC_MINOR__ < 9
+#define CU_DETAIL_HAS_GET_NEW_HANDLER 0
+#else
+#define CU_DETAIL_HAS_GET_NEW_HANDLER 1
+#endif
+
 // 编译时是否开启了异常
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
 #define CU_DETAIL_HAS_EXCEPTIONS 1

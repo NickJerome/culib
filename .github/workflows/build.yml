@@ -218,7 +218,7 @@ jobs:
                   add_cxflags("/Zc:__cplusplus")
               end
               add_files("src/*.cpp")
-              add_deps("culib")
+              add_deps("culib_new_override", "culib")
           LUA
           cat > consumer/src/main.cpp <<'CPP'
           #include <cu/coroutine.h>
@@ -275,7 +275,8 @@ jobs:
               }
               std::printf("port %d view %zu\n", port.value(), ours.size());
 
-              // 协程、网络和文件：使用方只写 add_deps("culib")，Windows 的 ws2_32、Linux 的 pthread 由 culib 带过来
+              // 协程、网络和文件：使用方只写 add_deps，Windows 的 ws2_32、Linux 的 pthread 由 culib 带过来；
+              // new / delete 走 culib 的分配器（culib_new_override）
               int answer = 0;
               cu::condition_variable answered;
               cu::coroutine worker([&answer, &answered] {

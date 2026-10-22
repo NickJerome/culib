@@ -1,9 +1,10 @@
-// 协程和同步原语的误用、栈溢出：每种情形在子进程里跑，检查它终止、并且 stderr 里有那句诊断（栈溢出查的是保护页拦住了）。
+// 协程、同步原语和分配器的误用，栈溢出：每种情形在子进程里跑，检查它终止、并且 stderr 里有那句诊断（栈溢出查的是保护页拦住了）。
 // 子进程的 stderr 只在那一条失败时才打印：诊断里的 "cu::" 开头会被 CI 报告当成异常输出。
 // 单独看某一条：coroutine_faults_test <情形名>。
 
 #include <cu/coroutine.h>
 #include <cu/detail/macros.h>
+#include <cu/mem.h>
 #include <cu/sync.h>
 
 #include <atomic>
@@ -116,6 +117,18 @@ void wait_without_lock() {
     never.wait(unheld);
 }
 
+void small_double_free() {
+    void* const block = cu::mem::alloc(64);
+    cu::mem::free(block);
+    cu::mem::free(block);
+}
+
+void large_double_free() {
+    void* const block = cu::mem::alloc(100000);
+    cu::mem::free(block);
+    cu::mem::free(block);
+}
+
 enum class ending { abort, stack_overflow };
 
 struct fault_case {
@@ -140,6 +153,8 @@ const fault_case cases[] = {
     {"unlocked_unlock", unlocked_unlock, ending::abort, "cu::mutex: unlock() of a mutex that is not locked"},
     {"wait_without_lock", wait_without_lock, ending::abort,
      "cu::condition_variable: wait() with a std::unique_lock that does not hold the mutex"},
+    {"small_double_free", small_double_free, ending::abort, "cu::mem: double free of"},
+    {"large_double_free", large_double_free, ending::abort, "cu::mem: double free, or free of a pointer"},
 };
 const std::size_t case_count = sizeof cases / sizeof cases[0];
 

@@ -17,6 +17,22 @@ target("culib_test")
     add_tests("default", {run_timeout = 600000})
 target_end()
 
+-- 依赖 culib_new_override：全局的 new / delete 换成 culib 的分配器以后，标准容器、线程和协程照样能用。
+target("new_override_test")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests")
+    if not is_plat("windows") then
+        set_languages("c++11")
+    end
+    set_warnings("allextra", "pedantic", "error")
+    set_encodings("utf-8")
+    add_files("override/*.cpp", "main.cpp")
+    add_includedirs("../src")
+    add_deps("culib_new_override", "culib")
+    add_tests("default", {run_timeout = 300000})
+target_end()
+
 -- 协程的误用和栈溢出都是终止进程，每种情形在子进程里跑。
 target("coroutine_faults_test")
     set_kind("binary")

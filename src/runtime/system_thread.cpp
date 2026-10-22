@@ -5,6 +5,7 @@
 #include <cu/detail/macros.h>
 
 #include "coroutine_list.h"
+#include "mem/allocator.h"
 #include "runtime.h"
 #include "timer.h"
 
@@ -41,6 +42,7 @@ void system_main() noexcept {
 
     for (;;) {
         const timer_time now = timer_now();
+        mem_purge(now);                       // 分配器的空页到点了就把内存还给系统
         timer_time next = timers_run(now);   // 到点的定时器叫醒的协程攒进 batch
         if (runtime* const rt = runtime_if_started()) {
             flush(batch, *rt);                // 上一轮 I/O 叫醒的和这一轮定时器叫醒的
@@ -50,6 +52,10 @@ void system_main() noexcept {
             }
         }
 
+        const timer_time purge = mem_purge_deadline();
+        if (purge < next) {
+            next = purge;
+        }
         io_poll(timeout_until(next, now));   // I/O 叫醒的协程也攒进 batch
     }
 }

@@ -22,6 +22,7 @@ target("culib")
     add_includedirs("src")
     add_headerfiles("include/(cu/**.h)")
     add_files("src/**.cpp")
+    remove_files("src/override/*.cpp")
     -- 平台代码按文件名后缀分：Windows 和 MinGW 用 _win，其余用 _posix；_linux、_macos 只给对应的平台
     if is_plat("windows", "mingw") then
         remove_files("src/**_posix.cpp")
@@ -63,6 +64,24 @@ target("culib")
     else
         add_cxflags("-ffunction-sections", "-fdata-sections")
     end
+target_end()
+
+-- 依赖它，全局的 new / delete（连同标准容器、std::string）就改用 culib 的分配器。是对象文件不是静态库：
+-- 静态库里的 operator new 只在链接器还缺它时才会被拉进来，而标准库已经有一份了。
+target("culib_new_override")
+    set_kind("object")
+    set_default(false)
+    if not is_plat("windows") then
+        set_languages("c++11")
+    end
+    if is_main_project then
+        set_warnings("allextra", "pedantic", "error")
+    else
+        set_warnings("allextra", "pedantic")
+    end
+    set_encodings("utf-8")
+    add_files("src/override/new.cpp")
+    add_deps("culib")
 target_end()
 
 if is_main_project then
