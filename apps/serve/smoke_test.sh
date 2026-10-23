@@ -19,8 +19,9 @@ dir=$(mktemp -d)
 trap 'rm -rf -- "$dir"' EXIT
 printf '<h1>hello from serve</h1>\n' > "$dir/index.html"
 
-# 输出写进文件：不占着调用方的管道，serve 停不掉时调用方也能结束
-"$serve" 127.0.0.1:0 "$dir/index.html" > "$dir/serve.out" 2>&1 &
+# 输出写进文件：不占着调用方的管道，serve 停不掉时调用方也能结束。路径单独作一个参数，Windows 的 Git Bash
+# 才一定会把它换成 Windows 路径
+"$serve" --address=127.0.0.1:0 --file "$dir/index.html" > "$dir/serve.out" 2>&1 &
 pid=$!
 
 # 端口由系统挑，从 serve 打的那一行里取；Windows 上行尾带 \r，只取到空白为止

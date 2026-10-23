@@ -1,7 +1,8 @@
 // serve 的第一步：每个请求都回同一个文件，回完就关连接。
-//   serve <address> <file>，例如 serve :8080 index.html
+//   serve [--address=:8080] [--file=index.html]
 
 #include <cu/coroutine.h>
+#include <cu/flag.h>
 #include <cu/fs.h>
 #include <cu/net.h>
 #include <cu/timeout.h>
@@ -15,6 +16,9 @@
 #include <utility>
 
 namespace {
+
+cu::flag::string address(":8080", "where to listen, host:port", {"address", "a"});
+cu::flag::string file("index.html", "the file sent for every request", {"file", "f"});
 
 // 收完请求头最多等这么久（hyper 的默认值也是 30 秒），写完一个响应最多等这么久：慢客户端和闲着的连接到点就断开。
 // 响应现在是一个小文件；文件大了以后写的时限要改成每次写之间的空闲时间。
@@ -60,11 +64,8 @@ void handle(cu::net::connection connection, const std::string& response) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::fprintf(stderr, "usage: serve <address> <file>\n");
-        return 2;
-    }
-    cu::result<std::string> body = cu::fs::read_file(argv[2]);
+    cu::flag::init(argc, argv);
+    cu::result<std::string> body = cu::fs::read_file(file.value());
     if (body.is_err()) {
         std::fprintf(stderr, "serve: %s\n", body.error().message().c_str());
         return 1;
@@ -73,7 +74,7 @@ int main(int argc, char** argv) {
                                  std::to_string(body.value().size()) + "\r\nConnection: close\r\n\r\n" +
                                  body.value();
 
-    cu::result<cu::net::listener> listening = cu::net::listen(argv[1]);
+    cu::result<cu::net::listener> listening = cu::net::listen(address.value());
     if (listening.is_err()) {
         std::fprintf(stderr, "serve: %s\n", listening.error().message().c_str());
         return 1;
