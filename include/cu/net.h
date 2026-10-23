@@ -10,6 +10,7 @@
 // "read 127.0.0.1:51234: i/o timeout"；读超时以后连接照样能用，没读到的数据下次还能读到；写超时的时候前面可能
 // 已经写出去一部分。
 
+#include <cu/detail/socket_handle.h>
 #include <cu/result.h>
 #include <cu/string_view.h>
 
@@ -42,11 +43,10 @@ private:
 // 一条 TCP 连接。连好以后关掉了 Nagle。
 class connection {
 public:
-    connection(connection&& other) noexcept;
-    connection& operator=(connection&& other) noexcept;
+    connection(connection&&) = default;
+    connection& operator=(connection&&) = default;
     connection(const connection&) = delete;
     connection& operator=(const connection&) = delete;
-    ~connection();
 
     // 读到一些就返回，最多 capacity 字节。返回 0 表示对端关了连接；capacity 为 0 时直接返回 0。
     result<std::size_t> read(void* buffer, std::size_t capacity);
@@ -60,22 +60,19 @@ public:
 private:
     friend struct detail::socket_access;
 
-    connection(std::uintptr_t handle, void* record, const address& remote) noexcept;
-    void close() noexcept;
+    connection(cu::detail::socket_handle handle, const address& remote) noexcept;
 
-    std::uintptr_t handle_;
-    void* record_;   // 事件引擎里的记录（Linux / macOS）
+    cu::detail::socket_handle socket_;   // 关句柄交给它
     address remote_;
 };
 
 // 一个在监听的 TCP 端口。
 class listener {
 public:
-    listener(listener&& other) noexcept;
-    listener& operator=(listener&& other) noexcept;
+    listener(listener&&) = default;
+    listener& operator=(listener&&) = default;
     listener(const listener&) = delete;
     listener& operator=(const listener&) = delete;
-    ~listener();
 
     // 等下一个连接。对端在 accept 之前就断开的，接着等下一个；句柄用完时返回 resource_exhausted，
     // 调用方等一会儿再调。
@@ -87,11 +84,9 @@ public:
 private:
     friend struct detail::socket_access;
 
-    listener(std::uintptr_t handle, void* record, const address& local) noexcept;
-    void close() noexcept;
+    listener(cu::detail::socket_handle handle, const address& local) noexcept;
 
-    std::uintptr_t handle_;
-    void* record_;   // 事件引擎里的记录（Linux / macOS）
+    cu::detail::socket_handle socket_;   // 关句柄交给它
     address local_;
 };
 

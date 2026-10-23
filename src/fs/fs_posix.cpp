@@ -2,6 +2,7 @@
 
 #include <cu/fs.h>
 
+#include "base/error_context.h"
 #include "platform/system_error.h"
 
 #include <cerrno>
@@ -48,7 +49,7 @@ result<std::string> read_file(string_view path) {
     } while (fd < 0 && errno == EINTR);
     if (fd < 0) {
         const int code = errno;
-        return cu::detail::system_error("open " + name, code);
+        return cu::detail::in_context("open " + name, cu::detail::system_error(code));
     }
     const file_guard guard(fd);
 
@@ -83,7 +84,7 @@ result<std::string> read_file(string_view path) {
         if (code == EINTR) {
             continue;
         }
-        return cu::detail::system_error("read " + name, code);
+        return cu::detail::in_context("read " + name, cu::detail::system_error(code));
     }
     content.resize(used);
     return result<std::string>(std::move(content));

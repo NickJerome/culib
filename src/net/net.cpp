@@ -1,12 +1,51 @@
-// net 里两个平台共用的部分：地址的解析和格式化，listener、connection 的移动和析构（关句柄由平台做）。
+// net 三个平台一份：拆「host:port」、格式化地址；listener、connection 在 socket_handle 上补一层，错误消息里写上是
+// 哪个操作、哪个地址，写要写完为止。会等的操作和平台差别都在事件引擎里（src/runtime/io_engine.h）。
 
-#include "net_detail.h"
+#include <cu/net.h>
+
+#include "base/error_context.h"
+#include "platform/socket_address.h"
+#include "runtime/io_socket.h"
 
 #include <cstring>
 #include <string>
+#include <utility>
 
 namespace cu {
 namespace net {
+
+using cu::detail::endpoint;
+using cu::detail::in_context;
+using cu::detail::socket_address;
+using cu::detail::socket_handle;
+
+namespace detail {
+
+// net.h 里几个类的私有部分只对这里开放。
+struct socket_access {
+    static address to_address(const socket_address& at) noexcept {
+        static_assert(sizeof(address::storage_) == sizeof(socket_address), "cu::net::address has the wrong size");
+        address value;
+        std::memcpy(value.storage_, &at, sizeof value.storage_);
+        return value;
+    }
+
+    static socket_address from_address(const address& value) noexcept {
+        socket_address at;
+        std::memcpy(&at, value.storage_, sizeof at);
+        return at;
+    }
+
+    static connection make_connection(socket_handle handle, const address& remote) noexcept {
+        return connection(std::move(handle), remote);
+    }
+
+    static listener make_listener(socket_handle handle, const address& local) noexcept {
+        return listener(std::move(handle), local);
+    }
+};
+
+}  // namespace detail
 
 namespace {
 
@@ -31,23 +70,7 @@ bool parse_port(string_view text, std::uint16_t& port) noexcept {
     return true;
 }
 
-}  // namespace
-
-namespace detail {
-
-address socket_access::to_address(const socket_address& at) noexcept {
-    static_assert(sizeof(address::storage_) == sizeof(socket_address), "cu::net::address has the wrong size");
-    address value;
-    std::memcpy(value.storage_, &at, sizeof value.storage_);
-    return value;
-}
-
-socket_address socket_access::from_address(const address& value) noexcept {
-    socket_address at;
-    std::memcpy(&at, value.storage_, sizeof at);
-    return at;
-}
-
+// 拆「host:port」：host 是数字 IPv4、方括号里的数字 IPv6，或者空着。operation 写进错误消息，例如 "listen"。
 result<endpoint> parse_address(string_view text, const char* operation) {
     const std::string prefix = std::string(operation) + " " + text.to_string() + ": ";
     string_view host;
@@ -101,17 +124,11 @@ result<endpoint> parse_address(string_view text, const char* operation) {
     return make_error(error_kind::invalid_argument, prefix + "host must be a numeric IP address");
 }
 
-void use_ipv4(socket_address& at, std::uint32_t ip) noexcept {
-    const unsigned short port = at.base.sa_family == AF_INET ? at.v4.sin_port : at.v6.sin6_port;
-    std::memset(&at, 0, sizeof at);
-    at.v4.sin_family = AF_INET;
-    at.v4.sin_port = port;
-    at.v4.sin_addr.s_addr = htonl(ip);
-}
-
+// connect 用：没写 host，或者写的是 0.0.0.0、[::]，都换成本机的环回地址，和 Go 一样。Linux 和 macOS 自己就这么做，
+// Windows 不认。
 void use_loopback_if_unspecified(endpoint& target) noexcept {
     if (target.any) {
-        use_ipv4(target.at, INADDR_LOOPBACK);
+        cu::detail::use_ipv4(target.at, INADDR_LOOPBACK);
         target.any = false;
         return;
     }
@@ -127,14 +144,14 @@ void use_loopback_if_unspecified(endpoint& target) noexcept {
     }
 }
 
-}  // namespace detail
+}  // namespace
 
 address::address() noexcept {
     std::memset(storage_, 0, sizeof storage_);
 }
 
 std::string address::to_string() const {
-    const detail::socket_address at = detail::socket_access::from_address(*this);
+    const socket_address at = detail::socket_access::from_address(*this);
     char text[INET6_ADDRSTRLEN];
     if (at.base.sa_family == AF_INET) {
         ::inet_ntop(AF_INET, &at.v4.sin_addr, text, sizeof text);
@@ -152,54 +169,80 @@ std::string address::to_string() const {
 }
 
 std::uint16_t address::port() const noexcept {
-    const detail::socket_address at = detail::socket_access::from_address(*this);
+    const socket_address at = detail::socket_access::from_address(*this);
     return ntohs(at.base.sa_family == AF_INET ? at.v4.sin_port : at.v6.sin6_port);
 }
 
-connection::connection(std::uintptr_t handle, void* record, const address& remote) noexcept
-    : handle_(handle), record_(record), remote_(remote) {}
+connection::connection(socket_handle handle, const address& remote) noexcept
+    : socket_(std::move(handle)), remote_(remote) {}
 
-connection::connection(connection&& other) noexcept
-    : handle_(other.handle_), record_(other.record_), remote_(other.remote_) {
-    other.handle_ = detail::no_handle;
-}
-
-connection& connection::operator=(connection&& other) noexcept {
-    if (this != &other) {
-        close();
-        handle_ = other.handle_;
-        record_ = other.record_;
-        remote_ = other.remote_;
-        other.handle_ = detail::no_handle;
+result<std::size_t> connection::read(void* buffer, std::size_t capacity) {
+    if (capacity == 0) {
+        return std::size_t(0);
     }
-    return *this;
-}
-
-connection::~connection() {
-    close();
-}
-
-listener::listener(std::uintptr_t handle, void* record, const address& local) noexcept
-    : handle_(handle), record_(record), local_(local) {}
-
-listener::listener(listener&& other) noexcept
-    : handle_(other.handle_), record_(other.record_), local_(other.local_) {
-    other.handle_ = detail::no_handle;
-}
-
-listener& listener::operator=(listener&& other) noexcept {
-    if (this != &other) {
-        close();
-        handle_ = other.handle_;
-        record_ = other.record_;
-        local_ = other.local_;
-        other.handle_ = detail::no_handle;
+    result<std::size_t> got = socket_.read(buffer, capacity);
+    if (got.is_err()) {
+        return in_context("read " + remote_.to_string(), got.error());
     }
-    return *this;
+    return got;
 }
 
-listener::~listener() {
-    close();
+// 全部写完才算成功。整个循环共用一个截止时刻（cu::timeout 定的）。
+result<void> connection::write(const void* data, std::size_t size) {
+    const char* next = static_cast<const char*>(data);
+    while (size > 0) {
+        result<std::size_t> sent = socket_.write(next, size);
+        if (sent.is_err()) {
+            return in_context("write " + remote_.to_string(), sent.error());
+        }
+        next += sent.value();
+        size -= sent.value();
+    }
+    return result<void>();
+}
+
+address connection::local_address() const {
+    return detail::socket_access::to_address(socket_.local_address());
+}
+
+listener::listener(socket_handle handle, const address& local) noexcept : socket_(std::move(handle)), local_(local) {}
+
+result<connection> listener::accept() {
+    result<socket_handle::accepted> got = socket_.accept();
+    if (got.is_err()) {
+        return in_context("accept " + local_.to_string(), got.error());
+    }
+    socket_handle::accepted& taken = got.value();
+    return detail::socket_access::make_connection(std::move(taken.socket),
+                                                  detail::socket_access::to_address(taken.peer));
+}
+
+result<listener> listen(string_view text) {
+    result<endpoint> parsed = parse_address(text, "listen");
+    if (parsed.is_err()) {
+        return std::move(parsed).error();
+    }
+    result<socket_handle> opened = socket_handle::listen(parsed.value());
+    if (opened.is_err()) {
+        return in_context("listen " + text.to_string(), opened.error());
+    }
+    const address local = detail::socket_access::to_address(opened.value().local_address());
+    return detail::socket_access::make_listener(std::move(opened).value(), local);
+}
+
+result<connection> connect(string_view text) {
+    result<endpoint> parsed = parse_address(text, "connect");
+    if (parsed.is_err()) {
+        return std::move(parsed).error();
+    }
+    endpoint& target = parsed.value();
+    use_loopback_if_unspecified(target);
+    result<socket_handle> connected = socket_handle::connect(target);
+    if (connected.is_err()) {
+        return in_context("connect " + text.to_string(), connected.error());
+    }
+    return detail::socket_access::make_connection(std::move(connected).value(),
+                                                  detail::socket_access::to_address(target.at));
 }
 
 }  // namespace net

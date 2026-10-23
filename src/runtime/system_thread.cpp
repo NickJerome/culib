@@ -5,6 +5,7 @@
 #include <cu/detail/macros.h>
 
 #include "coroutine_list.h"
+#include "io_engine.h"
 #include "mem/allocator.h"
 #include "runtime.h"
 #include "timer.h"
@@ -64,7 +65,7 @@ void system_main() noexcept {
             next = purge;
         }
         wakes_by.store(next);
-        io_poll(timeout_until(next, now));   // I/O 叫醒的协程也攒进 batch
+        io_engine::instance().poll(timeout_until(next, now));   // I/O 叫醒的协程也攒进 batch
     }
 }
 
@@ -81,7 +82,7 @@ void system_thread_start() noexcept {
 }
 
 void system_thread_wake() noexcept {
-    io_wake();
+    io_engine::instance().wake();
 }
 
 timer_time system_thread_wakes_by() noexcept {

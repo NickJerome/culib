@@ -2,6 +2,7 @@
 
 #include <cu/fs.h>
 
+#include "base/error_context.h"
 #include "platform/system_error.h"
 #include "platform/text_win.h"
 #include "platform/win32.h"
@@ -56,7 +57,7 @@ result<std::string> read_file(string_view path) {
         if (code == ERROR_ACCESS_DENIED && is_directory(wide)) {
             return make_error(error_kind::unsupported, "open " + name + ": is a directory");
         }
-        return cu::detail::system_error("open " + name, static_cast<int>(code));
+        return cu::detail::in_context("open " + name, cu::detail::system_error(static_cast<int>(code)));
     }
     const file_guard guard(file);
 
@@ -77,7 +78,7 @@ result<std::string> read_file(string_view path) {
         DWORD got = 0;
         if (!::ReadFile(file, &content[used], room < max_read ? static_cast<DWORD>(room) : max_read, &got, 0)) {
             const DWORD code = ::GetLastError();
-            return cu::detail::system_error("read " + name, static_cast<int>(code));
+            return cu::detail::in_context("read " + name, cu::detail::system_error(static_cast<int>(code)));
         }
         if (got == 0) {
             break;
