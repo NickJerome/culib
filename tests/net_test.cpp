@@ -1,9 +1,12 @@
 #include <cu/coroutine.h>
 #include <cu/net.h>
 #include <cu/test.h>
+#include <cu/timeout.h>
 
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -371,4 +374,478 @@ TEST(net, closes_the_old_listener_when_assigned) {
     first.value() = std::move(second.value());
     EXPECT(first.value().local_address().to_string(), ==, new_target);
     EXPECT(error_text(cu::net::listen(old_target)), ==, std::string());
+}
+
+namespace {
+
+typedef std::chrono::steady_clock steady_clock;
+
+// 读到的内容，或者错误本身。
+std::string text_of(const cu::result<std::size_t>& got, const char* buffer) {
+    return got.is_ok() ? std::string(buffer, got.value()) : got.error().to_string();
+}
+
+// 每次最多等 1 ms，读够 count 字节；超时了接着读。返回读到的内容，出错时是错误本身。
+std::string read_with_short_timeouts(cu::net::connection& from, std::size_t count, int& timeouts) {
+    std::string all;
+    char buffer[64];
+    while (all.size() < count) {
+        cu::result<std::size_t> got = cu::timeout(std::chrono::milliseconds(1), [&from, &buffer] {
+            return from.read(buffer, sizeof buffer);
+        });
+        if (got.is_err() && got.error().kind() == cu::error_kind::timeout) {
+            ++timeouts;
+            continue;
+        }
+        if (got.is_err() || got.value() == 0) {
+            return error_text(got) + " after " + std::to_string(all.size()) + " bytes";
+        }
+        all.append(buffer, got.value());
+    }
+    return all;
+}
+
+// 一个字节一个字节地写 payload，每写几个睡一会儿，让数据和读的那边到点前后脚到。
+void write_slowly(cu::net::connection& to, const std::string& payload) {
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        if (to.write(&payload[i], 1).is_err()) {
+            return;
+        }
+        if (i % 3 == 0) {
+            cu::this_coroutine::sleep_for(std::chrono::microseconds(200 + (i * 37) % 900));
+        }
+    }
+}
+
+// 连上 target 以后每 20 ms 写一个字节，直到对端关掉连接，最多写 count 个。
+void trickle(const std::string& target, int count) {
+    cu::result<cu::net::connection> connected = cu::net::connect(target);
+    if (connected.is_err()) {
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        if (connected.value().write("x", 1).is_err()) {
+            return;
+        }
+        cu::this_coroutine::sleep_for(std::chrono::milliseconds(20));
+    }
+}
+
+}  // namespace
+
+// 两边各超时一次以后接着收发：服务端（协程）等 30 ms 超时，再写 "go"；客户端（普通线程）读到 "go" 以后等 30 ms
+// 超时，再写 "late"。
+TEST(net, read_times_out_and_the_connection_keeps_working) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+
+    std::string first = "not run";
+    std::string second;
+    steady_clock::duration waited(0);
+    cu::coroutine serving([&server, &first, &second, &waited] {
+        cu::result<cu::net::connection> accepted = server.accept();
+        if (accepted.is_err()) {
+            first = accepted.error().to_string();
+            return;
+        }
+        cu::net::connection& client = accepted.value();
+        char buffer[16];
+        const steady_clock::time_point start = steady_clock::now();
+        first = error_text(cu::timeout(std::chrono::milliseconds(30), [&client, &buffer] {
+            return client.read(buffer, sizeof buffer);
+        }));
+        waited = steady_clock::now() - start;
+        if (client.write("go", 2).is_err()) {
+            return;
+        }
+        second = text_of(cu::timeout(std::chrono::seconds(10), [&client, &buffer] {
+            return client.read(buffer, sizeof buffer);
+        }), buffer);
+    });
+
+    std::string local;
+    std::string go;
+    std::string client_timeout;
+    {
+        cu::result<cu::net::connection> connected = cu::timeout(std::chrono::seconds(10), [&target] {
+            return cu::net::connect(target);
+        });
+        EXPECT(error_text(connected), ==, std::string());
+        if (connected.is_ok()) {
+            cu::net::connection& c = connected.value();
+            local = c.local_address().to_string();
+            char buffer[16];
+            go = text_of(c.read(buffer, sizeof buffer), buffer);
+            client_timeout = error_text(cu::timeout(std::chrono::milliseconds(30), [&c, &buffer] {
+                return c.read(buffer, sizeof buffer);
+            }));
+            EXPECT(error_text(c.write("late", 4)), ==, std::string());
+        }
+    }
+    serving.join();
+
+    EXPECT(first, ==, "timeout: read " + local + ": i/o timeout");
+    EXPECT(waited >= std::chrono::milliseconds(30), ==, true);
+    EXPECT(go, ==, std::string("go"));
+    EXPECT(client_timeout, ==, "timeout: read " + target + ": i/o timeout");
+    EXPECT(second, ==, std::string("late"));
+}
+
+TEST(net, accept_times_out_and_the_listener_keeps_working) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+
+    // 普通线程上等 30 ms，没人连
+    const std::string first = error_text(cu::timeout(std::chrono::milliseconds(30), [&server] {
+        return server.accept();
+    }));
+
+    // 协程里再等，这回有人连
+    std::string second = "not run";
+    cu::coroutine accepting([&server, &second] {
+        second = error_text(cu::timeout(std::chrono::seconds(10), [&server] {
+            return server.accept();
+        }));
+    });
+    cu::result<cu::net::connection> connected = cu::net::connect(target);
+    accepting.join();
+
+    EXPECT(first, ==, "timeout: accept " + target + ": i/o timeout");
+    EXPECT(second, ==, std::string());
+    EXPECT(error_text(connected), ==, std::string());
+}
+
+// 对端不读：一块一块写，写满两边的缓冲区以后等到点。整个循环共用一个时限。Windows 上一次写多少都会先整块收下
+// （系统替它缓冲），下一次写才等，所以要接着写。
+TEST(net, write_times_out_when_the_peer_does_not_read) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+    const std::string chunk(std::size_t(1) << 20, 'x');
+
+    std::string written = "not run";
+    cu::coroutine writing([&target, &chunk, &written] {
+        cu::result<cu::net::connection> connected = cu::net::connect(target);
+        if (connected.is_err()) {
+            written = connected.error().to_string();
+            return;
+        }
+        cu::net::connection& c = connected.value();
+        written = error_text(cu::timeout(std::chrono::milliseconds(100), [&c, &chunk] {
+            for (int i = 0; i < 256; ++i) {
+                cu::result<void> sent = c.write(chunk.data(), chunk.size());
+                if (sent.is_err()) {
+                    return sent;
+                }
+            }
+            return cu::result<void>(cu::make_error(cu::error_kind::unknown, "wrote 256 MiB without a timeout"));
+        }));
+    });
+    cu::result<cu::net::connection> accepted = server.accept();   // 收下连接，不读
+    writing.join();
+
+    EXPECT(error_text(accepted), ==, std::string());
+    EXPECT(written, ==, "timeout: write " + target + ": i/o timeout");
+}
+
+// 192.0.2.1 是留给文档用的地址，发过去的握手没人应答。网络直接说连不上（没有路由之类）时跳过。
+TEST(net, connect_times_out) {
+    const steady_clock::time_point start = steady_clock::now();
+    cu::result<cu::net::connection> connected = cu::timeout(std::chrono::milliseconds(100), [] {
+        return cu::net::connect("192.0.2.1:9");
+    });
+    const steady_clock::duration waited = steady_clock::now() - start;
+    if (connected.is_ok() || connected.error().kind() != cu::error_kind::timeout) {
+        std::printf("[SKIP] net.connect_times_out: connecting to 192.0.2.1:9 did not hang: %s\n",
+                    connected.is_ok() ? "connected" : connected.error().to_string().c_str());
+        return;
+    }
+    EXPECT(connected.error().message(), ==, std::string("connect 192.0.2.1:9: i/o timeout"));
+    EXPECT(waited >= std::chrono::milliseconds(100), ==, true);
+}
+
+// 时长不为正时只试一次：没有数据马上超时，有数据就读到。
+TEST(net, a_timeout_that_is_not_positive_tries_once) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+
+    std::string zero = "not run";
+    std::string negative;
+    std::string first_byte;
+    std::string rest;
+    cu::coroutine serving([&server, &zero, &negative, &first_byte, &rest] {
+        cu::result<cu::net::connection> accepted = server.accept();
+        if (accepted.is_err()) {
+            zero = accepted.error().to_string();
+            return;
+        }
+        cu::net::connection& client = accepted.value();
+        char buffer[16];
+        zero = error_text(cu::timeout(std::chrono::milliseconds(0), [&client, &buffer] {
+            return client.read(buffer, sizeof buffer);
+        }));
+        negative = error_text(cu::timeout(std::chrono::milliseconds(-5), [&client, &buffer] {
+            return client.read(buffer, sizeof buffer);
+        }));
+        if (client.write("go", 2).is_err()) {
+            return;
+        }
+        // 对端一次写了 "xy"：读走一个字节以后，另一个已经在缓冲区里了
+        first_byte = text_of(client.read(buffer, 1), buffer);
+        rest = text_of(cu::timeout(std::chrono::milliseconds(0), [&client, &buffer] {
+            return client.read(buffer, sizeof buffer);
+        }), buffer);
+    });
+
+    std::string local;
+    {
+        cu::result<cu::net::connection> connected = cu::net::connect(target);
+        EXPECT(error_text(connected), ==, std::string());
+        if (connected.is_ok()) {
+            local = connected.value().local_address().to_string();
+            char buffer[16];
+            EXPECT(text_of(connected.value().read(buffer, sizeof buffer), buffer), ==, std::string("go"));
+            EXPECT(error_text(connected.value().write("xy", 2)), ==, std::string());
+        }
+    }
+    serving.join();
+
+    EXPECT(zero, ==, "timeout: read " + local + ": i/o timeout");
+    EXPECT(negative, ==, "timeout: read " + local + ": i/o timeout");
+    EXPECT(first_byte, ==, std::string("x"));
+    EXPECT(rest, ==, std::string("y"));
+}
+
+// 一个时限管里面所有的读：对端每 20 ms 来一个字节，每次读都很快拿到数据，整个循环照样在 100 ms 时停下。
+TEST(net, a_timeout_covers_every_call_inside_it) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+    cu::coroutine writing(trickle, target, 500);
+
+    std::string result_text = "not run";
+    std::string peer;
+    std::size_t received = 0;
+    steady_clock::duration waited(0);
+    {
+        cu::result<cu::net::connection> accepted = server.accept();
+        EXPECT(error_text(accepted), ==, std::string());
+        if (accepted.is_ok()) {
+            cu::net::connection& client = accepted.value();
+            peer = client.remote_address().to_string();
+            const steady_clock::time_point start = steady_clock::now();
+            result_text = error_text(cu::timeout(std::chrono::milliseconds(100), [&client, &received] {
+                char buffer[16];
+                for (;;) {
+                    cu::result<std::size_t> got = client.read(buffer, sizeof buffer);
+                    if (got.is_err() || got.value() == 0) {
+                        return got;
+                    }
+                    received += got.value();
+                }
+            }));
+            waited = steady_clock::now() - start;
+        }
+    }
+    writing.join();
+
+    EXPECT(result_text, ==, "timeout: read " + peer + ": i/o timeout");
+    EXPECT(received >= 2, ==, true);
+    EXPECT(waited >= std::chrono::milliseconds(100), ==, true);
+    EXPECT(waited < std::chrono::seconds(5), ==, true);
+}
+
+// 套着用：里面的时限只会更紧；从里面出来以后换回外面的；都出来以后不限时。
+TEST(net, timeouts_nest) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+
+    std::string tighter_inside = "not run";
+    std::string looser_inside;
+    steady_clock::duration looser_waited(0);
+    std::string back_outside;
+    std::string untimed;
+    cu::coroutine serving([&server, &tighter_inside, &looser_inside, &looser_waited, &back_outside, &untimed] {
+        cu::result<cu::net::connection> accepted = server.accept();
+        if (accepted.is_err()) {
+            tighter_inside = accepted.error().to_string();
+            return;
+        }
+        cu::net::connection& client = accepted.value();
+        char buffer[16];
+        cu::result<std::size_t> outer = cu::timeout(std::chrono::seconds(10), [&] {
+            // 里面 20 ms，比外面紧：20 ms 就到点
+            tighter_inside = error_text(cu::timeout(std::chrono::milliseconds(20), [&client, &buffer] {
+                return client.read(buffer, sizeof buffer);
+            }));
+            if (client.write("1", 1).is_err()) {
+                return cu::result<std::size_t>(std::size_t(0));
+            }
+            // 出来以后又是外面的 10 s：对端 50 ms 以后才回，照样读到
+            return client.read(buffer, sizeof buffer);
+        });
+        back_outside = text_of(outer, buffer);
+
+        cu::result<std::size_t> loose = cu::timeout(std::chrono::milliseconds(30), [&] {
+            // 里面 10 s，比外面松：还是外面的 30 ms 先到
+            const steady_clock::time_point start = steady_clock::now();
+            cu::result<std::size_t> got = cu::timeout(std::chrono::seconds(10), [&client, &buffer] {
+                return client.read(buffer, sizeof buffer);
+            });
+            looser_waited = steady_clock::now() - start;
+            return got;
+        });
+        looser_inside = error_text(loose);
+
+        // 都出来了：不限时，等对端 50 ms 以后写的那个字节
+        if (client.write("2", 1).is_err()) {
+            return;
+        }
+        untimed = text_of(client.read(buffer, sizeof buffer), buffer);
+    });
+
+    std::string local;
+    {
+        cu::result<cu::net::connection> connected = cu::net::connect(target);
+        EXPECT(error_text(connected), ==, std::string());
+        if (connected.is_ok()) {
+            cu::net::connection& c = connected.value();
+            local = c.local_address().to_string();
+            char buffer[16];
+            for (int round = 0; round < 2; ++round) {
+                cu::result<std::size_t> got = c.read(buffer, sizeof buffer);
+                if (got.is_err() || got.value() == 0) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                EXPECT(error_text(c.write("z", 1)), ==, std::string());
+            }
+        }
+    }
+    serving.join();
+
+    const std::string timed_out = "timeout: read " + local + ": i/o timeout";
+    EXPECT(tighter_inside, ==, timed_out);
+    EXPECT(back_outside, ==, std::string("z"));
+    EXPECT(looser_inside, ==, timed_out);
+    EXPECT(looser_waited < std::chrono::seconds(5), ==, true);
+    EXPECT(untimed, ==, std::string("z"));
+}
+
+// 新起的协程不受起它的那一段的时限管：外面 20 ms 早到了，里面起的协程照样等到 100 ms 以后来的数据。
+TEST(net, a_new_coroutine_does_not_inherit_a_timeout) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+
+    std::string child = "not run";
+    cu::coroutine serving([&server, &child] {
+        cu::result<cu::net::connection> accepted = server.accept();
+        if (accepted.is_err()) {
+            child = accepted.error().to_string();
+            return;
+        }
+        cu::net::connection& client = accepted.value();
+        cu::result<void> outer = cu::timeout(std::chrono::milliseconds(20), [&client, &child] {
+            cu::coroutine reading([&client, &child] {
+                char buffer[16];
+                child = text_of(client.read(buffer, sizeof buffer), buffer);
+            });
+            reading.join();
+            return cu::result<void>();
+        });
+        (void)outer;
+    });
+
+    {
+        cu::result<cu::net::connection> connected = cu::net::connect(target);
+        EXPECT(error_text(connected), ==, std::string());
+        if (connected.is_ok()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            EXPECT(error_text(connected.value().write("late", 4)), ==, std::string());
+        }
+    }
+    serving.join();
+
+    EXPECT(child, ==, std::string("late"));
+}
+
+// 数据和到点前后脚到：读的一边每次最多等 1 ms，写的一边一个字节一个字节地写、不时睡一会儿。超时的那些轮次不丢
+// 数据，读到的和写的一样。读的一边先是协程，再是普通线程。
+TEST(net, timeouts_racing_with_data_lose_nothing) {
+    cu::result<cu::net::listener> listening = cu::net::listen("127.0.0.1:0");
+    EXPECT(error_text(listening), ==, std::string());
+    if (listening.is_err()) {
+        return;
+    }
+    cu::net::listener& server = listening.value();
+    const std::string target = server.local_address().to_string();
+    const std::string payload = make_payload(600);
+
+    for (int round = 0; round < 2; ++round) {
+        std::string connect_error;
+        cu::coroutine writing([&target, &payload, &connect_error] {
+            cu::result<cu::net::connection> connected = cu::net::connect(target);
+            if (connected.is_err()) {
+                connect_error = connected.error().to_string();
+                return;
+            }
+            write_slowly(connected.value(), payload);
+        });
+        cu::result<cu::net::connection> accepted = server.accept();
+        EXPECT(error_text(accepted), ==, std::string());
+        if (accepted.is_err()) {
+            writing.join();
+            return;
+        }
+
+        std::string received;
+        int timeouts = 0;
+        if (round == 0) {
+            cu::coroutine reading([&accepted, &payload, &received, &timeouts] {
+                received = read_with_short_timeouts(accepted.value(), payload.size(), timeouts);
+            });
+            reading.join();
+        } else {
+            received = read_with_short_timeouts(accepted.value(), payload.size(), timeouts);
+        }
+        writing.join();
+
+        EXPECT(connect_error, ==, std::string());
+        EXPECT(received.size(), ==, payload.size());
+        EXPECT(received == payload, ==, true);
+        EXPECT(timeouts > 0, ==, true);
+    }
 }

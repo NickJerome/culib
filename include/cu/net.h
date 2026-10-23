@@ -5,6 +5,10 @@
 // listener 和 connection 都只能移动，析构时关掉。会等的调用（accept、connect、read、write）在协程里只挂起当前
 // 协程，在普通线程上阻塞这根线程。同一个连接同一时刻最多一根协程读、一根协程写；还有人在等的时候不能析构。
 // 失败的消息照 Go 的样子，例如 "listen :8080: bind: Address already in use"。
+//
+// 会等的调用默认一直等，要限时就包在 cu::timeout 里（见 cu/timeout.h）。到点时返回 error_kind::timeout，消息例如
+// "read 127.0.0.1:51234: i/o timeout"；读超时以后连接照样能用，没读到的数据下次还能读到；写超时的时候前面可能
+// 已经写出去一部分。
 
 #include <cu/result.h>
 #include <cu/string_view.h>
@@ -95,7 +99,8 @@ private:
 // 设了别的程序能抢走端口。
 result<listener> listen(string_view address);
 
-// 连到 address 上，例如 "127.0.0.1:8080"、"[::1]:8080"。
+// 连到 address 上，例如 "127.0.0.1:8080"、"[::1]:8080"。对端不应答时一直等到系统放弃，默认设置下是几十秒到
+// 两分钟。
 result<connection> connect(string_view address);
 
 }  // namespace net

@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "coroutine_block.h"
+#include "timer.h"
 
 namespace cu {
 namespace detail {
@@ -16,6 +17,9 @@ void system_thread_start() noexcept;
 
 // 叫醒在等 I/O 的系统线程，让它马上再转一轮。任何线程都能调。
 void system_thread_wake() noexcept;
+
+// 系统线程最晚在这一刻再看一遍定时器。它醒着、还没算好这一轮等到哪一刻时是 timer_never。任何线程都能调。
+timer_time system_thread_wakes_by() noexcept;
 
 // 在系统线程上排进就绪：先攒着，这一轮处理完一起排进全局队列，只拿一次锁、只看一次要不要叫醒工作线程。
 // 不在系统线程上时什么也不做，返回 false。

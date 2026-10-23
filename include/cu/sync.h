@@ -28,18 +28,6 @@ struct waiter_list {
     sync_waiter* last;
 };
 
-// 现在往后 nanoseconds 纳秒的时刻（steady_clock 的纳秒数），超过能表示的最晚时刻就取最晚的。
-std::int64_t deadline_after_nanoseconds(std::int64_t nanoseconds) noexcept;
-
-// 现在往后 duration 的时刻；duration 不为正时是早就过了的时刻。
-template <typename Rep, typename Period>
-std::int64_t deadline_after(const std::chrono::duration<Rep, Period>& duration) {
-    if (duration <= duration.zero()) {
-        return 0;
-    }
-    return deadline_after_nanoseconds(ceil_nanoseconds(duration));
-}
-
 }  // namespace detail
 
 // 互斥量。拿不到时排队：放锁的一方叫醒排在最前面的那个，它醒来和刚来的一起抢，抢输了回到队首，下一次放锁直接

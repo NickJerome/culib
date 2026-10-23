@@ -5,6 +5,7 @@
 #include <cu/net.h>
 
 #include <cstdint>
+#include <string>
 
 #include "socket_headers.h"
 
@@ -42,6 +43,11 @@ void use_ipv4(socket_address& at, std::uint32_t ip) noexcept;
 // connect 用：没写 host，或者写的是 0.0.0.0、[::]，都换成本机的环回地址，和 Go 一样。
 // Linux 和 macOS 自己就这么做，Windows 不认。
 void use_loopback_if_unspecified(endpoint& target) noexcept;
+
+// 到点了还没完成，例如 "read 127.0.0.1:51234: i/o timeout"。
+inline error timeout_error(const std::string& what) {
+    return make_error(error_kind::timeout, what + ": i/o timeout");
+}
 
 // net.h 里几个类的私有部分只对这里开放。
 struct socket_access {

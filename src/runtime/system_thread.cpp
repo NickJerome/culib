@@ -9,6 +9,7 @@
 #include "runtime.h"
 #include "timer.h"
 
+#include <atomic>
 #include <thread>
 
 namespace cu {
@@ -18,6 +19,11 @@ namespace {
 
 // 系统线程上指向这一轮叫醒的那一批协程，别的线程上为空。
 thread_local coroutine_list* this_batch = 0;
+
+// 见 system_thread_wakes_by。醒来以后先改成 timer_never 再看定时器，算好以后写下要等到的那一刻：放定时器的一方
+// 在它看过那一份堆以后才放进去的，读到的要么是 timer_never，要么是这一轮（或者更晚一轮）算好的时刻，
+// 比那一刻早就叫醒它，不比那一刻早，它在那一刻醒来以后会看见。
+std::atomic<timer_time> wakes_by(timer_never);
 
 // 离 next 还有多久（纳秒）；next 是 timer_never 时返回 -1，一直等。
 std::int64_t timeout_until(timer_time next, timer_time now) noexcept {
@@ -41,6 +47,7 @@ void system_main() noexcept {
     this_batch = &batch;
 
     for (;;) {
+        wakes_by.store(timer_never);
         const timer_time now = timer_now();
         mem_purge(now);                       // 分配器的空页到点了就把内存还给系统
         timer_time next = timers_run(now);   // 到点的定时器叫醒的协程攒进 batch
@@ -56,6 +63,7 @@ void system_main() noexcept {
         if (purge < next) {
             next = purge;
         }
+        wakes_by.store(next);
         io_poll(timeout_until(next, now));   // I/O 叫醒的协程也攒进 batch
     }
 }
@@ -74,6 +82,10 @@ void system_thread_start() noexcept {
 
 void system_thread_wake() noexcept {
     io_wake();
+}
+
+timer_time system_thread_wakes_by() noexcept {
+    return wakes_by.load();
 }
 
 // 不内联：调用方可能是协程，线程局部变量只在这里读（见 worker::on_this_thread）。

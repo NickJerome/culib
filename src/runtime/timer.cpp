@@ -6,6 +6,7 @@
 
 #include "timer.h"
 
+#include <cu/detail/nanoseconds.h>
 #include <cu/detail/spin_lock.h>
 
 #include "base/fatal.h"
@@ -155,6 +156,10 @@ timer_time timer_after(timer_time now, std::int64_t duration) noexcept {
     return now + duration;
 }
 
+std::int64_t deadline_after_nanoseconds(std::int64_t nanoseconds) noexcept {
+    return timer_after(timer_now(), nanoseconds);
+}
+
 void timer_add(timer_node& node) noexcept {
     node.heap = heap_of_this_thread();
     timer_heap& timers = heaps()[node.heap - 1];
@@ -174,9 +179,9 @@ void timer_add(timer_node& node) noexcept {
         sift_up(timers.entries, timers.entries.size() - 1);
         earliest = timers.entries[0].node == &node;
     }
-    // 成了这一份里最早的，就可能比系统线程打算醒的时刻早：叫醒它重新算。不是最早的，这一份里有更早的，
-    // 系统线程至少会在那时醒
-    if (earliest) {
+    // 成了这一份里最早的，又比系统线程打算醒的时刻早，就叫醒它重新算。不是最早的，这一份里有更早的，系统线程至少
+    // 会在那时醒；不比它打算醒的时刻早，它到时醒来会看见。每次读写都配一个定时器时，多半是后一种
+    if (earliest && node.when < system_thread_wakes_by()) {
         system_thread_wake();
     }
 }

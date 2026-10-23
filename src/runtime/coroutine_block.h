@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "stack.h"
+#include "timer.h"
 
 namespace cu {
 namespace detail {
@@ -19,8 +20,8 @@ struct thread_waiter;
 
 struct coroutine_block {
     coroutine_block() noexcept
-        : next(0), context(0), resumer(0), run(0), destroy(0), body(0), number(0), phase(0), refs(2),
-          finished(false), joiner(0), thread_joiner(0) {
+        : next(0), context(0), resumer(0), run(0), destroy(0), body(0), number(0), deadline(timer_never), phase(0),
+          refs(2), finished(false), joiner(0), thread_joiner(0) {
         stack.base = 0;
         stack.committed = 0;
 #if CU_DETAIL_ASAN
@@ -45,6 +46,9 @@ struct coroutine_block {
     void (*destroy)(void*);
     void* body;
     std::uint64_t number;
+
+    // cu::timeout 定的截止时刻；没有限时为 timer_never。只有协程自己读写
+    timer_time deadline;
 
     // 挂起和叫醒的握手，见 park.h
     std::atomic<int> phase;

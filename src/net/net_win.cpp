@@ -2,6 +2,8 @@
 
 #include "net_detail.h"
 
+#include <cu/timeout.h>
+
 #include "base/fatal.h"
 #include "platform/system_error.h"
 #include "runtime/io_win.h"
@@ -122,7 +124,8 @@ address local_address_of(SOCKET s) {
 }
 
 // 提交一个 overlapped 操作以后调。submitted：提交时直接返回了成功；没有的话，错误码是 WSA_IO_PENDING
-// 才算交给了系统。交给了系统的，等完成包取回来再取结果。返回 0 表示成功，否则是错误码。
+// 才算交给了系统。交给了系统的，等完成包取回来再取结果；最多等到 cu::timeout 定的截止时刻，到点就取消。
+// 当场完成的不用取消。返回 0 表示成功，否则是错误码。
 int complete(SOCKET s, bool submitted, io_operation& operation, DWORD& transferred) noexcept {
     if (!submitted) {
         const int code = ::WSAGetLastError();
@@ -130,12 +133,21 @@ int complete(SOCKET s, bool submitted, io_operation& operation, DWORD& transferr
             return code;
         }
     }
-    cu::detail::io_wait_completion(operation);
+    const std::int64_t deadline = submitted ? cu::detail::timer_never : cu::detail::current_deadline();
+    cu::detail::io_wait_completion(operation, reinterpret_cast<HANDLE>(s), deadline);
     DWORD flags = 0;
     if (!::WSAGetOverlappedResult(s, &operation.overlapped, &transferred, FALSE, &flags)) {
         return ::WSAGetLastError();
     }
     return 0;
+}
+
+// complete 的错误码换成 cu::error。等的时候不能关句柄，只有到点会取消操作，所以取消了就是超时。
+error failure(const std::string& what, int code) {
+    if (code == WSA_OPERATION_ABORTED) {
+        return detail::timeout_error(what);
+    }
+    return system_error(what, code);
 }
 
 }  // namespace
@@ -154,7 +166,7 @@ result<std::size_t> connection::read(void* buffer, std::size_t capacity) {
     const bool submitted = ::WSARecv(s, &slice, 1, 0, &flags, &operation.overlapped, 0) == 0;
     const int code = complete(s, submitted, operation, got);
     if (code != 0) {
-        return system_error("read " + remote_.to_string(), code);
+        return failure("read " + remote_.to_string(), code);
     }
     return std::size_t(got);
 }
@@ -171,7 +183,7 @@ result<void> connection::write(const void* data, std::size_t size) {
         const bool submitted = ::WSASend(s, &slice, 1, 0, 0, &operation.overlapped, 0) == 0;
         const int code = complete(s, submitted, operation, sent);
         if (code != 0) {
-            return system_error("write " + remote_.to_string(), code);
+            return failure("write " + remote_.to_string(), code);
         }
         next += sent;
         size -= sent;
@@ -212,7 +224,7 @@ result<connection> listener::accept() {
             continue;
         }
         if (code != 0) {
-            return system_error("accept " + local_.to_string(), code);
+            return failure("accept " + local_.to_string(), code);
         }
 
         // 让新套接字认得自己的地址（getpeername、shutdown 要用）
@@ -305,7 +317,7 @@ result<connection> connect(string_view text) {
                                           &operation.overlapped) != FALSE;
     const int code = complete(s, submitted, operation, sent);
     if (code != 0) {
-        return system_error(what, code);
+        return failure(what, code);
     }
 
     // 让套接字认得自己连上了（getpeername、shutdown 要用）

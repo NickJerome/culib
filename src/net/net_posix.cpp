@@ -3,6 +3,8 @@
 #include "net_detail.h"
 #include "socket_posix.h"
 
+#include <cu/timeout.h>
+
 #include "platform/system_error.h"
 #include "runtime/io_posix.h"
 
@@ -72,11 +74,21 @@ address local_address_of(int fd) {
     return detail::socket_access::to_address(at);
 }
 
-// 等非阻塞的 connect 出结果。返回 0 表示连上了，否则是错误码。
+// 等可读或者可写，最多等到 cu::timeout 定的截止时刻。返回 false 表示到点了。
+bool wait_ready(io_record* record, cu::detail::io_direction direction) noexcept {
+    return cu::detail::io_wait(record, direction, cu::detail::current_deadline());
+}
+
+// wait_connected 的返回值：到点了还没连上。错误码都是正数。
+const int timed_out = -1;
+
+// 等非阻塞的 connect 出结果。返回 0 表示连上了，timed_out 表示到点了，否则是错误码。
 // 可写也可能是虚的，照 Go 的做法再用 getpeername 确认一次。
 int wait_connected(int fd, io_record* record) noexcept {
     for (;;) {
-        cu::detail::io_wait(record, cu::detail::io_write);
+        if (!wait_ready(record, cu::detail::io_write)) {
+            return timed_out;
+        }
         int code = 0;
         socklen_t length = sizeof code;
         if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &code, &length) != 0) {
@@ -126,7 +138,9 @@ result<std::size_t> connection::read(void* buffer, std::size_t capacity) {
         if (!would_block(code)) {
             return system_error("read " + remote_.to_string(), code);
         }
-        cu::detail::io_wait(record_of(record_), cu::detail::io_read);
+        if (!wait_ready(record_of(record_), cu::detail::io_read)) {
+            return detail::timeout_error("read " + remote_.to_string());
+        }
     }
 }
 
@@ -146,7 +160,9 @@ result<void> connection::write(const void* data, std::size_t size) {
         if (!would_block(code)) {
             return system_error("write " + remote_.to_string(), code);
         }
-        cu::detail::io_wait(record_of(record_), cu::detail::io_write);
+        if (!wait_ready(record_of(record_), cu::detail::io_write)) {
+            return detail::timeout_error("write " + remote_.to_string());
+        }
     }
     return result<void>();
 }
@@ -179,7 +195,9 @@ result<connection> listener::accept() {
         if (!would_block(code)) {
             return system_error("accept " + local_.to_string(), code);
         }
-        cu::detail::io_wait(record_of(record_), cu::detail::io_read);
+        if (!wait_ready(record_of(record_), cu::detail::io_read)) {
+            return detail::timeout_error("accept " + local_.to_string());
+        }
     }
 }
 
@@ -268,6 +286,9 @@ result<connection> connect(string_view text) {
         detail::socket_access::make_connection(guard.release(), record, detail::socket_access::to_address(target.at));
     if (pending) {
         const int code = wait_connected(fd, record);
+        if (code == timed_out) {
+            return detail::timeout_error(what);
+        }
         if (code != 0) {
             return system_error(what, code);
         }

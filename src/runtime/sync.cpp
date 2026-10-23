@@ -26,10 +26,6 @@ struct sync_waiter {
     bool timed_out;           // condition_variable：到点了，定时器把它摘了下来
 };
 
-std::int64_t deadline_after_nanoseconds(std::int64_t nanoseconds) noexcept {
-    return timer_after(timer_now(), nanoseconds);
-}
-
 }  // namespace detail
 
 namespace {

@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "platform/win32.h"
+#include "timer.h"
 
 namespace cu {
 namespace detail {
@@ -26,9 +27,11 @@ struct io_operation {
 // 把句柄关联到完成端口。失败返回 false，原因在 GetLastError()。
 bool io_associate(HANDLE handle) noexcept;
 
-// 操作已经交给系统、会有完成包（提交返回成功或 ERROR_IO_PENDING）以后调：等到完成包取回来。
-// 在协程里挂起协程，在普通线程上阻塞线程。结果用 WSAGetOverlappedResult 取。
-void io_wait_completion(io_operation& operation) noexcept;
+// 操作已经交给系统、会有完成包（提交返回成功或 ERROR_IO_PENDING）以后调：等到完成包取回来。到了 deadline
+// （timer_never 是一直等）还没完成，就用 CancelIoEx 取消 handle 上的这次操作，照样等它的完成包：取消成了的，
+// 结果是 ERROR_OPERATION_ABORTED；赶在取消之前完成的，结果照常。在协程里挂起协程，在普通线程上阻塞线程。
+// 结果用 WSAGetOverlappedResult 取。
+void io_wait_completion(io_operation& operation, HANDLE handle, timer_time deadline) noexcept;
 
 }  // namespace detail
 }  // namespace cu

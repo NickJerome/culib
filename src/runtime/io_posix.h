@@ -5,6 +5,8 @@
 
 #include <cstdint>
 
+#include "timer.h"
+
 namespace cu {
 namespace detail {
 
@@ -18,9 +20,10 @@ io_record* io_watch(int fd) noexcept;
 // 撤下登记并关掉 fd。之后不能再用这条记录，引擎在没人会碰它的时候释放。调用方保证没人在等它。
 void io_close(int fd, io_record* record) noexcept;
 
-// 系统调用说「还没好」（EAGAIN）以后调：等这个方向来一次就绪。在协程里挂起协程，在普通线程上阻塞线程。
-// 就绪可能是虚的，醒来以后要重试系统调用。
-void io_wait(io_record* record, io_direction direction) noexcept;
+// 系统调用说「还没好」（EAGAIN）以后调：等这个方向来一次就绪，最多等到 deadline（timer_never 是一直等）。
+// 已经过了 deadline 就不等，返回 false；否则等完返回 true，调用方重试系统调用：醒来可能是就绪（也可能是虚的），
+// 也可能是到点了。在协程里挂起协程，在普通线程上阻塞线程。
+bool io_wait(io_record* record, io_direction direction, timer_time deadline) noexcept;
 
 // 后端（io_linux.cpp / io_macos.cpp）：建等待器、登记、撤下、等一批事件、叫醒等着的线程。
 

@@ -3,6 +3,8 @@
 // 等待格是一个原子变量：0 空闲，1 来过一次就绪、还没人消费，其余是等着的协程（或者打了标记的普通线程）。
 // 等待者在系统调用说 EAGAIN 以后把自己放进去再挂起；系统线程看到这个方向就绪，就把格子换成 1，
 // 原来有等待者就叫醒它。就绪先到、等待者后到时，等待者看到 1，消费掉直接重试。
+//
+// 限时等的另放一个定时器。就绪和到点抢着把等待者从格子里换出来，换出来的一方叫醒它，所以只醒一次。
 
 #include "io_posix.h"
 
@@ -13,6 +15,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 
 #include <unistd.h>
 
@@ -90,6 +93,70 @@ engine_state& engine() noexcept {
     return *state;
 }
 
+// 限时等时放在等待者栈上的定时器。定时器放在最前面：fire 拿到的指针就是它的。
+struct timed_wait {
+    timed_wait() noexcept : slot(0), waiter(0), fired(false) {}
+
+    timer_node node;
+    std::atomic<std::uintptr_t>* slot;
+    std::uintptr_t waiter;     // 放进格子里的那个值
+    std::atomic<bool> fired;   // fire 跑完了，之后不再碰这里
+};
+
+// 系统线程上，到点了：格子里还是这个等待者，就换回 0 再叫醒它；已经不是了，说明就绪先到，ready 叫醒了它。
+// 写了 fired 以后等待者随时可能返回，所以叫醒用的是先读出来的值。
+void wait_timed_out(timer_node* node) noexcept {
+    timed_wait* const self = reinterpret_cast<timed_wait*>(node);
+    const std::uintptr_t waiter = self->waiter;
+    std::uintptr_t expected = waiter;
+    const bool claimed = self->slot->compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+    self->fired.store(true, std::memory_order_release);
+    if (claimed) {
+        wake(waiter);
+    }
+}
+
+// 睡到被叫醒：协程挂起，普通线程阻塞。
+void sleep_until_woken(thread_waiter* thread) noexcept {
+    if (thread) {
+        thread->wait();
+        return;
+    }
+    scheduler_park();
+}
+
+// 把 waiter 放进格子，睡到就绪或者到点。先放进格子再放定时器：反过来的话，定时器赶在放进去之前到点，就没人
+// 叫醒它了。醒来以后格子清成 0：调用方马上重试系统调用，之后来的数据不会漏。
+void wait_in_slot(std::atomic<std::uintptr_t>& slot, std::uintptr_t waiter, thread_waiter* thread,
+                  timer_time deadline) noexcept {
+    std::uintptr_t expected = 0;
+    if (!slot.compare_exchange_strong(expected, waiter)) {
+        slot.store(0);   // 就绪已经来过：消费掉
+        return;
+    }
+    if (deadline == timer_never) {
+        sleep_until_woken(thread);
+        slot.store(0);
+        return;
+    }
+
+    timed_wait timer;
+    timer.node.when = deadline;
+    timer.node.fire = &wait_timed_out;
+    timer.slot = &slot;
+    timer.waiter = waiter;
+    timer_add(timer.node);
+    sleep_until_woken(thread);
+
+    // 定时器还在堆里就拿掉；已经被系统线程取下，就等它的 fire 跑完，fire 还要来看这里
+    if (!timer_remove(timer.node)) {
+        while (!timer.fired.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+    slot.store(0);
+}
+
 }  // namespace
 
 void io_poll(std::int64_t timeout) noexcept {
@@ -120,22 +187,19 @@ void io_close(int fd, io_record* record) noexcept {
     state.retired = record;
 }
 
-void io_wait(io_record* record, io_direction direction) noexcept {
+// 到没到点只在这里看：到点醒来的也返回 true，调用方再试一次系统调用，前后脚到的数据照样拿到，再进来才返回 false。
+bool io_wait(io_record* record, io_direction direction, timer_time deadline) noexcept {
+    if (deadline != timer_never && deadline <= timer_now()) {
+        return false;
+    }
     std::atomic<std::uintptr_t>& slot = record->slots[direction];
-    std::uintptr_t expected = 0;
-    coroutine_block* const self = current_block();
-    if (self) {
-        if (slot.compare_exchange_strong(expected, reinterpret_cast<std::uintptr_t>(self))) {
-            scheduler_park();
-        }
-        slot.store(0);   // 消费掉这次就绪：马上要重试系统调用，之后来的数据不会漏
-        return;
+    if (coroutine_block* const self = current_block()) {
+        wait_in_slot(slot, reinterpret_cast<std::uintptr_t>(self), 0, deadline);
+        return true;
     }
-    thread_waiter waiter;
-    if (slot.compare_exchange_strong(expected, reinterpret_cast<std::uintptr_t>(&waiter) | thread_mark)) {
-        waiter.wait();
-    }
-    slot.store(0);
+    thread_waiter thread;
+    wait_in_slot(slot, reinterpret_cast<std::uintptr_t>(&thread) | thread_mark, &thread, deadline);
+    return true;
 }
 
 }  // namespace detail

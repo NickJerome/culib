@@ -1,5 +1,6 @@
 // 事件引擎的 Windows 部分。没开 FILE_SKIP_COMPLETION_PORT_ON_SUCCESS：当场完成的操作也有完成包，
-// 等待者一律等到完成包取回来，OVERLAPPED 不会在系统还要写它的时候被下一次操作复用。
+// 等待者一律等到完成包取回来，OVERLAPPED 不会在系统还要写它的时候被下一次操作复用。限时等的到点时取消操作，
+// 照样等完成包，Go 也这么做。
 //
 // 系统线程按时醒：GetQueuedCompletionStatusEx 的超时按系统节拍到期，默认约 15.6 ms，监控要每 1 ms 看一次。
 // 所以另设一个高精度定时器，用等待完成包把它接到完成端口上，到点时端口里多一个包，Go 也这么做。等待完成包的
@@ -13,6 +14,8 @@
 #include "scheduler.h"
 #include "system_thread.h"
 #include "timer.h"
+
+#include <thread>
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
@@ -137,6 +140,61 @@ engine_state& engine() noexcept {
     return *state;
 }
 
+// 限时等时放在等待者栈上的定时器。定时器放在最前面：fire 拿到的指针就是它的。
+struct timed_wait {
+    timed_wait() noexcept : handle(0), operation(0), fired(false) {}
+
+    timer_node node;
+    HANDLE handle;
+    io_operation* operation;
+    std::atomic<bool> fired;   // fire 跑完了，之后不再碰这里
+};
+
+// 系统线程上，到点了：取消这次操作。已经完成的取消不到（ERROR_NOT_FOUND），不碍事。
+void cancel_operation(timer_node* node) noexcept {
+    timed_wait* const self = reinterpret_cast<timed_wait*>(node);
+    ::CancelIoEx(self->handle, &self->operation->overlapped);
+    self->fired.store(true, std::memory_order_release);
+}
+
+// 睡到被叫醒：协程挂起，普通线程阻塞。
+void sleep_until_woken(thread_waiter* thread) noexcept {
+    if (thread) {
+        thread->wait();
+        return;
+    }
+    scheduler_park();
+}
+
+// 把 waiter 记进操作，睡到完成包取回来。到点了定时器只取消操作，叫醒的还是完成包：OVERLAPPED 和缓冲区在
+// 等待者的栈上，系统写完它们才能返回。
+void wait_for_packet(io_operation& operation, std::uintptr_t waiter, thread_waiter* thread, HANDLE handle,
+                     timer_time deadline) noexcept {
+    std::uintptr_t expected = 0;
+    if (!operation.state.compare_exchange_strong(expected, waiter)) {
+        return;   // 完成包已经取回来了
+    }
+    if (deadline == timer_never) {
+        sleep_until_woken(thread);
+        return;
+    }
+
+    timed_wait timer;
+    timer.node.when = deadline;
+    timer.node.fire = &cancel_operation;
+    timer.handle = handle;
+    timer.operation = &operation;
+    timer_add(timer.node);
+    sleep_until_woken(thread);
+
+    // 定时器还在堆里就拿掉；已经被系统线程取下，就等它的 fire 跑完，fire 还要来看这里
+    if (!timer_remove(timer.node)) {
+        while (!timer.fired.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+    }
+}
+
 }  // namespace
 
 // 没有 OVERLAPPED 的包是定时器到点或者 io_wake 投进来的，只为把系统线程叫醒。
@@ -169,19 +227,13 @@ bool io_associate(HANDLE handle) noexcept {
     return ::CreateIoCompletionPort(handle, engine().port, 0, 0) != 0;
 }
 
-void io_wait_completion(io_operation& operation) noexcept {
-    std::uintptr_t expected = 0;
-    coroutine_block* const self = current_block();
-    if (self) {
-        if (operation.state.compare_exchange_strong(expected, reinterpret_cast<std::uintptr_t>(self))) {
-            scheduler_park();
-        }
+void io_wait_completion(io_operation& operation, HANDLE handle, timer_time deadline) noexcept {
+    if (coroutine_block* const self = current_block()) {
+        wait_for_packet(operation, reinterpret_cast<std::uintptr_t>(self), 0, handle, deadline);
         return;
     }
-    thread_waiter waiter;
-    if (operation.state.compare_exchange_strong(expected, reinterpret_cast<std::uintptr_t>(&waiter) | thread_mark)) {
-        waiter.wait();
-    }
+    thread_waiter thread;
+    wait_for_packet(operation, reinterpret_cast<std::uintptr_t>(&thread) | thread_mark, &thread, handle, deadline);
 }
 
 }  // namespace detail
