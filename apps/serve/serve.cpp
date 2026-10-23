@@ -4,6 +4,7 @@
 #include <cu/coroutine.h>
 #include <cu/fs.h>
 #include <cu/net.h>
+#include <cu/timeout.h>
 
 #include <algorithm>
 #include <chrono>
@@ -15,21 +16,42 @@
 
 namespace {
 
-// 读到请求头结束（一个空行）就回文件。请求头超过 64 KiB、读失败或者对端先关了，直接关连接。
-void handle(cu::net::connection connection, const std::string& response) {
+// 收完请求头最多等这么久（hyper 的默认值也是 30 秒），写完一个响应最多等这么久：慢客户端和闲着的连接到点就断开。
+// 响应现在是一个小文件；文件大了以后写的时限要改成每次写之间的空闲时间。
+const std::chrono::seconds head_timeout(30);
+const std::chrono::seconds send_timeout(30);
+
+// 读到请求头结束（一个空行）。请求头超过 64 KiB、对端先关了，都算失败。
+cu::result<std::string> read_head(cu::net::connection& connection) {
     std::string head;
     char buffer[4096];
     while (head.find("\r\n\r\n") == std::string::npos) {
         if (head.size() > 64 * 1024) {
-            return;
+            return cu::make_error(cu::error_kind::invalid_argument, "request head is longer than 64 KiB");
         }
         cu::result<std::size_t> got = connection.read(buffer, sizeof buffer);
-        if (got.is_err() || got.value() == 0) {
-            return;
+        if (got.is_err()) {
+            return std::move(got).error();
+        }
+        if (got.value() == 0) {
+            return cu::make_error(cu::error_kind::io, "peer closed the connection before the request head ended");
         }
         head.append(buffer, got.value());
     }
-    cu::result<void> sent = connection.write(response.data(), response.size());
+    return head;
+}
+
+// 收到完整的请求头就回文件。收不全（到点、太长、对端先关）直接关连接；写失败打一行。
+void handle(cu::net::connection connection, const std::string& response) {
+    cu::result<std::string> head = cu::timeout(head_timeout, [&connection] {
+        return read_head(connection);
+    });
+    if (head.is_err()) {
+        return;
+    }
+    cu::result<void> sent = cu::timeout(send_timeout, [&connection, &response] {
+        return connection.write(response.data(), response.size());
+    });
     if (sent.is_err()) {
         std::fprintf(stderr, "serve: %s\n", sent.error().message().c_str());
     }
