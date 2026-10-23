@@ -1,26 +1,22 @@
 // cu::mutex 和 cu::condition_variable。等着的协程或线程在自己的栈上放一个 sync_waiter，排进对象的队列；叫醒的一方
 // 拿着对象的锁把它摘下，放了锁再叫醒。谁把它从队列里摘下来谁叫醒它，所以排一次队恰好醒一次。
+// 谁在等、怎么睡怎么叫醒交给 waiter，限时交给 deadline_timer（wait.h）：协程和普通线程走同一段代码。
 
 #include <cu/sync.h>
 
 #include "base/fatal.h"
-#include "scheduler.h"
 #include "timer.h"
-
-#include <atomic>
-#include <thread>
+#include "wait.h"
 
 namespace cu {
 namespace detail {
 
 struct sync_waiter {
-    sync_waiter() noexcept
-        : prev(0), next(0), block(current_block()), thread(0), queued(false), handed(false), timed_out(false) {}
+    sync_waiter() noexcept : prev(0), next(0), queued(false), handed(false), timed_out(false) {}
 
     sync_waiter* prev;
     sync_waiter* next;
-    coroutine_block* block;   // 等着的协程；在普通线程上为空，用 thread
-    thread_waiter* thread;
+    waiter who;               // 等着的协程或普通线程
     bool queued;              // 在队列里
     bool handed;              // mutex：放锁的一方直接把锁交给了它
     bool timed_out;           // condition_variable：到点了，定时器把它摘了下来
@@ -30,12 +26,10 @@ struct sync_waiter {
 
 namespace {
 
-using detail::coroutine_block;
+using detail::deadline_timer;
 using detail::fatal;
 using detail::spin_lock;
 using detail::sync_waiter;
-using detail::thread_waiter;
-using detail::timer_node;
 using detail::waiter_list;
 
 // 下面四个调用方都拿着所在对象的锁。
@@ -87,28 +81,9 @@ sync_waiter* pop_front(waiter_list& list) noexcept {
     return first;
 }
 
-// 叫醒摘下来的等待者。它醒了可能马上返回，栈上的 sync_waiter 就没了，所以先把要用的读出来，叫醒以后不再碰它。
-void wake(sync_waiter* waiter) noexcept {
-    coroutine_block* const block = waiter->block;
-    if (block) {
-        detail::scheduler_unpark(block);
-        return;
-    }
-    waiter->thread->wake();
-}
-
-// 等到被叫醒：协程挂起，普通线程阻塞。enqueue 负责排队和放锁，在睡下之前调。
-template <typename Enqueue>
-void sleep_until_woken(sync_waiter& self, Enqueue enqueue) {
-    if (self.block) {
-        enqueue();
-        detail::scheduler_park();
-        return;
-    }
-    thread_waiter thread;
-    self.thread = &thread;
-    enqueue();
-    thread.wait();
+// 叫醒摘下来的等待者。它醒了可能马上返回，栈上的 sync_waiter 就没了，所以叫醒以后不再碰它。
+void wake(sync_waiter* woken) noexcept {
+    woken->who.wake();
 }
 
 void check_holding(const std::unique_lock<cu::mutex>& lock) noexcept {
@@ -117,86 +92,27 @@ void check_holding(const std::unique_lock<cu::mutex>& lock) noexcept {
     }
 }
 
-// 协程的一次限时等待。定时器放在最前面：fire 拿到的指针就是它的。
+// 限时等时交给定时器的：等的是谁，排在哪个对象的队列里。
 struct timed_wait {
-    timed_wait() noexcept : waiter(0), guard(0), list(0), fired(false) {}
-
-    timer_node node;
-    sync_waiter* waiter;
+    sync_waiter* self;
     spin_lock* guard;
     waiter_list* list;
-    std::atomic<bool> fired;   // fire 跑完了，之后不再碰这里
 };
 
 // 系统线程上，到点了：还在队列里就摘下来，记成到点，叫醒它；不在了说明通知已经把它摘走，由通知的一方叫醒。
-void wait_timed_out(timer_node* node) noexcept {
-    timed_wait* const self = reinterpret_cast<timed_wait*>(node);
-    coroutine_block* woken = 0;
-    self->guard->lock();
-    if (self->waiter->queued) {
-        remove(*self->list, *self->waiter);
-        self->waiter->timed_out = true;
-        woken = self->waiter->block;
+void wait_timed_out(void* context) noexcept {
+    timed_wait* const timed = static_cast<timed_wait*>(context);
+    sync_waiter* woken = 0;
+    timed->guard->lock();
+    if (timed->self->queued) {
+        remove(*timed->list, *timed->self);
+        timed->self->timed_out = true;
+        woken = timed->self;
     }
-    self->guard->unlock();
-
-    self->fired.store(true, std::memory_order_release);
+    timed->guard->unlock();
     if (woken) {
-        detail::scheduler_unpark(woken);
+        wake(woken);
     }
-}
-
-// 协程限时等，返回是否到点。先排队再放定时器：反过来的话，定时器赶在排队之前到点，就没人在到点时叫醒它了。
-bool wait_in_coroutine(spin_lock& guard, waiter_list& list, sync_waiter& self, std::unique_lock<cu::mutex>& lock,
-                       std::int64_t deadline) {
-    timed_wait timer;
-    timer.node.when = deadline;
-    timer.node.fire = &wait_timed_out;
-    timer.waiter = &self;
-    timer.guard = &guard;
-    timer.list = &list;
-
-    guard.lock();
-    push_back(list, self);
-    guard.unlock();
-    lock.unlock();
-    detail::timer_add(timer.node);
-    detail::scheduler_park();
-
-    // 定时器还在堆里就拿掉；已经被系统线程取下，就等它的 fire 跑完，fire 还要来看这里
-    if (!detail::timer_remove(timer.node)) {
-        while (!timer.fired.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-    }
-    return self.timed_out;
-}
-
-// 普通线程限时等，返回是否到点。
-bool wait_in_thread(spin_lock& guard, waiter_list& list, sync_waiter& self, std::unique_lock<cu::mutex>& lock,
-                    std::int64_t deadline) {
-    thread_waiter thread;
-    self.thread = &thread;
-
-    guard.lock();
-    push_back(list, self);
-    guard.unlock();
-    lock.unlock();
-    if (thread.wait_until(deadline)) {
-        return false;
-    }
-
-    // 到点了：还在队列里就自己摘下来；已经不在了，说明通知的一方摘走了它、正要叫醒它，等它叫完
-    guard.lock();
-    const bool timed_out = self.queued;
-    if (timed_out) {
-        remove(list, self);
-    }
-    guard.unlock();
-    if (!timed_out) {
-        thread.wait();
-    }
-    return timed_out;
 }
 
 }  // namespace
@@ -254,14 +170,13 @@ void mutex::wait_for_lock() {
     sync_waiter self;
     bool lost = false;
     for (;;) {
-        sleep_until_woken(self, [this, &self, lost] {
-            if (lost) {
-                push_front(waiters_, self);
-            } else {
-                push_back(waiters_, self);
-            }
-            guard_.unlock();
-        });
+        if (lost) {
+            push_front(waiters_, self);
+        } else {
+            push_back(waiters_, self);
+        }
+        guard_.unlock();
+        self.who.sleep();
         if (self.handed) {
             return;
         }
@@ -310,30 +225,32 @@ void condition_variable::notify_all() noexcept {
 void condition_variable::wait(std::unique_lock<mutex>& lock) {
     check_holding(lock);
     sync_waiter self;
-    sleep_until_woken(self, [this, &self, &lock] {
-        guard_.lock();
-        push_back(waiters_, self);
-        guard_.unlock();
-        lock.unlock();
-    });
+    guard_.lock();
+    push_back(waiters_, self);
+    guard_.unlock();
+    lock.unlock();
+    self.who.sleep();
     lock.lock();
 }
 
+// 和 wait 一样先排上、放开 lock，再放定时器：反过来的话，定时器赶在排上之前到点，就没人在到点时叫醒它了。
 std::cv_status condition_variable::wait_until_deadline(std::unique_lock<mutex>& lock, std::int64_t deadline) {
     check_holding(lock);
     if (deadline <= detail::timer_now()) {
         return std::cv_status::timeout;
     }
-    if (deadline == detail::timer_never) {
-        wait(lock);
-        return std::cv_status::no_timeout;
-    }
-
     sync_waiter self;
-    const bool timed_out = self.block ? wait_in_coroutine(guard_, waiters_, self, lock, deadline)
-                                      : wait_in_thread(guard_, waiters_, self, lock, deadline);
+    guard_.lock();
+    push_back(waiters_, self);
+    guard_.unlock();
+    lock.unlock();
+    {
+        timed_wait context = {&self, &guard_, &waiters_};
+        deadline_timer timer(deadline, &wait_timed_out, &context);
+        self.who.sleep();
+    }   // 定时器在这里收掉：先被通知的拿掉它，已经到点的等它的回调跑完
     lock.lock();
-    return timed_out ? std::cv_status::timeout : std::cv_status::no_timeout;
+    return self.timed_out ? std::cv_status::timeout : std::cv_status::no_timeout;
 }
 
 }  // namespace cu

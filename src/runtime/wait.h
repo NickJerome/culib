@@ -1,7 +1,7 @@
 #pragma once
 
 // 一次等待要用的两样东西，都放在等待者自己的栈上：waiter 记着谁在等、怎么叫醒它；deadline_timer 给这次等待限时。
-// 事件引擎用它们；在等的可以是协程，也可以是普通线程。
+// 事件引擎、cu::mutex 和 cu::condition_variable 用它们；在等的可以是协程，也可以是普通线程。
 
 #include <atomic>
 
@@ -21,7 +21,8 @@ public:
     waiter(const waiter&) = delete;
     waiter& operator=(const waiter&) = delete;
 
-    // 睡到 wake()：协程挂起，普通线程阻塞。每次 sleep 恰好配一次 wake，wake 可以先到。只能由建它的那一方调。
+    // 睡到 wake()：协程挂起，普通线程阻塞。每次 sleep 恰好配一次 wake，wake 可以先到；睡醒以后可以再睡下一次
+    // （mutex 抢输了回到队首时就这么用）。只能由建它的那一方调。
     void sleep() noexcept;
 
     // 任何线程都能调。调完以后等待者随时可能返回、销毁这个对象，之后不能再碰它。

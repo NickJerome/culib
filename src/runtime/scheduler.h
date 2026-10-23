@@ -31,7 +31,8 @@ void scheduler_yield() noexcept;
 // 挂起当前协程，睡到 when（timer_now() 的时刻）。只能在协程里调。
 void scheduler_sleep_until(timer_time when) noexcept;
 
-// 普通线程上的一次等待，放在等待者的栈上。
+// 普通线程上的等待，放在等待者的栈上。每次 wait 用掉一次 wake，所以同一个对象可以睡下、被叫醒，再睡下；
+// wake 可以先到。
 struct thread_waiter {
     thread_waiter() : done(false) {}
 
@@ -40,19 +41,7 @@ struct thread_waiter {
         while (!done) {
             woken.wait(held);
         }
-    }
-
-    // 等到被叫醒，最多等到 deadline（timer_now() 的时刻）。返回是否被叫醒了。
-    bool wait_until(timer_time deadline) {
-        const std::chrono::steady_clock::time_point until(
-            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::nanoseconds(deadline)));
-        std::unique_lock<std::mutex> held(lock);
-        while (!done) {
-            if (woken.wait_until(held, until) == std::cv_status::timeout) {
-                return done;
-            }
-        }
-        return true;
+        done = false;
     }
 
     // 拿着锁通知：等待者看到 done 以后要先拿回这把锁才能返回、销毁这个对象。
