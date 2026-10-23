@@ -27,6 +27,9 @@ g++ "${flags[@]}" tests/*.cpp "$build_dir/libculib.a" -o "$build_dir/culib_test"
 g++ "${flags[@]}" tests/fault/coroutine_faults.cpp "$build_dir/libculib.a" -o "$build_dir/coroutine_faults_test"
 "$build_dir/coroutine_faults_test"
 
+g++ "${flags[@]}" tests/flag/flag_test.cpp "$build_dir/libculib.a" -o "$build_dir/flag_test"
+"$build_dir/flag_test"
+
 g++ "${flags[@]}" -c src/override/new.cpp -o "$build_dir/new_override.o"
 g++ "${flags[@]}" tests/override/*.cpp tests/main.cpp "$build_dir/new_override.o" "$build_dir/libculib.a" \
     -o "$build_dir/new_override_test"

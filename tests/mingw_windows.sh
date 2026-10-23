@@ -38,6 +38,10 @@ done
     tests/fault/coroutine_faults.cpp "${library_objects[@]}" -lws2_32
 "$output/coroutine_faults_test.exe"
 
+"$compiler" "${flags[@]}" -static -o "$output/flag_test.exe" \
+    tests/flag/flag_test.cpp "${library_objects[@]}" -lws2_32
+"$output/flag_test.exe"
+
 "$compiler" "${flags[@]}" -static -o "$output/new_override_test.exe" \
     tests/override/*.cpp tests/main.cpp src/override/new.cpp "${library_objects[@]}" -lws2_32
 "$output/new_override_test.exe"

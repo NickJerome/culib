@@ -222,6 +222,7 @@ jobs:
           LUA
           cat > consumer/src/main.cpp <<'CPP'
           #include <cu/coroutine.h>
+          #include <cu/flag.h>
           #include <cu/fs.h>
           #include <cu/net.h>
           #include <cu/result.h>
@@ -239,6 +240,9 @@ jobs:
           // 静态的锁不需要在 main 之前跑构造函数
           static cu::mutex answer_lock;
 
+          // 选项是全局对象，main 之前登记
+          static cu::flag::int64 base_port(8080, "the port to start from", {"base-port", "p"});
+
           static cu::result<int> checked_port(int port) {
               if (port < 1 || port > 65535) {
                   return cu::make_error(cu::error_kind::out_of_range, "bad port");
@@ -254,7 +258,8 @@ jobs:
               return checked.value() * 2;
           }
 
-          int main() {
+          int main(int argc, char* argv[]) {
+              cu::flag::init(argc, argv);
               // 两种标准用同一套 culib 接口；C++17 另外查和标准 string_view 的互转
           #if __cplusplus >= 201703L
               std::string_view standard = "from std::string_view";
@@ -268,7 +273,7 @@ jobs:
           #else
               cu::string_view ours = "from C++11";
           #endif
-              const cu::result<int> port = doubled_port(8080);
+              const cu::result<int> port = doubled_port(static_cast<int>(base_port.value()));
               if (port.is_err()) {
                   std::fprintf(stderr, "%s\n", port.error().to_string().c_str());
                   return 1;
